@@ -51,6 +51,13 @@ pub struct CommandContext {
     pub cursor: (usize, usize),
 }
 
+/// 状态栏钩子收到的轻量上下文（不含 doc.text，避免每帧克隆全文）
+pub struct StatuslineCtx {
+    pub path: Option<String>,
+    pub mode: String,
+    pub cursor: (usize, usize),
+}
+
 /// 一次文档编辑请求（坐标基于命令开始时的原始快照，0-based 行列）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
@@ -74,6 +81,7 @@ thread_local! {
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
     static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
+    static STATUSLINE_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     // HashMap::new 非 const fn，EVENT_HANDLERS 不能用 const 块初始化
     static EVENT_HANDLERS: RefCell<HashMap<String, Vec<JsValue>>> = RefCell::new(HashMap::new());
@@ -100,6 +108,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
                 .function(NativeFunction::from_fn_ptr(js_map), JsString::from("map"), 3)
+                .function(NativeFunction::from_fn_ptr(js_set_statusline), JsString::from("set_statusline"), 1)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -489,6 +498,50 @@ pub fn close_popup(id: u64) -> Result<()> {
     })
 }
 
+fn js_set_statusline(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let arg = args.first().cloned().unwrap_or(JsValue::null());
+    if arg.is_null_or_undefined() {
+        STATUSLINE_HOOK.with(|h| *h.borrow_mut() = None);
+    } else if arg.as_callable().is_some() {
+        STATUSLINE_HOOK.with(|h| *h.borrow_mut() = Some(arg));
+    } else {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.set_statusline: expected a function or null",
+        ))));
+    }
+    Ok(JsValue::undefined())
+}
+
+/// 调状态栏钩子；无钩子 / 返回 null / 非字符串 / 抛错 → None
+pub fn statusline_text(ctx: &StatuslineCtx) -> Option<String> {
+    init();
+    let hook = STATUSLINE_HOOK.with(|h| h.borrow().clone())?;
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let func = hook.as_callable().and_then(JsFunction::from_object)?;
+        let cursor = ObjectInitializer::new(engine)
+            .property(JsString::from("row"), JsValue::from(ctx.cursor.0 as f64), Attribute::all())
+            .property(JsString::from("col"), JsValue::from(ctx.cursor.1 as f64), Attribute::all())
+            .build();
+        let ctx_obj = ObjectInitializer::new(engine)
+            .property(
+                JsString::from("path"),
+                match &ctx.path {
+                    Some(p) => JsValue::from(JsString::from(p.clone())),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .property(JsString::from("mode"), JsValue::from(JsString::from(ctx.mode.clone())), Attribute::all())
+            .property(JsString::from("cursor"), JsValue::from(cursor), Attribute::all())
+            .build();
+        let undefined = JsValue::undefined();
+        let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine).ok()?;
+        value.try_js_into::<String>(engine).ok()
+    })
+}
+
 /// 调 bufferline 图标钩子；未注册 / 返回 null / 报错 → None。
 pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
     init();
@@ -758,5 +811,33 @@ mod tests {
         assert!(load_script(r#"helix.map("normal", 42, "y");"#).is_err());
         assert!(load_script(r#"helix.map("normal", "x", 42);"#).is_err());
         assert!(load_script(r#"helix.map("normal", "", "y");"#).is_err());
+    }
+
+    #[test]
+    fn statusline_hook() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        assert_eq!(statusline_text(&StatuslineCtx { path: None, mode: "normal".into(), cursor: (0, 0) }), None);
+
+        load_script(
+            r#"
+        helix.set_statusline((ctx) => ctx.mode + ":" + ctx.cursor.row);
+        "#,
+        )
+        .unwrap();
+        let ctx = StatuslineCtx { path: Some("/tmp/a.rs".into()), mode: "insert".into(), cursor: (3, 7) };
+        assert_eq!(statusline_text(&ctx), Some("insert:3".to_string()));
+
+        // 返回 null → None
+        load_script(r#"helix.set_statusline(() => null);"#).unwrap();
+        assert_eq!(statusline_text(&ctx), None);
+        // 抛错 → None
+        load_script(r#"helix.set_statusline(() => { throw new Error("boom"); });"#).unwrap();
+        assert_eq!(statusline_text(&ctx), None);
+        // set_statusline(null) 清除
+        load_script(r#"helix.set_statusline(null);"#).unwrap();
+        assert_eq!(statusline_text(&ctx), None);
+        // 非法参数 → JS 报错
+        assert!(load_script(r#"helix.set_statusline(42);"#).is_err());
     }
 }
