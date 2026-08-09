@@ -18,9 +18,9 @@ pub struct CommandContext {
 
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
 // 所以引擎按线程存放（编辑器主线程是唯一调用者）；MESSAGES 跨线程共享。
-// ponytail: boa 0.21.1 的 Context drop 有 double-finalize UAF（valgrind 证实，
-// debug 下 glibc tcache 偶发 abort），因此 Box::leak 泄漏到 'static 规避——
-// 进程退出时 OS 回收。升级 boa 修复后应改回正常持有。
+// ponytail: 实现时观察到进程退出阶段偶发 tcache 崩溃（疑似 Context drop 的
+// double-finalize，但独立复现未能确认），故 Box::leak 泄漏到 'static 规避——
+// 进程退出时 OS 回收，对 PoC 无实际代价。升级 boa 后应改回正常持有。
 thread_local! {
     static CONTEXT: RefCell<Option<&'static mut Context>> = RefCell::new(None);
     static REGISTRY: RefCell<HashMap<String, JsValue>> = RefCell::new(HashMap::new());
