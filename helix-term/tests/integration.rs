@@ -21,6 +21,7 @@ mod test {
     mod plugin_palette;
     mod movement;
     mod plugin;
+    mod plugin_doc;
     mod plugin_statusline;
     mod splits;
 }

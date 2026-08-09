@@ -135,14 +135,14 @@ fn js_register_command(
             "invalid command name: {name:?}"
         )))));
     }
-    REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), func));
-    // 可选第三参：命令说明
+    // 先校验/存入 doc 再注册：第三参类型非法（如 42）时整体失败，不产生半注册
     if let Some(doc_arg) = args.get(2) {
         if !doc_arg.is_null_or_undefined() {
             let doc: String = doc_arg.try_js_into(context)?;
-            COMMAND_DOCS.with(|d| d.borrow_mut().insert(name, doc));
+            COMMAND_DOCS.with(|d| d.borrow_mut().insert(name.clone(), doc));
         }
     }
+    REGISTRY.with(|r| r.borrow_mut().insert(name, func));
     Ok(JsValue::undefined())
 }
 
@@ -864,11 +864,13 @@ mod tests {
             r#"
         helix.register_command("doc1", () => {}, "first doc");
         helix.register_command("nodoc", () => {});
+        helix.register_command("nulldoc", () => {}, undefined);
         "#,
         )
         .unwrap();
         assert_eq!(command_doc("doc1"), Some("first doc".to_string()));
         assert_eq!(command_doc("nodoc"), None);
+        assert_eq!(command_doc("nulldoc"), None);
         assert_eq!(command_doc("missing"), None);
         // 非法 doc 类型 → 报错
         assert!(load_script(r#"helix.register_command("bad", () => {}, 42);"#).is_err());
