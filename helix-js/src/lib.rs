@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
+use boa_engine::object::builtins::JsFunction;
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsString, JsValue, NativeFunction, Source};
+use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 
 /// 插件命令收到的只读上下文快照（由 helix-term 序列化编辑器状态得到）
 pub struct CommandContext {
@@ -36,6 +37,11 @@ pub fn init() {
             let engine = Box::leak(Box::new(Context::default()));
             let helix = ObjectInitializer::new(engine)
                 .function(NativeFunction::from_fn_ptr(js_echo), JsString::from("echo"), 1)
+                .function(
+                    NativeFunction::from_fn_ptr(js_register_command),
+                    JsString::from("register_command"),
+                    2,
+                )
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -43,6 +49,91 @@ pub fn init() {
             *slot = Some(engine);
         }
     });
+}
+
+fn js_register_command(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let func = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    if name.is_empty() || name.chars().any(char::is_whitespace) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "invalid command name: {name:?}"
+        )))));
+    }
+    REGISTRY.with(|r| r.borrow_mut().insert(name, func));
+    Ok(JsValue::undefined())
+}
+
+/// 把 CommandContext 转成 JS 对象 { doc: { path, text }, cursor: { row, col } }
+fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let doc = ObjectInitializer::new(engine)
+        .property(
+            JsString::from("path"),
+            match &ctx.path {
+                Some(p) => JsValue::from(JsString::from(p.clone())),
+                None => JsValue::null(),
+            },
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("text"),
+            JsValue::from(JsString::from(ctx.text.clone())),
+            Attribute::all(),
+        )
+        .build();
+    let cursor = ObjectInitializer::new(engine)
+        .property(
+            JsString::from("row"),
+            JsValue::from(ctx.cursor.0 as f64),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("col"),
+            JsValue::from(ctx.cursor.1 as f64),
+            Attribute::all(),
+        )
+        .build();
+    Ok(JsValue::from(
+        ObjectInitializer::new(engine)
+            .property(JsString::from("doc"), doc, Attribute::all())
+            .property(JsString::from("cursor"), cursor, Attribute::all())
+            .build(),
+    ))
+}
+
+/// 运行插件命令。返回 Ok(true) 表示已运行，Ok(false) 表示未注册
+pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
+    init();
+    let func = REGISTRY.with(|r| r.borrow().get(name).cloned());
+    let Some(func) = func else { return Ok(false) };
+
+    let func = func
+        .as_callable()
+        .and_then(JsFunction::from_object)
+        .ok_or_else(|| anyhow!("registered value for '{name}' is not a function"))?;
+
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized by init()");
+        let arg = ctx_to_js(ctx, engine)
+            .map_err(|e| anyhow!("failed to build command context: {e}"))?;
+        let undefined = JsValue::undefined();
+        func.call(&undefined, &[arg], engine)
+            .map(|_| true)
+            .map_err(|e| anyhow!("plugin command '{name}' failed: {e}"))
+    })
+}
+
+/// 已注册的插件命令名（供命令行补全）
+pub fn command_names() -> Vec<String> {
+    init();
+    REGISTRY.with(|r| r.borrow().keys().cloned().collect())
 }
 
 fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -92,5 +183,32 @@ mod tests {
         init();
         load_script(r#"helix.echo("hello from js");"#).unwrap();
         assert_eq!(take_messages(), vec!["hello from js"]);
+    }
+
+    #[test]
+    fn register_and_run_command() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("where", (ctx) => {
+            helix.echo("cursor: " + ctx.cursor.row + "," + ctx.cursor.col);
+        });
+        "#,
+        )
+        .unwrap();
+
+        let ctx = CommandContext {
+            path: Some("/tmp/demo.rs".to_string()),
+            text: "hello\nworld".to_string(),
+            cursor: (1, 2),
+        };
+        assert!(run_command("where", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["cursor: 1,2"]);
+
+        // 未注册的命令返回 false
+        assert!(!run_command("nope", &ctx).unwrap());
+        // 非法命令名（含空白）注册时报错
+        assert!(load_script(r#"helix.register_command("bad name", () => {});"#).is_err());
     }
 }
