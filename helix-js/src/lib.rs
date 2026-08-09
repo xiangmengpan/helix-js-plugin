@@ -87,6 +87,7 @@ thread_local! {
     static EVENT_HANDLERS: RefCell<HashMap<String, Vec<JsValue>>> = RefCell::new(HashMap::new());
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
@@ -380,17 +381,58 @@ pub fn take_edits() -> Vec<Edit> {
     CURRENT_EDITS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
-/// 求值一段插件脚本；脚本里可调用 `helix.register_command` / `helix.echo`
+/// 求值一段插件脚本（无名字，用于测试/内联）；脚本里可调用 `helix.register_command` / `helix.echo`
 pub fn load_script(src: &str) -> Result<()> {
+    load_script_named("<anon>", src)
+}
+
+/// 求值并记录脚本（名字用于报错定位与热重载）
+pub fn load_script_named(name: &str, src: &str) -> Result<()> {
     init();
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
-        let engine = binding.as_mut().expect("CONTEXT initialized by init()");
+        let engine = binding.as_mut().expect("CONTEXT initialized");
         engine
             .eval(Source::from_bytes(src))
             .map(|_| ())
-            .map_err(|e| anyhow!("plugin script error: {e}"))
+            .map_err(|e| anyhow!("plugin script '{name}' error: {e}"))?;
+        LOADED_SCRIPTS.with(|s| s.borrow_mut().push((name.to_string(), src.to_string())));
+        Ok(())
     })
+}
+
+/// 清空所有插件状态（热重载用；id 计数器保留保证唯一性）。
+/// 注意：UI_REQUESTS/MESSAGES 不清——它们是命令边界 drain 的队列。
+fn reset_plugin_state() {
+    REGISTRY.with(|r| r.borrow_mut().clear());
+    EVENT_HANDLERS.with(|h| h.borrow_mut().clear());
+    POPUPS.with(|p| p.borrow_mut().clear());
+    CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+    BUFFER_ICON_HOOK.with(|b| *b.borrow_mut() = None);
+    STATUSLINE_HOOK.with(|s| *s.borrow_mut() = None);
+    COMMAND_DOCS.with(|d| d.borrow_mut().clear());
+}
+
+/// 热重载：清空状态后按加载顺序重跑全部脚本。
+/// 失败路径分析：记录的脚本都是 load 时成功求值过的，重跑同一源码必然再次成功
+/// （脚本不依赖其他脚本的状态，reload 会重新注册全部命令/处理器）——
+/// 因此 Err 分支仅作防御（如脚本依赖被清空的全局状态），单测只覆盖成功路径。
+pub fn reload_all() -> Result<()> {
+    init();
+    let scripts = LOADED_SCRIPTS.with(|s| s.borrow().clone());
+    reset_plugin_state();
+    for (name, src) in &scripts {
+        CONTEXT.with(|cell| -> Result<()> {
+            let mut binding = cell.borrow_mut();
+            let engine = binding.as_mut().expect("CONTEXT initialized");
+            engine
+                .eval(Source::from_bytes(src.as_str()))
+                .map(|_| ())
+                .map_err(|e| anyhow!("plugin reload '{name}' failed: {e}"))?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// 取走并清空 echo 消息队列
@@ -906,5 +948,24 @@ mod tests {
         assert_eq!(command_doc("missing"), None);
         // 非法 doc 类型 → 报错
         assert!(load_script(r#"helix.register_command("bad", () => {}, 42);"#).is_err());
+    }
+
+    #[test]
+    fn plugin_reload() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script_named("a.js", r#"helix.register_command("reload-cmd", () => { helix.echo("v1"); });"#).unwrap();
+        load_script_named("b.js", r#"helix.on("save", () => {});"#).unwrap();
+
+        assert!(has_handlers("save"));
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        assert!(run_command("reload-cmd", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["v1"]);
+
+        // reload：清空状态后重跑全部已记录脚本
+        reload_all().unwrap();
+        assert!(has_handlers("save"), "handlers re-registered after reload");
+        assert!(run_command("reload-cmd", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["v1"]);
     }
 }

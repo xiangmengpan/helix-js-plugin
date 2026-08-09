@@ -156,7 +156,7 @@ impl Application {
                         let path = entry.path();
                         if path.extension().is_some_and(|ext| ext == "js") {
                             match std::fs::read_to_string(&path).and_then(|src| {
-                                helix_js::load_script(&src)
+                                helix_js::load_script_named(&path.display().to_string(), &src)
                                     .map_err(|e| std::io::Error::other(e.to_string()))
                             }) {
                                 Ok(()) => {

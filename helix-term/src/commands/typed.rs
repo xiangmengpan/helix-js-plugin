@@ -4124,6 +4124,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
     },
     TypableCommand {
+        name: "plugin-reload",
+        aliases: &[],
+        doc: "Reload all loaded JavaScript plugins.",
+        fun: plugin_reload,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
         name: "plugin-load",
         aliases: &[],
         doc: "Load a JavaScript plugin file.",
@@ -4368,6 +4376,25 @@ fn parse_plugin_binding(
     Ok((mode, keys, cmd))
 }
 
+fn plugin_reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    match helix_js::reload_all() {
+        Ok(()) => {
+            let msgs = helix_js::take_messages();
+            if !msgs.is_empty() {
+                cx.editor.set_status(msgs.join(" "));
+            }
+            Ok(())
+        }
+        Err(err) => {
+            cx.editor.set_error(format!("plugin-reload: {err}"));
+            Ok(())
+        }
+    }
+}
+
 fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4376,7 +4403,7 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         return Err(anyhow!("usage: plugin-load <path>"));
     };
     let src = std::fs::read_to_string(path).map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
-    helix_js::load_script(&src).map_err(|e| anyhow!("plugin-load: {e}"))?;
+    helix_js::load_script_named(path, &src).map_err(|e| anyhow!("plugin-load: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));
