@@ -6,7 +6,6 @@ use crate::job::Job;
 
 use super::*;
 
-use crate::keymap::KeyTrie;
 use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
@@ -4193,7 +4192,7 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
             if !msgs.is_empty() {
                 cx.editor.set_status(msgs.join(" "));
             }
-            apply_ui_requests(helix_js::take_ui_requests(), Some(&mut *cx))?;
+            apply_ui_requests(helix_js::take_ui_requests())?;
             // 应用插件文档编辑（一个命令 = 一个事务）。
             // 只在 Ok(true) 分支消费：Err 时队列残留由下次命令开始时清空，语义安全。
             let edits = helix_js::take_edits();
@@ -4300,38 +4299,40 @@ pub(crate) fn apply_plugin_edits(
     Ok(())
 }
 
-/// 消费插件 UI 请求：MapKey 注入 keymap；OpenPopup 在有无 compositor 的上下文都推层。
-/// 启动加载（Application::new）无 compositor，传 None 跳过弹窗。
-pub(crate) fn apply_ui_requests(
-    reqs: Vec<helix_js::UiRequest>,
-    cx: Option<&mut compositor::Context>,
-) -> anyhow::Result<()> {
+/// 消费插件 UI 请求：MapKey 注入 keymap、OpenPopup 推层都经 job 通道
+/// （闭包只捕获 owned 数据，满足 'static + Send）。
+pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Result<()> {
     for req in reqs {
         match req {
             helix_js::UiRequest::OpenPopup { id } => {
-                // cx 仅作“能否开弹窗”的开关：弹窗推层走 job 通道（compositor::Context
-                // 无 push_layer 能力），启动加载（None）时跳过。
-                if cx.is_some() {
-                    let popup =
-                        ui::Popup::new("plugin-popup", ui::PluginPopup::new(id)).auto_close(false);
-                    // 由事件循环在下一轮推层并渲染。
-                    job::dispatch_blocking(move |_editor, compositor| {
-                        compositor.replace_or_push("plugin-popup", popup);
-                    });
-                }
+                let popup =
+                    ui::Popup::new("plugin-popup", ui::PluginPopup::new(id)).auto_close(false);
+                // 由事件循环在下一轮推层并渲染。
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.replace_or_push("plugin-popup", popup);
+                });
             }
             helix_js::UiRequest::MapKey { mode, key, command } => {
-                apply_plugin_keymap(&mode, &key, &command)?;
+                // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
+                let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
+                job::dispatch_blocking(move |_editor, compositor| {
+                    if let Some(view) = compositor.find::<ui::EditorView>() {
+                        view.keymaps.insert_binding(mode, &keys, cmd);
+                    }
+                });
             }
         }
     }
     Ok(())
 }
 
-/// 把单个键位绑定注入运行时 keymap：解析键序列 → 链式 KeyTrieNode → merge_keys → store。
-/// 覆盖语义：同键已有绑定（含内置）被插件绑定替换（merge_nodes 叶子替换）。
-fn apply_plugin_keymap(mode: &str, key: &str, command: &str) -> anyhow::Result<()> {
-    use helix_view::{document::Mode, input::KeyEvent};
+/// 解析 helix.map 的 mode / 键序列 / 命令名为 owned 数据（job 闭包要求 'static + Send）。
+/// 实际注入（链式 KeyTrieNode → merge_keys → store）在 Keymaps::insert_binding。
+fn parse_plugin_binding(
+    mode: &str,
+    key: &str,
+    command: &str,
+) -> anyhow::Result<(Mode, Vec<KeyEvent>, MappableCommand)> {
     use std::str::FromStr;
 
     let mode = match mode {
@@ -4358,29 +4359,13 @@ fn apply_plugin_keymap(mode: &str, key: &str, command: &str) -> anyhow::Result<(
     if keys.is_empty() {
         bail!("helix.map: empty key sequence");
     }
-
     // 叶子：命令名转 Typable，交给 MappableCommand::execute 的插件回退执行
     let cmd = MappableCommand::Typable {
         name: command.to_string(),
         args: String::new(),
         doc: String::new(),
     };
-    let mut trie = KeyTrie::MappableCommand(cmd);
-    for key in keys.into_iter().rev() {
-        let mut map = indexmap::IndexMap::new();
-        map.insert(key, trie);
-        trie = KeyTrie::Node(crate::keymap::KeyTrieNode::new("plugin-map", map));
-    }
-    let mut delta = std::collections::HashMap::new();
-    delta.insert(mode, trie);
-
-    let keymaps = crate::application::KEYMAPS
-        .get()
-        .expect("KEYMAPS initialized by Application::new");
-    let mut current = keymaps.load().as_ref().clone();
-    crate::keymap::merge_keys(&mut current, delta);
-    keymaps.store(std::sync::Arc::new(current));
-    Ok(())
+    Ok((mode, keys, cmd))
 }
 
 fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -4396,8 +4381,8 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));
     }
-    // 脚本里的 helix.map 入队 MapKey，命令路径有 compositor：弹窗可推层
-    apply_ui_requests(helix_js::take_ui_requests(), Some(cx))?;
+    // 脚本里的 helix.map 入队 MapKey；OpenPopup 推层也经 job 通道
+    apply_ui_requests(helix_js::take_ui_requests())?;
     Ok(())
 }
 

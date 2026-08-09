@@ -4,10 +4,7 @@ pub mod macros;
 pub use crate::commands::MappableCommand;
 pub use default::default;
 
-use arc_swap::{
-    access::{DynAccess, DynGuard},
-    ArcSwap,
-};
+use arc_swap::{ArcSwap, Guard};
 use helix_view::{document::Mode, info::Info, input::KeyEvent};
 use indexmap::IndexMap;
 use macros::key;
@@ -262,7 +259,9 @@ pub enum KeymapResult {
 pub type ReverseKeymap = HashMap<String, Vec<Vec<KeyEvent>>>;
 
 pub struct Keymaps {
-    pub map: Box<dyn DynAccess<HashMap<Mode, KeyTrie>>>,
+    /// 具体 ArcSwap：既能 load（按键查询）也能 store（插件键位注入）。
+    /// ponytail: 启动快照——config-reload 不再热更新键位（需重启才能重载插件绑定）。
+    pub map: ArcSwap<HashMap<Mode, KeyTrie>>,
     /// Stores pending keys waiting for the next key. This is relative to a
     /// sticky node if one is in use.
     state: Vec<KeyEvent>,
@@ -271,16 +270,30 @@ pub struct Keymaps {
 }
 
 impl Keymaps {
-    pub fn new(map: Box<dyn DynAccess<HashMap<Mode, KeyTrie>>>) -> Self {
+    pub fn new(map: HashMap<Mode, KeyTrie>) -> Self {
         Self {
-            map,
+            map: ArcSwap::from_pointee(map),
             state: Vec::new(),
             sticky: None,
         }
     }
 
-    pub fn map(&self) -> DynGuard<HashMap<Mode, KeyTrie>> {
+    pub fn map(&self) -> Guard<Arc<HashMap<Mode, KeyTrie>>> {
         self.map.load()
+    }
+
+    /// 插件键位注入：已解析的键序列 → 链式 KeyTrieNode（叶子 MappableCommand）→ merge_keys → store。
+    /// 覆盖语义：同键已有绑定（含内置）被插件绑定替换（merge_nodes 叶子替换）。
+    pub fn insert_binding(&self, mode: Mode, keys: &[KeyEvent], command: MappableCommand) {
+        let mut trie = KeyTrie::MappableCommand(command);
+        for key in keys.iter().rev() {
+            let mut map = IndexMap::new();
+            map.insert(*key, trie);
+            trie = KeyTrie::Node(KeyTrieNode::new("plugin-map", map));
+        }
+        let mut current = (**self.map.load()).clone();
+        merge_keys(&mut current, HashMap::from([(mode, trie)]));
+        self.map.store(Arc::new(current));
     }
 
     /// Returns list of keys waiting to be disambiguated in current mode.
@@ -358,7 +371,7 @@ impl Keymaps {
 
 impl Default for Keymaps {
     fn default() -> Self {
-        Self::new(Box::new(ArcSwap::new(Arc::new(default()))))
+        Self::new(default())
     }
 }
 
@@ -378,7 +391,6 @@ mod tests {
     use super::macros::keymap;
     use super::*;
     use crate::commands::MappableCommand;
-    use arc_swap::access::Constant;
     use helix_core::hashmap;
     use helix_view::input::{KeyCode, KeyEvent, KeyModifiers};
     use indexmap::indexmap;
@@ -415,7 +427,7 @@ mod tests {
         merge_keys(&mut merged_keyamp, keymap.clone());
         assert_ne!(keymap, merged_keyamp);
 
-        let mut keymap = Keymaps::new(Box::new(Constant(merged_keyamp.clone())));
+        let mut keymap = Keymaps::new(merged_keyamp.clone());
         assert_eq!(
             keymap.get(Mode::Normal, key!('i')),
             KeymapResult::Matched(MappableCommand::normal_mode),
