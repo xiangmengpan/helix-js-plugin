@@ -3612,6 +3612,12 @@ pub fn command_palette(cx: &mut Context) {
                         args: String::new(),
                         doc: cmd.doc.to_owned(),
                     }),
+            ).chain(
+                helix_js::command_names().into_iter().map(|name| MappableCommand::Typable {
+                    name,
+                    args: String::new(),
+                    doc: String::new(),
+                }),
             );
 
             let columns = [
