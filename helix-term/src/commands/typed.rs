@@ -4407,7 +4407,13 @@ pub(super) fn command_mode(cx: &mut Context) {
 
 fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
     let (command, _, _) = command_line::split(input);
-    let command = TYPABLE_COMMAND_MAP.get(command)?;
+    let command = match TYPABLE_COMMAND_MAP.get(command) {
+        Some(cmd) => cmd,
+        None => {
+            // 插件命令 doc 回退
+            return helix_js::command_doc(command).map(Cow::Owned);
+        }
+    };
 
     if command.aliases.is_empty() && command.signature.flags.is_empty() {
         return Some(Cow::Borrowed(command.doc));

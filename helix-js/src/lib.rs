@@ -85,6 +85,8 @@ thread_local! {
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     // HashMap::new 非 const fn，EVENT_HANDLERS 不能用 const 块初始化
     static EVENT_HANDLERS: RefCell<HashMap<String, Vec<JsValue>>> = RefCell::new(HashMap::new());
+    // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
+    static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
@@ -133,7 +135,14 @@ fn js_register_command(
             "invalid command name: {name:?}"
         )))));
     }
-    REGISTRY.with(|r| r.borrow_mut().insert(name, func));
+    REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), func));
+    // 可选第三参：命令说明
+    if let Some(doc_arg) = args.get(2) {
+        if !doc_arg.is_null_or_undefined() {
+            let doc: String = doc_arg.try_js_into(context)?;
+            COMMAND_DOCS.with(|d| d.borrow_mut().insert(name, doc));
+        }
+    }
     Ok(JsValue::undefined())
 }
 
@@ -246,6 +255,12 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
 pub fn command_names() -> Vec<String> {
     init();
     REGISTRY.with(|r| r.borrow().keys().cloned().collect())
+}
+
+/// 插件命令说明（未注册返回 None）
+pub fn command_doc(name: &str) -> Option<String> {
+    init();
+    COMMAND_DOCS.with(|d| d.borrow().get(name).cloned())
 }
 
 fn js_on(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -839,5 +854,23 @@ mod tests {
         assert_eq!(statusline_text(&ctx), None);
         // 非法参数 → JS 报错
         assert!(load_script(r#"helix.set_statusline(42);"#).is_err());
+    }
+
+    #[test]
+    fn command_docs() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("doc1", () => {}, "first doc");
+        helix.register_command("nodoc", () => {});
+        "#,
+        )
+        .unwrap();
+        assert_eq!(command_doc("doc1"), Some("first doc".to_string()));
+        assert_eq!(command_doc("nodoc"), None);
+        assert_eq!(command_doc("missing"), None);
+        // 非法 doc 类型 → 报错
+        assert!(load_script(r#"helix.register_command("bad", () => {}, 42);"#).is_err());
     }
 }
