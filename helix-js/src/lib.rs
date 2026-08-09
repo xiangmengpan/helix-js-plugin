@@ -11,8 +11,10 @@ use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 
 /// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
+#[derive(Debug)]
 pub enum UiRequest {
     OpenPopup { id: u64 },
+    MapKey { mode: String, key: String, command: String },
 }
 
 /// 按键事件的只读快照，传给 JS onKey 回调
@@ -70,6 +72,7 @@ thread_local! {
     static REGISTRY: RefCell<HashMap<String, JsValue>> = RefCell::new(HashMap::new());
     static POPUPS: RefCell<HashMap<u64, PopupCallbacks>> = RefCell::new(HashMap::new());
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
+    static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
     static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     // HashMap::new 非 const fn，EVENT_HANDLERS 不能用 const 块初始化
@@ -96,6 +99,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_open_popup), JsString::from("open_popup"), 1)
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
+                .function(NativeFunction::from_fn_ptr(js_map), JsString::from("map"), 3)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -121,6 +125,39 @@ fn js_register_command(
         )))));
     }
     REGISTRY.with(|r| r.borrow_mut().insert(name, func));
+    Ok(JsValue::undefined())
+}
+
+/// helix.map 允许的 mode 白名单
+const KEYMAP_MODES: [&str; 3] = ["normal", "insert", "select"];
+
+/// 注册键位绑定：字符串命令直接入队，函数注册为隐藏插件命令 __mapped_N
+fn js_map(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let mode: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    if !KEYMAP_MODES.contains(&mode.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.map: unknown mode '{mode}'"
+        )))));
+    }
+    let key: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    if key.is_empty() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.map: key must not be empty",
+        ))));
+    }
+    let command_arg = args.get(2).cloned().unwrap_or(JsValue::undefined());
+
+    // 函数 → 注册为隐藏插件命令 __mapped_N
+    let command: String = if command_arg.as_callable().is_some() {
+        let id = NEXT_MAP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+        let name = format!("__mapped_{id}");
+        REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), command_arg));
+        name
+    } else {
+        command_arg.try_js_into(context)?
+    };
+
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::MapKey { mode, key, command });
     Ok(JsValue::undefined())
 }
 
@@ -528,7 +565,7 @@ mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
-        let UiRequest::OpenPopup { id } = reqs[0];
+        let UiRequest::OpenPopup { id } = reqs[0] else { unreachable!("expected OpenPopup") };
         assert_eq!(id, 1); // 自增从 1 开始
 
         let lines = render_popup(id, 40, 10).unwrap();
@@ -552,6 +589,7 @@ mod tests {
         load_script(r#"helix.open_popup({ render: () => ["x"] });"#).unwrap();
         let id = match take_ui_requests()[0] {
             UiRequest::OpenPopup { id } => id,
+            _ => unreachable!("expected OpenPopup"),
         };
         let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
         assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Ignored);
@@ -563,6 +601,7 @@ mod tests {
         load_script(r#"helix.open_popup({ render: () => "not an array" });"#).unwrap();
         let id = match take_ui_requests()[0] {
             UiRequest::OpenPopup { id } => id,
+            _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10).is_err());
         close_popup(id).unwrap();
@@ -675,5 +714,49 @@ mod tests {
         // mode-change 处理器带 mode 参数 + echo
         emit_event("mode-change", &ctx, Some("insert")).unwrap();
         assert_eq!(take_messages(), vec!["mode:insert"]);
+    }
+
+    #[test]
+    fn keymap_registration() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+
+        // 字符串命令 → MapKey 入队
+        load_script(r#"helix.map("normal", "gd", "goto-def");"#).unwrap();
+        let reqs = take_ui_requests();
+        assert_eq!(reqs.len(), 1);
+        match &reqs[0] {
+            UiRequest::MapKey { mode, key, command } => {
+                assert_eq!(mode, "normal");
+                assert_eq!(key, "gd");
+                assert_eq!(command, "goto-def");
+            }
+            other => panic!("expected MapKey, got {other:?}"),
+        }
+
+        // 回调 → 注册 __mapped_N + MapKey 入队
+        load_script(
+            r#"
+        helix.map("insert", "C-n", () => { helix.echo("cb"); });
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        assert_eq!(reqs.len(), 1);
+        let command = match &reqs[0] {
+            UiRequest::MapKey { command, .. } => command.clone(),
+            other => panic!("expected MapKey, got {other:?}"),
+        };
+        assert!(command.starts_with("__mapped_"), "command: {command}");
+        // 注册的命令可以运行（与普通插件命令同机制）
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        assert!(run_command(&command, &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["cb"]);
+
+        // 校验失败
+        assert!(load_script(r#"helix.map("bogus", "x", "y");"#).is_err());
+        assert!(load_script(r#"helix.map("normal", 42, "y");"#).is_err());
+        assert!(load_script(r#"helix.map("normal", "x", 42);"#).is_err());
+        assert!(load_script(r#"helix.map("normal", "", "y");"#).is_err());
     }
 }
