@@ -89,3 +89,60 @@ async fn plugin_popup_open_and_close() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_bufferline_icons() -> anyhow::Result<()> {
+    // 验证 bufferline 图标钩子真的渲染进标签栏
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.rs");
+    let b = dir.path().join("b.py");
+    std::fs::write(&a, "fn main() {}\n")?;
+    std::fs::write(&b, "print(1)\n")?;
+    let plugin_path = dir.path().join("buf_icons.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_buffer_icon((path) => {
+            if (!path) return null;
+            if (path.endsWith(".rs")) return "🦀";
+            if (path.endsWith(".py")) return "🐍";
+            return null;
+        });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new()
+            .with_file(a, None)
+            .with_file(b, None)
+            .build()?,
+        vec![
+            // 注意：不能单独发 (None, ...) 迭代——无按键时 event_loop_until_idle 会挂起
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                Some(&|app| {
+                    let area = helix_view::graphics::Rect::new(0, 0, 120, 1);
+                    let mut buf = tui::buffer::Buffer::empty(area);
+                    helix_term::ui::EditorView::render_bufferline(&app.editor, area, &mut buf);
+                    let rendered: String = buf
+                        .content
+                        .iter()
+                        .map(|cell| cell.symbol.as_str())
+                        .collect();
+                    assert!(
+                        rendered.contains("🦀") && rendered.contains("a.rs"),
+                        "bufferline missing rs icon: {rendered:?}"
+                    );
+                    assert!(
+                        rendered.contains("🐍") && rendered.contains("b.py"),
+                        "bufferline missing py icon: {rendered:?}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
