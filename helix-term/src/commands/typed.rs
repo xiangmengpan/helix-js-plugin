@@ -4259,15 +4259,17 @@ pub(crate) fn emit_plugin_event(
         editor.set_error(format!("plugin event '{name}' failed: {err}"));
         return;
     }
-    let msgs = helix_js::take_messages();
-    if !msgs.is_empty() {
-        editor.set_status(msgs.join(" "));
-    }
     let edits = helix_js::take_edits();
     if !edits.is_empty() {
         if let Err(err) = apply_plugin_edits(editor, &edits) {
             editor.set_error(format!("plugin event '{name}' edits failed: {err}"));
+            return;
         }
+    }
+    // 编辑成功应用后才显示 echo 消息，避免失败时状态栏信息误导
+    let msgs = helix_js::take_messages();
+    if !msgs.is_empty() {
+        editor.set_status(msgs.join(" "));
     }
 }
 
