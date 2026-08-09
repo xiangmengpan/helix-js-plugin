@@ -18,7 +18,9 @@ mod test {
     mod auto_pairs;
     mod command_line;
     mod commands;
+    mod plugin_palette;
     mod movement;
     mod plugin;
+    mod plugin_statusline;
     mod splits;
 }
