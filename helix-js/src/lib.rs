@@ -46,6 +46,14 @@ pub struct CommandContext {
     pub cursor: (usize, usize),
 }
 
+/// 一次文档编辑请求（坐标基于命令开始时的原始快照，0-based 行列）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+    pub insert: String,
+}
+
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
 // 所以引擎按线程存放（编辑器主线程是唯一调用者）；MESSAGES 跨线程共享。
 // drop 顺序：所有公共函数先调用 init()（先触达 CONTEXT），故线程销毁时
@@ -60,6 +68,7 @@ thread_local! {
     static POPUPS: RefCell<HashMap<u64, PopupCallbacks>> = RefCell::new(HashMap::new());
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
+    static CURRENT_EDITS: RefCell<Vec<Edit>> = RefCell::new(Vec::new());
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
@@ -125,6 +134,9 @@ fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
             JsValue::from(JsString::from(ctx.text.clone())),
             Attribute::all(),
         )
+        .function(NativeFunction::from_fn_ptr(js_doc_insert), JsString::from("insert"), 3)
+        .function(NativeFunction::from_fn_ptr(js_doc_replace), JsString::from("replace"), 5)
+        .function(NativeFunction::from_fn_ptr(js_doc_delete), JsString::from("delete"), 4)
         .build();
     let cursor = ObjectInitializer::new(engine)
         .property(
@@ -149,6 +161,8 @@ fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
 /// 运行插件命令。返回 Ok(true) 表示已运行，Ok(false) 表示未注册
 pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     init();
+    // 命令开始时清空编辑队列，避免跨命令残留
+    CURRENT_EDITS.with(|c| c.borrow_mut().clear());
     let func = REGISTRY.with(|r| r.borrow().get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
@@ -187,6 +201,39 @@ fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engi
         .expect("messages lock")
         .push(text);
     Ok(JsValue::undefined())
+}
+
+fn js_doc_insert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let row: usize = args.get(0).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let col: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let insert: String = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    CURRENT_EDITS.with(|c| c.borrow_mut().push(Edit { start: (row, col), end: (row, col), insert }));
+    Ok(JsValue::undefined())
+}
+
+fn js_doc_replace(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let sr: usize = args.get(0).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let insert: String = args.get(4).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    CURRENT_EDITS.with(|c| c.borrow_mut().push(Edit { start: (sr, sc), end: (er, ec), insert }));
+    Ok(JsValue::undefined())
+}
+
+fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let sr: usize = args.get(0).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    CURRENT_EDITS.with(|c| c.borrow_mut().push(Edit { start: (sr, sc), end: (er, ec), insert: String::new() }));
+    Ok(JsValue::undefined())
+}
+
+/// 取走并清空编辑队列（helix-term 在命令返回后消费）
+pub fn take_edits() -> Vec<Edit> {
+    init();
+    CURRENT_EDITS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 /// 求值一段插件脚本；脚本里可调用 `helix.register_command` / `helix.echo`
@@ -471,5 +518,59 @@ mod tests {
         assert_eq!(bufferline_icon(Some("main.rs")), Some("🦀".to_string()));
         assert_eq!(bufferline_icon(Some("main.py")), None);
         assert_eq!(bufferline_icon(None), None);
+    }
+
+    #[test]
+    fn doc_edits_queue() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("edit", (ctx) => {
+            ctx.doc.insert(1, 2, "ab");
+            ctx.doc.replace(0, 0, 0, 5, "new");
+            ctx.doc.delete(3, 0, 4, 0);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (1, 2) };
+        run_command("edit", &ctx).unwrap();
+        let edits = take_edits();
+        assert_eq!(
+            edits,
+            vec![
+                Edit { start: (1, 2), end: (1, 2), insert: "ab".into() },
+                Edit { start: (0, 0), end: (0, 5), insert: "new".into() },
+                Edit { start: (3, 0), end: (4, 0), insert: String::new() },
+            ]
+        );
+        // take_edits 清空
+        assert!(take_edits().is_empty());
+    }
+
+    #[test]
+    fn doc_edit_validation() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 类型错误 → 命令失败（run_command 返回 Err），且队列被清空
+        load_script(
+            r#"
+        helix.register_command("bad1", (ctx) => { ctx.doc.insert("x", 0, "a"); });
+        helix.register_command("bad2", (ctx) => { ctx.doc.replace(0, 0, 0, 0, 42); });
+        helix.register_command("bad3", (ctx) => { ctx.doc.delete(0, 0, 0); });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        assert!(run_command("bad1", &ctx).is_err());
+        assert!(take_edits().is_empty());
+        assert!(run_command("bad2", &ctx).is_err());
+        assert!(run_command("bad3", &ctx).is_err());
+        assert!(take_edits().is_empty());
+        // 正常命令运行后队列仍有值（供 helix-term 消费）
+        load_script(r#"helix.register_command("ok", (ctx) => { ctx.doc.insert(0, 0, "z"); });"#).unwrap();
+        run_command("ok", &ctx).unwrap();
+        assert_eq!(take_edits().len(), 1);
     }
 }
