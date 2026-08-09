@@ -6,6 +6,7 @@ use crate::job::Job;
 
 use super::*;
 
+use crate::keymap::KeyTrie;
 use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
@@ -4162,54 +4163,49 @@ fn execute_command_line(
 
     match typed::TYPABLE_COMMAND_MAP.get(command) {
         Some(cmd) => execute_command(cx, cmd, rest, event),
-        None if event == PromptEvent::Validate => {
-            // 插件命令：序列化当前文档状态后交给 JS 运行时
-            let (view, doc) = current_ref!(cx.editor);
-            let text = doc.text();
-            let pos = doc.selection(view.id).primary().cursor(text.slice(..));
-            let line = text.char_to_line(pos);
-            let col = pos - text.line_to_char(line);
-            let ctx = CommandContext {
-                path: doc.path().map(|p| p.to_string_lossy().into_owned()),
-                text: text.to_string(),
-                cursor: (line, col),
-            };
-            // 借用：view/doc（及 text）的最后使用在 ctx 构造处，NLL 在此结束对 editor 的共享借用
-
-            match helix_js::run_command(command, &ctx) {
-                Ok(true) => {
-                    let msgs = helix_js::take_messages();
-                    if !msgs.is_empty() {
-                        cx.editor.set_status(msgs.join(" "));
-                    }
-                    for req in helix_js::take_ui_requests() {
-                        match req {
-                            helix_js::UiRequest::OpenPopup { id } => {
-                                let popup = ui::Popup::new("plugin-popup", ui::PluginPopup::new(id))
-                                    .auto_close(false);
-                                // 本分支拿到的是 compositor::Context（无 push_layer 能力），
-                                // 走 job 通道由事件循环在下一轮推层并渲染。
-                                job::dispatch_blocking(move |_editor, compositor| {
-                                    compositor.replace_or_push("plugin-popup", popup);
-                                });
-                            }
-                        }
-                    }
-                    // 应用插件文档编辑（一个命令 = 一个事务）。
-                    // 只在 Ok(true) 分支消费：Err 时队列残留由下次命令开始时清空，语义安全。
-                    let edits = helix_js::take_edits();
-                    if !edits.is_empty() {
-                        if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
-                            cx.editor.set_error(format!("plugin edit failed: {err}"));
-                        }
-                    }
-                    Ok(())
-                }
-                Ok(false) => Err(anyhow!("no such command: '{command}'")),
-                Err(err) => Err(anyhow!("'{command}': {err}")),
-            }
-        }
+        None if event == PromptEvent::Validate => match run_plugin_command(cx, command)? {
+            true => Ok(()),
+            false => Err(anyhow!("no such command: '{command}'")),
+        },
         None => Ok(()),
+    }
+}
+
+/// 运行插件命令（静态命令表 miss 时的回退路径）。
+/// 返回 Ok(true) = 已运行，Ok(false) = 未注册，Err = 运行失败。
+/// 序列化当前文档状态后交给 JS 运行时；成功时消费 echo 消息、UI 请求与编辑队列。
+pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> anyhow::Result<bool> {
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text();
+    let pos = doc.selection(view.id).primary().cursor(text.slice(..));
+    let line = text.char_to_line(pos);
+    let col = pos - text.line_to_char(line);
+    let ctx = CommandContext {
+        path: doc.path().map(|p| p.to_string_lossy().into_owned()),
+        text: text.to_string(),
+        cursor: (line, col),
+    };
+    // 借用：view/doc（及 text）的最后使用在 ctx 构造处，NLL 在此结束对 editor 的共享借用
+
+    match helix_js::run_command(name, &ctx) {
+        Ok(true) => {
+            let msgs = helix_js::take_messages();
+            if !msgs.is_empty() {
+                cx.editor.set_status(msgs.join(" "));
+            }
+            apply_ui_requests(helix_js::take_ui_requests(), Some(&mut *cx))?;
+            // 应用插件文档编辑（一个命令 = 一个事务）。
+            // 只在 Ok(true) 分支消费：Err 时队列残留由下次命令开始时清空，语义安全。
+            let edits = helix_js::take_edits();
+            if !edits.is_empty() {
+                if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
+                    cx.editor.set_error(format!("plugin edit failed: {err}"));
+                }
+            }
+            Ok(true)
+        }
+        Ok(false) => Ok(false),
+        Err(err) => Err(anyhow!("'{name}': {err}")),
     }
 }
 
@@ -4236,11 +4232,7 @@ pub(super) fn execute_command(
 /// 钩子失败不阻断主流程：错误写入状态栏后继续；处理器 echo 的消息上屏。
 /// 参数用 `&mut Editor` 而非 compositor::Context：commands.rs 的模式命令
 /// 拿到的是 keymap Context（只有 editor 字段），此签名两个调用方都兼容。
-pub(crate) fn emit_plugin_event(
-    editor: &mut Editor,
-    name: &str,
-    extra: Option<&str>,
-) {
+pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&str>) {
     if !helix_js::has_handlers(name) {
         return;
     }
@@ -4275,7 +4267,10 @@ pub(crate) fn emit_plugin_event(
 
 /// 把插件 Edit（0-based 行列，原始快照坐标）转成 Transaction 并应用。
 /// 一次事件的所有编辑合并为一个事务 → 一次撤销。
-pub(crate) fn apply_plugin_edits(editor: &mut Editor, edits: &[helix_js::Edit]) -> anyhow::Result<()> {
+pub(crate) fn apply_plugin_edits(
+    editor: &mut Editor,
+    edits: &[helix_js::Edit],
+) -> anyhow::Result<()> {
     use helix_core::Change;
 
     let (view, doc) = current!(editor);
@@ -4305,6 +4300,89 @@ pub(crate) fn apply_plugin_edits(editor: &mut Editor, edits: &[helix_js::Edit]) 
     Ok(())
 }
 
+/// 消费插件 UI 请求：MapKey 注入 keymap；OpenPopup 在有无 compositor 的上下文都推层。
+/// 启动加载（Application::new）无 compositor，传 None 跳过弹窗。
+pub(crate) fn apply_ui_requests(
+    reqs: Vec<helix_js::UiRequest>,
+    cx: Option<&mut compositor::Context>,
+) -> anyhow::Result<()> {
+    for req in reqs {
+        match req {
+            helix_js::UiRequest::OpenPopup { id } => {
+                // cx 仅作“能否开弹窗”的开关：弹窗推层走 job 通道（compositor::Context
+                // 无 push_layer 能力），启动加载（None）时跳过。
+                if cx.is_some() {
+                    let popup =
+                        ui::Popup::new("plugin-popup", ui::PluginPopup::new(id)).auto_close(false);
+                    // 由事件循环在下一轮推层并渲染。
+                    job::dispatch_blocking(move |_editor, compositor| {
+                        compositor.replace_or_push("plugin-popup", popup);
+                    });
+                }
+            }
+            helix_js::UiRequest::MapKey { mode, key, command } => {
+                apply_plugin_keymap(&mode, &key, &command)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 把单个键位绑定注入运行时 keymap：解析键序列 → 链式 KeyTrieNode → merge_keys → store。
+/// 覆盖语义：同键已有绑定（含内置）被插件绑定替换（merge_nodes 叶子替换）。
+fn apply_plugin_keymap(mode: &str, key: &str, command: &str) -> anyhow::Result<()> {
+    use helix_view::{document::Mode, input::KeyEvent};
+    use std::str::FromStr;
+
+    let mode = match mode {
+        "normal" => Mode::Normal,
+        "insert" => Mode::Insert,
+        "select" => Mode::Select,
+        other => bail!("helix.map: unknown mode '{other}'"),
+    };
+    let mut keys: Vec<KeyEvent> = Vec::new();
+    for token in key.split_whitespace() {
+        match KeyEvent::from_str(token) {
+            Ok(k) => keys.push(k),
+            // "gd" 这类多字符缩写：逐字符拆成独立键（默认键位表同款解析）
+            Err(_) => {
+                for ch in token.chars() {
+                    keys.push(
+                        KeyEvent::from_str(&ch.to_string())
+                            .map_err(|_| anyhow!("helix.map: cannot parse key '{token}'"))?,
+                    );
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        bail!("helix.map: empty key sequence");
+    }
+
+    // 叶子：命令名转 Typable，交给 MappableCommand::execute 的插件回退执行
+    let cmd = MappableCommand::Typable {
+        name: command.to_string(),
+        args: String::new(),
+        doc: String::new(),
+    };
+    let mut trie = KeyTrie::MappableCommand(cmd);
+    for key in keys.into_iter().rev() {
+        let mut map = indexmap::IndexMap::new();
+        map.insert(key, trie);
+        trie = KeyTrie::Node(crate::keymap::KeyTrieNode::new("plugin-map", map));
+    }
+    let mut delta = std::collections::HashMap::new();
+    delta.insert(mode, trie);
+
+    let keymaps = crate::application::KEYMAPS
+        .get()
+        .expect("KEYMAPS initialized by Application::new");
+    let mut current = keymaps.load().as_ref().clone();
+    crate::keymap::merge_keys(&mut current, delta);
+    keymaps.store(std::sync::Arc::new(current));
+    Ok(())
+}
+
 fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4312,14 +4390,14 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     let Some(path) = args.first() else {
         return Err(anyhow!("usage: plugin-load <path>"));
     };
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
-    helix_js::load_script(&src)
-        .map_err(|e| anyhow!("plugin-load: {e}"))?;
+    let src = std::fs::read_to_string(path).map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
+    helix_js::load_script(&src).map_err(|e| anyhow!("plugin-load: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));
     }
+    // 脚本里的 helix.map 入队 MapKey，命令路径有 compositor：弹窗可推层
+    apply_ui_requests(helix_js::take_ui_requests(), Some(cx))?;
     Ok(())
 }
 

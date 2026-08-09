@@ -33,7 +33,7 @@ use log::{debug, error, info, warn};
 use std::{
     io::{stdin, IsTerminal},
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 #[cfg_attr(windows, allow(unused_imports))]
@@ -66,6 +66,14 @@ type TerminalEvent = termina::Event;
 type TerminalEvent = crossterm::event::Event;
 
 type Terminal = tui::terminal::Terminal<TerminalBackend>;
+
+/// 运行时 keymap 槽：插件 `helix.map` 的绑定经此注入，编辑器视图每次按键即时可见。
+/// EditorView 持有其 `Arc` 克隆作为 DynAccess；`apply_plugin_keymap` store 新快照。
+/// ponytail: 启动快照——config-reload 不再热更新键位（需重启才能重载插件绑定），
+/// 升级路径：监听 config 变更事件时重建 KEYMAPS。
+pub(crate) static KEYMAPS: OnceLock<
+    ArcSwap<std::collections::HashMap<helix_view::document::Mode, crate::keymap::KeyTrie>>,
+> = OnceLock::new();
 
 pub struct Application {
     pub compositor: Compositor,
@@ -133,35 +141,49 @@ impl Application {
         );
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
-        // Load JavaScript plugins from the config dir at startup (best effort)
-        let plugin_dir = helix_loader::config_dir().join("plugins");
-        if plugin_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "js") {
-                        match std::fs::read_to_string(&path).and_then(|src| {
-                            helix_js::load_script(&src).map_err(|e| std::io::Error::other(e.to_string()))
-                        }) {
-                            Ok(()) => {
-                                for msg in helix_js::take_messages() {
-                                    editor.set_status(msg);
+        let keys = KEYMAPS.get_or_init(|| ArcSwap::from_pointee(config.load().keys.clone()));
+        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(Box::new(keys))));
+        compositor.push(editor_view);
+
+        let jobs = Jobs::new();
+
+        // Load JavaScript plugins from the config dir at startup (best effort).
+        // 必须在 KEYMAPS get_or_init 之后：插件 load_script 入队的 MapKey 请求
+        // 会经 apply_ui_requests 写入 KEYMAPS（apply_plugin_keymap 要求已初始化）。
+        // 集成测试跳过：不能加载开发机的 ~/.config/helix/plugins（会污染测试的
+        // 全局 JS 运行时——注册的命令/事件处理器/键位绑定跨测试残留）。
+        #[cfg(not(feature = "integration"))]
+        {
+            let plugin_dir = helix_loader::config_dir().join("plugins");
+            if plugin_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|ext| ext == "js") {
+                            match std::fs::read_to_string(&path).and_then(|src| {
+                                helix_js::load_script(&src)
+                                    .map_err(|e| std::io::Error::other(e.to_string()))
+                            }) {
+                                Ok(()) => {
+                                    for msg in helix_js::take_messages() {
+                                        editor.set_status(msg);
+                                    }
+                                    // 无 compositor 的启动上下文：OpenPopup 跳过，MapKey 照常注入
+                                    let _ = crate::commands::typed::apply_ui_requests(
+                                        helix_js::take_ui_requests(),
+                                        None,
+                                    );
                                 }
+                                Err(err) => editor.set_error(format!(
+                                    "plugin '{}' failed: {err}",
+                                    path.display()
+                                )),
                             }
-                            Err(err) => editor.set_error(format!("plugin '{}' failed: {err}", path.display())),
                         }
                     }
                 }
             }
         }
-
-        let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
-            &config.keys
-        }));
-        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(keys)));
-        compositor.push(editor_view);
-
-        let jobs = Jobs::new();
 
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));

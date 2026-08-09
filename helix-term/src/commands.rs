@@ -249,19 +249,28 @@ impl MappableCommand {
     pub fn execute(&self, cx: &mut Context) {
         match &self {
             Self::Typable { name, args, doc: _ } => {
+                let mut cx = compositor::Context {
+                    editor: cx.editor,
+                    jobs: cx.jobs,
+                    scroll: None,
+                };
                 if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
-                    let mut cx = compositor::Context {
-                        editor: cx.editor,
-                        jobs: cx.jobs,
-                        scroll: None,
-                    };
                     if let Err(e) =
                         typed::execute_command(&mut cx, command, args, PromptEvent::Validate)
                     {
                         cx.editor.set_error(format!("{}", e));
                     }
                 } else {
-                    cx.editor.set_error(format!("no such command: '{name}'"));
+                    // 插件命令回退：键位绑定的插件命令（helix.map 注入）走这里。
+                    // 与 execute_command_line 共用 run_plugin_command，保证行为一致。
+                    match typed::run_plugin_command(&mut cx, name) {
+                        Ok(true) => {}
+                        Ok(false) if !args.is_empty() => {
+                            cx.editor.set_error(format!("no such command: '{name}'"));
+                        }
+                        Err(err) => cx.editor.set_error(format!("'{name}': {err}")),
+                        Ok(false) => {}
+                    }
                 }
             }
             Self::Static { fun, .. } => (fun)(cx),
@@ -3136,7 +3145,7 @@ fn insert_mode(cx: &mut Context) {
     // JS 插件 mode-change 钩子（模式已切换完成）
     // ponytail: mode-change 仅覆盖主模式命令（insert/normal/select）；
     // exit_select_mode / append_mode 等其他切换路径按需再挂
-        typed::emit_plugin_event(cx.editor, "mode-change", Some("insert"));
+    typed::emit_plugin_event(cx.editor, "mode-change", Some("insert"));
 }
 
 // inserts at the end of each selection

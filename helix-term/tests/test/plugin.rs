@@ -169,7 +169,10 @@ async fn plugin_edit_document() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":inshello<ret>"),
                 Some(&|app| {
@@ -239,7 +242,10 @@ async fn plugin_events() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file.clone(), None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // save 钩子：编辑先应用再保存 → 磁盘与缓冲区都是 "pre-data\n"
             (
                 Some(":w<ret>"),
@@ -285,9 +291,75 @@ async fn plugin_events() -> anyhow::Result<()> {
                 Some(":w<ret>"),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "two\n", "throw handler should abort edit application");
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "two\n",
+                        "throw handler should abort edit application"
+                    );
                     let on_disk = std::fs::read_to_string(&file2).unwrap();
                     assert_eq!(on_disk, "two\n", "save must not be blocked by hook error");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_keymap() -> anyhow::Result<()> {
+    // 插件键位注入：helix.map 注册的键在 :plugin-load 后立即可用；
+    // 字符串命令走 MappableCommand 回退（execute → run_plugin_command），
+    // 回调注册为 __mapped_N 隐藏命令，同一机制。
+    // 两行文件 + 光标断言：j 覆盖内置 move_line_down，未覆盖时光标会下移——
+    // 单行文件下 move_line_down 是无操作，状态栏又残留上一次的 "hello"，无法区分。
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("km.txt");
+    std::fs::write(&file, "hello\nworld\n")?;
+    let plugin_path = dir.path().join("keys.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("echo-hello", () => { helix.echo("hello"); });
+        helix.map("normal", "X", "echo-hello");
+        helix.map("normal", "j", "echo-hello");   // 覆盖内置 j（下移）
+        helix.map("normal", "Y", () => { helix.echo("cb"); });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (
+                Some("X"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "hello");
+                }),
+            ),
+            (
+                Some("j"),
+                Some(&|app| {
+                    let (view, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "hello\nworld\n");
+                    let sel = doc.selection(view.id).primary();
+                    let pos = sel.cursor(doc.text().slice(..));
+                    assert_eq!(pos, 0, "j must be overridden, cursor should not move");
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "hello");
+                }),
+            ),
+            (
+                Some("Y"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "cb");
                 }),
             ),
         ],
