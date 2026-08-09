@@ -22,6 +22,7 @@ mod test {
     mod movement;
     mod plugin;
     mod plugin_doc;
+    mod plugin_docchange;
     mod plugin_statusline;
     mod splits;
 }
