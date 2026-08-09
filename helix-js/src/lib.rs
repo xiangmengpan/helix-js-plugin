@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{anyhow, Result};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
+use boa_engine::{Context, JsString, JsValue, NativeFunction, Source};
 
 /// 插件命令收到的只读上下文快照（由 helix-term 序列化编辑器状态得到）
 pub struct CommandContext {
