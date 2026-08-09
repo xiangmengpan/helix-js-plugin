@@ -249,9 +249,10 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
                 Some(mode) => vec![JsValue::from(JsString::from(mode.to_string())), doc.clone()],
                 None => vec![doc.clone()],
             };
-            let _: JsValue = func
-                .call(&undefined, &args, engine)
-                .map_err(|e| anyhow!("event '{name}' handler failed: {e}"))?;
+            let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
+                CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+                anyhow!("event '{name}' handler failed: {e}")
+            })?;
         }
         Ok(())
     })

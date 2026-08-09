@@ -124,7 +124,7 @@ fn quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow
     cx.block_try_flush_writes()?;
     // JS 插件 buffer-close 钩子（quit/force_quit 都汇聚到这里；
     // 文档在此刻仍是当前文档，序列化上下文有效）
-    let _ = emit_plugin_event(cx.editor, "buffer-close", None);
+    emit_plugin_event(cx.editor, "buffer-close", None);
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -137,7 +137,7 @@ fn force_quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
 
     cx.block_try_flush_writes()?;
     // force_quit 不保存直接关：钩子同样先于 close 触发
-    let _ = emit_plugin_event(cx.editor, "buffer-close", None);
+    emit_plugin_event(cx.editor, "buffer-close", None);
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -179,7 +179,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             align_view(doc, view, Align::Center);
             // JS 插件 buffer-open 钩子（仅 :open/:o 命令路径；file picker 选择文件
             // 走 ui/mod.rs 直接调 editor.open，不经此处，不触发）
-            let _ = emit_plugin_event(cx.editor, "buffer-open", None);
+            emit_plugin_event(cx.editor, "buffer-open", None);
         }
     }
     Ok(())
@@ -408,7 +408,7 @@ fn write_impl(
 
     // JS 插件 save 钩子：编辑先应用再保存（与预处理改动同属保存前变更，
     // 同一次撤销可回到保存前状态）。重取 current 以释放上文的 view/doc 借用。
-    let _ = emit_plugin_event(cx.editor, "save", None);
+    emit_plugin_event(cx.editor, "save", None);
 
     // Save an undo checkpoint for any outstanding changes.
     let (view, doc) = current!(cx.editor);
@@ -4240,9 +4240,9 @@ pub(crate) fn emit_plugin_event(
     editor: &mut Editor,
     name: &str,
     extra: Option<&str>,
-) -> anyhow::Result<()> {
+) {
     if !helix_js::has_handlers(name) {
-        return Ok(());
+        return;
     }
     let (view, doc) = current_ref!(editor);
     let text = doc.text();
@@ -4257,7 +4257,7 @@ pub(crate) fn emit_plugin_event(
 
     if let Err(err) = helix_js::emit_event(name, &ctx, extra) {
         editor.set_error(format!("plugin event '{name}' failed: {err}"));
-        return Ok(());
+        return;
     }
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
@@ -4269,7 +4269,6 @@ pub(crate) fn emit_plugin_event(
             editor.set_error(format!("plugin event '{name}' edits failed: {err}"));
         }
     }
-    Ok(())
 }
 
 /// 把插件 Edit（0-based 行列，原始快照坐标）转成 Transaction 并应用。
