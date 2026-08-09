@@ -698,6 +698,13 @@ impl EditorView {
                 bufferline_inactive
             };
 
+            // JS 插件图标钩子：返回非空图标则拼到文件名前
+            let icon = helix_js::bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()));
+            let fname = match icon {
+                Some(icon) if !icon.is_empty() => format!("{icon} {fname}"),
+                _ => fname.to_string(),
+            };
+
             let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
             let used_width = viewport.x.saturating_sub(x);
             let rem_width = surface.area.width.saturating_sub(used_width);

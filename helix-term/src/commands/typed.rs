@@ -4169,6 +4169,19 @@ fn execute_command_line(
                     if !msgs.is_empty() {
                         cx.editor.set_status(msgs.join(" "));
                     }
+                    for req in helix_js::take_ui_requests() {
+                        match req {
+                            helix_js::UiRequest::OpenPopup { id } => {
+                                let popup = ui::Popup::new("plugin-popup", ui::PluginPopup::new(id))
+                                    .auto_close(false);
+                                // 本分支拿到的是 compositor::Context（无 push_layer 能力），
+                                // 走 job 通道由事件循环在下一轮推层并渲染。
+                                job::dispatch_blocking(move |_editor, compositor| {
+                                    compositor.replace_or_push("plugin-popup", popup);
+                                });
+                            }
+                        }
+                    }
                     Ok(())
                 }
                 Ok(false) => Err(anyhow!("no such command: '{command}'")),

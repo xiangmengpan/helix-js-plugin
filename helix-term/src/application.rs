@@ -68,7 +68,7 @@ type TerminalEvent = crossterm::event::Event;
 type Terminal = tui::terminal::Terminal<TerminalBackend>;
 
 pub struct Application {
-    compositor: Compositor,
+    pub compositor: Compositor,
     terminal: Terminal,
     pub editor: Editor,
 
