@@ -39,6 +39,9 @@ struct PopupCallbacks {
     on_close: Option<JsValue>,
 }
 
+/// 事件名白名单：helix.on 只接受这些事件
+const EVENT_WHITELIST: [&str; 4] = ["save", "mode-change", "buffer-open", "buffer-close"];
+
 /// 插件命令收到的只读上下文快照（由 helix-term 序列化编辑器状态得到）
 pub struct CommandContext {
     pub path: Option<String>,
@@ -69,6 +72,8 @@ thread_local! {
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
+    // HashMap::new 非 const fn，EVENT_HANDLERS 不能用 const 块初始化
+    static EVENT_HANDLERS: RefCell<HashMap<String, Vec<JsValue>>> = RefCell::new(HashMap::new());
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
@@ -90,6 +95,7 @@ pub fn init() {
                 )
                 .function(NativeFunction::from_fn_ptr(js_open_popup), JsString::from("open_popup"), 1)
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
+                .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -118,9 +124,10 @@ fn js_register_command(
     Ok(JsValue::undefined())
 }
 
-/// 把 CommandContext 转成 JS 对象 { doc: { path, text }, cursor: { row, col } }
-fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let doc = ObjectInitializer::new(engine)
+/// 把 CommandContext 转成 doc 对象 { path, text } + 编辑方法
+fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+    Ok(JsValue::from(
+        ObjectInitializer::new(engine)
         .property(
             JsString::from("path"),
             match &ctx.path {
@@ -137,7 +144,13 @@ fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
         .function(NativeFunction::from_fn_ptr(js_doc_insert), JsString::from("insert"), 3)
         .function(NativeFunction::from_fn_ptr(js_doc_replace), JsString::from("replace"), 5)
         .function(NativeFunction::from_fn_ptr(js_doc_delete), JsString::from("delete"), 4)
-        .build();
+        .build(),
+    ))
+}
+
+/// 把 CommandContext 转成 JS 对象 { doc: { path, text }, cursor: { row, col } }
+fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let doc = doc_to_js(ctx, engine)?;
     let cursor = ObjectInitializer::new(engine)
         .property(
             JsString::from("row"),
@@ -187,6 +200,61 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
 pub fn command_names() -> Vec<String> {
     init();
     REGISTRY.with(|r| r.borrow().keys().cloned().collect())
+}
+
+fn js_on(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let name: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let handler = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    if !EVENT_WHITELIST.contains(&name.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.on: unknown event '{name}'"
+        )))));
+    }
+    if handler.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.on: handler must be a function",
+        ))));
+    }
+    EVENT_HANDLERS.with(|h| h.borrow_mut().entry(name).or_default().push(handler));
+    Ok(JsValue::undefined())
+}
+
+/// 是否有注册的事件处理器（挂点快速跳过）
+pub fn has_handlers(name: &str) -> bool {
+    init();
+    EVENT_HANDLERS.with(|h| h.borrow().get(name).is_some_and(|v| !v.is_empty()))
+}
+
+/// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。
+/// extra 用于 mode-change 的 mode 字符串参数。
+pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Result<()> {
+    init();
+    CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+    let handlers = EVENT_HANDLERS.with(|h| h.borrow().get(name).cloned());
+    let Some(handlers) = handlers else { return Ok(()) };
+    if handlers.is_empty() {
+        return Ok(());
+    }
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build event doc: {e}"))?;
+        let undefined = JsValue::undefined();
+        for handler in &handlers {
+            let func = handler
+                .as_callable()
+                .and_then(JsFunction::from_object)
+                .ok_or_else(|| anyhow!("event '{name}' handler not callable"))?;
+            let args: Vec<JsValue> = match extra {
+                Some(mode) => vec![JsValue::from(JsString::from(mode.to_string())), doc.clone()],
+                None => vec![doc.clone()],
+            };
+            let _: JsValue = func
+                .call(&undefined, &args, engine)
+                .map_err(|e| anyhow!("event '{name}' handler failed: {e}"))?;
+        }
+        Ok(())
+    })
 }
 
 fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -572,5 +640,39 @@ mod tests {
         load_script(r#"helix.register_command("ok", (ctx) => { ctx.doc.insert(0, 0, "z"); });"#).unwrap();
         run_command("ok", &ctx).unwrap();
         assert_eq!(take_edits().len(), 1);
+    }
+
+    #[test]
+    fn event_handlers() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        assert!(!has_handlers("save"));
+
+        load_script(
+            r#"
+        let order = [];
+        helix.on("save", (doc) => { order.push("a"); });
+        helix.on("save", (doc) => { order.push("b"); });
+        helix.on("mode-change", (mode, doc) => { helix.echo("mode:" + mode); });
+        "#,
+        )
+        .unwrap();
+
+        assert!(has_handlers("save"));
+        assert!(has_handlers("mode-change"));
+        assert!(!has_handlers("buffer-open"));
+
+        // emit 带编辑队列清空 + 多处理器按注册顺序
+        let ctx = CommandContext { path: Some("/tmp/e.rs".into()), text: "x".into(), cursor: (0, 0) };
+        emit_event("save", &ctx, None).unwrap();
+        assert!(take_edits().is_empty());
+
+        // 事件名白名单校验 + 回调类型校验
+        assert!(load_script(r#"helix.on("bogus", () => {});"#).is_err());
+        assert!(load_script(r#"helix.on("save", 42);"#).is_err());
+
+        // mode-change 处理器带 mode 参数 + echo
+        emit_event("mode-change", &ctx, Some("insert")).unwrap();
+        assert_eq!(take_messages(), vec!["mode:insert"]);
     }
 }
