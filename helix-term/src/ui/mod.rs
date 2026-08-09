@@ -12,7 +12,7 @@ pub mod plugin_popup;
 pub mod prompt;
 mod select;
 mod spinner;
-mod statusline;
+pub mod statusline;
 mod text;
 mod text_decorations;
 
