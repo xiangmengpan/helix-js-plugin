@@ -39,6 +39,7 @@ impl Component for PluginPopup {
                 EventResult::Consumed(Some(Box::new(
                     move |compositor: &mut Compositor, cx: &mut Context| {
                         let _ = helix_js::close_popup(id);
+                        // ponytail: pop() 假定弹窗层在栈顶；若未来有叠加图层场景，改用 compositor.remove("plugin-popup")
                         compositor.pop();
                         let msgs = helix_js::take_messages();
                         if !msgs.is_empty() {
@@ -78,6 +79,7 @@ impl Component for PluginPopup {
 
 /// 把编辑器按键转成 JS onKey 可见的快照；无法表示的键返回 None（不转交 JS）。
 /// 本树 KeyEvent 只有 code+modifiers（无 kind，termina 已过滤 Release），
+// ponytail: 若 KeyEvent 将来增加 kind 字段，需在此过滤 KeyEventKind::Press。
 /// KeyCode 无 BackTab，故与简报实现相比删去这两处分支。
 fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
     let name = match key.code {
