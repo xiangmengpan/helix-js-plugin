@@ -3133,6 +3133,8 @@ fn insert_mode(cx: &mut Context) {
         .transform(|range| Range::new(range.to(), range.from()));
 
     doc.set_selection(view.id, selection);
+    // JS 插件 mode-change 钩子（模式已切换完成）
+    let _ = typed::emit_plugin_event(cx.editor, "mode-change", Some("insert"));
 }
 
 // inserts at the end of each selection
@@ -3982,6 +3984,8 @@ fn open_above(cx: &mut Context) {
 
 fn normal_mode(cx: &mut Context) {
     cx.editor.enter_normal_mode();
+    // JS 插件 mode-change 钩子
+    let _ = typed::emit_plugin_event(cx.editor, "mode-change", Some("normal"));
 }
 
 // Store a jump on the jumplist.
@@ -4135,6 +4139,8 @@ fn select_mode(cx: &mut Context) {
     doc.set_selection(view.id, selection);
 
     cx.editor.mode = Mode::Select;
+    // JS 插件 mode-change 钩子
+    let _ = typed::emit_plugin_event(cx.editor, "mode-change", Some("select"));
 }
 
 fn exit_select_mode(cx: &mut Context) {

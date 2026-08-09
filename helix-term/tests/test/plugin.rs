@@ -203,3 +203,97 @@ async fn plugin_edit_document() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_events() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("ev.txt");
+    std::fs::write(&file, "data\n")?;
+    let file2 = dir.path().join("ev2.txt");
+    std::fs::write(&file2, "two\n")?;
+    let plugin_path = dir.path().join("events.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.on("save", (doc) => { doc.insert(0, 0, "pre-"); });
+        helix.on("mode-change", (mode) => { helix.echo("mode:" + mode); });
+        "#,
+    )?;
+    // buffer-open 处理器放第二个脚本：避开启动时序，用 :open 显式触发
+    let open_plugin_path = dir.path().join("open_events.js");
+    std::fs::write(
+        &open_plugin_path,
+        r#"
+        helix.on("buffer-open", (doc) => { helix.echo("opened:" + doc.path); });
+        "#,
+    )?;
+    // 抛错的 save 处理器：验证钩子失败不阻断保存
+    let bad_plugin_path = dir.path().join("bad_events.js");
+    std::fs::write(
+        &bad_plugin_path,
+        r#"
+        helix.on("save", () => { throw new Error("boom"); });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file.clone(), None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            // save 钩子：编辑先应用再保存 → 磁盘与缓冲区都是 "pre-data\n"
+            (
+                Some(":w<ret>"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "pre-data\n");
+                    let on_disk = std::fs::read_to_string(&file).unwrap();
+                    assert_eq!(on_disk, "pre-data\n");
+                }),
+            ),
+            // mode-change 钩子：进入 insert 模式 → 状态栏 "mode:insert"
+            (
+                Some("i"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert_eq!(*severity, Severity::Info, "status: {status}");
+                    assert_eq!(status.as_ref(), "mode:insert");
+                }),
+            ),
+            // buffer-open 钩子：第二个脚本注册处理器，:open 触发。
+            // 注意先 <esc> 退出 insert 模式，否则后续命令会被输入进缓冲区。
+            (Some("<esc>"), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", open_plugin_path.display())),
+                None,
+            ),
+            (
+                Some(&format!(":open {}<ret>", file2.display())),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert_eq!(*severity, Severity::Info, "status: {status}");
+                    assert_eq!(status.as_ref(), format!("opened:{}", file2.display()));
+                }),
+            ),
+            // 钩子抛错不阻断保存：save 事件 Err → 编辑队列被丢弃、保存照常完成。
+            // （保存成功会覆盖状态栏，故不查 severity；查 doc 无 pre- 插入即可证明
+            // emit_event 走了 Err 早退路径，磁盘内容证明保存未被阻断）
+            (
+                Some(&format!(":plugin-load {}<ret>", bad_plugin_path.display())),
+                None,
+            ),
+            (
+                Some(":w<ret>"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "two\n", "throw handler should abort edit application");
+                    let on_disk = std::fs::read_to_string(&file2).unwrap();
+                    assert_eq!(on_disk, "two\n", "save must not be blocked by hook error");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}

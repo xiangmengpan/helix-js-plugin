@@ -122,6 +122,9 @@ fn quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow
     }
 
     cx.block_try_flush_writes()?;
+    // JS 插件 buffer-close 钩子（quit/force_quit 都汇聚到这里；
+    // 文档在此刻仍是当前文档，序列化上下文有效）
+    let _ = emit_plugin_event(cx.editor, "buffer-close", None);
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -133,6 +136,8 @@ fn force_quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
     }
 
     cx.block_try_flush_writes()?;
+    // force_quit 不保存直接关：钩子同样先于 close 触发
+    let _ = emit_plugin_event(cx.editor, "buffer-close", None);
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -172,6 +177,9 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             doc.set_selection(view.id, pos);
             // does not affect opening a buffer without pos
             align_view(doc, view, Align::Center);
+            // JS 插件 buffer-open 钩子（仅 :open/:o 命令路径；file picker 选择文件
+            // 走 ui/mod.rs 直接调 editor.open，不经此处，不触发）
+            let _ = emit_plugin_event(cx.editor, "buffer-open", None);
         }
     }
     Ok(())
@@ -398,7 +406,12 @@ fn write_impl(
         insert_final_newline(doc, view_id);
     }
 
+    // JS 插件 save 钩子：编辑先应用再保存（与预处理改动同属保存前变更，
+    // 同一次撤销可回到保存前状态）。重取 current 以释放上文的 view/doc 借用。
+    let _ = emit_plugin_event(cx.editor, "save", None);
+
     // Save an undo checkpoint for any outstanding changes.
+    let (view, doc) = current!(cx.editor);
     doc.append_changes_to_history(view);
 
     let auto_format = config.auto_format && options.auto_format;
@@ -4186,7 +4199,7 @@ fn execute_command_line(
                     // 只在 Ok(true) 分支消费：Err 时队列残留由下次命令开始时清空，语义安全。
                     let edits = helix_js::take_edits();
                     if !edits.is_empty() {
-                        if let Err(err) = apply_plugin_edits(cx, &edits) {
+                        if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
                             cx.editor.set_error(format!("plugin edit failed: {err}"));
                         }
                     }
@@ -4219,12 +4232,52 @@ pub(super) fn execute_command(
     (cmd.fun)(cx, args, event).map_err(|err| anyhow!("'{}': {err}", cmd.name))
 }
 
+/// 触发 JS 插件事件：序列化当前文档 → emit_event → 应用处理器入队的编辑。
+/// 钩子失败不阻断主流程：错误写入状态栏后继续；处理器 echo 的消息上屏。
+/// 参数用 `&mut Editor` 而非 compositor::Context：commands.rs 的模式命令
+/// 拿到的是 keymap Context（只有 editor 字段），此签名两个调用方都兼容。
+pub(crate) fn emit_plugin_event(
+    editor: &mut Editor,
+    name: &str,
+    extra: Option<&str>,
+) -> anyhow::Result<()> {
+    if !helix_js::has_handlers(name) {
+        return Ok(());
+    }
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text();
+    let pos = doc.selection(view.id).primary().cursor(text.slice(..));
+    let line = text.char_to_line(pos);
+    let col = pos - text.line_to_char(line);
+    let ctx = CommandContext {
+        path: doc.path().map(|p| p.to_string_lossy().into_owned()),
+        text: text.to_string(),
+        cursor: (line, col),
+    };
+
+    if let Err(err) = helix_js::emit_event(name, &ctx, extra) {
+        editor.set_error(format!("plugin event '{name}' failed: {err}"));
+        return Ok(());
+    }
+    let msgs = helix_js::take_messages();
+    if !msgs.is_empty() {
+        editor.set_status(msgs.join(" "));
+    }
+    let edits = helix_js::take_edits();
+    if !edits.is_empty() {
+        if let Err(err) = apply_plugin_edits(editor, &edits) {
+            editor.set_error(format!("plugin event '{name}' edits failed: {err}"));
+        }
+    }
+    Ok(())
+}
+
 /// 把插件 Edit（0-based 行列，原始快照坐标）转成 Transaction 并应用。
-/// 一个命令的所有编辑合并为一个事务 → 一次撤销。
-fn apply_plugin_edits(cx: &mut compositor::Context, edits: &[helix_js::Edit]) -> anyhow::Result<()> {
+/// 一次事件的所有编辑合并为一个事务 → 一次撤销。
+pub(crate) fn apply_plugin_edits(editor: &mut Editor, edits: &[helix_js::Edit]) -> anyhow::Result<()> {
     use helix_core::Change;
 
-    let (view, doc) = current!(cx.editor);
+    let (view, doc) = current!(editor);
     let text = doc.text();
     let to_char = |(row, col): (usize, usize)| -> usize {
         let line = row.min(text.len_lines().saturating_sub(1));
