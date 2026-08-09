@@ -86,6 +86,29 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         })
     }
 
+    // JS 插件状态栏钩子：追加到 right parts（整体保持右对齐，插件文本位于最右侧）
+    if let Some(text) = helix_js::statusline_text(&helix_js::StatuslineCtx {
+        path: context.doc.path().map(|p| p.to_string_lossy().into_owned()),
+        mode: match context.editor.mode() {
+            Mode::Normal => "normal".to_string(),
+            Mode::Insert => "insert".to_string(),
+            Mode::Select => "select".to_string(),
+        },
+        cursor: {
+            let pos = context
+                .doc
+                .selection(context.view.id)
+                .primary()
+                .cursor(context.doc.text().slice(..));
+            (
+                context.doc.text().char_to_line(pos),
+                pos - context.doc.text().line_to_char(context.doc.text().char_to_line(pos)),
+            )
+        },
+    }) {
+        append(&mut context.parts.right, text.into(), base_style);
+    }
+
     surface.set_spans(
         viewport.x
             + viewport
