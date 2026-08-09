@@ -26,7 +26,8 @@ pub struct CommandContext {
 // 进程退出时 OS 回收，对 PoC 无实际代价。升级 boa 后应改回正常持有。
 thread_local! {
     static CONTEXT: RefCell<Option<&'static mut Context>> = const { RefCell::new(None) };
-    static REGISTRY: RefCell<HashMap<String, JsValue>> = const { RefCell::new(HashMap::new()) };
+    // HashMap::new 非 const fn（1.90），REGISTRY 不能用 const 块初始化
+    static REGISTRY: RefCell<HashMap<String, JsValue>> = RefCell::new(HashMap::new());
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
