@@ -42,7 +42,7 @@ struct PopupCallbacks {
 }
 
 /// 事件名白名单：helix.on 只接受这些事件
-const EVENT_WHITELIST: [&str; 4] = ["save", "mode-change", "buffer-open", "buffer-close"];
+const EVENT_WHITELIST: [&str; 5] = ["save", "mode-change", "buffer-open", "buffer-close", "doc-change"];
 
 /// 插件命令收到的只读上下文快照（由 helix-term 序列化编辑器状态得到）
 pub struct CommandContext {
@@ -179,8 +179,21 @@ fn js_map(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engin
     Ok(JsValue::undefined())
 }
 
-/// 把 CommandContext 转成 doc 对象 { path, text } + 编辑方法
+/// 把 CommandContext 转成 doc 对象 { path, text, cursor } + 编辑方法
+/// cursor 挂在 doc 上：命令 ctx 与事件 doc 共用，事件回调可直接读 doc.cursor
 fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let cursor = ObjectInitializer::new(engine)
+        .property(
+            JsString::from("row"),
+            JsValue::from(ctx.cursor.0 as f64),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("col"),
+            JsValue::from(ctx.cursor.1 as f64),
+            Attribute::all(),
+        )
+        .build();
     Ok(JsValue::from(
         ObjectInitializer::new(engine)
         .property(
@@ -196,6 +209,7 @@ fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
             JsValue::from(JsString::from(ctx.text.clone())),
             Attribute::all(),
         )
+        .property(JsString::from("cursor"), cursor, Attribute::all())
         .function(NativeFunction::from_fn_ptr(js_doc_insert), JsString::from("insert"), 3)
         .function(NativeFunction::from_fn_ptr(js_doc_replace), JsString::from("replace"), 5)
         .function(NativeFunction::from_fn_ptr(js_doc_delete), JsString::from("delete"), 4)
@@ -782,6 +796,24 @@ mod tests {
         // mode-change 处理器带 mode 参数 + echo
         emit_event("mode-change", &ctx, Some("insert")).unwrap();
         assert_eq!(take_messages(), vec!["mode:insert"]);
+    }
+
+    #[test]
+    fn doc_change_event() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.on("doc-change", (doc) => { helix.echo("changed:" + doc.cursor.row); });
+        "#,
+        )
+        .unwrap();
+        assert!(has_handlers("doc-change"));
+        let ctx = CommandContext { path: None, text: "x".into(), cursor: (2, 0) };
+        emit_event("doc-change", &ctx, None).unwrap();
+        assert_eq!(take_messages(), vec!["changed:2"]);
+        // 未注册的事件名仍然报错
+        assert!(load_script(r#"helix.on("bogus", () => {});"#).is_err());
     }
 
     #[test]

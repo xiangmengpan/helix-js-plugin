@@ -619,6 +619,33 @@ impl Application {
     }
 
     pub async fn handle_idle_timeout(&mut self) {
+        // JS 插件 doc-change 钩子：idle 间隔 = 防抖；revision 前进才触发
+        if helix_js::has_handlers("doc-change") {
+            use std::cell::Cell;
+            thread_local! {
+                static LAST_REVISION: Cell<Option<usize>> = const { Cell::new(None) };
+            }
+            let rev = {
+                let (_, doc) = helix_view::current_ref!(self.editor);
+                // History 非 Copy，Cell::get 不可用；沿用 document.rs 的 take/set 模式读 revision
+                let history = doc.history.take();
+                let rev = history.current_revision();
+                doc.history.set(history);
+                rev
+            };
+            let changed = LAST_REVISION.with(|c| {
+                let prev = c.get();
+                if prev != Some(rev) {
+                    c.set(Some(rev));
+                    true
+                } else {
+                    false
+                }
+            });
+            if changed {
+                crate::commands::typed::emit_plugin_event(&mut self.editor, "doc-change", None);
+            }
+        }
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
