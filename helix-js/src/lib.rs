@@ -68,7 +68,7 @@ thread_local! {
     static POPUPS: RefCell<HashMap<u64, PopupCallbacks>> = RefCell::new(HashMap::new());
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
-    static CURRENT_EDITS: RefCell<Vec<Edit>> = RefCell::new(Vec::new());
+    static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
@@ -204,7 +204,7 @@ fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engi
 }
 
 fn js_doc_insert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let row: usize = args.get(0).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let row: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let col: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let insert: String = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     CURRENT_EDITS.with(|c| c.borrow_mut().push(Edit { start: (row, col), end: (row, col), insert }));
@@ -212,7 +212,7 @@ fn js_doc_insert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> bo
 }
 
 fn js_doc_replace(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let sr: usize = args.get(0).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sr: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
@@ -222,7 +222,7 @@ fn js_doc_replace(_this: &JsValue, args: &[JsValue], context: &mut Context) -> b
 }
 
 fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let sr: usize = args.get(0).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sr: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
