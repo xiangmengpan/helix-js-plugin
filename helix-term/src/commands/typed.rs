@@ -4161,7 +4161,7 @@ fn execute_command_line(
                 text: text.to_string(),
                 cursor: (line, col),
             };
-            let _ = (view, doc); // view/doc 的最后使用在 ctx 构造处，NLL 在此结束对 editor 的借用
+            // 借用：view/doc（及 text）的最后使用在 ctx 构造处，NLL 在此结束对 editor 的共享借用
 
             match helix_js::run_command(command, &ctx) {
                 Ok(true) => {
