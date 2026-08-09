@@ -2,6 +2,7 @@ use super::*;
 
 use helix_core::diagnostic::Severity;
 use helix_term::ui;
+use helix_view::current_ref;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_load_and_run_command() -> anyhow::Result<()> {
@@ -137,6 +138,59 @@ async fn plugin_bufferline_icons() -> anyhow::Result<()> {
                         rendered.contains("🐍") && rendered.contains("b.py"),
                         "bufferline missing py icon: {rendered:?}"
                     );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_edit_document() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("t.txt");
+    std::fs::write(&file, "world\n")?;
+    let plugin_path = dir.path().join("edit_plugin.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("inshello", (ctx) => {
+            ctx.doc.insert(ctx.cursor.row, ctx.cursor.col, "hello ");
+        });
+        helix.register_command("delfirst", (ctx) => {
+            ctx.doc.delete(0, 0, 0, 5);
+        });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(":inshello<ret>"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "hello world\n");
+                }),
+            ),
+            // 整个命令 = 一次撤销
+            (
+                Some("u"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "world\n");
+                }),
+            ),
+            (
+                Some(":delfirst<ret>"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    // delete(0,0,0,5) 删 [0,5)="world"（5 字符）→ 余 "\n"
+                    assert_eq!(doc.text().to_string(), "\n");
                 }),
             ),
         ],

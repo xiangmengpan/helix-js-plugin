@@ -4182,6 +4182,14 @@ fn execute_command_line(
                             }
                         }
                     }
+                    // 应用插件文档编辑（一个命令 = 一个事务）。
+                    // 只在 Ok(true) 分支消费：Err 时队列残留由下次命令开始时清空，语义安全。
+                    let edits = helix_js::take_edits();
+                    if !edits.is_empty() {
+                        if let Err(err) = apply_plugin_edits(cx, &edits) {
+                            cx.editor.set_error(format!("plugin edit failed: {err}"));
+                        }
+                    }
                     Ok(())
                 }
                 Ok(false) => Err(anyhow!("no such command: '{command}'")),
@@ -4209,6 +4217,38 @@ pub(super) fn execute_command(
     };
 
     (cmd.fun)(cx, args, event).map_err(|err| anyhow!("'{}': {err}", cmd.name))
+}
+
+/// 把插件 Edit（0-based 行列，原始快照坐标）转成 Transaction 并应用。
+/// 一个命令的所有编辑合并为一个事务 → 一次撤销。
+fn apply_plugin_edits(cx: &mut compositor::Context, edits: &[helix_js::Edit]) -> anyhow::Result<()> {
+    use helix_core::Change;
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text();
+    let to_char = |(row, col): (usize, usize)| -> usize {
+        let line = row.min(text.len_lines().saturating_sub(1));
+        let line_start = text.line_to_char(line);
+        (line_start + col).min(text.len_chars())
+    };
+    let mut changes: Vec<Change> = edits
+        .iter()
+        // 用户把 (start,end) 传反时 swap 规范化，避免 helix 的 debug_assert 崩溃
+        .map(|edit| {
+            let (s, en) = (to_char(edit.start), to_char(edit.end));
+            let (from, to) = if s <= en { (s, en) } else { (en, s) };
+            (from, to, Some(edit.insert.clone().into()))
+        })
+        .collect();
+    changes.sort_by_key(|c| c.0);
+    for w in changes.windows(2) {
+        if w[0].1 > w[1].0 {
+            bail!("overlapping edits");
+        }
+    }
+    let txn = Transaction::change(text, changes.into_iter());
+    doc.apply(&txn, view.id);
+    Ok(())
 }
 
 fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
