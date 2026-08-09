@@ -1902,7 +1902,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "boa_engine",
- "parking_lot",
 ]
 
 [[package]]
