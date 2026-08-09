@@ -1,14 +1,43 @@
 //! JavaScript plugin runtime for the Helix editor (PoC).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
-use boa_engine::object::builtins::JsFunction;
+use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
+
+/// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
+pub enum UiRequest {
+    OpenPopup { id: u64 },
+}
+
+/// 按键事件的只读快照，传给 JS onKey 回调
+pub struct PluginKey {
+    pub name: String,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+/// popup_key 的返回：关闭弹窗 / 已消费按键 / 穿透给编辑器
+#[derive(Debug, PartialEq, Eq)]
+pub enum PopupKeyResult {
+    Close,
+    Handled,
+    Ignored,
+}
+
+/// 弹窗回调注册表项（JsValue 是 Clone 的，popup_key 需要克隆出来调）
+#[derive(Clone)]
+struct PopupCallbacks {
+    render: JsValue,
+    on_key: Option<JsValue>,
+    on_close: Option<JsValue>,
+}
 
 /// 插件命令收到的只读上下文快照（由 helix-term 序列化编辑器状态得到）
 pub struct CommandContext {
@@ -28,12 +57,17 @@ thread_local! {
     static CONTEXT: RefCell<Option<&'static mut Context>> = const { RefCell::new(None) };
     // HashMap::new 非 const fn（1.90），REGISTRY 不能用 const 块初始化
     static REGISTRY: RefCell<HashMap<String, JsValue>> = RefCell::new(HashMap::new());
+    static POPUPS: RefCell<HashMap<u64, PopupCallbacks>> = RefCell::new(HashMap::new());
+    static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
+    static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
 
 /// 创建 boa 上下文并注册全局 `helix` 对象（幂等）
 pub fn init() {
     MESSAGES.get_or_init(Default::default);
+    UI_REQUESTS.get_or_init(Default::default);
     CONTEXT.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -45,6 +79,8 @@ pub fn init() {
                     JsString::from("register_command"),
                     2,
                 )
+                .function(NativeFunction::from_fn_ptr(js_open_popup), JsString::from("open_popup"), 1)
+                .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -172,6 +208,150 @@ pub fn take_messages() -> Vec<String> {
     std::mem::take(&mut *MESSAGES.get().expect("MESSAGES not initialized").lock().expect("messages lock poisoned"))
 }
 
+fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_popup: options object required")))
+    })?;
+    let render = opts.get(JsString::from("render"), ctx)?;
+    if render.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "open_popup: render must be a function",
+        ))));
+    }
+    let on_key = opts.get(JsString::from("onKey"), ctx)?;
+    let on_key = on_key.as_callable().map(|_| on_key);
+    let on_close = opts.get(JsString::from("onClose"), ctx)?;
+    let on_close = on_close.as_callable().map(|_| on_close);
+
+    let id = NEXT_POPUP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    POPUPS.with(|p| p.borrow_mut().insert(id, PopupCallbacks { render, on_key, on_close }));
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPopup { id });
+    Ok(JsValue::from(id))
+}
+
+fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let undefined = JsValue::undefined();
+    let hook = args.first().unwrap_or(&undefined);
+    if !hook.is_callable() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "set_buffer_icon: expected a function",
+        ))));
+    }
+    BUFFER_ICON_HOOK.with(|h| *h.borrow_mut() = Some(hook.clone()));
+    Ok(JsValue::undefined())
+}
+
+/// 取走并清空 UI 请求队列
+pub fn take_ui_requests() -> Vec<UiRequest> {
+    init();
+    std::mem::take(&mut *UI_REQUESTS.get().expect("UI_REQUESTS initialized").lock().expect("ui requests lock"))
+}
+
+/// 调 JS render 回调，返回行数组。ctx 对象 { width, height }。
+pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<String>> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let render = POPUPS.with(|p| p.borrow().get(&id).map(|cb| cb.render.clone()))
+            .ok_or_else(|| anyhow!("popup {id} not open"))?;
+        let ctx_obj = ObjectInitializer::new(engine)
+            .property(JsString::from("width"), width, Attribute::all())
+            .property(JsString::from("height"), height, Attribute::all())
+            .build();
+        let func = render.as_callable().and_then(JsFunction::from_object)
+            .ok_or_else(|| anyhow!("popup {id} render is not a function"))?;
+        let undefined = JsValue::undefined();
+        let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine)
+            .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
+        // 结果必须是 string[]
+        let arr: JsArray = value.try_js_into(engine)
+            .map_err(|e| anyhow!("popup {id} render must return an array of strings: {e}"))?;
+        let len: usize = arr
+            .get(JsString::from("length"), engine)
+            .map_err(|e| anyhow!("popup {id} length read failed: {e}"))?
+            .try_js_into(engine)
+            .map_err(|e| anyhow!("popup {id} render length invalid: {e}"))?;
+        let mut lines = Vec::with_capacity(len);
+        for i in 0..len {
+            let item = arr
+                .get(i, engine)
+                .map_err(|e| anyhow!("popup {id} render line {i} read failed: {e}"))?;
+            let s: String = item.try_js_into(engine)
+                .map_err(|e| anyhow!("popup {id} render line {i} must be a string: {e}"))?;
+            lines.push(s);
+        }
+        Ok(lines)
+    })
+}
+
+/// 调 JS onKey 回调。未注册 onKey 或缺省时：Esc→Close，其他→Ignore。
+pub fn popup_key(id: u64, key: &PluginKey) -> Result<PopupKeyResult> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let callbacks = POPUPS.with(|p| p.borrow().get(&id).cloned())
+            .ok_or_else(|| anyhow!("popup {id} not open"))?;
+        let Some(on_key) = callbacks.on_key else {
+            return Ok(if key.name == "Esc" { PopupKeyResult::Close } else { PopupKeyResult::Ignored });
+        };
+        let func = on_key.as_callable().and_then(JsFunction::from_object)
+            .ok_or_else(|| anyhow!("popup {id} onKey is not a function"))?;
+        let key_obj = ObjectInitializer::new(engine)
+            .property(JsString::from("name"), JsString::from(key.name.clone()), Attribute::all())
+            .property(JsString::from("shift"), key.shift, Attribute::all())
+            .property(JsString::from("ctrl"), key.ctrl, Attribute::all())
+            .property(JsString::from("alt"), key.alt, Attribute::all())
+            .build();
+        let undefined = JsValue::undefined();
+        let value: JsValue = func.call(&undefined, &[JsValue::from(key_obj)], engine)
+            .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
+        let s: Option<String> = value.try_js_into(engine).ok();
+        Ok(match s.as_deref() {
+            Some("close") => PopupKeyResult::Close,
+            Some("handled") => PopupKeyResult::Handled,
+            Some("ignore") => PopupKeyResult::Ignored,
+            _ => PopupKeyResult::Handled, // 未识别返回值 → 消费（安全默认）
+        })
+    })
+}
+
+/// 关闭弹窗：触发 onClose 并移除注册表项。幂等（已关闭返回 Ok）。
+pub fn close_popup(id: u64) -> Result<()> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let callbacks = POPUPS.with(|p| p.borrow_mut().remove(&id));
+        let Some(callbacks) = callbacks else { return Ok(()) };
+        if let Some(on_close) = callbacks.on_close {
+            let func = on_close.as_callable().and_then(JsFunction::from_object)
+                .ok_or_else(|| anyhow!("popup {id} onClose is not a function"))?;
+            let undefined = JsValue::undefined();
+            let _: JsValue = func.call(&undefined, &[], engine)
+                .map_err(|e| anyhow!("popup {id} onClose failed: {e}"))?;
+        }
+        Ok(())
+    })
+}
+
+/// 调 bufferline 图标钩子；未注册 / 返回 null / 报错 → None。
+pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let hook = BUFFER_ICON_HOOK.with(|h| h.borrow().clone());
+        let hook = hook?;
+        let func = hook.as_callable().and_then(JsFunction::from_object)?;
+        let arg = match path { Some(p) => JsValue::from(JsString::from(p)), None => JsValue::null() };
+        let undefined = JsValue::undefined();
+        let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
+        value.try_js_into::<String>(engine).ok()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +393,83 @@ mod tests {
         assert!(!run_command("nope", &ctx).unwrap());
         // 非法命令名（含空白）注册时报错
         assert!(load_script(r#"helix.register_command("bad name", () => {});"#).is_err());
+    }
+
+    #[test]
+    fn popup_lifecycle() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        let rendered = null;
+        helix.open_popup({
+            render: () => ["a", "b", "c"],
+            onKey: (key) => key.name === "Down" ? "handled" : "close",
+            onClose: () => helix.echo("closed:" + rendered),
+        });
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        assert_eq!(reqs.len(), 1);
+        let UiRequest::OpenPopup { id } = reqs[0];
+        assert_eq!(id, 1); // 自增从 1 开始
+
+        let lines = render_popup(id, 40, 10).unwrap();
+        assert_eq!(lines, vec!["a", "b", "c"]);
+
+        let key = PluginKey { name: "Down".into(), shift: false, ctrl: false, alt: false };
+        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Handled);
+        let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
+        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Close);
+
+        close_popup(id).unwrap();
+        assert_eq!(take_messages(), vec!["closed:null"]);
+        assert!(render_popup(id, 40, 10).is_err()); // 已关闭，注册表移除
+    }
+
+    #[test]
+    fn popup_default_keys_and_validation() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 未提供 onKey：Esc 默认关闭，其他穿透
+        load_script(r#"helix.open_popup({ render: () => ["x"] });"#).unwrap();
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id } => id,
+        };
+        let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
+        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Ignored);
+        let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
+        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Close);
+        close_popup(id).unwrap();
+
+        // render 非数组 → Err
+        load_script(r#"helix.open_popup({ render: () => "not an array" });"#).unwrap();
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id } => id,
+        };
+        assert!(render_popup(id, 40, 10).is_err());
+        close_popup(id).unwrap();
+
+        // 参数缺失/类型错误 → JS 报错
+        assert!(load_script(r#"helix.open_popup({});"#).is_err());
+        assert!(load_script(r#"helix.open_popup({ render: 42 });"#).is_err());
+    }
+
+    #[test]
+    fn buffer_icon_hook() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        assert_eq!(bufferline_icon(Some("a.rs")), None); // 未注册 → None
+
+        load_script(
+            r#"
+        helix.set_buffer_icon((path) => path && path.endsWith(".rs") ? "🦀" : null);
+        "#,
+        )
+        .unwrap();
+        assert_eq!(bufferline_icon(Some("main.rs")), Some("🦀".to_string()));
+        assert_eq!(bufferline_icon(Some("main.py")), None);
+        assert_eq!(bufferline_icon(None), None);
     }
 }
