@@ -173,8 +173,11 @@ async fn plugin_edit_document() -> anyhow::Result<()> {
             (
                 Some(":inshello<ret>"),
                 Some(&|app| {
-                    let (_, doc) = current_ref!(app.editor);
+                    let (view, doc) = current_ref!(app.editor);
                     assert_eq!(doc.text().to_string(), "hello world\n");
+                    let sel = doc.selection(view.id).primary();
+                    let pos = sel.cursor(doc.text().slice(..));
+                    assert_eq!(pos, 6, "cursor after insert");
                 }),
             ),
             // 整个命令 = 一次撤销
