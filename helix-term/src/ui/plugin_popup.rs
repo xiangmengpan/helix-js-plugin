@@ -95,6 +95,8 @@ fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
         KeyCode::End => "End".into(),
         KeyCode::PageUp => "PageUp".into(),
         KeyCode::PageDown => "PageDown".into(),
+        KeyCode::Insert => "Insert".into(),
+        KeyCode::F(n) => format!("F{n}"),
         _ => return None,
     };
     Some(PluginKey {
