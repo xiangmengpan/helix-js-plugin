@@ -7,4 +7,3 @@ description = "JavaScript plugin runtime for the Helix editor (PoC)"
 [dependencies]
 boa_engine = { workspace = true }
 anyhow = "1"
-parking_lot = { workspace = true }

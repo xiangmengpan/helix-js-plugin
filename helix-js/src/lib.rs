@@ -19,12 +19,14 @@ pub struct CommandContext {
 
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
 // 所以引擎按线程存放（编辑器主线程是唯一调用者）；MESSAGES 跨线程共享。
+// drop 顺序：所有公共函数先调用 init()（先触达 CONTEXT），故线程销毁时
+// REGISTRY 先于 CONTEXT drop，JsValue 的 GC 引用在 CONTEXT 销毁前释放。
 // ponytail: 实现时观察到进程退出阶段偶发 tcache 崩溃（疑似 Context drop 的
 // double-finalize，但独立复现未能确认），故 Box::leak 泄漏到 'static 规避——
 // 进程退出时 OS 回收，对 PoC 无实际代价。升级 boa 后应改回正常持有。
 thread_local! {
-    static CONTEXT: RefCell<Option<&'static mut Context>> = RefCell::new(None);
-    static REGISTRY: RefCell<HashMap<String, JsValue>> = RefCell::new(HashMap::new());
+    static CONTEXT: RefCell<Option<&'static mut Context>> = const { RefCell::new(None) };
+    static REGISTRY: RefCell<HashMap<String, JsValue>> = const { RefCell::new(HashMap::new()) };
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
@@ -166,7 +168,7 @@ pub fn load_script(src: &str) -> Result<()> {
 /// 取走并清空 echo 消息队列
 pub fn take_messages() -> Vec<String> {
     init();
-    std::mem::take(&mut *MESSAGES.get().unwrap().lock().unwrap())
+    std::mem::take(&mut *MESSAGES.get().expect("MESSAGES not initialized").lock().expect("messages lock poisoned"))
 }
 
 #[cfg(test)]
