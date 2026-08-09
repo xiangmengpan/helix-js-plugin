@@ -10,6 +10,7 @@ use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
+use helix_js::CommandContext;
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
@@ -4108,6 +4109,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: exclude_workspace,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "plugin-load",
+        aliases: &[],
+        doc: "Load a JavaScript plugin file.",
+        fun: plugin_load,
+        completer: CommandCompleter::all(completers::filename),
+        signature: Signature { positionals: (1, Some(1)), ..Signature::DEFAULT },
     }
 ];
 
@@ -4140,7 +4149,32 @@ fn execute_command_line(
 
     match typed::TYPABLE_COMMAND_MAP.get(command) {
         Some(cmd) => execute_command(cx, cmd, rest, event),
-        None if event == PromptEvent::Validate => Err(anyhow!("no such command: '{command}'")),
+        None if event == PromptEvent::Validate => {
+            // 插件命令：序列化当前文档状态后交给 JS 运行时
+            let (view, doc) = current_ref!(cx.editor);
+            let text = doc.text();
+            let pos = doc.selection(view.id).primary().cursor(text.slice(..));
+            let line = text.char_to_line(pos);
+            let col = pos - text.line_to_char(line);
+            let ctx = CommandContext {
+                path: doc.path().map(|p| p.to_string_lossy().into_owned()),
+                text: text.to_string(),
+                cursor: (line, col),
+            };
+            let _ = (view, doc); // view/doc 的最后使用在 ctx 构造处，NLL 在此结束对 editor 的借用
+
+            match helix_js::run_command(command, &ctx) {
+                Ok(true) => {
+                    let msgs = helix_js::take_messages();
+                    if !msgs.is_empty() {
+                        cx.editor.set_status(msgs.join(" "));
+                    }
+                    Ok(())
+                }
+                Ok(false) => Err(anyhow!("no such command: '{command}'")),
+                Err(err) => Err(anyhow!("'{command}': {err}")),
+            }
+        }
         None => Ok(()),
     }
 }
@@ -4162,6 +4196,24 @@ pub(super) fn execute_command(
     };
 
     (cmd.fun)(cx, args, event).map_err(|err| anyhow!("'{}': {err}", cmd.name))
+}
+
+fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(path) = args.first() else {
+        return Err(anyhow!("usage: plugin-load <path>"));
+    };
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
+    helix_js::load_script(&src)
+        .map_err(|e| anyhow!("plugin-load: {e}"))?;
+    let msgs = helix_js::take_messages();
+    if !msgs.is_empty() {
+        cx.editor.set_status(msgs.join(" "));
+    }
+    Ok(())
 }
 
 #[allow(clippy::unnecessary_unwrap)]
@@ -4259,13 +4311,17 @@ fn complete_command_line(editor: &Editor, input: &str) -> Vec<ui::prompt::Comple
     let (command, rest, complete_command) = command_line::split(input);
 
     if complete_command {
+        let plugin_names = helix_js::command_names();
         fuzzy_match(
             input,
-            TYPABLE_COMMAND_LIST.iter().map(|command| command.name),
+            TYPABLE_COMMAND_LIST
+                .iter()
+                .map(|command| command.name)
+                .chain(plugin_names.iter().map(String::as_str)),
             false,
         )
         .into_iter()
-        .map(|(name, _)| (0.., name.into()))
+        .map(|(name, _)| (0.., name.to_string().into()))
         .collect()
     } else {
         TYPABLE_COMMAND_MAP

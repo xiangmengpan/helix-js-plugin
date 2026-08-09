@@ -1999,6 +1999,7 @@ dependencies = [
  "helix-core",
  "helix-dap",
  "helix-event",
+ "helix-js",
  "helix-loader",
  "helix-lsp",
  "helix-stdx",

@@ -133,6 +133,28 @@ impl Application {
         );
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
+        // Load JavaScript plugins from the config dir at startup (best effort)
+        let plugin_dir = helix_loader::config_dir().join("plugins");
+        if plugin_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "js") {
+                        match std::fs::read_to_string(&path).and_then(|src| {
+                            helix_js::load_script(&src).map_err(|e| std::io::Error::other(e.to_string()))
+                        }) {
+                            Ok(()) => {
+                                for msg in helix_js::take_messages() {
+                                    editor.set_status(msg);
+                                }
+                            }
+                            Err(err) => editor.set_error(format!("plugin '{}' failed: {err}", path.display())),
+                        }
+                    }
+                }
+            }
+        }
+
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
             &config.keys
         }));
