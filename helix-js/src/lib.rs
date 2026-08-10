@@ -397,13 +397,16 @@ fn js_run(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engin
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr: String = stderr.chars().take(RUN_OUTPUT_LIMIT).collect();
+        let code = output.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string());
         return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.run: command failed ({:?}): {stderr}",
-            output.status.code()
+            "helix.run: command failed ({code}): {stderr}"
         )))));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stdout: String = stdout.chars().take(RUN_OUTPUT_LIMIT).collect();
+    let mut stdout: String = stdout.chars().take(RUN_OUTPUT_LIMIT).collect();
+    if output.stdout.len() > RUN_OUTPUT_LIMIT {
+        stdout.push_str("(truncated)");
+    }
     Ok(JsValue::from(JsString::from(stdout)))
 }
 
