@@ -77,27 +77,71 @@ pub enum CursorRequest {
 
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
 // 所以引擎按线程存放（编辑器主线程是唯一调用者）；MESSAGES 跨线程共享。
-// drop 顺序：所有公共函数先调用 init()（先触达 CONTEXT），故线程销毁时
-// REGISTRY 先于 CONTEXT drop，JsValue 的 GC 引用在 CONTEXT 销毁前释放。
-// ponytail: 实现时观察到进程退出阶段偶发 tcache 崩溃（疑似 Context drop 的
-// double-finalize，但独立复现未能确认），故 Box::leak 泄漏到 'static 规避——
-// 进程退出时 OS 回收，对 PoC 无实际代价。升级 boa 后应改回正常持有。
+// 进程退出阶段曾约 50% 概率 SIGABRT（glibc tcache corruption）：线程退出时
+// 容器 drop → JsValue drop → boa Gc 堆对象被释放，与 teardown 时序冲突。
+// 故 CONTEXT 及所有持有 JsValue 的容器（REGISTRY/POPUPS/EVENT_HANDLERS/
+// BUFFER_ICON_HOOK/STATUSLINE_HOOK）一律 Box::leak 到 'static——线程退出时
+// 只 drop 引用（指针），内容永不 drop，由 OS 在进程退出时回收。对 PoC 无
+// 实际代价；升级 boa 后可改回正常持有。
 thread_local! {
     static CONTEXT: RefCell<Option<&'static mut Context>> = const { RefCell::new(None) };
-    // HashMap::new 非 const fn（1.90），REGISTRY 不能用 const 块初始化
-    static REGISTRY: RefCell<HashMap<String, JsValue>> = RefCell::new(HashMap::new());
-    static POPUPS: RefCell<HashMap<u64, PopupCallbacks>> = RefCell::new(HashMap::new());
+    // 持有 JsValue：线程退出时内容泄漏，不随线程 drop（与 CONTEXT 同哲学，见上）
+    static REGISTRY: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static POPUPS: RefCell<Option<&'static mut HashMap<u64, PopupCallbacks>>> = const { RefCell::new(None) };
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
-    static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
-    static STATUSLINE_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static BUFFER_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static STATUSLINE_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
-    // HashMap::new 非 const fn，EVENT_HANDLERS 不能用 const 块初始化
-    static EVENT_HANDLERS: RefCell<HashMap<String, Vec<JsValue>>> = RefCell::new(HashMap::new());
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static EVENT_HANDLERS: RefCell<Option<&'static mut HashMap<String, Vec<JsValue>>>> = const { RefCell::new(None) };
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 访问 REGISTRY：首次触达惰性 Box::leak 创建；线程退出时内容泄漏（见上）
+fn with_registry<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
+    REGISTRY.with(|r| {
+        let mut slot = r.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 EVENT_HANDLERS：同上（内容泄漏）
+fn with_event_handlers<T>(f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T) -> T {
+    EVENT_HANDLERS.with(|h| {
+        let mut slot = h.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 POPUPS：同上（内容泄漏）
+fn with_popups<T>(f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -> T) -> T {
+    POPUPS.with(|p| {
+        let mut slot = p.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 BUFFER_ICON_HOOK：同上（内容泄漏）
+fn with_buffer_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+    BUFFER_ICON_HOOK.with(|h| {
+        let mut slot = h.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 STATUSLINE_HOOK：同上（内容泄漏）
+fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+    STATUSLINE_HOOK.with(|h| {
+        let mut slot = h.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
@@ -156,7 +200,7 @@ fn js_register_command(
             COMMAND_DOCS.with(|d| d.borrow_mut().insert(name.clone(), doc));
         }
     }
-    REGISTRY.with(|r| r.borrow_mut().insert(name, func));
+    with_registry(|r| r.insert(name, func));
     Ok(JsValue::undefined())
 }
 
@@ -183,7 +227,7 @@ fn js_map(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engin
     let command: String = if command_arg.as_callable().is_some() {
         let id = NEXT_MAP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
         let name = format!("__mapped_{id}");
-        REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), command_arg));
+        with_registry(|r| r.insert(name.clone(), command_arg));
         name
     } else {
         command_arg.try_js_into(context)?
@@ -273,7 +317,7 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     // 命令开始时清空编辑队列，避免跨命令残留
     CURRENT_EDITS.with(|c| c.borrow_mut().clear());
     CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
-    let func = REGISTRY.with(|r| r.borrow().get(name).cloned());
+    let func = with_registry(|r| r.get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
     let func = func
@@ -296,7 +340,7 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
 /// 已注册的插件命令名（供命令行补全）
 pub fn command_names() -> Vec<String> {
     init();
-    REGISTRY.with(|r| r.borrow().keys().cloned().collect())
+    with_registry(|r| r.keys().cloned().collect())
 }
 
 /// 插件命令说明（未注册返回 None）
@@ -318,14 +362,14 @@ fn js_on(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine
             "helix.on: handler must be a function",
         ))));
     }
-    EVENT_HANDLERS.with(|h| h.borrow_mut().entry(name).or_default().push(handler));
+    with_event_handlers(|h| h.entry(name).or_default().push(handler));
     Ok(JsValue::undefined())
 }
 
 /// 是否有注册的事件处理器（挂点快速跳过）
 pub fn has_handlers(name: &str) -> bool {
     init();
-    EVENT_HANDLERS.with(|h| h.borrow().get(name).is_some_and(|v| !v.is_empty()))
+    with_event_handlers(|h| h.get(name).is_some_and(|v| !v.is_empty()))
 }
 
 /// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。
@@ -334,7 +378,7 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
     init();
     CURRENT_EDITS.with(|c| c.borrow_mut().clear());
     CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
-    let handlers = EVENT_HANDLERS.with(|h| h.borrow().get(name).cloned());
+    let handlers = with_event_handlers(|h| h.get(name).cloned());
     let Some(handlers) = handlers else { return Ok(()) };
     if handlers.is_empty() {
         return Ok(());
@@ -493,13 +537,13 @@ pub fn load_script_named(name: &str, src: &str) -> Result<()> {
 /// 清空所有插件状态（热重载用；id 计数器保留保证唯一性）。
 /// 注意：UI_REQUESTS/MESSAGES 不清——它们是命令边界 drain 的队列。
 fn reset_plugin_state() {
-    REGISTRY.with(|r| r.borrow_mut().clear());
-    EVENT_HANDLERS.with(|h| h.borrow_mut().clear());
-    POPUPS.with(|p| p.borrow_mut().clear());
+    with_registry(|r| r.clear());
+    with_event_handlers(|h| h.clear());
+    with_popups(|p| p.clear());
     CURRENT_EDITS.with(|c| c.borrow_mut().clear());
     CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
-    BUFFER_ICON_HOOK.with(|b| *b.borrow_mut() = None);
-    STATUSLINE_HOOK.with(|s| *s.borrow_mut() = None);
+    with_buffer_icon_hook(|h| *h = None);
+    with_statusline_hook(|h| *h = None);
     COMMAND_DOCS.with(|d| d.borrow_mut().clear());
 }
 
@@ -546,7 +590,7 @@ fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
     let on_close = on_close.as_callable().map(|_| on_close);
 
     let id = NEXT_POPUP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
-    POPUPS.with(|p| p.borrow_mut().insert(id, PopupCallbacks { render, on_key, on_close }));
+    with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPopup { id });
     Ok(JsValue::from(id))
 }
@@ -559,7 +603,7 @@ fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> 
             "set_buffer_icon: expected a function",
         ))));
     }
-    BUFFER_ICON_HOOK.with(|h| *h.borrow_mut() = Some(hook.clone()));
+    with_buffer_icon_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
 
@@ -575,7 +619,7 @@ pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<String>> {
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
         let engine = binding.as_mut().expect("CONTEXT initialized");
-        let render = POPUPS.with(|p| p.borrow().get(&id).map(|cb| cb.render.clone()))
+        let render = with_popups(|p| p.get(&id).map(|cb| cb.render.clone()))
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
         let ctx_obj = ObjectInitializer::new(engine)
             .property(JsString::from("width"), width, Attribute::all())
@@ -613,7 +657,7 @@ pub fn popup_key(id: u64, key: &PluginKey) -> Result<PopupKeyResult> {
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
         let engine = binding.as_mut().expect("CONTEXT initialized");
-        let callbacks = POPUPS.with(|p| p.borrow().get(&id).cloned())
+        let callbacks = with_popups(|p| p.get(&id).cloned())
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
         let Some(on_key) = callbacks.on_key else {
             return Ok(if key.name == "Esc" { PopupKeyResult::Close } else { PopupKeyResult::Ignored });
@@ -645,7 +689,7 @@ pub fn close_popup(id: u64) -> Result<()> {
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
         let engine = binding.as_mut().expect("CONTEXT initialized");
-        let callbacks = POPUPS.with(|p| p.borrow_mut().remove(&id));
+        let callbacks = with_popups(|p| p.remove(&id));
         let Some(callbacks) = callbacks else { return Ok(()) };
         if let Some(on_close) = callbacks.on_close {
             let func = on_close.as_callable().and_then(JsFunction::from_object)
@@ -661,9 +705,9 @@ pub fn close_popup(id: u64) -> Result<()> {
 fn js_set_statusline(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::null());
     if arg.is_null_or_undefined() {
-        STATUSLINE_HOOK.with(|h| *h.borrow_mut() = None);
+        with_statusline_hook(|h| *h = None);
     } else if arg.as_callable().is_some() {
-        STATUSLINE_HOOK.with(|h| *h.borrow_mut() = Some(arg));
+        with_statusline_hook(|h| *h = Some(arg));
     } else {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.set_statusline: expected a function or null",
@@ -675,7 +719,7 @@ fn js_set_statusline(_this: &JsValue, args: &[JsValue], _context: &mut Context) 
 /// 调状态栏钩子；无钩子 / 返回 null / 非字符串 / 抛错 → None
 pub fn statusline_text(ctx: &StatuslineCtx) -> Option<String> {
     init();
-    let hook = STATUSLINE_HOOK.with(|h| h.borrow().clone())?;
+    let hook = with_statusline_hook(|h| h.clone())?;
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
         let engine = binding.as_mut().expect("CONTEXT initialized");
@@ -708,7 +752,7 @@ pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
         let engine = binding.as_mut().expect("CONTEXT initialized");
-        let hook = BUFFER_ICON_HOOK.with(|h| h.borrow().clone());
+        let hook = with_buffer_icon_hook(|h| h.clone());
         let hook = hook?;
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let arg = match path { Some(p) => JsValue::from(JsString::from(p)), None => JsValue::null() };
