@@ -170,10 +170,14 @@ fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
-// 跨线程：worker 发事件、主线程 drain；sender 可克隆，worker 各自持有
-static TERM_EVENTS: OnceLock<std::sync::mpsc::Sender<TermEvent>> = OnceLock::new();
-static TERM_EVENTS_RX: OnceLock<Mutex<std::sync::mpsc::Receiver<TermEvent>>> = OnceLock::new();
-// 进程 id → 控制通道（term_write / term_kill 用）
+// 事件通道按线程存放：回调注册表（TERM_CALLBACKS）是线程本地的，通道也必须同线程配对——
+// 全局单通道会被并发测试的 render 泵互偷（别的线程 drain 后 resolve 时找不到本线程的回调，静默丢弃）。
+// worker 在 std 线程上持发起线程的 Sender 克隆；drain 只读本线程的 Receiver。
+thread_local! {
+    static TERM_EVENTS: RefCell<Option<std::sync::mpsc::Sender<TermEvent>>> = const { RefCell::new(None) };
+    static TERM_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<TermEvent>>> = const { RefCell::new(None) };
+}
+// 进程 id → 控制通道（term_write / term_kill 用）；id 由线程本地计数器分配，无跨线程冲突
 static TERM_WORKERS: OnceLock<Mutex<HashMap<u64, std::sync::mpsc::Sender<TermCtrl>>>> = OnceLock::new();
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
@@ -188,10 +192,14 @@ fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
 pub fn init() {
     MESSAGES.get_or_init(Default::default);
     UI_REQUESTS.get_or_init(Default::default);
-    let (tx, rx) = std::sync::mpsc::channel();
-    TERM_EVENTS.set(tx).ok();
-    TERM_EVENTS_RX.set(Mutex::new(rx)).ok();
-    TERM_WORKERS.set(Mutex::new(HashMap::new())).ok();
+    TERM_EVENTS.with(|t| {
+        if t.borrow().is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            *t.borrow_mut() = Some(tx);
+            TERM_EVENTS_RX.with(|r| *r.borrow_mut() = Some(rx));
+        }
+    });
+    TERM_WORKERS.get_or_init(Default::default);
     CONTEXT.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -685,7 +693,13 @@ fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa
     });
     let (tx, rx) = std::sync::mpsc::channel();
     TERM_WORKERS.get().expect("TERM_WORKERS initialized").lock().unwrap().insert(id, tx.clone());
-    spawn_worker(id, &cmd, true, TERM_EVENTS.get().expect("TERM_EVENTS initialized").clone(), rx);
+    spawn_worker(
+        id,
+        &cmd,
+        true,
+        TERM_EVENTS.with(|t| t.borrow().clone().expect("TERM_EVENTS initialized")),
+        rx,
+    );
     Ok(JsValue::from(id))
 }
 
@@ -708,7 +722,13 @@ fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine:
     });
     let (tx, rx) = std::sync::mpsc::channel();
     TERM_WORKERS.get().expect("TERM_WORKERS initialized").lock().unwrap().insert(id, tx);
-    spawn_worker(id, &cmd, false, TERM_EVENTS.get().expect("TERM_EVENTS initialized").clone(), rx);
+    spawn_worker(
+        id,
+        &cmd,
+        false,
+        TERM_EVENTS.with(|t| t.borrow().clone().expect("TERM_EVENTS initialized")),
+        rx,
+    );
     Ok(JsValue::from(id))
 }
 
@@ -738,11 +758,14 @@ fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa
 /// 取走全部待处理进程事件（主线程轮询用）
 pub fn drain_term_events() -> Vec<TermEvent> {
     init();
-    let rx = TERM_EVENTS_RX.get().expect("TERM_EVENTS_RX initialized");
     let mut events = Vec::new();
-    while let Ok(e) = rx.lock().unwrap().try_recv() {
-        events.push(e);
-    }
+    TERM_EVENTS_RX.with(|r| {
+        if let Some(rx) = r.borrow_mut().as_mut() {
+            while let Ok(e) = rx.try_recv() {
+                events.push(e);
+            }
+        }
+    });
     events
 }
 

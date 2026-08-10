@@ -300,7 +300,54 @@ impl Application {
         Ok(app)
     }
 
+    /// JS 插件异步事件泵：worker 结果 → 主线程 JS 回调 → 应用回调入队的编辑/消息。
+    /// 返回 true 表示消费了事件（调用方据此决定是否强制重绘）。
+    /// 幂等：drain 到空队列，重复调用为 no-op。
+    fn pump_term_events(&mut self) -> bool {
+        let term_events = helix_js::drain_term_events();
+        if term_events.is_empty() {
+            return false;
+        }
+        let mut error = None;
+        for event in term_events {
+            // 事件 id 在变体内部，resolve 前解出
+            let id = match &event {
+                helix_js::TermEvent::Chunk(id, _) | helix_js::TermEvent::Exit(id, _, _) => *id,
+            };
+            if let Err(err) = helix_js::resolve_term_event(id, event) {
+                error = Some(err);
+            }
+        }
+        let cursor_reqs = helix_js::take_cursor_requests();
+        if !cursor_reqs.is_empty() {
+            if let Err(err) =
+                crate::commands::typed::apply_cursor_requests(&mut self.editor, &cursor_reqs)
+            {
+                error = error.or(Some(err));
+            }
+        }
+        let edits = helix_js::take_edits();
+        if !edits.is_empty() {
+            if let Err(err) = crate::commands::typed::apply_plugin_edits(&mut self.editor, &edits) {
+                error = error.or(Some(err));
+            }
+        }
+        let msgs = helix_js::take_messages();
+        match error {
+            Some(err) => self.editor.set_error(err.to_string()),
+            None if !msgs.is_empty() => self.editor.set_status(msgs.join(" ")),
+            _ => {}
+        }
+        if let Err(err) = crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests()) {
+            self.editor.set_error(err.to_string());
+        }
+        true
+    }
+
     async fn render(&mut self) {
+        // 泵：worker 结果在每帧绘制前 resolve，回调的编辑/消息同帧上屏
+        self.pump_term_events();
+
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
@@ -652,7 +699,8 @@ impl Application {
             scroll: None,
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
-        if should_render || self.editor.needs_redraw {
+        // idle 是 worker 完成后的主要唤醒点；泵过事件时必须重绘（仅 idle 本身不触发渲染）
+        if should_render || self.editor.needs_redraw || self.pump_term_events() {
             self.render().await;
         }
     }
