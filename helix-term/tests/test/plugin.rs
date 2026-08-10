@@ -92,6 +92,45 @@ async fn plugin_popup_open_and_close() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn plugin_popup_size_smoke() -> anyhow::Result<()> {
+    // 冒烟：open_popup 的 width/height/position 选项不能使弹窗打开失败
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("sz.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("sizepopup.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("size-popup", () => {
+            helix.open_popup({ render: () => ["line1", "line2", "line3"], width: 20, height: 4, position: { row: 2, col: 3 } });
+        });
+        "#,
+    )?;
+
+    let popup_type = std::any::type_name::<ui::Popup<ui::PluginPopup>>();
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(":size-popup<ret>"),
+                Some(&|app| {
+                    assert!(
+                        app.compositor.has_component(popup_type),
+                        "popup open with size/position options"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn plugin_bufferline_icons() -> anyhow::Result<()> {
     // 验证 bufferline 图标钩子真的渲染进标签栏
     let dir = tempfile::tempdir()?;
