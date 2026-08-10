@@ -332,6 +332,7 @@ pub fn has_handlers(name: &str) -> bool {
 pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Result<()> {
     init();
     CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+    CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
     let handlers = EVENT_HANDLERS.with(|h| h.borrow().get(name).cloned());
     let Some(handlers) = handlers else { return Ok(()) };
     if handlers.is_empty() {
@@ -353,6 +354,7 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
             };
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+    CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
                 anyhow!("event '{name}' handler failed: {e}")
             })?;
         }
@@ -466,6 +468,7 @@ fn reset_plugin_state() {
     EVENT_HANDLERS.with(|h| h.borrow_mut().clear());
     POPUPS.with(|p| p.borrow_mut().clear());
     CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+    CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
     BUFFER_ICON_HOOK.with(|b| *b.borrow_mut() = None);
     STATUSLINE_HOOK.with(|s| *s.borrow_mut() = None);
     COMMAND_DOCS.with(|d| d.borrow_mut().clear());
