@@ -1121,16 +1121,16 @@ mod tests {
             r#"
         helix.register_command("r4", () => {
             const out = helix.run("head -c 100000 /dev/zero | tr '\\0' 'x'");
-            helix.echo("len:" + out.length);
+            helix.echo("len:" + out.length + " tail:" + out.slice(-11));
         });
         "#,
         )
         .unwrap();
         assert!(run_command("r4", &ctx).unwrap());
         let msg = take_messages();
-        assert!(msg[0].ends_with("(truncated)"), "marker expected: {:?}", msg[0]);
-        let len: usize = msg[0].strip_prefix("len:").unwrap().strip_suffix("(truncated)").unwrap().parse().unwrap();
-        assert!(len <= 65536, "truncated output, len={len}");
+        assert!(msg[0].contains("tail:(truncated)"), "marker expected: {:?}", msg[0]);
+        let len: usize = msg[0].strip_prefix("len:").unwrap().split(" tail:").next().unwrap().parse().unwrap();
+        assert!(len <= 65536 + "(truncated)".len(), "truncated output, len={len}");
     }
 
     #[test]
