@@ -176,9 +176,11 @@ static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
 thread_local! {
     static TERM_EVENTS: RefCell<Option<std::sync::mpsc::Sender<TermEvent>>> = const { RefCell::new(None) };
     static TERM_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<TermEvent>>> = const { RefCell::new(None) };
+    // 进程 id → 控制通道（term_write / term_kill 用）。按线程存放：id 由本线程计数器
+    // 分配，若 map 全局则并发线程的同 id 互相覆盖（与 TERM_EVENTS 同模式）；
+    // worker 线程不访问此表，只在发起线程的 Sender 克隆上发事件。
+    static TERM_WORKERS: RefCell<HashMap<u64, std::sync::mpsc::Sender<TermCtrl>>> = RefCell::new(HashMap::new());
 }
-// 进程 id → 控制通道（term_write / term_kill 用）；id 由线程本地计数器分配，无跨线程冲突
-static TERM_WORKERS: OnceLock<Mutex<HashMap<u64, std::sync::mpsc::Sender<TermCtrl>>>> = OnceLock::new();
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
 fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
@@ -199,7 +201,6 @@ pub fn init() {
             TERM_EVENTS_RX.with(|r| *r.borrow_mut() = Some(rx));
         }
     });
-    TERM_WORKERS.get_or_init(Default::default);
     CONTEXT.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -692,7 +693,7 @@ fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa
         m.insert(id, TermCallbacks { on_chunk: cb.clone(), on_exit: Some(cb), is_run_async: true })
     });
     let (tx, rx) = std::sync::mpsc::channel();
-    TERM_WORKERS.get().expect("TERM_WORKERS initialized").lock().unwrap().insert(id, tx.clone());
+    TERM_WORKERS.with(|m| m.borrow_mut().insert(id, tx.clone()));
     spawn_worker(
         id,
         &cmd,
@@ -721,7 +722,7 @@ fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine:
         m.insert(id, TermCallbacks { on_chunk, on_exit, is_run_async: false })
     });
     let (tx, rx) = std::sync::mpsc::channel();
-    TERM_WORKERS.get().expect("TERM_WORKERS initialized").lock().unwrap().insert(id, tx);
+    TERM_WORKERS.with(|m| m.borrow_mut().insert(id, tx));
     spawn_worker(
         id,
         &cmd,
@@ -735,7 +736,7 @@ fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine:
 fn js_term_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let text: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sender = TERM_WORKERS.get().unwrap().lock().unwrap().get(&id).cloned().ok_or_else(|| {
+    let sender = TERM_WORKERS.with(|m| m.borrow().get(&id).cloned()).ok_or_else(|| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.term_write: unknown id")))
     })?;
     sender
@@ -746,7 +747,7 @@ fn js_term_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> bo
 
 fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sender = TERM_WORKERS.get().unwrap().lock().unwrap().remove(&id).ok_or_else(|| {
+    let sender = TERM_WORKERS.with(|m| m.borrow_mut().remove(&id)).ok_or_else(|| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.term_kill: unknown id")))
     })?;
     sender
@@ -806,7 +807,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                         .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
                 }
                 with_terms(|m| m.remove(&id));
-                TERM_WORKERS.get().unwrap().lock().unwrap().remove(&id);
+                TERM_WORKERS.with(|m| m.borrow_mut().remove(&id));
             }
         }
         Ok(())

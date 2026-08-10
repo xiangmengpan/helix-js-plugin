@@ -2,6 +2,8 @@ use super::*;
 
 use helix_core::diagnostic::Severity;
 
+// ponytail: 见 plugin_async.rs 注释——harness 依赖 multi_thread（block_in_place），
+// current_thread 会 panic；多线程下任务迁移丢事件的已知隐患留待后续任务。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_doc_change_event() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;

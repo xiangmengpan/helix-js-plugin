@@ -1,7 +1,9 @@
 use super::*;
 
-use helix_core::diagnostic::Severity;
-
+// ponytail: 本测试需 multi_thread（harness 的 app.close → block_try_flush_writes 用
+// block_in_place，current_thread 会 panic）。multi_thread 下主任务 await 时可能迁移 OS 线程，
+// 线程本地 TERM_EVENTS 通道滞留旧线程 → ~1/22 随机丢事件；与 docchange 同源，属已知测试侧
+// 隐患，生产端编辑器单线程无此路径，待后续任务处理。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_async_run() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
