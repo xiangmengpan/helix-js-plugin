@@ -124,6 +124,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_set_cursor), JsString::from("set_cursor"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_selection), JsString::from("set_selection"), 4)
                 .function(NativeFunction::from_fn_ptr(js_set_statusline), JsString::from("set_statusline"), 1)
+                .function(NativeFunction::from_fn_ptr(js_run), JsString::from("run"), 1)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -379,6 +380,31 @@ fn js_set_selection(_this: &JsValue, args: &[JsValue], context: &mut Context) ->
         head: (hr, hc),
     }));
     Ok(JsValue::undefined())
+}
+
+/// shell 执行输出截断上限（防失控输出冻结状态栏）
+const RUN_OUTPUT_LIMIT: usize = 65536;
+
+// ponytail: 同步阻塞 + sh -c，仅 Unix；未来要 Windows 支持需改 cmd.exe /C。
+fn js_run(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    use std::process::Command;
+    let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .output()
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.run: failed to spawn: {e}")))))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr: String = stderr.chars().take(RUN_OUTPUT_LIMIT).collect();
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.run: command failed ({:?}): {stderr}",
+            output.status.code()
+        )))));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout: String = stdout.chars().take(RUN_OUTPUT_LIMIT).collect();
+    Ok(JsValue::from(JsString::from(stdout)))
 }
 
 fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -1065,6 +1091,40 @@ mod tests {
         load_script(r#"helix.register_command("badsel", (ctx) => { helix.set_cursor("x", 0); });"#).unwrap();
         assert!(run_command("badsel", &ctx).is_err());
         assert!(take_cursor_requests().is_empty());
+    }
+
+    #[test]
+    fn shell_run() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 成功路径
+        load_script(r#"helix.register_command("r1", () => { helix.echo(helix.run("echo hi")); });"#).unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("r1", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["hi\n"]);
+
+        // 非零退出码 → 错误
+        load_script(r#"helix.register_command("r2", () => { helix.run("exit 3"); });"#).unwrap();
+        assert!(run_command("r2", &ctx).is_err());
+
+        // 类型错误
+        load_script(r#"helix.register_command("r3", () => { helix.run(42); });"#).unwrap();
+        assert!(run_command("r3", &ctx).is_err());
+
+        // 截断：输出超限 → 返回长度 ≤ 65536
+        load_script(
+            r#"
+        helix.register_command("r4", () => {
+            const out = helix.run("head -c 100000 /dev/zero | tr '\\0' 'x'");
+            helix.echo("len:" + out.length);
+        });
+        "#,
+        )
+        .unwrap();
+        assert!(run_command("r4", &ctx).unwrap());
+        let msg = take_messages();
+        let len: usize = msg[0].strip_prefix("len:").unwrap().parse().unwrap();
+        assert!(len <= 65536, "truncated output, len={len}");
     }
 
     #[test]
