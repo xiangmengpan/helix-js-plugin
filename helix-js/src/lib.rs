@@ -149,6 +149,11 @@ thread_local! {
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    // 主题覆盖：scope → 颜色字符串（set_theme 整体替换；reset_theme 清空）。
+    // 只存字符串，无 JsValue，普通 RefCell 即可（随线程 drop）。
+    static THEME_OVERRIDES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    // 覆盖集是否变化（set/reset 置位；helix-term drain 时读取并清位）
+    static THEME_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// 访问 REGISTRY：首次触达惰性 Box::leak 创建；线程退出时内容泄漏（见上）
@@ -248,6 +253,8 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_spawn), JsString::from("spawn"), 1)
                 .function(NativeFunction::from_fn_ptr(js_term_write), JsString::from("term_write"), 2)
                 .function(NativeFunction::from_fn_ptr(js_term_kill), JsString::from("term_kill"), 1)
+                .function(NativeFunction::from_fn_ptr(js_set_theme), JsString::from("set_theme"), 1)
+                .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -255,6 +262,50 @@ pub fn init() {
             *slot = Some(engine);
         }
     });
+}
+
+/// 设置主题覆盖：scope → 颜色字符串，整体替换旧的覆盖集并置脏。
+/// 非字符串值（对象/数字等）忽略；空对象等价清空。
+fn js_set_theme(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let obj = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.set_theme: expected an object of { scope: color }",
+        )))
+    })?;
+    let mut overrides = HashMap::new();
+    for key in obj.own_property_keys(ctx)? {
+        let boa_engine::property::PropertyKey::String(scope) = &key else { continue };
+        let scope = scope.to_std_string_escaped();
+        let value = obj.get(key, ctx)?;
+        // 只接受字符串颜色值；其余类型忽略（不整体报错——部分非法条目不阻断其余覆盖）
+        let Some(color) = (value.is_string())
+            .then(|| value.try_js_into::<String>(ctx).ok())
+            .flatten()
+        else { continue };
+        overrides.insert(scope, color);
+    }
+    THEME_OVERRIDES.with(|o| *o.borrow_mut() = overrides);
+    THEME_DIRTY.with(|d| d.set(true));
+    Ok(JsValue::undefined())
+}
+
+/// 清除主题覆盖并置脏（helix-term 下次 drain 还原基准主题）
+fn js_reset_theme(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    THEME_OVERRIDES.with(|o| o.borrow_mut().clear());
+    THEME_DIRTY.with(|d| d.set(true));
+    Ok(JsValue::undefined())
+}
+
+/// 覆盖集是否自上次 drain 后变化（helix-term 读取并清位）
+pub fn take_theme_dirty() -> bool {
+    init();
+    THEME_DIRTY.with(|d| d.replace(false))
+}
+
+/// 当前主题覆盖集快照（scope → 颜色字符串；helix-term 合并进基准主题）
+pub fn theme_overrides() -> HashMap<String, String> {
+    init();
+    THEME_OVERRIDES.with(|o| o.borrow().clone())
 }
 
 fn js_register_command(
@@ -916,6 +967,9 @@ fn reset_plugin_state() {
     with_statusline_hook(|h| *h = None);
     LAST_PANEL_ID.with(|c| c.set(None));
     COMMAND_DOCS.with(|d| d.borrow_mut().clear());
+    // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
+    THEME_OVERRIDES.with(|o| o.borrow_mut().clear());
+    THEME_DIRTY.with(|d| d.set(true));
 }
 
 /// 热重载：清空状态后按加载顺序重跑全部脚本。
@@ -1286,6 +1340,54 @@ mod tests {
 
     // 多个测试共享全局运行时，用锁串行化避免消息队列竞争
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn theme_overrides_api() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 清残留脏位（本测试是唯一 set_theme 的测试，防御顺序依赖）
+        let _ = take_theme_dirty();
+        assert!(theme_overrides().is_empty());
+
+        // set_theme：整体替换 + 置脏；非字符串值忽略
+        load_script(
+            r##"
+        helix.set_theme({
+            "ui.popup": "#ff00aa",
+            "error": "red",
+            "ui.window": { fg: "#112233" },
+        });
+        "##,
+        )
+        .unwrap();
+        assert!(take_theme_dirty());
+        let ov = theme_overrides();
+        assert_eq!(ov.get("ui.popup").map(String::as_str), Some("#ff00aa"));
+        assert_eq!(ov.get("error").map(String::as_str), Some("red"));
+        assert!(!ov.contains_key("ui.window"), "非字符串值应被忽略");
+
+        // 再次 set_theme：替换而非累积
+        load_script(r#"helix.set_theme({ "error": "blue" });"#).unwrap();
+        assert!(take_theme_dirty());
+        let ov = theme_overrides();
+        assert_eq!(ov.len(), 1);
+        assert_eq!(ov.get("error").map(String::as_str), Some("blue"));
+
+        // 空对象 → 清空覆盖（等价的 reset）
+        load_script(r#"helix.set_theme({});"#).unwrap();
+        assert!(theme_overrides().is_empty());
+
+        // reset_theme：清空 + 置脏
+        load_script(r#"helix.set_theme({ "error": "red" });"#).unwrap();
+        assert!(take_theme_dirty());
+        load_script(r#"helix.reset_theme();"#).unwrap();
+        assert!(take_theme_dirty());
+        assert!(theme_overrides().is_empty());
+
+        // 非法参数（非对象/缺参）→ JS 报错
+        assert!(load_script(r#"helix.set_theme("red");"#).is_err());
+        assert!(load_script(r#"helix.set_theme();"#).is_err());
+    }
 
     #[test]
     fn echo_captures_message() {

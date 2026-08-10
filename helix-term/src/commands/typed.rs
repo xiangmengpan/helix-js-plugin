@@ -1,6 +1,7 @@
 use std::fmt::Write;
 use std::io::BufReader;
 use std::ops::{self, Deref};
+use std::sync::Mutex;
 
 use crate::job::Job;
 
@@ -17,6 +18,48 @@ use helix_view::editor::{CloseError, ConfigEvent};
 use helix_view::expansion;
 use serde_json::Value;
 use ui::completers::{self, Completer};
+
+/// 插件主题覆盖的基准 toml：应用最终主题后由 load_configured_theme 捕获。
+/// default/base16_default 无实体文件，用编译期 const；其余用 load_raw（不解析 inherits）。
+/// 用 Mutex<Option> 而非 OnceLock：config-refresh / 自适应模式切换会重新捕获。
+static BASE_THEME_TOML: Mutex<Option<toml::Value>> = Mutex::new(None);
+
+pub(crate) fn set_base_theme(loader: &helix_view::theme::Loader, name: &str) {
+    let base = match name {
+        "default" => Some(helix_view::theme::DEFAULT_THEME_DATA.clone()),
+        "base16_default" => Some(helix_view::theme::BASE16_DEFAULT_THEME_DATA.clone()),
+        _ => loader.load_raw(name).ok(),
+    };
+    *BASE_THEME_TOML.lock().expect("base theme lock") = base;
+}
+
+/// 覆盖集 → toml 值 `{ scope: { fg: color } }`（merge_themes 的 child 形状）
+fn theme_overrides_value(overrides: &HashMap<String, String>) -> toml::Value {
+    let mut map = toml::map::Map::new();
+    for (scope, color) in overrides {
+        let mut style = toml::map::Map::new();
+        style.insert("fg".to_string(), toml::Value::String(color.clone()));
+        map.insert(scope.clone(), toml::Value::Table(style));
+    }
+    toml::Value::Table(map)
+}
+
+/// 把插件覆盖集合并进基准主题并应用（None/空 → 还原基准）。
+/// 无覆盖时 Theme::from 的 scope 集与基准一致，可直接替换 editor.theme。
+pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&HashMap<String, String>>) {
+    let base = BASE_THEME_TOML
+        .lock()
+        .expect("base theme lock")
+        .clone()
+        .unwrap_or_else(|| helix_view::theme::DEFAULT_THEME_DATA.clone());
+    let merged = match overrides {
+        Some(ov) if !ov.is_empty() => {
+            editor.theme_loader.merge_themes(base, theme_overrides_value(ov))
+        }
+        _ => base,
+    };
+    editor.theme = helix_view::theme::Theme::from(merged);
+}
 
 #[derive(Clone)]
 pub struct TypableCommand {
@@ -4215,6 +4258,11 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
             if !msgs.is_empty() {
                 cx.editor.set_status(msgs.join(" "));
             }
+            // 插件主题覆盖：set_theme/reset_theme 在命令里调用时同帧应用
+            if helix_js::take_theme_dirty() {
+                let overrides = helix_js::theme_overrides();
+                apply_theme_overrides(cx.editor, Some(&overrides));
+            }
             apply_ui_requests(helix_js::take_ui_requests())?;
             // 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
             // 快照坐标的光标正确推进）。只在 Ok(true) 分支消费：Err 时队列残留由下次
@@ -4305,6 +4353,11 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
         editor.set_status(msgs.join(" "));
+    }
+    // 事件处理器里的 set_theme/reset_theme 同帧应用
+    if helix_js::take_theme_dirty() {
+        let overrides = helix_js::theme_overrides();
+        apply_theme_overrides(editor, Some(&overrides));
     }
 }
 
@@ -4474,6 +4527,11 @@ fn plugin_reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) 
             }
             // 脚本里的 helix.map 重跑会再入队 MapKey，必须像 plugin_load 一样 drain
             // ponytail: 键位绑定只重应用不撤销——旧脚本移除/改名的绑定残留需重启才能清掉（编辑器侧 Keymaps 无 API）
+            if helix_js::take_theme_dirty() {
+                // reload 重置了插件状态（覆盖清空）；若重跑脚本重新 set_theme 则应用新覆盖，否则还原基准
+                let overrides = helix_js::theme_overrides();
+                apply_theme_overrides(cx.editor, Some(&overrides));
+            }
             apply_ui_requests(helix_js::take_ui_requests())?;
             Ok(())
         }
