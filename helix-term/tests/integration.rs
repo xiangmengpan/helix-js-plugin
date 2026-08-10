@@ -29,6 +29,7 @@ mod test {
     mod plugin_popup_edit;
     mod plugin_async;
     mod plugin_panel;
+    mod plugin_theme;
     mod plugin_statusline;
     mod splits;
 }
