@@ -17,6 +17,28 @@ pub enum UiRequest {
     MapKey { mode: String, key: String, command: String },
 }
 
+/// 异步进程事件（worker 线程 → 主线程；主线程 drain 后 resolve 到 JS 回调）
+#[derive(Debug)]
+pub enum TermEvent {
+    Chunk(u64, String),
+    /// run_async 的 Exit 携带聚合后的完整 stdout（Option）；spawn 的 Exit 为 None
+    Exit(u64, i32, Option<String>),
+}
+
+/// 主线程 → worker 线程的控制指令（stdin 写入 / 杀进程）
+enum TermCtrl {
+    Write(String),
+    Kill,
+}
+
+/// 一个进程 id 的 JS 回调集（resolve 时需要克隆出容器外调用）
+struct TermCallbacks {
+    on_chunk: JsValue,
+    on_exit: Option<JsValue>,
+    /// true = run_async（Exit 回调签名为 (err, out)）；false = spawn（签名为 (code)）
+    is_run_async: bool,
+}
+
 /// 按键事件的只读快照，传给 JS onKey 回调
 pub struct PluginKey {
     pub name: String,
@@ -99,6 +121,9 @@ thread_local! {
     static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static EVENT_HANDLERS: RefCell<Option<&'static mut HashMap<String, Vec<JsValue>>>> = const { RefCell::new(None) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static TERM_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, TermCallbacks>>> = const { RefCell::new(None) };
+    static NEXT_TERM_ID: Cell<u64> = const { Cell::new(1) };
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
@@ -145,11 +170,28 @@ fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
+// 跨线程：worker 发事件、主线程 drain；sender 可克隆，worker 各自持有
+static TERM_EVENTS: OnceLock<std::sync::mpsc::Sender<TermEvent>> = OnceLock::new();
+static TERM_EVENTS_RX: OnceLock<Mutex<std::sync::mpsc::Receiver<TermEvent>>> = OnceLock::new();
+// 进程 id → 控制通道（term_write / term_kill 用）
+static TERM_WORKERS: OnceLock<Mutex<HashMap<u64, std::sync::mpsc::Sender<TermCtrl>>>> = OnceLock::new();
+
+/// 访问 TERM_CALLBACKS：同上（内容泄漏）
+fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
+    TERM_CALLBACKS.with(|t| {
+        let mut slot = t.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
 
 /// 创建 boa 上下文并注册全局 `helix` 对象（幂等）
 pub fn init() {
     MESSAGES.get_or_init(Default::default);
     UI_REQUESTS.get_or_init(Default::default);
+    let (tx, rx) = std::sync::mpsc::channel();
+    TERM_EVENTS.set(tx).ok();
+    TERM_EVENTS_RX.set(Mutex::new(rx)).ok();
+    TERM_WORKERS.set(Mutex::new(HashMap::new())).ok();
     CONTEXT.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -169,6 +211,10 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_set_selection), JsString::from("set_selection"), 4)
                 .function(NativeFunction::from_fn_ptr(js_set_statusline), JsString::from("set_statusline"), 1)
                 .function(NativeFunction::from_fn_ptr(js_run), JsString::from("run"), 1)
+                .function(NativeFunction::from_fn_ptr(js_run_async), JsString::from("run_async"), 2)
+                .function(NativeFunction::from_fn_ptr(js_spawn), JsString::from("spawn"), 1)
+                .function(NativeFunction::from_fn_ptr(js_term_write), JsString::from("term_write"), 2)
+                .function(NativeFunction::from_fn_ptr(js_term_kill), JsString::from("term_kill"), 1)
                 .build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
@@ -466,6 +512,250 @@ fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engi
         .expect("messages lock")
         .push(text);
     Ok(JsValue::undefined())
+}
+
+/// worker 读块大小
+const TERM_CHUNK_SIZE: usize = 4096;
+
+/// 启动 worker 线程：sh -c 跑子进程，读线程逐块发 Chunk（或聚合进 stdout）；
+/// 主线程轮询控制通道（写 stdin / kill）与读线程完成信号，全部读完才收尾发 Exit。
+/// 控制通道由 term_write/term_kill 发消息；无人发 Kill 且子进程不退出时 worker 一直存活（终端会话语义）。
+fn spawn_worker(
+    id: u64,
+    cmd: &str,
+    aggregate: bool,
+    tx: std::sync::mpsc::Sender<TermEvent>,
+    stdin_rx: std::sync::mpsc::Receiver<TermCtrl>,
+) {
+    let cmd = cmd.to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        use std::process::{Command, Stdio};
+        let mut child = match Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+        let mut stream_out = child.stdout.take();
+        let mut stream_err = child.stderr.take();
+        let mut stdin = child.stdin.take();
+
+        // 读线程：stdout/stderr 各一个，逐块发 Chunk（非聚合）或拼进共享缓冲（聚合）；完成后发 done 信号
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let mut readers = Vec::new();
+        {
+            let tx = tx.clone();
+            let done_tx = done_tx.clone();
+            let output = output.clone();
+            readers.push(std::thread::spawn(move || {
+                let mut buf = [0u8; TERM_CHUNK_SIZE];
+                loop {
+                    match stream_out.as_mut().unwrap().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                            if aggregate {
+                                output.lock().unwrap().push_str(&chunk);
+                            } else if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = done_tx.send(());
+            }));
+        }
+        {
+            let tx = tx.clone();
+            let done_tx = done_tx.clone();
+            let output = output.clone();
+            readers.push(std::thread::spawn(move || {
+                let mut buf = [0u8; TERM_CHUNK_SIZE];
+                loop {
+                    match stream_err.as_mut().unwrap().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                            if aggregate {
+                                output.lock().unwrap().push_str(&chunk);
+                            } else if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = done_tx.send(());
+            }));
+        }
+        drop(done_tx);
+
+        // 主循环：处理控制消息；两个读线程都 EOF 后收尾
+        loop {
+            while let Ok(msg) = stdin_rx.try_recv() {
+                match msg {
+                    TermCtrl::Write(text) => {
+                        if let Some(s) = stdin.as_mut() {
+                            let _ = s.write_all(text.as_bytes());
+                            let _ = s.flush();
+                        }
+                    }
+                    TermCtrl::Kill => {
+                        let _ = child.kill();
+                    }
+                }
+            }
+            let mut finished = 0;
+            while done_rx.try_recv().is_ok() {
+                finished += 1;
+            }
+            if finished >= readers.len() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(stdin); // 关 stdin → 仍等输入的子进程读到 EOF 后退出
+        for h in readers {
+            let _ = h.join();
+        }
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let stdout = if aggregate {
+            Some(std::mem::take(&mut *output.lock().unwrap()))
+        } else {
+            None
+        };
+        let _ = tx.send(TermEvent::Exit(id, code, stdout));
+    });
+}
+
+fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let cb = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    if cb.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.run_async: callback must be a function",
+        ))));
+    }
+    let id = NEXT_TERM_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    with_terms(|m| {
+        m.insert(id, TermCallbacks { on_chunk: cb.clone(), on_exit: Some(cb), is_run_async: true })
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    TERM_WORKERS.get().expect("TERM_WORKERS initialized").lock().unwrap().insert(id, tx.clone());
+    spawn_worker(id, &cmd, true, TERM_EVENTS.get().expect("TERM_EVENTS initialized").clone(), rx);
+    Ok(JsValue::from(id))
+}
+
+fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.spawn: options object required")))
+    })?;
+    let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
+    let on_chunk = opts.get(JsString::from("onChunk"), ctx)?;
+    if on_chunk.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.spawn: onChunk must be a function",
+        ))));
+    }
+    let on_exit = opts.get(JsString::from("onExit"), ctx)?;
+    let on_exit = on_exit.as_callable().map(|_| on_exit);
+    let id = NEXT_TERM_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    with_terms(|m| {
+        m.insert(id, TermCallbacks { on_chunk, on_exit, is_run_async: false })
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    TERM_WORKERS.get().expect("TERM_WORKERS initialized").lock().unwrap().insert(id, tx);
+    spawn_worker(id, &cmd, false, TERM_EVENTS.get().expect("TERM_EVENTS initialized").clone(), rx);
+    Ok(JsValue::from(id))
+}
+
+fn js_term_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let text: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sender = TERM_WORKERS.get().unwrap().lock().unwrap().get(&id).cloned().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.term_write: unknown id")))
+    })?;
+    sender
+        .send(TermCtrl::Write(text))
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("helix.term_write: worker gone"))))?;
+    Ok(JsValue::undefined())
+}
+
+fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sender = TERM_WORKERS.get().unwrap().lock().unwrap().remove(&id).ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.term_kill: unknown id")))
+    })?;
+    sender
+        .send(TermCtrl::Kill)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("helix.term_kill: worker gone"))))?;
+    Ok(JsValue::undefined())
+}
+
+/// 取走全部待处理进程事件（主线程轮询用）
+pub fn drain_term_events() -> Vec<TermEvent> {
+    init();
+    let rx = TERM_EVENTS_RX.get().expect("TERM_EVENTS_RX initialized");
+    let mut events = Vec::new();
+    while let Ok(e) = rx.lock().unwrap().try_recv() {
+        events.push(e);
+    }
+    events
+}
+
+/// 把一条进程事件投递到对应 id 的 JS 回调。
+/// Chunk → onChunk(chunk)；Exit → run_async 调 onExit(null, stdout)、spawn 调 onExit(code)；
+/// 进程结束（Exit）后清理回调与 worker 注册，防止重复回调。
+pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let callbacks = with_terms(|m| {
+            m.get(&id).map(|c| TermCallbacks {
+                on_chunk: c.on_chunk.clone(),
+                on_exit: c.on_exit.clone(),
+                is_run_async: c.is_run_async,
+            })
+        });
+        let Some(callbacks) = callbacks else { return Ok(()) };
+        let undefined = JsValue::undefined();
+        match event {
+            TermEvent::Chunk(_, chunk) => {
+                let func = callbacks.on_chunk.as_callable().and_then(JsFunction::from_object)
+                    .ok_or_else(|| anyhow!("term {id} onChunk not callable"))?;
+                let _: JsValue = func.call(&undefined, &[JsValue::from(JsString::from(chunk))], engine)
+                    .map_err(|e| anyhow!("term {id} onChunk failed: {e}"))?;
+            }
+            TermEvent::Exit(_, code, stdout) => {
+                if let Some(on_exit) = callbacks.on_exit {
+                    let func = on_exit.as_callable().and_then(JsFunction::from_object)
+                        .ok_or_else(|| anyhow!("term {id} onExit not callable"))?;
+                    let args = if callbacks.is_run_async {
+                        vec![JsValue::null(), JsValue::from(JsString::from(stdout.unwrap_or_default()))]
+                    } else {
+                        vec![JsValue::from(code)]
+                    };
+                    let _: JsValue = func.call(&undefined, &args, engine)
+                        .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
+                }
+                with_terms(|m| m.remove(&id));
+                TERM_WORKERS.get().unwrap().lock().unwrap().remove(&id);
+            }
+        }
+        Ok(())
+    })
 }
 
 fn js_doc_insert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -1217,6 +1507,86 @@ mod tests {
         assert!(msg[0].contains("tail:(truncated)"), "marker expected: {:?}", msg[0]);
         let len: usize = msg[0].strip_prefix("len:").unwrap().split(" tail:").next().unwrap().parse().unwrap();
         assert!(len <= 65536 + "(truncated)".len(), "truncated output, len={len}");
+    }
+
+    /// 轮询 drain_term_events 直到谓词命中或超时（async 测试需要）
+    fn wait_for_term_event(pred: impl Fn(&TermEvent) -> bool) -> Vec<TermEvent> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let events = drain_term_events();
+            if events.iter().any(&pred) {
+                return events;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("timed out waiting for term event");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn async_run_and_spawn() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+
+        // run_async：echo → Exit 事件携带 stdout → resolve 触发回调
+        load_script(
+            r#"
+        helix.run_async("echo async-hello", (err, out) => {
+            helix.echo("cb:" + (err ?? "ok") + ":" + (out ?? "").trim());
+        });
+        "#,
+        )
+        .unwrap();
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        let TermEvent::Exit(id, code, stdout) = &events[0] else { unreachable!() };
+        assert_eq!(*code, 0);
+        let stdout = stdout.clone().unwrap_or_default();
+        resolve_term_event(*id, TermEvent::Exit(*id, *code, Some(stdout))).unwrap();
+        assert_eq!(take_messages(), vec!["cb:ok:async-hello"]);
+
+        // spawn 流式：cat 回显
+        load_script(
+            r#"
+        helix.register_command("sp", () => {
+            const id = helix.spawn({ cmd: "cat", onChunk: (c) => helix.echo("chunk:" + c), onExit: (code) => helix.echo("exit:" + code) });
+            helix.term_write(id, "hello-term\n");
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("sp", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term")));
+        let ev = events.iter().find(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term"))).expect("chunk event");
+        let TermEvent::Chunk(id, chunk) = ev else { unreachable!() };
+        resolve_term_event(*id, TermEvent::Chunk(*id, chunk.clone())).unwrap();
+        assert!(take_messages().contains(&format!("chunk:{chunk}")));
+
+        // term_kill：sleep 100 → kill → Exit 快到达
+        load_script(
+            r#"
+        helix.register_command("kp", () => {
+            const id = helix.spawn({ cmd: "sleep 100", onChunk: () => {}, onExit: (code) => helix.echo("killed:" + code) });
+            helix.term_kill(id);
+        });
+        "#,
+        )
+        .unwrap();
+        assert!(run_command("kp", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        let TermEvent::Exit(id, code, _) = &events[0] else { unreachable!() };
+        assert!(*code != 0, "killed process should have non-zero exit");
+        resolve_term_event(*id, TermEvent::Exit(*id, *code, None)).unwrap();
+        assert!(take_messages()[0].starts_with("killed:"));
+
+        // 类型校验：run_async/spawn 参数错误在 load 时即报错
+        assert!(load_script(r#"helix.run_async(42, () => {});"#).is_err());
+        assert!(load_script(r#"helix.run_async("x", 42);"#).is_err());
+        assert!(load_script(r#"helix.spawn({ cmd: "x" });"#).is_err()); // 缺 onChunk
+        // term_write 未知 id 在 load 时不会执行（命令体），须放进命令里跑
+        load_script(r#"helix.register_command("badid", () => { helix.term_write(999, "x"); });"#).unwrap();
+        assert!(run_command("badid", &ctx).is_err());
     }
 
     #[test]
