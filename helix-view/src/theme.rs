@@ -184,8 +184,15 @@ impl Loader {
             .unwrap_or_default()
     }
 
+    /// Loads the raw toml value of a theme file, without resolving inheritance.
+    pub fn load_raw(&self, name: &str) -> Result<Value> {
+        let mut visited_paths = HashSet::new();
+        let path = self.path(name, &mut visited_paths)?;
+        self.load_toml(path)
+    }
+
     // merge one theme into the parent theme
-    fn merge_themes(&self, parent_theme_toml: Value, theme_toml: Value) -> Value {
+    pub fn merge_themes(&self, parent_theme_toml: Value, theme_toml: Value) -> Value {
         let parent_palette = parent_theme_toml.get("palette");
         let palette = theme_toml.get("palette");
 
