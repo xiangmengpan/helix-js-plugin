@@ -1104,8 +1104,10 @@ mod tests {
         assert_eq!(take_messages(), vec!["hi\n"]);
 
         // 非零退出码 → 错误
-        load_script(r#"helix.register_command("r2", () => { helix.run("exit 3"); });"#).unwrap();
-        assert!(run_command("r2", &ctx).is_err());
+        load_script(r#"helix.register_command("r2", () => { helix.run("echo boom >&2; exit 3"); });"#).unwrap();
+        let err = run_command("r2", &ctx).unwrap_err().to_string();
+        assert!(err.contains("command failed"), "err: {err}");
+        assert!(err.contains("boom"), "stderr should be included: {err}");
 
         // 类型错误
         load_script(r#"helix.register_command("r3", () => { helix.run(42); });"#).unwrap();
