@@ -4284,7 +4284,6 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
     if !cursor_reqs.is_empty() {
         if let Err(err) = apply_cursor_requests(editor, &cursor_reqs) {
             editor.set_error(format!("plugin event '{name}' cursor failed: {err}"));
-            return;
         }
     }
     let edits = helix_js::take_edits();
