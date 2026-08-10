@@ -4184,13 +4184,20 @@ fn execute_command_line(
 pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> anyhow::Result<bool> {
     let (view, doc) = current_ref!(cx.editor);
     let text = doc.text();
-    let pos = doc.selection(view.id).primary().cursor(text.slice(..));
+    let primary = doc.selection(view.id).primary();
+    let pos = primary.cursor(text.slice(..));
     let line = text.char_to_line(pos);
     let col = pos - text.line_to_char(line);
+    let anchor_line = text.char_to_line(primary.anchor);
+    let head_line = text.char_to_line(primary.head);
     let ctx = CommandContext {
         path: doc.path().map(|p| p.to_string_lossy().into_owned()),
         text: text.to_string(),
         cursor: (line, col),
+        selection: (
+            (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
+            (head_line, primary.head - text.line_to_char(head_line)),
+        ),
     };
     // 借用：view/doc（及 text）的最后使用在 ctx 构造处，NLL 在此结束对 editor 的共享借用
 
@@ -4201,8 +4208,16 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
                 cx.editor.set_status(msgs.join(" "));
             }
             apply_ui_requests(helix_js::take_ui_requests())?;
+            // 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
+            // 快照坐标的光标正确推进）。只在 Ok(true) 分支消费：Err 时队列残留由下次
+            // 命令开始时清空，语义安全。
+            let cursor_reqs = helix_js::take_cursor_requests();
+            if !cursor_reqs.is_empty() {
+                if let Err(err) = apply_cursor_requests(cx.editor, &cursor_reqs) {
+                    cx.editor.set_error(format!("plugin cursor failed: {err}"));
+                }
+            }
             // 应用插件文档编辑（一个命令 = 一个事务）。
-            // 只在 Ok(true) 分支消费：Err 时队列残留由下次命令开始时清空，语义安全。
             let edits = helix_js::take_edits();
             if !edits.is_empty() {
                 if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
@@ -4245,18 +4260,32 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
     }
     let (view, doc) = current_ref!(editor);
     let text = doc.text();
-    let pos = doc.selection(view.id).primary().cursor(text.slice(..));
+    let primary = doc.selection(view.id).primary();
+    let pos = primary.cursor(text.slice(..));
     let line = text.char_to_line(pos);
     let col = pos - text.line_to_char(line);
+    let anchor_line = text.char_to_line(primary.anchor);
+    let head_line = text.char_to_line(primary.head);
     let ctx = CommandContext {
         path: doc.path().map(|p| p.to_string_lossy().into_owned()),
         text: text.to_string(),
         cursor: (line, col),
+        selection: (
+            (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
+            (head_line, primary.head - text.line_to_char(head_line)),
+        ),
     };
 
     if let Err(err) = helix_js::emit_event(name, &ctx, extra) {
         editor.set_error(format!("plugin event '{name}' failed: {err}"));
         return;
+    }
+    let cursor_reqs = helix_js::take_cursor_requests();
+    if !cursor_reqs.is_empty() {
+        if let Err(err) = apply_cursor_requests(editor, &cursor_reqs) {
+            editor.set_error(format!("plugin event '{name}' cursor failed: {err}"));
+            return;
+        }
     }
     let edits = helix_js::take_edits();
     if !edits.is_empty() {
@@ -4272,6 +4301,39 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
     }
 }
 
+/// 0-based 行列 → char 索引（越界 clamp）
+fn pos_to_char(text: &Rope, row: usize, col: usize) -> usize {
+    let line = row.min(text.len_lines().saturating_sub(1));
+    let line_start = text.line_to_char(line);
+    (line_start + col).min(text.len_chars())
+}
+
+/// 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
+/// 快照坐标的光标正确推进）
+fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::CursorRequest]) -> anyhow::Result<()> {
+    use helix_core::Selection;
+    let (view, doc) = current!(editor);
+    let text = doc.text();
+    // 先全部算完再逐个应用：避免 text（对 doc 的不可变借用）与 set_selection 冲突
+    let selections: Vec<Selection> = reqs
+        .iter()
+        .map(|req| match req {
+            helix_js::CursorRequest::SetCursor { row, col } => {
+                Selection::point(pos_to_char(text, *row, *col))
+            }
+            helix_js::CursorRequest::SetSelection { anchor, head } => {
+                let a = pos_to_char(text, anchor.0, anchor.1);
+                let h = pos_to_char(text, head.0, head.1);
+                Selection::single(a, h)
+            }
+        })
+        .collect();
+    for selection in selections {
+        doc.set_selection(view.id, selection);
+    }
+    Ok(())
+}
+
 /// 把插件 Edit（0-based 行列，原始快照坐标）转成 Transaction 并应用。
 /// 一次事件的所有编辑合并为一个事务 → 一次撤销。
 pub(crate) fn apply_plugin_edits(
@@ -4282,11 +4344,7 @@ pub(crate) fn apply_plugin_edits(
 
     let (view, doc) = current!(editor);
     let text = doc.text();
-    let to_char = |(row, col): (usize, usize)| -> usize {
-        let line = row.min(text.len_lines().saturating_sub(1));
-        let line_start = text.line_to_char(line);
-        (line_start + col).min(text.len_chars())
-    };
+    let to_char = |(row, col): (usize, usize)| pos_to_char(text, row, col);
     let mut changes: Vec<Change> = edits
         .iter()
         // 用户把 (start,end) 传反时 swap 规范化，避免 helix 的 debug_assert 崩溃

@@ -49,6 +49,8 @@ pub struct CommandContext {
     pub path: Option<String>,
     pub text: String,
     pub cursor: (usize, usize),
+    /// 主选区（anchor, head）行列对
+    pub selection: ((usize, usize), (usize, usize)),
 }
 
 /// 状态栏钩子收到的轻量上下文（不含 doc.text，避免每帧克隆全文）
@@ -64,6 +66,13 @@ pub struct Edit {
     pub start: (usize, usize),
     pub end: (usize, usize),
     pub insert: String,
+}
+
+/// 光标/选区请求（命令返回后由 helix-term 应用）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CursorRequest {
+    SetCursor { row: usize, col: usize },
+    SetSelection { anchor: (usize, usize), head: (usize, usize) },
 }
 
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
@@ -83,6 +92,7 @@ thread_local! {
     static BUFFER_ICON_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static STATUSLINE_HOOK: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
+    static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
     // HashMap::new 非 const fn，EVENT_HANDLERS 不能用 const 块初始化
     static EVENT_HANDLERS: RefCell<HashMap<String, Vec<JsValue>>> = RefCell::new(HashMap::new());
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
@@ -111,6 +121,8 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
                 .function(NativeFunction::from_fn_ptr(js_map), JsString::from("map"), 3)
+                .function(NativeFunction::from_fn_ptr(js_set_cursor), JsString::from("set_cursor"), 2)
+                .function(NativeFunction::from_fn_ptr(js_set_selection), JsString::from("set_selection"), 4)
                 .function(NativeFunction::from_fn_ptr(js_set_statusline), JsString::from("set_statusline"), 1)
                 .build();
             engine
@@ -218,9 +230,21 @@ fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
     ))
 }
 
-/// 把 CommandContext 转成 JS 对象 { doc: { path, text }, cursor: { row, col } }
+/// 把 CommandContext 转成 JS 对象 { doc: { path, text }, cursor: { row, col }, selection: { anchor: {row,col}, head: {row,col} } }
 fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
     let doc = doc_to_js(ctx, engine)?;
+    let anchor = ObjectInitializer::new(engine)
+        .property(JsString::from("row"), JsValue::from(ctx.selection.0 .0 as f64), Attribute::all())
+        .property(JsString::from("col"), JsValue::from(ctx.selection.0 .1 as f64), Attribute::all())
+        .build();
+    let head = ObjectInitializer::new(engine)
+        .property(JsString::from("row"), JsValue::from(ctx.selection.1 .0 as f64), Attribute::all())
+        .property(JsString::from("col"), JsValue::from(ctx.selection.1 .1 as f64), Attribute::all())
+        .build();
+    let selection = ObjectInitializer::new(engine)
+        .property(JsString::from("anchor"), anchor, Attribute::all())
+        .property(JsString::from("head"), head, Attribute::all())
+        .build();
     let cursor = ObjectInitializer::new(engine)
         .property(
             JsString::from("row"),
@@ -237,6 +261,7 @@ fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
         ObjectInitializer::new(engine)
             .property(JsString::from("doc"), doc, Attribute::all())
             .property(JsString::from("cursor"), cursor, Attribute::all())
+            .property(JsString::from("selection"), selection, Attribute::all())
             .build(),
     ))
 }
@@ -246,6 +271,7 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     init();
     // 命令开始时清空编辑队列，避免跨命令残留
     CURRENT_EDITS.with(|c| c.borrow_mut().clear());
+    CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
     let func = REGISTRY.with(|r| r.borrow().get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
@@ -334,6 +360,25 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
     })
 }
 
+fn js_set_cursor(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let row: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let col: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    CURSOR_REQUESTS.with(|c| c.borrow_mut().push(CursorRequest::SetCursor { row, col }));
+    Ok(JsValue::undefined())
+}
+
+fn js_set_selection(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let ar: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let ac: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let hr: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let hc: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    CURSOR_REQUESTS.with(|c| c.borrow_mut().push(CursorRequest::SetSelection {
+        anchor: (ar, ac),
+        head: (hr, hc),
+    }));
+    Ok(JsValue::undefined())
+}
+
 fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let text: String = args
         .first()
@@ -379,6 +424,12 @@ fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Context) -> bo
 pub fn take_edits() -> Vec<Edit> {
     init();
     CURRENT_EDITS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// 取走并清空光标/选区请求队列（helix-term 消费）
+pub fn take_cursor_requests() -> Vec<CursorRequest> {
+    init();
+    CURSOR_REQUESTS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 /// 求值一段插件脚本（无名字，用于测试/内联）；脚本里可调用 `helix.register_command` / `helix.echo`
@@ -668,6 +719,7 @@ mod tests {
             path: Some("/tmp/demo.rs".to_string()),
             text: "hello\nworld".to_string(),
             cursor: (1, 2),
+            selection: ((0, 0), (0, 0)),
         };
         assert!(run_command("where", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["cursor: 1,2"]);
@@ -772,7 +824,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (1, 2) };
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (1, 2), selection: ((0, 0), (0, 0)) };
         run_command("edit", &ctx).unwrap();
         let edits = take_edits();
         assert_eq!(
@@ -800,7 +852,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("bad1", &ctx).is_err());
         assert!(take_edits().is_empty());
         assert!(run_command("bad2", &ctx).is_err());
@@ -833,7 +885,7 @@ mod tests {
         assert!(!has_handlers("buffer-open"));
 
         // emit 带编辑队列清空 + 多处理器按注册顺序
-        let ctx = CommandContext { path: Some("/tmp/e.rs".into()), text: "x".into(), cursor: (0, 0) };
+        let ctx = CommandContext { path: Some("/tmp/e.rs".into()), text: "x".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         emit_event("save", &ctx, None).unwrap();
         assert!(take_edits().is_empty());
 
@@ -857,7 +909,7 @@ mod tests {
         )
         .unwrap();
         assert!(has_handlers("doc-change"));
-        let ctx = CommandContext { path: None, text: "x".into(), cursor: (2, 0) };
+        let ctx = CommandContext { path: None, text: "x".into(), cursor: (2, 0), selection: ((0, 0), (0, 0)) };
         emit_event("doc-change", &ctx, None).unwrap();
         assert_eq!(take_messages(), vec!["changed:2"]);
         // 未注册的事件名仍然报错
@@ -897,7 +949,7 @@ mod tests {
         };
         assert!(command.starts_with("__mapped_"), "command: {command}");
         // 注册的命令可以运行（与普通插件命令同机制）
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command(&command, &ctx).unwrap());
         assert_eq!(take_messages(), vec!["cb"]);
 
@@ -964,7 +1016,7 @@ mod tests {
         load_script_named("b.js", r#"helix.on("save", () => {});"#).unwrap();
 
         assert!(has_handlers("save"));
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
 
@@ -973,6 +1025,43 @@ mod tests {
         assert!(has_handlers("save"), "handlers re-registered after reload");
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
+    }
+
+    #[test]
+    fn selection_and_cursor() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("selcmd", (ctx) => {
+            helix.set_cursor(2, 3);
+            helix.set_selection(0, 1, 0, 5);
+            helix.echo("sel:" + ctx.selection.anchor.row + "," + ctx.selection.anchor.col + "-" + ctx.selection.head.row + "," + ctx.selection.head.col);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            path: None,
+            text: "abc\ndef\nghi".into(),
+            cursor: (0, 0),
+            selection: ((0, 1), (0, 5)),
+        };
+        assert!(run_command("selcmd", &ctx).unwrap());
+        let reqs = take_cursor_requests();
+        assert_eq!(
+            reqs,
+            vec![
+                CursorRequest::SetCursor { row: 2, col: 3 },
+                CursorRequest::SetSelection { anchor: (0, 1), head: (0, 5) },
+            ]
+        );
+        assert_eq!(take_messages(), vec!["sel:0,1-0,5"]);
+
+        // 类型错误 → 命令失败（run_command 返回 Err），请求队列被清空
+        load_script(r#"helix.register_command("badsel", (ctx) => { helix.set_cursor("x", 0); });"#).unwrap();
+        assert!(run_command("badsel", &ctx).is_err());
+        assert!(take_cursor_requests().is_empty());
     }
 
     #[test]
@@ -988,7 +1077,7 @@ mod tests {
         .unwrap();
 
         reload_all().unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("ccmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["ok"]);
     }
