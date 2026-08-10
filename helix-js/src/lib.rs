@@ -924,6 +924,11 @@ fn reset_plugin_state() {
 /// 因此 Err 分支仅作防御（如脚本依赖被清空的全局状态），单测只覆盖成功路径。
 pub fn reload_all() -> Result<()> {
     init();
+    // 面板层还挂在 compositor 上——入队 ClosePanel 让 plugin_reload 的 apply_ui_requests 移除它，
+    // 否则 reset_plugin_state 清掉 LAST_PANEL_ID 后该层变成无法关闭的僵尸层
+    if let Some(panel_id) = LAST_PANEL_ID.with(|c| c.get()) {
+        UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id: panel_id });
+    }
     let scripts = LOADED_SCRIPTS.with(|s| s.borrow().clone());
     reset_plugin_state();
     for (name, src) in &scripts {
@@ -1750,6 +1755,32 @@ mod tests {
         assert!(has_handlers("save"), "handlers re-registered after reload");
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
+    }
+
+    #[test]
+    fn reload_closes_open_panel_layer() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 面板由命令打开（不在加载时），保证 reload 重跑脚本不会自动重开面板
+        load_script(
+            r#"helix.register_command("open-panel", () => { helix.open_panel({ side: "right", size: 30, render: () => ["p1"] }); });"#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("open-panel", &ctx).unwrap());
+        assert!(matches!(take_ui_requests()[0], UiRequest::OpenPanel { .. }));
+
+        // reload：面板层还挂在 compositor 上 → 必须入队 ClosePanel 供 apply_ui_requests 移除
+        reload_all().unwrap();
+        let reqs = take_ui_requests();
+        assert!(matches!(&reqs[0], UiRequest::ClosePanel { .. }), "layer removed after reload");
+        // LAST_PANEL_ID 已清空 → :panel-close 不再误报有面板
+        assert!(close_last_panel().is_err());
     }
 
     #[test]
