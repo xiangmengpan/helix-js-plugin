@@ -1,5 +1,7 @@
+use crate::commands::typed::{apply_cursor_requests, apply_plugin_edits};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
-use helix_js::{PluginKey, PopupKeyResult};
+use helix_js::{CommandContext, PluginKey, PopupKeyResult};
+use helix_view::current_ref;
 use helix_view::graphics::Rect;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
@@ -24,14 +26,52 @@ impl PluginPopup {
 }
 
 impl Component for PluginPopup {
-    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let Event::Key(key_event) = event else {
             return EventResult::Ignored(None);
         };
         let Some(key) = key_to_plugin_key(key_event) else {
             return EventResult::Ignored(None);
         };
-        match helix_js::popup_key(self.id, &key) {
+        // 构建当前文档快照（弹窗是模态层，打开期间文档不变；每次按键重新序列化）
+        let ctx = {
+            let (view, doc) = current_ref!(cx.editor);
+            let text = doc.text();
+            let primary = doc.selection(view.id).primary();
+            let pos = primary.cursor(text.slice(..));
+            let line = text.char_to_line(pos);
+            let col = pos - text.line_to_char(line);
+            let anchor_line = text.char_to_line(primary.anchor);
+            let head_line = text.char_to_line(primary.head);
+            CommandContext {
+                path: doc.path().map(|p| p.to_string_lossy().into_owned()),
+                text: text.to_string(),
+                cursor: (line, col),
+                selection: (
+                    (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
+                    (head_line, primary.head - text.line_to_char(head_line)),
+                ),
+            }
+        };
+        let result = helix_js::popup_key(self.id, &key, &ctx);
+        // 应用编辑/光标/消息（在 popup_key 之后：onKey 入队的编辑在本次按键内同步应用）
+        let cursor_reqs = helix_js::take_cursor_requests();
+        if !cursor_reqs.is_empty() {
+            if let Err(err) = apply_cursor_requests(cx.editor, &cursor_reqs) {
+                cx.editor.set_error(format!("plugin popup cursor failed: {err}"));
+            }
+        }
+        let edits = helix_js::take_edits();
+        if !edits.is_empty() {
+            if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
+                cx.editor.set_error(format!("plugin popup edit failed: {err}"));
+            }
+        }
+        let msgs = helix_js::take_messages();
+        if !msgs.is_empty() {
+            cx.editor.set_status(msgs.join(" "));
+        }
+        match result {
             Ok(PopupKeyResult::Close) => {
                 let id = self.id;
                 // 先通知 JS（触发 onClose，echo 消息入队），再弹掉图层，最后把

@@ -651,8 +651,9 @@ pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<String>> {
     })
 }
 
-/// 调 JS onKey 回调。未注册 onKey 或缺省时：Esc→Close，其他→Ignore。
-pub fn popup_key(id: u64, key: &PluginKey) -> Result<PopupKeyResult> {
+/// 调 JS onKey 回调（第二个参数是可编辑的 doc 快照）。
+/// 未注册 onKey 或缺省时：Esc→Close，其他→Ignore。
+pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<PopupKeyResult> {
     init();
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
@@ -670,8 +671,9 @@ pub fn popup_key(id: u64, key: &PluginKey) -> Result<PopupKeyResult> {
             .property(JsString::from("ctrl"), key.ctrl, Attribute::all())
             .property(JsString::from("alt"), key.alt, Attribute::all())
             .build();
+        let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build popup doc: {e}"))?;
         let undefined = JsValue::undefined();
-        let value: JsValue = func.call(&undefined, &[JsValue::from(key_obj)], engine)
+        let value: JsValue = func.call(&undefined, &[JsValue::from(key_obj), doc], engine)
             .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
         let s: Option<String> = value.try_js_into(engine).ok();
         Ok(match s.as_deref() {
@@ -830,9 +832,10 @@ mod tests {
         assert_eq!(lines, vec!["a", "b", "c"]);
 
         let key = PluginKey { name: "Down".into(), shift: false, ctrl: false, alt: false };
-        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Handled);
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Handled);
         let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
-        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Close);
+        assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
 
         close_popup(id).unwrap();
         assert_eq!(take_messages(), vec!["closed:null"]);
@@ -850,9 +853,10 @@ mod tests {
             _ => unreachable!("expected OpenPopup"),
         };
         let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
-        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Ignored);
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Ignored);
         let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
-        assert_eq!(popup_key(id, &key).unwrap(), PopupKeyResult::Close);
+        assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
         close_popup(id).unwrap();
 
         // render 非数组 → Err
@@ -867,6 +871,44 @@ mod tests {
         // 参数缺失/类型错误 → JS 报错
         assert!(load_script(r#"helix.open_popup({});"#).is_err());
         assert!(load_script(r#"helix.open_popup({ render: 42 });"#).is_err());
+    }
+
+    #[test]
+    fn popup_onkey_edits_doc() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.open_popup({
+            render: () => ["a", "b"],
+            onKey: (key, doc) => {
+                if (key.name === "Enter") {
+                    doc.insert(doc.cursor.row, doc.cursor.col, "XYZ");
+                    return "close";
+                }
+                return "handled";
+            },
+        });
+        "#,
+        )
+        .unwrap();
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id } => id,
+            _ => unreachable!("expected OpenPopup"),
+        };
+        let ctx = CommandContext {
+            path: Some("/tmp/p.rs".into()),
+            text: "line1\nline2".into(),
+            cursor: (1, 2),
+            selection: ((0, 0), (0, 0)),
+        };
+        let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
+        assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
+        assert_eq!(
+            take_edits(),
+            vec![Edit { start: (1, 2), end: (1, 2), insert: "XYZ".into() }]
+        );
+        close_popup(id).unwrap();
     }
 
     #[test]

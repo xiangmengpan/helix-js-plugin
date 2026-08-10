@@ -4309,7 +4309,7 @@ fn pos_to_char(text: &Rope, row: usize, col: usize) -> usize {
 
 /// 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
 /// 快照坐标的光标正确推进）
-fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::CursorRequest]) -> anyhow::Result<()> {
+pub(crate) fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::CursorRequest]) -> anyhow::Result<()> {
     use helix_core::Selection;
     let (view, doc) = current!(editor);
     let text = doc.text();
