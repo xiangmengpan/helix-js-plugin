@@ -17,6 +17,7 @@ pub enum EventResult {
 
 use crate::job::Jobs;
 use crate::ui::picker;
+use crate::ui::plugin_panel::PluginPanel;
 use helix_view::Editor;
 
 pub use helix_view::input::Event;
@@ -182,8 +183,17 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        // 面板推挤：有 PluginPanel 层时按层分流——面板拿停靠区，其余层拿收缩后的剩余区；
+        // 无面板时全部层渲染全屏区（原逻辑）。
+        let split = self.find::<PluginPanel>().map(|panel| panel.split_area(area));
+        let panel_type = std::any::type_name::<PluginPanel>();
         for layer in &mut self.layers {
-            layer.render(area, surface, cx);
+            let layer_area = match split {
+                Some((panel_area, _rest_area)) if layer.type_name() == panel_type => panel_area,
+                Some((_, rest_area)) => rest_area,
+                None => area,
+            };
+            layer.render(layer_area, surface, cx);
         }
     }
 
