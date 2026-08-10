@@ -1128,7 +1128,8 @@ mod tests {
         .unwrap();
         assert!(run_command("r4", &ctx).unwrap());
         let msg = take_messages();
-        let len: usize = msg[0].strip_prefix("len:").unwrap().parse().unwrap();
+        assert!(msg[0].ends_with("(truncated)"), "marker expected: {:?}", msg[0]);
+        let len: usize = msg[0].strip_prefix("len:").unwrap().strip_suffix("(truncated)").unwrap().parse().unwrap();
         assert!(len <= 65536, "truncated output, len={len}");
     }
 
