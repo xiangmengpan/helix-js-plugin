@@ -68,6 +68,13 @@ struct PopupCallbacks {
     on_close: Option<JsValue>,
 }
 
+/// render 回调返回的一行：文本 + 可选样式名（主题 scope，如 "error"）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyledLine {
+    pub text: String,
+    pub style: Option<String>,
+}
+
 /// 事件名白名单：helix.on 只接受这些事件
 const EVENT_WHITELIST: [&str; 5] = ["save", "mode-change", "buffer-open", "buffer-close", "doc-change"];
 
@@ -1011,8 +1018,36 @@ pub fn take_ui_requests() -> Vec<UiRequest> {
     std::mem::take(&mut *UI_REQUESTS.get().expect("UI_REQUESTS initialized").lock().expect("ui requests lock"))
 }
 
-/// 调 JS render 回调，返回行数组。ctx 对象 { width, height }。
-pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<String>> {
+/// 解析 render 返回数组的一个元素：对象（含 text 属性）→ StyledLine{text, style}；字符串 → (text, None)；否则 Err
+fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_engine::JsResult<StyledLine> {
+    if let Some(obj) = item.as_object() {
+        let text: String = obj.get(JsString::from("text"), ctx)?.try_js_into(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "popup {id} render line {i}: object must have a string 'text' property"
+            ))))
+        })?;
+        let style = obj.get(JsString::from("style"), ctx)?;
+        let style = if style.is_null_or_undefined() {
+            None
+        } else {
+            Some(style.try_js_into::<String>(ctx).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "popup {id} render line {i}: 'style' must be a string"
+                ))))
+            })?)
+        };
+        Ok(StyledLine { text, style })
+    } else if let Ok(text) = item.try_js_into::<String>(ctx) {
+        Ok(StyledLine { text, style: None })
+    } else {
+        Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "popup {id} render line {i} must be a string or an object with 'text'"
+        )))))
+    }
+}
+
+/// 调 JS render 回调，返回样式化行数组。ctx 对象 { width, height }。
+pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<StyledLine>> {
     init();
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
@@ -1030,7 +1065,7 @@ pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<String>> {
             .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
         // 结果必须是 string[]
         let arr: JsArray = value.try_js_into(engine)
-            .map_err(|e| anyhow!("popup {id} render must return an array of strings: {e}"))?;
+            .map_err(|e| anyhow!("popup {id} render must return an array of strings or styled objects: {e}"))?;
         let len: usize = arr
             .get(JsString::from("length"), engine)
             .map_err(|e| anyhow!("popup {id} length read failed: {e}"))?
@@ -1041,9 +1076,8 @@ pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<String>> {
             let item = arr
                 .get(i, engine)
                 .map_err(|e| anyhow!("popup {id} render line {i} read failed: {e}"))?;
-            let s: String = item.try_js_into(engine)
-                .map_err(|e| anyhow!("popup {id} render line {i} must be a string: {e}"))?;
-            lines.push(s);
+            lines.push(parse_line_item(&item, engine, id, i)
+                .map_err(|e| anyhow!("popup {id} render failed: {e}"))?);
         }
         Ok(lines)
     })
@@ -1227,7 +1261,14 @@ mod tests {
         assert_eq!(id, 1); // 自增从 1 开始
 
         let lines = render_popup(id, 40, 10).unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        assert_eq!(
+            lines,
+            vec![
+                StyledLine { text: "a".into(), style: None },
+                StyledLine { text: "b".into(), style: None },
+                StyledLine { text: "c".into(), style: None },
+            ]
+        );
 
         let key = PluginKey { name: "Down".into(), shift: false, ctrl: false, alt: false };
         let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
@@ -1302,6 +1343,40 @@ mod tests {
         }
         // 非法类型
         assert!(load_script(r#"helix.open_popup({ render: () => [], width: "big" });"#).is_err());
+    }
+
+    #[test]
+    fn popup_styled_lines() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.open_popup({
+            render: () => [
+                { text: "err: ", style: "error" },
+                "plain",
+                { text: "warn" },
+            ],
+        });
+        "#,
+        )
+        .unwrap();
+        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        let lines = render_popup(id, 40, 10).unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                StyledLine { text: "err: ".into(), style: Some("error".into()) },
+                StyledLine { text: "plain".into(), style: None },
+                StyledLine { text: "warn".into(), style: None },
+            ]
+        );
+        close_popup(id).unwrap();
+        // 非法元素（缺 text / 非字符串非对象）→ Err
+        load_script(r#"helix.open_popup({ render: () => [{ style: "error" }] });"#).unwrap();
+        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        assert!(render_popup(id, 40, 10).is_err());
+        close_popup(id).unwrap();
     }
 
     #[test]

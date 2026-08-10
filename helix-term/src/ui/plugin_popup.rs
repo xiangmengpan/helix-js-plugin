@@ -1,19 +1,19 @@
 use crate::commands::typed::{apply_cursor_requests, apply_plugin_edits};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
-use helix_js::{CommandContext, PluginKey, PopupKeyResult};
+use helix_js::{CommandContext, PluginKey, PopupKeyResult, StyledLine};
 use helix_view::current_ref;
 use helix_view::graphics::Rect;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use tui::buffer::Buffer as Surface;
-use tui::text::Text as TuiText;
+use tui::text::{Span, Spans, Text as TuiText};
 use tui::widgets::{Paragraph, Widget, Wrap};
 
 /// JS 插件弹窗的内容组件：内容由 JS `render` 回调绘制，按键由 JS `onKey` 回调处理。
 /// 作为 `ui::Popup` 的内容使用；图层弹出/边框/滚动由外层 Popup 负责。
 pub struct PluginPopup {
     id: u64,
-    lines: Vec<String>,
+    lines: Vec<StyledLine>,
     /// open_popup 的 width/height 尺寸上限（两者都提供时才生效）
     size_hint: Option<(u16, u16)>,
 }
@@ -97,12 +97,24 @@ impl Component for PluginPopup {
         }
     }
 
-    fn render(&mut self, area: Rect, surface: &mut Surface, _cx: &mut Context) {
+    fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         match helix_js::render_popup(self.id, area.width, area.height) {
             Ok(lines) => self.lines = lines,
-            Err(err) => self.lines = vec![format!("<plugin popup error: {err}>")],
+            Err(err) => self.lines = vec![StyledLine { text: format!("<plugin popup error: {err}>"), style: None }],
         }
-        let text = TuiText::from(self.lines.join("\n"));
+        // 每行样式化 span：style 名直接映射到主题 scope（未知 scope 主题返回默认 Style，不 panic）
+        let spans: Vec<Spans> = self
+            .lines
+            .iter()
+            .map(|l| {
+                let span = match &l.style {
+                    Some(s) => Span::styled(l.text.clone(), cx.editor.theme.get(s)),
+                    None => Span::raw(l.text.clone()),
+                };
+                Spans::from(span)
+            })
+            .collect();
+        let text = TuiText::from(spans);
         let par = Paragraph::new(&text).wrap(Wrap { trim: false });
         par.render(area, surface);
     }
@@ -111,7 +123,7 @@ impl Component for PluginPopup {
         let width = self
             .lines
             .iter()
-            .map(|l| l.chars().count() as u16)
+            .map(|l| l.text.chars().count() as u16)
             .max()
             .unwrap_or(0)
             .min(viewport.0);
@@ -164,21 +176,24 @@ mod tests {
     #[test]
     fn required_size_clamps_to_size_hint() {
         let mut p = PluginPopup::new(1, Some((10, 4)));
-        p.lines = vec!["W".repeat(20); 10];
+        p.lines = vec![StyledLine { text: "W".repeat(20), style: None }; 10];
         assert_eq!(p.required_size((120, 30)), Some((10, 4)));
     }
 
     #[test]
     fn required_size_without_hint_uses_content() {
         let mut p = PluginPopup::new(1, None);
-        p.lines = vec!["abc".into(), "a".into()];
+        p.lines = vec![
+            StyledLine { text: "abc".into(), style: None },
+            StyledLine { text: "a".into(), style: None },
+        ];
         assert_eq!(p.required_size((120, 30)), Some((3, 2)));
     }
 
     #[test]
     fn required_size_never_exceeds_viewport_width() {
         let mut p = PluginPopup::new(1, None);
-        p.lines = vec!["x".repeat(200)];
+        p.lines = vec![StyledLine { text: "x".repeat(200), style: None }];
         assert_eq!(p.required_size((50, 30)), Some((50, 1)));
     }
 }
