@@ -23,6 +23,7 @@ mod test {
     mod plugin;
     mod plugin_doc;
     mod plugin_docchange;
+    mod plugin_reload;
     mod plugin_statusline;
     mod splits;
 }
