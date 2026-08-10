@@ -386,14 +386,21 @@ pub fn load_script(src: &str) -> Result<()> {
     load_script_named("<anon>", src)
 }
 
+/// IIFE 包裹求值：每次求值（含 reload 重跑）都得到全新词法作用域，
+/// 顶层 const/let 不再与上一次求值冲突；顺带隔离脚本间全局污染。
+/// `helix` 是全局属性，IIFE 内可正常访问；错误消息定位脚本名。
+fn eval_wrapped(engine: &mut boa_engine::Context, src: &str) -> boa_engine::JsResult<JsValue> {
+    let wrapped = format!("(function() {{\n{src}\n}})()");
+    engine.eval(Source::from_bytes(&wrapped))
+}
+
 /// 求值并记录脚本（名字用于报错定位与热重载）
 pub fn load_script_named(name: &str, src: &str) -> Result<()> {
     init();
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
         let engine = binding.as_mut().expect("CONTEXT initialized");
-        engine
-            .eval(Source::from_bytes(src))
+        eval_wrapped(engine, src)
             .map(|_| ())
             .map_err(|e| anyhow!("plugin script '{name}' error: {e}"))?;
         LOADED_SCRIPTS.with(|s| s.borrow_mut().push((name.to_string(), src.to_string())));
@@ -414,8 +421,8 @@ fn reset_plugin_state() {
 }
 
 /// 热重载：清空状态后按加载顺序重跑全部脚本。
-/// 失败路径分析：记录的脚本都是 load 时成功求值过的，重跑同一源码必然再次成功
-/// （脚本不依赖其他脚本的状态，reload 会重新注册全部命令/处理器）——
+/// 脚本以 IIFE 包裹求值，每次重跑都是全新词法作用域——顶层 const/let/var 都不冲突，
+/// reload 必然成功（脚本不依赖其他脚本的状态，reload 会重新注册全部命令/处理器），
 /// 因此 Err 分支仅作防御（如脚本依赖被清空的全局状态），单测只覆盖成功路径。
 pub fn reload_all() -> Result<()> {
     init();
@@ -425,8 +432,7 @@ pub fn reload_all() -> Result<()> {
         CONTEXT.with(|cell| -> Result<()> {
             let mut binding = cell.borrow_mut();
             let engine = binding.as_mut().expect("CONTEXT initialized");
-            engine
-                .eval(Source::from_bytes(src.as_str()))
+            eval_wrapped(engine, src)
                 .map(|_| ())
                 .map_err(|e| anyhow!("plugin reload '{name}' failed: {e}"))?;
             Ok(())
@@ -967,5 +973,23 @@ mod tests {
         assert!(has_handlers("save"), "handlers re-registered after reload");
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
+    }
+
+    #[test]
+    fn plugin_reload_top_level_const() {
+        // 顶层 const/let 脚本 reload 必须成功：IIFE 包裹下重跑获得全新词法作用域
+        // （无 IIFE 时全局词法环境重复声明会抛 SyntaxError: duplicate lexical declaration）
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script_named(
+            "c.js",
+            r#"const X = 1; helix.register_command("ccmd", () => helix.echo("ok"));"#,
+        )
+        .unwrap();
+
+        reload_all().unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0) };
+        assert!(run_command("ccmd", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["ok"]);
     }
 }

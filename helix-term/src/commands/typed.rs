@@ -4386,6 +4386,9 @@ fn plugin_reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) 
             if !msgs.is_empty() {
                 cx.editor.set_status(msgs.join(" "));
             }
+            // 脚本里的 helix.map 重跑会再入队 MapKey，必须像 plugin_load 一样 drain
+            // ponytail: 键位绑定只重应用不撤销——旧脚本移除/改名的绑定残留需重启才能清掉（编辑器侧 Keymaps 无 API）
+            apply_ui_requests(helix_js::take_ui_requests())?;
             Ok(())
         }
         Err(err) => {
