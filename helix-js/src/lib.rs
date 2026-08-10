@@ -517,6 +517,63 @@ fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engi
 /// worker 读块大小
 const TERM_CHUNK_SIZE: usize = 4096;
 
+/// 读线程主循环（stdout/stderr 共用）。
+/// aggregate=true：原始字节累积进 output，EOF 后统一 lossy 解码（跨块多字节字符不被切开）；
+/// aggregate=false：流式增量解码——拼上跨块的残留尾部（最多 3 字节，UTF-8 最长序列），
+/// 用 from_utf8 判定有效前缀发出，不完整尾部留到下一块；EOF 时残留尾部 lossy 输出。
+fn read_stream<R: std::io::Read>(
+    mut stream: R,
+    id: u64,
+    aggregate: bool,
+    output: &std::sync::Mutex<Vec<u8>>,
+    tx: &std::sync::mpsc::Sender<TermEvent>,
+) {
+    let mut buf = [0u8; TERM_CHUNK_SIZE];
+    let mut tail: Vec<u8> = Vec::with_capacity(3); // 跨块的不完整 UTF-8 尾部（最长序列 3 字节）
+    loop {
+        let n = match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if aggregate {
+            output.lock().unwrap().extend_from_slice(&buf[..n]);
+            continue;
+        }
+        tail.extend_from_slice(&buf[..n]);
+        match std::str::from_utf8(&tail) {
+            Ok(s) => {
+                if tx.send(TermEvent::Chunk(id, s.to_string())).is_err() {
+                    return;
+                }
+                tail.clear();
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if e.error_len().is_some() {
+                    // 硬性非法字节（非不完整尾部）：整段 lossy 输出，不留尾部
+                    let chunk = String::from_utf8_lossy(&tail).into_owned();
+                    if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
+                        return;
+                    }
+                    tail.clear();
+                } else if valid > 0 {
+                    // 尾部是不完整序列：发出有效前缀，残留字节留到下一块
+                    let chunk = String::from_utf8_lossy(&tail[..valid]).into_owned();
+                    if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
+                        return;
+                    }
+                    tail.drain(..valid);
+                }
+            }
+        }
+    }
+    if !aggregate && !tail.is_empty() {
+        // EOF：残留的不完整尾部 lossy 输出（无后续字节可拼）
+        let chunk = String::from_utf8_lossy(&tail).into_owned();
+        let _ = tx.send(TermEvent::Chunk(id, chunk));
+    }
+}
+
 /// 启动 worker 线程：sh -c 跑子进程，读线程逐块发 Chunk（或聚合进 stdout）；
 /// 主线程轮询控制通道（写 stdin / kill）与读线程完成信号，全部读完才收尾发 Exit。
 /// 控制通道由 term_write/term_kill 发消息；无人发 Kill 且子进程不退出时 worker 一直存活（终端会话语义）。
@@ -529,7 +586,7 @@ fn spawn_worker(
 ) {
     let cmd = cmd.to_string();
     std::thread::spawn(move || {
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::process::{Command, Stdio};
         let mut child = match Command::new("sh")
             .arg("-c")
@@ -545,34 +602,21 @@ fn spawn_worker(
                 return;
             }
         };
-        let mut stream_out = child.stdout.take();
-        let mut stream_err = child.stderr.take();
+        let stream_out = child.stdout.take();
+        let stream_err = child.stderr.take();
         let mut stdin = child.stdin.take();
 
         // 读线程：stdout/stderr 各一个，逐块发 Chunk（非聚合）或拼进共享缓冲（聚合）；完成后发 done 信号
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        // 聚合缓冲存原始字节，EOF 后统一 lossy 解码：跨块多字节字符不损坏
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let mut readers = Vec::new();
         {
             let tx = tx.clone();
             let done_tx = done_tx.clone();
             let output = output.clone();
             readers.push(std::thread::spawn(move || {
-                let mut buf = [0u8; TERM_CHUNK_SIZE];
-                loop {
-                    match stream_out.as_mut().unwrap().read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                            if aggregate {
-                                output.lock().unwrap().push_str(&chunk);
-                            } else if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
+                read_stream(stream_out.unwrap(), id, aggregate, &output, &tx);
                 let _ = done_tx.send(());
             }));
         }
@@ -581,21 +625,7 @@ fn spawn_worker(
             let done_tx = done_tx.clone();
             let output = output.clone();
             readers.push(std::thread::spawn(move || {
-                let mut buf = [0u8; TERM_CHUNK_SIZE];
-                loop {
-                    match stream_err.as_mut().unwrap().read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                            if aggregate {
-                                output.lock().unwrap().push_str(&chunk);
-                            } else if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
+                read_stream(stream_err.unwrap(), id, aggregate, &output, &tx);
                 let _ = done_tx.send(());
             }));
         }
@@ -630,8 +660,10 @@ fn spawn_worker(
             let _ = h.join();
         }
         let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let bytes = std::mem::take(&mut *output.lock().unwrap());
         let stdout = if aggregate {
-            Some(std::mem::take(&mut *output.lock().unwrap()))
+            // 全部原始字节统一 lossy 解码（跨块字符在整流上解码，不产生 U+FFFD）
+            Some(String::from_utf8_lossy(&bytes).into_owned())
         } else {
             None
         };
@@ -1509,13 +1541,16 @@ mod tests {
         assert!(len <= 65536 + "(truncated)".len(), "truncated output, len={len}");
     }
 
-    /// 轮询 drain_term_events 直到谓词命中或超时（async 测试需要）
+    /// 轮询 drain_term_events 直到谓词命中或超时（async 测试需要）。
+    /// 累积自调用以来的全部事件返回：进程事件是 Chunk(s)→Exit 的顺序流，
+    /// 命中谓词的那次 drain 之前可能已有事件被取走，须一并保留按序 resolve。
     fn wait_for_term_event(pred: impl Fn(&TermEvent) -> bool) -> Vec<TermEvent> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut all = Vec::new();
         loop {
-            let events = drain_term_events();
-            if events.iter().any(&pred) {
-                return events;
+            all.extend(drain_term_events());
+            if all.iter().any(&pred) {
+                return all;
             }
             if std::time::Instant::now() > deadline {
                 panic!("timed out waiting for term event");
@@ -1587,6 +1622,85 @@ mod tests {
         // term_write 未知 id 在 load 时不会执行（命令体），须放进命令里跑
         load_script(r#"helix.register_command("badid", () => { helix.term_write(999, "x"); });"#).unwrap();
         assert!(run_command("badid", &ctx).is_err());
+    }
+
+    #[test]
+    fn async_utf8_across_chunks() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+
+        // run_async 聚合：19999 字节 CJK 输出（"中文\n"×2857，7 字节/行）跨多个 4096 块，
+        // 每块边界都可能切开 3 字节字符——修复前逐块 from_utf8_lossy 会产出 U+FFFD。
+        // head -c 19999 恰好截在行边界（19999 = 7×2857），整流是合法 UTF-8。
+        load_script(
+            r#"
+        helix.run_async("yes 中文 | head -c 19999", (err, out) => {
+            helix.echo("agg:" + (err === null) + ":" + out.length);
+        });
+        "#,
+        )
+        .unwrap();
+        // 只等聚合模式的 Exit（携带 Some(stdout)），遗漏的遗留 Exit 一并 resolve 清理
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, Some(_))));
+        let ev = events
+            .iter()
+            .find(|e| matches!(e, TermEvent::Exit(_, _, Some(_))))
+            .expect("run_async exit");
+        let TermEvent::Exit(_, code, stdout) = ev else { unreachable!() };
+        assert_eq!(*code, 0);
+        let out = stdout.clone().unwrap_or_default();
+        assert_eq!(out.len(), 19999, "aggregated bytes intact across chunks");
+        assert!(!out.contains('\u{FFFD}'), "no replacement chars in aggregated output");
+        assert_eq!(out.matches("中文").count(), 2857, "CJK lines preserved (7 bytes/line)");
+        for ev in &events {
+            if let TermEvent::Exit(id, code, stdout) = ev {
+                resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
+            }
+        }
+        let msg = take_messages();
+        let m = msg.iter().find(|m| m.starts_with("agg:")).expect("run_async echo");
+        // JS 收到完整输出：19999 字节 = 2857 行 × 3 个 BMP 字符 = 8571 个 UTF-16 单元
+        assert_eq!(m.as_str(), "agg:true:8571");
+
+        // spawn 流式：同一输出经 onChunk 增量解码拼接，块边界不得产生 U+FFFD
+        load_script(
+            r#"
+        helix.register_command("spcjk", () => {
+            const parts = [];
+            const id = helix.spawn({
+                cmd: "yes 中文 | head -c 19999",
+                onChunk: (c) => parts.push(c),
+                onExit: (code) => helix.echo("spawn:" + code + ":" + parts.length + ":" + parts.join("")),
+            });
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("spcjk", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        // 按序 resolve：先 Chunk 后 Exit，JS 的 parts 才能拼全
+        for ev in &events {
+            match ev {
+                TermEvent::Chunk(id, chunk) => {
+                    resolve_term_event(*id, TermEvent::Chunk(*id, chunk.clone())).unwrap();
+                }
+                TermEvent::Exit(id, code, stdout) => {
+                    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
+                }
+            }
+        }
+        let msg = take_messages();
+        let m = msg.iter().find(|m| m.starts_with("spawn:0:")).expect("spawn echo");
+        let mut it = m.splitn(4, ':');
+        assert_eq!(it.next(), Some("spawn"));
+        assert_eq!(it.next(), Some("0"));
+        let chunks: usize = it.next().unwrap().parse().expect("chunk count");
+        assert!(chunks >= 4, "streaming should split into multiple chunks, got {chunks}");
+        let joined = it.next().unwrap();
+        assert_eq!(joined.len(), 19999, "streamed bytes intact across chunks");
+        assert!(!joined.contains('\u{FFFD}'), "no replacement chars in streamed output");
+        assert_eq!(joined.matches("中文").count(), 2857, "CJK lines preserved in streamed output");
     }
 
     #[test]
