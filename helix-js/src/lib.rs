@@ -19,6 +19,14 @@ pub enum UiRequest {
         height: Option<u16>,
         position: Option<(u16, u16)>,
     },
+    OpenPanel {
+        id: u64,
+        side: String,
+        size: u16,
+    },
+    ClosePanel {
+        id: u64,
+    },
     MapKey { mode: String, key: String, command: String },
 }
 
@@ -125,6 +133,8 @@ thread_local! {
     static POPUPS: RefCell<Option<&'static mut HashMap<u64, PopupCallbacks>>> = const { RefCell::new(None) };
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
+    // 最近一次 open_panel 的面板 id（:panel-close 用，无面板时为 None）
+    static LAST_PANEL_ID: Cell<Option<u64>> = const { Cell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static BUFFER_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -225,6 +235,8 @@ pub fn init() {
                     2,
                 )
                 .function(NativeFunction::from_fn_ptr(js_open_popup), JsString::from("open_popup"), 1)
+                .function(NativeFunction::from_fn_ptr(js_open_panel), JsString::from("open_panel"), 1)
+                .function(NativeFunction::from_fn_ptr(js_close_panel), JsString::from("close_panel"), 1)
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
                 .function(NativeFunction::from_fn_ptr(js_map), JsString::from("map"), 3)
@@ -902,6 +914,7 @@ fn reset_plugin_state() {
     CURSOR_REQUESTS.with(|c| c.borrow_mut().clear());
     with_buffer_icon_hook(|h| *h = None);
     with_statusline_hook(|h| *h = None);
+    LAST_PANEL_ID.with(|c| c.set(None));
     COMMAND_DOCS.with(|d| d.borrow_mut().clear());
 }
 
@@ -998,6 +1011,62 @@ fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
     with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPopup { id, width, height, position });
     Ok(JsValue::from(id))
+}
+
+/// open_panel 允许的 side 白名单
+const PANEL_SIDES: [&str; 3] = ["right", "left", "bottom"];
+
+/// 侧边面板：校验 side 白名单 / size / render 后注册回调（on_key=None——面板恒事件穿透），
+/// 入队 OpenPanel。id 与弹窗共用 NEXT_POPUP_ID 空间，面板渲染复用 render_popup 同一注册表。
+fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_panel: options object required")))
+    })?;
+    let side: String = opts.get(JsString::from("side"), ctx)?.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_panel: 'side' must be a string")))
+    })?;
+    if !PANEL_SIDES.contains(&side.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "open_panel: unknown side '{side}' (expected right|left|bottom)"
+        )))));
+    }
+    let render = opts.get(JsString::from("render"), ctx)?;
+    if render.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "open_panel: render must be a function",
+        ))));
+    }
+    let on_close = opts.get(JsString::from("onClose"), ctx)?;
+    let on_close = on_close.as_callable().map(|_| on_close);
+    let size = {
+        let v = opts.get(JsString::from("size"), ctx)?;
+        let n: f64 = v.try_js_into(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("open_panel: 'size' must be a number")))
+        })?;
+        if !n.is_finite() || n < 1.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "open_panel: 'size' must be an integer in [1, {}]",
+                u16::MAX
+            )))));
+        }
+        n as u16
+    };
+
+    let id = NEXT_POPUP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    LAST_PANEL_ID.with(|c| c.set(Some(id)));
+    with_popups(|p| p.insert(id, PopupCallbacks { render, on_key: None, on_close }));
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPanel { id, side, size });
+    Ok(JsValue::from(id))
+}
+
+/// 入队 ClosePanel（id 校验）；JS 侧与 :panel-close 共用
+fn js_close_panel(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(_ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("close_panel: id must be a number")))
+    })?;
+    LAST_PANEL_ID.with(|c| { if c.get() == Some(id) { c.set(None); } });
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id });
+    Ok(JsValue::undefined())
 }
 
 fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -1136,6 +1205,15 @@ pub fn close_popup(id: u64) -> Result<()> {
     })
 }
 
+/// 入队关闭最近一次 open_panel 的面板（:panel-close 用）；无面板时 Err
+pub fn close_last_panel() -> Result<()> {
+    init();
+    let id = LAST_PANEL_ID.with(|c| c.get()).ok_or_else(|| anyhow!("no panel open"))?;
+    LAST_PANEL_ID.with(|c| c.set(None));
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id });
+    Ok(())
+}
+
 fn js_set_statusline(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::null());
     if arg.is_null_or_undefined() {
@@ -1238,6 +1316,29 @@ mod tests {
         assert!(!run_command("nope", &ctx).unwrap());
         // 非法命令名（含空白）注册时报错
         assert!(load_script(r#"helix.register_command("bad name", () => {});"#).is_err());
+    }
+
+    #[test]
+    fn panel_api() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        const pid = helix.open_panel({ side: "right", size: 30, render: () => ["p1", "p2"] });
+        helix.echo("id:" + pid);
+        helix.close_panel(pid);
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        // 编译器建议：matches! 守卫未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
+        assert!(matches!(&reqs[0], UiRequest::OpenPanel { id: _, side, size } if side == "right" && *size == 30));
+        assert!(matches!(&reqs[1], UiRequest::ClosePanel { id: _ }));
+        assert!(take_messages()[0].starts_with("id:"));
+        // 校验：side 白名单 / size / render
+        assert!(load_script(r#"helix.open_panel({ side: "top", size: 10, render: () => [] });"#).is_err());
+        assert!(load_script(r#"helix.open_panel({ side: "right", size: 10 });"#).is_err()); // 缺 render
+        assert!(load_script(r#"helix.open_panel({ side: "right", size: "big", render: () => [] });"#).is_err());
     }
 
     #[test]

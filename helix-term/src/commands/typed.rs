@@ -4138,6 +4138,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: plugin_load,
         completer: CommandCompleter::all(completers::filename),
         signature: Signature { positionals: (1, Some(1)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "panel-close",
+        aliases: &[],
+        doc: "Close the most recently opened plugin side panel.",
+        fun: panel_close,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
     }
 ];
 
@@ -4378,6 +4386,26 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.replace_or_push("plugin-popup", popup);
                 });
             }
+            helix_js::UiRequest::OpenPanel { id, side, size } => {
+                // side 已在 JS 侧白名单校验，此处仅防御性映射
+                let side = match side.as_str() {
+                    "right" => ui::PanelSide::Right,
+                    "left" => ui::PanelSide::Left,
+                    "bottom" => ui::PanelSide::Bottom,
+                    other => bail!("open_panel: unknown side '{other}'"),
+                };
+                let panel = ui::PluginPanel::new(id, side, size);
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.replace_or_push("plugin-panel", panel);
+                });
+            }
+            helix_js::UiRequest::ClosePanel { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    // 先清 render 注册表（幂等），再按静态 id 移除层
+                    let _ = helix_js::close_popup(id);
+                    compositor.remove("plugin-panel");
+                });
+            }
             helix_js::UiRequest::MapKey { mode, key, command } => {
                 // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
                 let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
@@ -4470,6 +4498,17 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         cx.editor.set_status(msgs.join(" "));
     }
     // 脚本里的 helix.map 入队 MapKey；OpenPopup 推层也经 job 通道
+    apply_ui_requests(helix_js::take_ui_requests())?;
+    Ok(())
+}
+
+/// :panel-close 入队 ClosePanel 并手动 drain（与 plugin_reload 同款——命令路径的 drain
+/// 只在 run_command Ok(true) 分支，TypableCommand 需自己触发）
+fn panel_close(_cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    helix_js::close_last_panel().map_err(|e| anyhow!("panel-close: {e}"))?;
     apply_ui_requests(helix_js::take_ui_requests())?;
     Ok(())
 }
