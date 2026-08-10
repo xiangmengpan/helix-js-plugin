@@ -45,6 +45,34 @@ impl PluginPanel {
             ),
         }
     }
+
+    /// 把全屏区切成 (面板区, 编辑器区)：面板占停靠边 size，编辑器占剩余部分。
+    /// size 超界时面板 clamp 到全尺寸、编辑器区对应维度为 0（saturating 不 panic）。
+    /// compositor.render 用此结果分流：面板层拿 panel，其余层拿 rest。
+    pub fn split_area(&self, area: Rect) -> (Rect, Rect) {
+        let panel = self.panel_area(area);
+        let rest = match self.side {
+            PanelSide::Right => Rect::new(
+                area.x,
+                area.y,
+                area.width.saturating_sub(self.size),
+                area.height,
+            ),
+            PanelSide::Left => Rect::new(
+                area.x.saturating_add(self.size),
+                area.y,
+                area.width.saturating_sub(self.size),
+                area.height,
+            ),
+            PanelSide::Bottom => Rect::new(
+                area.x,
+                area.y,
+                area.width,
+                area.height.saturating_sub(self.size),
+            ),
+        };
+        (panel, rest)
+    }
 }
 
 impl Component for PluginPanel {
@@ -54,7 +82,6 @@ impl Component for PluginPanel {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        let area = self.panel_area(area);
         match helix_js::render_popup(self.id, area.width, area.height) {
             Ok(lines) => self.lines = lines,
             Err(err) => self.lines = vec![StyledLine { text: format!("<plugin panel error: {err}>"), style: None }],
@@ -88,18 +115,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_area_by_side() {
+    fn split_area_by_side() {
         let area = Rect::new(0, 0, 100, 40);
-        assert_eq!(PluginPanel::new(1, PanelSide::Right, 20).panel_area(area), Rect::new(80, 0, 20, 40));
-        assert_eq!(PluginPanel::new(1, PanelSide::Left, 20).panel_area(area), Rect::new(0, 0, 20, 40));
-        assert_eq!(PluginPanel::new(1, PanelSide::Bottom, 10).panel_area(area), Rect::new(0, 30, 100, 10));
+        // Right：面板在右侧 20 列，编辑器剩左侧 80 列
+        let (panel, rest) = PluginPanel::new(1, PanelSide::Right, 20).split_area(area);
+        assert_eq!(panel, Rect::new(80, 0, 20, 40));
+        assert_eq!(rest, Rect::new(0, 0, 80, 40));
+        // Left：面板在左侧 20 列，编辑器剩右侧 80 列
+        let (panel, rest) = PluginPanel::new(1, PanelSide::Left, 20).split_area(area);
+        assert_eq!(panel, Rect::new(0, 0, 20, 40));
+        assert_eq!(rest, Rect::new(20, 0, 80, 40));
+        // Bottom：面板在底部 10 行，编辑器剩顶部 30 行
+        let (panel, rest) = PluginPanel::new(1, PanelSide::Bottom, 10).split_area(area);
+        assert_eq!(panel, Rect::new(0, 30, 100, 10));
+        assert_eq!(rest, Rect::new(0, 0, 100, 30));
     }
 
     #[test]
-    fn panel_area_clamps_oversized() {
-        // size 超屏宽 → clamp 到全宽，x 回退到 0（saturating 不 panic）
+    fn split_area_clamps_oversized() {
+        // size 超屏 → 面板 clamp 到全屏，编辑器区对应维度为 0（saturating 不 panic）
         let area = Rect::new(0, 0, 100, 40);
-        assert_eq!(PluginPanel::new(1, PanelSide::Right, 500).panel_area(area), Rect::new(0, 0, 100, 40));
-        assert_eq!(PluginPanel::new(1, PanelSide::Bottom, 500).panel_area(area), Rect::new(0, 0, 100, 40));
+        let (panel, rest) = PluginPanel::new(1, PanelSide::Right, 500).split_area(area);
+        assert_eq!(panel, Rect::new(0, 0, 100, 40));
+        assert_eq!(rest, Rect::new(0, 0, 0, 40));
+        let (panel, rest) = PluginPanel::new(1, PanelSide::Bottom, 500).split_area(area);
+        assert_eq!(panel, Rect::new(0, 0, 100, 40));
+        assert_eq!(rest, Rect::new(0, 0, 100, 0));
     }
 }
