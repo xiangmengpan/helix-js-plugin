@@ -140,7 +140,7 @@ impl Component for PluginPopup {
 /// 本树 KeyEvent 只有 code+modifiers（无 kind，termina 已过滤 Release），
 // ponytail: 若 KeyEvent 将来增加 kind 字段，需在此过滤 KeyEventKind::Press。
 /// KeyCode 无 BackTab，故与简报实现相比删去这两处分支。
-fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
+pub(crate) fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
     let name = match key.code {
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Esc => "Esc".into(),

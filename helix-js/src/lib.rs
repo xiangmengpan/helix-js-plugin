@@ -1021,7 +1021,7 @@ fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
 /// open_panel 允许的 side 白名单
 const PANEL_SIDES: [&str; 3] = ["right", "left", "bottom"];
 
-/// 侧边面板：校验 side 白名单 / size / render 后注册回调（on_key=None——面板恒事件穿透），
+/// 侧边面板：校验 side 白名单 / size / render 后注册回调（onKey 可选，同 open_popup），
 /// 入队 OpenPanel。id 与弹窗共用 NEXT_POPUP_ID 空间，面板渲染复用 render_popup 同一注册表。
 fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
@@ -1043,6 +1043,8 @@ fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
     }
     let on_close = opts.get(JsString::from("onClose"), ctx)?;
     let on_close = on_close.as_callable().map(|_| on_close);
+    let on_key = opts.get(JsString::from("onKey"), ctx)?;
+    let on_key = on_key.as_callable().map(|_| on_key);
     let size = {
         let v = opts.get(JsString::from("size"), ctx)?;
         let n: f64 = v.try_js_into(ctx).map_err(|_| {
@@ -1059,7 +1061,7 @@ fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
 
     let id = NEXT_POPUP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
     LAST_PANEL_ID.with(|c| c.set(Some(id)));
-    with_popups(|p| p.insert(id, PopupCallbacks { render, on_key: None, on_close }));
+    with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPanel { id, side, size });
     Ok(JsValue::from(id))
 }
@@ -1189,6 +1191,13 @@ pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<Popup
             _ => PopupKeyResult::Handled, // 未识别返回值 → 消费（安全默认）
         })
     })
+}
+
+/// 面板是否注册了 onKey 回调。helix-term 侧据此决定是否把按键交给 popup_key：
+/// 无 onKey 的面板缺省全 Ignore（事件穿透），不调 popup_key（其缺省 Esc→Close 语义不适用于面板）。
+pub fn panel_has_onkey(id: u64) -> bool {
+    init();
+    with_popups(|p| p.get(&id).map(|cb| cb.on_key.is_some()).unwrap_or(false))
 }
 
 /// 关闭弹窗：触发 onClose 并移除注册表项。幂等（已关闭返回 Ok）。
@@ -1344,6 +1353,40 @@ mod tests {
         assert!(load_script(r#"helix.open_panel({ side: "top", size: 10, render: () => [] });"#).is_err());
         assert!(load_script(r#"helix.open_panel({ side: "right", size: 10 });"#).is_err()); // 缺 render
         assert!(load_script(r#"helix.open_panel({ side: "right", size: "big", render: () => [] });"#).is_err());
+    }
+
+    #[test]
+    fn panel_onkey() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        const pid = helix.open_panel({
+            side: "right", size: 20,
+            render: () => ["p"],
+            onKey: (key) => { helix.echo("panel-key:" + key.name); return key.name === "Esc" ? "close" : "handled"; },
+        });
+        helix.echo("pid:" + pid);
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        // 编译器建议：matches! 未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
+        assert!(matches!(&reqs[0], UiRequest::OpenPanel { id: _, .. }));
+        // 编译器要求：单臂 match 非穷尽 → 改 let-else（与 popup_lifecycle 同款）
+        let UiRequest::OpenPanel { id, .. } = reqs[0] else { unreachable!("expected OpenPanel") };
+        assert!(take_messages()[0].starts_with("pid:"));
+        // popup_key 走同一注册表：Esc → close，其他 → handled
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let esc = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
+        assert_eq!(popup_key(id, &esc, &ctx).unwrap(), PopupKeyResult::Close);
+        assert_eq!(take_messages(), vec!["panel-key:Esc"]);
+        // panel_has_onkey：有 onKey → true（简报测试的补充断言）
+        assert!(panel_has_onkey(id));
+        // 无 onKey 的面板：false（helix-term 侧据此全 Ignore 穿透，不调 popup_key）
+        load_script(r#"helix.open_panel({ side: "left", size: 10, render: () => ["x"] });"#).unwrap();
+        let UiRequest::OpenPanel { id: id2, .. } = take_ui_requests()[0] else { unreachable!("expected OpenPanel") };
+        assert!(!panel_has_onkey(id2));
     }
 
     #[test]
