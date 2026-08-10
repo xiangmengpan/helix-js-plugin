@@ -13,7 +13,12 @@ use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 /// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
 #[derive(Debug)]
 pub enum UiRequest {
-    OpenPopup { id: u64 },
+    OpenPopup {
+        id: u64,
+        width: Option<u16>,
+        height: Option<u16>,
+        position: Option<(u16, u16)>,
+    },
     MapKey { mode: String, key: String, command: String },
 }
 
@@ -920,6 +925,25 @@ pub fn take_messages() -> Vec<String> {
     std::mem::take(&mut *MESSAGES.get().expect("MESSAGES not initialized").lock().expect("messages lock poisoned"))
 }
 
+/// 解析 open_popup 选项里的可选 u16（undefined/null → None）；非数、负数、非整数、超上限报错
+fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<u16>> {
+    if v.is_null_or_undefined() {
+        return Ok(None);
+    }
+    let n: f64 = v.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "open_popup: '{name}' must be a number"
+        ))))
+    })?;
+    if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "open_popup: '{name}' must be an integer in [0, {}]",
+            u16::MAX
+        )))));
+    }
+    Ok(Some(n as u16))
+}
+
 fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
         JsError::from_opaque(JsValue::from(JsString::from("open_popup: options object required")))
@@ -934,10 +958,38 @@ fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
     let on_key = on_key.as_callable().map(|_| on_key);
     let on_close = opts.get(JsString::from("onClose"), ctx)?;
     let on_close = on_close.as_callable().map(|_| on_close);
+    // 尺寸/位置在注册前解析：任一非法则整体失败，不产生半注册
+    let width = opt_u16(&opts.get(JsString::from("width"), ctx)?, ctx, "width")?;
+    let height = opt_u16(&opts.get(JsString::from("height"), ctx)?, ctx, "height")?;
+    let position = {
+        let v = opts.get(JsString::from("position"), ctx)?;
+        if v.is_null_or_undefined() {
+            None
+        } else {
+            let obj = v.as_object().ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "open_popup: 'position' must be an object with row/col",
+                )))
+            })?;
+            let row = opt_u16(&obj.get(JsString::from("row"), ctx)?, ctx, "position.row")?
+                .ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(
+                        "open_popup: 'position.row' is required",
+                    )))
+                })?;
+            let col = opt_u16(&obj.get(JsString::from("col"), ctx)?, ctx, "position.col")?
+                .ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(
+                        "open_popup: 'position.col' is required",
+                    )))
+                })?;
+            Some((row, col))
+        }
+    };
 
     let id = NEXT_POPUP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
     with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPopup { id });
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPopup { id, width, height, position });
     Ok(JsValue::from(id))
 }
 
@@ -1171,7 +1223,7 @@ mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
-        let UiRequest::OpenPopup { id } = reqs[0] else { unreachable!("expected OpenPopup") };
+        let UiRequest::OpenPopup { id, .. } = reqs[0] else { unreachable!("expected OpenPopup") };
         assert_eq!(id, 1); // 自增从 1 开始
 
         let lines = render_popup(id, 40, 10).unwrap();
@@ -1195,7 +1247,7 @@ mod tests {
         // 未提供 onKey：Esc 默认关闭，其他穿透
         load_script(r#"helix.open_popup({ render: () => ["x"] });"#).unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id } => id,
+            UiRequest::OpenPopup { id, .. } => id,
             _ => unreachable!("expected OpenPopup"),
         };
         let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
@@ -1208,7 +1260,7 @@ mod tests {
         // render 非数组 → Err
         load_script(r#"helix.open_popup({ render: () => "not an array" });"#).unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id } => id,
+            UiRequest::OpenPopup { id, .. } => id,
             _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10).is_err());
@@ -1217,6 +1269,39 @@ mod tests {
         // 参数缺失/类型错误 → JS 报错
         assert!(load_script(r#"helix.open_popup({});"#).is_err());
         assert!(load_script(r#"helix.open_popup({ render: 42 });"#).is_err());
+    }
+
+    #[test]
+    fn popup_size_position() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.open_popup({ render: () => ["x"], width: 40, height: 10, position: { row: 3, col: 4 } });
+        helix.open_popup({ render: () => ["y"] });
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        assert_eq!(reqs.len(), 2);
+        match &reqs[0] {
+            UiRequest::OpenPopup { width, height, position, .. } => {
+                assert_eq!(*width, Some(40));
+                assert_eq!(*height, Some(10));
+                assert_eq!(*position, Some((3, 4)));
+            }
+            other => panic!("expected OpenPopup, got {other:?}"),
+        }
+        match &reqs[1] {
+            UiRequest::OpenPopup { width, height, position, .. } => {
+                assert_eq!(*width, None);
+                assert_eq!(*height, None);
+                assert_eq!(*position, None);
+            }
+            other => panic!("expected OpenPopup, got {other:?}"),
+        }
+        // 非法类型
+        assert!(load_script(r#"helix.open_popup({ render: () => [], width: "big" });"#).is_err());
     }
 
     #[test]
@@ -1239,7 +1324,7 @@ mod tests {
         )
         .unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id } => id,
+            UiRequest::OpenPopup { id, .. } => id,
             _ => unreachable!("expected OpenPopup"),
         };
         let ctx = CommandContext {

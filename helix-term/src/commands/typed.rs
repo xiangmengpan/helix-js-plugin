@@ -4369,9 +4369,10 @@ pub(crate) fn apply_plugin_edits(
 pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Result<()> {
     for req in reqs {
         match req {
-            helix_js::UiRequest::OpenPopup { id } => {
-                let popup =
-                    ui::Popup::new("plugin-popup", ui::PluginPopup::new(id)).auto_close(false);
+            helix_js::UiRequest::OpenPopup { id, width, height, position } => {
+                let popup = ui::Popup::new("plugin-popup", ui::PluginPopup::new(id, width.zip(height)))
+                    .position(position.map(|(row, col)| helix_core::Position::new(row as usize, col as usize)))
+                    .auto_close(false);
                 // 由事件循环在下一轮推层并渲染。
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.replace_or_push("plugin-popup", popup);

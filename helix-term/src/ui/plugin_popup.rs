@@ -14,13 +14,16 @@ use tui::widgets::{Paragraph, Widget, Wrap};
 pub struct PluginPopup {
     id: u64,
     lines: Vec<String>,
+    /// open_popup 的 width/height 尺寸上限（两者都提供时才生效）
+    size_hint: Option<(u16, u16)>,
 }
 
 impl PluginPopup {
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u64, size_hint: Option<(u16, u16)>) -> Self {
         Self {
             id,
             lines: Vec::new(),
+            size_hint,
         }
     }
 }
@@ -113,6 +116,10 @@ impl Component for PluginPopup {
             .unwrap_or(0)
             .min(viewport.0);
         let height = self.lines.len() as u16;
+        let (width, height) = match self.size_hint {
+            Some((w, h)) => (width.min(w), height.min(h)),
+            None => (width, height),
+        };
         Some((width, height))
     }
 }
@@ -147,4 +154,31 @@ fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
         ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
         alt: key.modifiers.contains(KeyModifiers::ALT),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compositor::Component;
+
+    #[test]
+    fn required_size_clamps_to_size_hint() {
+        let mut p = PluginPopup::new(1, Some((10, 4)));
+        p.lines = vec!["W".repeat(20); 10];
+        assert_eq!(p.required_size((120, 30)), Some((10, 4)));
+    }
+
+    #[test]
+    fn required_size_without_hint_uses_content() {
+        let mut p = PluginPopup::new(1, None);
+        p.lines = vec!["abc".into(), "a".into()];
+        assert_eq!(p.required_size((120, 30)), Some((3, 2)));
+    }
+
+    #[test]
+    fn required_size_never_exceeds_viewport_width() {
+        let mut p = PluginPopup::new(1, None);
+        p.lines = vec!["x".repeat(200)];
+        assert_eq!(p.required_size((50, 30)), Some((50, 1)));
+    }
 }
