@@ -19,18 +19,13 @@ use helix_view::expansion;
 use serde_json::Value;
 use ui::completers::{self, Completer};
 
-/// 插件主题覆盖的基准 toml：应用最终主题后由 load_configured_theme 捕获。
-/// default/base16_default 无实体文件，用编译期 const；其余用 load_raw（不解析 inherits）。
+/// 插件主题覆盖的基准 toml：应用最终主题后由 load_configured_theme / :theme 捕获。
+/// 用 load_resolved（继承已解析、palette 已合并），保证含 inherits 的主题 set/reset 不丢父主题样式。
 /// 用 Mutex<Option> 而非 OnceLock：config-refresh / 自适应模式切换会重新捕获。
 static BASE_THEME_TOML: Mutex<Option<toml::Value>> = Mutex::new(None);
 
 pub(crate) fn set_base_theme(loader: &helix_view::theme::Loader, name: &str) {
-    let base = match name {
-        "default" => Some(helix_view::theme::DEFAULT_THEME_DATA.clone()),
-        "base16_default" => Some(helix_view::theme::BASE16_DEFAULT_THEME_DATA.clone()),
-        _ => loader.load_raw(name).ok(),
-    };
-    *BASE_THEME_TOML.lock().expect("base theme lock") = base;
+    *BASE_THEME_TOML.lock().expect("base theme lock") = loader.load_resolved(name).ok();
 }
 
 /// 覆盖集 → toml 值 `{ scope: { fg: color } }`（merge_themes 的 child 形状）
@@ -45,7 +40,8 @@ fn theme_overrides_value(overrides: &HashMap<String, String>) -> toml::Value {
 }
 
 /// 把插件覆盖集合并进基准主题并应用（None/空 → 还原基准）。
-/// 无覆盖时 Theme::from 的 scope 集与基准一致，可直接替换 editor.theme。
+/// 走 Editor::set_theme：更新 syn_loader scope 集（新 scope 高亮索引）、
+/// 刷新并广播 ConfigEvent::ThemeChanged（终端背景）与 ui.selection 校验。
 pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&HashMap<String, String>>) {
     let base = BASE_THEME_TOML
         .lock()
@@ -58,7 +54,7 @@ pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&Hash
         }
         _ => base,
     };
-    editor.theme = helix_view::theme::Theme::from(merged);
+    let _ = editor.set_theme(helix_view::theme::Theme::from(merged));
 }
 
 #[derive(Clone)]
@@ -1192,6 +1188,8 @@ fn theme(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
                     bail!("Unsupported theme: theme requires true color support");
                 }
                 cx.editor.set_theme(theme)?;
+                // 主题切换后基准过期：重新捕获，插件 set_theme/reset_theme 才能基于新主题合并
+                set_base_theme(&cx.editor.theme_loader, theme_name);
             } else {
                 let name = cx.editor.theme.name().to_string();
 

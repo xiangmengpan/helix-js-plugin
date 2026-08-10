@@ -191,6 +191,20 @@ impl Loader {
         self.load_toml(path)
     }
 
+    /// Loads the full toml value with inheritance resolved (parent styles merged
+    /// and palette merged), unlike `load_raw`. Used as the plugin theme-override
+    /// baseline so that set/reset over inheriting themes keeps the parent styles.
+    pub fn load_resolved(&self, name: &str) -> Result<Value> {
+        match name {
+            "default" => Ok(DEFAULT_THEME_DATA.clone()),
+            "base16_default" => Ok(BASE16_DEFAULT_THEME_DATA.clone()),
+            _ => {
+                let mut visited_paths = HashSet::new();
+                self.load_theme(name, &mut visited_paths)
+            }
+        }
+    }
+
     // merge one theme into the parent theme
     pub fn merge_themes(&self, parent_theme_toml: Value, theme_toml: Value) -> Value {
         let parent_palette = parent_theme_toml.get("palette");
