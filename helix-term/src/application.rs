@@ -304,9 +304,17 @@ impl Application {
     /// 返回 true 表示消费了事件（调用方据此决定是否强制重绘）。
     /// 幂等：drain 到空队列，重复调用为 no-op。
     fn pump_term_events(&mut self) -> bool {
+        // 插件主题覆盖（独立于 term 事件：set_theme/reset_theme 置位即应用，即使无进程事件）
+        let theme_changed = if helix_js::take_theme_dirty() {
+            let overrides = helix_js::theme_overrides();
+            crate::commands::typed::apply_theme_overrides(&mut self.editor, Some(&overrides));
+            true
+        } else {
+            false
+        };
         let term_events = helix_js::drain_term_events();
         if term_events.is_empty() {
-            return false;
+            return theme_changed;
         }
         let mut error = None;
         for event in term_events {
@@ -591,6 +599,8 @@ impl Application {
                     })
             })
             .unwrap_or_else(|| editor.theme_loader.default_theme(true_color));
+        // 捕获插件主题覆盖的基准 toml（按最终应用的主题名：default/base16_default 无实体文件，用编译期 const）
+        crate::commands::typed::set_base_theme(&editor.theme_loader, theme.name());
         let _ = editor.set_theme(theme);
     }
 
