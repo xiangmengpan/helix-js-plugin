@@ -49,36 +49,34 @@ mod pty {
     /// 打开新 PTY（默认 24×80），返回 (master, slave File)
     pub fn open_pty() -> Result<(Master, File)> {
         unsafe {
-            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
             if master < 0 {
                 return Err(anyhow!("posix_openpt: {}", std::io::Error::last_os_error()));
             }
-            if libc::grantpt(master) != 0 {
-                libc::close(master);
+            let master = Master(master); // 尽早包进 RAII 包装，后续 `?` 错误路径不再泄漏 fd
+            if libc::grantpt(master.fd()) != 0 {
                 return Err(anyhow!("grantpt: {}", std::io::Error::last_os_error()));
             }
-            if libc::unlockpt(master) != 0 {
-                libc::close(master);
+            if libc::unlockpt(master.fd()) != 0 {
                 return Err(anyhow!("unlockpt: {}", std::io::Error::last_os_error()));
             }
-            let name = libc::ptsname(master);
+            let name = libc::ptsname(master.fd());
             if name.is_null() {
-                libc::close(master);
                 return Err(anyhow!("ptsname: {}", std::io::Error::last_os_error()));
             }
             let name = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
             let slave = libc::open(
                 std::ffi::CString::new(name)?.as_ptr(),
-                libc::O_RDWR | libc::O_NOCTTY,
+                libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
             );
             if slave < 0 {
-                libc::close(master);
                 return Err(anyhow!("open slave: {}", std::io::Error::last_os_error()));
             }
+            let slave = File::from_raw_fd(slave);
             // 默认尺寸：内核新建 pty 的 winsize 是 0×0，stty size 会读成 "0 0"；
             // 简报期望缺省 "24 80"。在子进程启动前设好（master ioctl 作用于同一 tty）。
-            set_winsize(master, 24, 80)?;
-            Ok((Master(master), File::from_raw_fd(slave)))
+            set_winsize(master.fd(), 24, 80)?; // 失败时 master/slave 由 Drop 兜底关闭
+            Ok((master, slave))
         }
     }
 
