@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
-use boa_engine::object::ObjectInitializer;
+use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 
@@ -178,6 +178,24 @@ struct PopupCallbacks {
 pub struct StyledLine {
     pub text: String,
     pub style: Option<String>,
+}
+
+/// 组件树节点：render 返回单节点对象（含 type 字段）时解析出的布局树。
+/// Text 单行（style/width 可选）；Row 水平并排（gap 列间距）；Col 垂直堆叠（gap 行间距）；
+/// Scroll 高度裁剪容器（保留最后 height 行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompNode {
+    Text { text: String, style: Option<String>, width: Option<u16> },
+    Row { children: Vec<CompNode>, gap: u16 },
+    Col { children: Vec<CompNode>, gap: u16 },
+    Scroll { children: Vec<CompNode>, height: u16 },
+}
+
+/// render 回调的返回：数组（字符串/样式对象）→ 旧行 API；单节点对象（含 type）→ 组件树
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Content {
+    Lines(Vec<StyledLine>),
+    Tree(CompNode),
 }
 
 /// 事件名白名单：helix.on 只接受这些事件
@@ -373,6 +391,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_open_file), JsString::from("open_file"), 1)
                 .function(NativeFunction::from_fn_ptr(js_move_panel), JsString::from("move_panel"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
+                .function(NativeFunction::from_fn_ptr(js_el), JsString::from("el"), 2)
                 .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
                 .function(NativeFunction::from_fn_ptr(js_map), JsString::from("map"), 3)
                 .function(NativeFunction::from_fn_ptr(js_set_cursor), JsString::from("set_cursor"), 2)
@@ -1717,6 +1736,108 @@ fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> 
     Ok(JsValue::undefined())
 }
 
+/// 读对象可选字符串字段：null/undefined → None；非字符串 → Err
+fn obj_opt_str(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<String>> {
+    let v = obj.get(JsString::from(key), ctx)?;
+    if v.is_null_or_undefined() {
+        return Ok(None);
+    }
+    let s: String = v.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: '{key}' must be a string"
+        ))))
+    })?;
+    Ok(Some(s))
+}
+
+/// 读对象可选 u16 字段：null/undefined → None；必须是 [0, u16::MAX] 整数
+fn obj_opt_u16(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<u16>> {
+    let v = obj.get(JsString::from(key), ctx)?;
+    if v.is_null_or_undefined() {
+        return Ok(None);
+    }
+    let n: f64 = v.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: '{key}' must be a number"
+        ))))
+    })?;
+    if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: '{key}' must be an integer in [0, {}]",
+            u16::MAX
+        )))));
+    }
+    Ok(Some(n as u16))
+}
+
+/// helix.el(type, arg, opts)：构造组件节点数据对象 {type, ...}，实际解析在 render 时递归进行。
+/// type 白名单：text（arg=文本字符串，opts={style,width}）/ row、col（arg=子节点数组，opts={gap}）
+/// / scroll（arg=子节点数组，opts={height}）。只做浅层校验（子节点对象合法性由 parse_node 递归检查）。
+fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let api = "helix.el";
+    let type_: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: 'type' must be a string"
+        ))))
+    })?;
+    // 先收集字段再一次性建对象：builder 持有 &mut ctx，中途再借 ctx 会冲突
+    let arg = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    let opts = args.get(2).filter(|o| !o.is_null_or_undefined());
+    let mut props: Vec<(String, JsValue)> = vec![("type".into(), JsString::from(type_.clone()).into())];
+    match type_.as_str() {
+        "text" => {
+            let text: String = arg.try_js_into(ctx).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: 'text' expects a string"
+                ))))
+            })?;
+            props.push(("text".into(), JsString::from(text).into()));
+            if let Some(opts) = opts {
+                let obj = opts.as_object().ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: options must be an object"
+                    ))))
+                })?;
+                if let Some(style) = obj_opt_str(&obj, "style", ctx, api)? {
+                    props.push(("style".into(), JsString::from(style).into()));
+                }
+                if let Some(width) = obj_opt_u16(&obj, "width", ctx, api)? {
+                    props.push(("width".into(), JsValue::from(width)));
+                }
+            }
+        }
+        "row" | "col" | "scroll" => {
+            let _: JsArray = arg.try_js_into(ctx).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: '{type_}' expects an array of nodes"
+                ))))
+            })?;
+            props.push(("children".into(), arg.clone()));
+            if let Some(opts) = opts {
+                let obj = opts.as_object().ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: options must be an object"
+                    ))))
+                })?;
+                let key = if type_ == "scroll" { "height" } else { "gap" };
+                if let Some(v) = obj_opt_u16(&obj, key, ctx, api)? {
+                    props.push((key.into(), JsValue::from(v)));
+                }
+            }
+        }
+        other => {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: unknown type '{other}' (expected text|row|col|scroll)"
+            )))));
+        }
+    }
+    let mut builder = ObjectInitializer::new(ctx);
+    for (k, v) in props {
+        builder.property(JsString::from(k), v, Attribute::all());
+    }
+    Ok(builder.build().into())
+}
+
 /// 取走并清空 UI 请求队列
 pub fn take_ui_requests() -> Vec<UiRequest> {
     init();
@@ -1751,8 +1872,9 @@ fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_
     }
 }
 
-/// 调 JS render 回调，返回样式化行数组。ctx 对象 { width, height }。
-pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<StyledLine>> {
+/// 调 JS render 回调，返回内容：数组 → Content::Lines（旧行 API）；单节点对象（含 type）→ Content::Tree。
+/// ctx 对象 { width, height }。
+pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Content> {
     init();
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
@@ -1768,24 +1890,117 @@ pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Vec<StyledLine>>
         let undefined = JsValue::undefined();
         let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine)
             .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
-        // 结果必须是 string[]
-        let arr: JsArray = value.try_js_into(engine)
-            .map_err(|e| anyhow!("popup {id} render must return an array of strings or styled objects: {e}"))?;
-        let len: usize = arr
-            .get(JsString::from("length"), engine)
-            .map_err(|e| anyhow!("popup {id} length read failed: {e}"))?
-            .try_js_into(engine)
-            .map_err(|e| anyhow!("popup {id} render length invalid: {e}"))?;
-        let mut lines = Vec::with_capacity(len);
-        for i in 0..len {
-            let item = arr
-                .get(i, engine)
-                .map_err(|e| anyhow!("popup {id} render line {i} read failed: {e}"))?;
-            lines.push(parse_line_item(&item, engine, id, i)
-                .map_err(|e| anyhow!("popup {id} render failed: {e}"))?);
+        // 数组 → 旧行 API；单对象含 type → 组件树（数组也是对象，数组判断在前）
+        if let Ok(arr) = value.try_js_into::<JsArray>(engine) {
+            let len: usize = arr
+                .get(JsString::from("length"), engine)
+                .map_err(|e| anyhow!("popup {id} length read failed: {e}"))?
+                .try_js_into(engine)
+                .map_err(|e| anyhow!("popup {id} render length invalid: {e}"))?;
+            let mut lines = Vec::with_capacity(len);
+            for i in 0..len {
+                let item = arr
+                    .get(i, engine)
+                    .map_err(|e| anyhow!("popup {id} render line {i} read failed: {e}"))?;
+                lines.push(parse_line_item(&item, engine, id, i)
+                    .map_err(|e| anyhow!("popup {id} render failed: {e}"))?);
+            }
+            Ok(Content::Lines(lines))
+        } else if let Some(obj) = value.as_object() {
+            let has_type = obj
+                .has_own_property(JsString::from("type"), engine)
+                .map_err(|e| anyhow!("popup {id} type read failed: {e}"))?;
+            if has_type {
+                let node = parse_node(&value, engine, id)
+                    .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
+                Ok(Content::Tree(node))
+            } else {
+                Err(anyhow!(
+                    "popup {id} render must return an array of strings/styled objects, or a node object with 'type'"
+                ))
+            }
+        } else {
+            Err(anyhow!(
+                "popup {id} render must return an array of strings/styled objects, or a node object with 'type'"
+            ))
         }
-        Ok(lines)
     })
+}
+
+/// 递归解析节点对象 → CompNode。type 白名单 + 字段校验（text 必需；style/width/gap/height 可选）。
+fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResult<CompNode> {
+    let api = format!("popup {id} render");
+    let obj = value.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: node must be an object with 'type'"
+        ))))
+    })?;
+    let type_: String = obj
+        .get(JsString::from("type"), ctx)?
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: node 'type' must be a string"
+            ))))
+        })?;
+    match type_.as_str() {
+        "text" => {
+            let text: String = obj
+                .get(JsString::from("text"), ctx)?
+                .try_js_into(ctx)
+                .map_err(|_| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: text node must have a string 'text' property"
+                    ))))
+                })?;
+            let style = obj_opt_str(&obj, "style", ctx, &api)?;
+            let width = obj_opt_u16(&obj, "width", ctx, &api)?;
+            Ok(CompNode::Text { text, style, width })
+        }
+        "row" | "col" => {
+            let children = parse_children(&obj, ctx, id)?;
+            let gap = obj_opt_u16(&obj, "gap", ctx, &api)?.unwrap_or(0);
+            Ok(if type_ == "row" {
+                CompNode::Row { children, gap }
+            } else {
+                CompNode::Col { children, gap }
+            })
+        }
+        "scroll" => {
+            let children = parse_children(&obj, ctx, id)?;
+            let height = obj_opt_u16(&obj, "height", ctx, &api)?.unwrap_or(0);
+            Ok(CompNode::Scroll { children, height })
+        }
+        other => Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: unknown node type '{other}' (expected text|row|col|scroll)"
+        ))))),
+    }
+}
+
+/// 解析容器节点的 children 数组：每项必须是节点对象（递归 parse_node）
+fn parse_children(obj: &JsObject, ctx: &mut Context, id: u64) -> boa_engine::JsResult<Vec<CompNode>> {
+    let api = format!("popup {id} render");
+    let v = obj.get(JsString::from("children"), ctx)?;
+    let arr: JsArray = v.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: container node must have an array 'children'"
+        ))))
+    })?;
+    let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: children length invalid"
+        ))))
+    })?;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = arr.get(i, ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: children[{i}] read failed"
+            ))))
+        })?;
+        out.push(parse_node(&item, ctx, id)?);
+    }
+    Ok(out)
 }
 
 /// 调 JS onKey 回调（第二个参数是可编辑的 doc 快照）。
@@ -2155,11 +2370,11 @@ mod tests {
         let lines = render_popup(id, 40, 10).unwrap();
         assert_eq!(
             lines,
-            vec![
+            Content::Lines(vec![
                 StyledLine { text: "a".into(), style: None },
                 StyledLine { text: "b".into(), style: None },
                 StyledLine { text: "c".into(), style: None },
-            ]
+            ])
         );
 
         let key = PluginKey { name: "Down".into(), shift: false, ctrl: false, alt: false };
@@ -2257,11 +2472,11 @@ mod tests {
         let lines = render_popup(id, 40, 10).unwrap();
         assert_eq!(
             lines,
-            vec![
+            Content::Lines(vec![
                 StyledLine { text: "err: ".into(), style: Some("error".into()) },
                 StyledLine { text: "plain".into(), style: None },
                 StyledLine { text: "warn".into(), style: None },
-            ]
+            ])
         );
         close_popup(id).unwrap();
         // 非法元素（缺 text / 非字符串非对象）→ Err
@@ -3014,5 +3229,58 @@ mod tests {
         assert!(run_command("bad-load", &ctx).is_err());
 
         std::mem::forget(dir);
+    }
+
+    /// 简报验证测试：el 构造节点、render 返回树 → Content::Tree、非法节点类型 → Err
+    #[test]
+    fn component_nodes() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.open_popup({
+            render: () => helix.el("col", [
+                helix.el("text", "title", { style: "error" }),
+                helix.el("row", [
+                    helix.el("text", "left"),
+                    helix.el("text", "right", { width: 5 }),
+                ], { gap: 1 }),
+                helix.el("scroll", [helix.el("text", "s1"), helix.el("text", "s2")], { height: 1 }),
+            ]),
+        });
+        helix.register_command("tree", (ctx) => {
+            const n = helix.el("text", "hello", { width: 10 });
+            helix.echo("type:" + n.type + " text:" + n.text + " w:" + n.width);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("tree", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["type:text text:hello w:10"]);
+
+        let reqs = take_ui_requests();
+        let id = match &reqs[0] { UiRequest::OpenPopup { id, .. } => *id, _ => unreachable!("expected OpenPopup") };
+        match render_popup(id, 40, 10).unwrap() {
+            Content::Tree(root) => {
+                assert!(matches!(&root, CompNode::Col { .. }));
+                match &root {
+                    CompNode::Col { children, .. } => {
+                        assert_eq!(children.len(), 3);
+                        assert!(matches!(&children[0], CompNode::Text { text, style: Some(s), .. } if text == "title" && s == "error"));
+                        assert!(matches!(&children[1], CompNode::Row { .. }));
+                        assert!(matches!(&children[2], CompNode::Scroll { .. }));
+                    }
+                    _ => panic!(),
+                }
+            }
+            _ => panic!("expected tree"),
+        }
+        close_popup(id).unwrap();
+        // 非法节点类型 → Err
+        load_script(r#"helix.open_popup({ render: () => ({ type: "bogus" }) });"#).unwrap();
+        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        assert!(render_popup(id, 40, 10).is_err());
+        close_popup(id).unwrap();
     }
 }

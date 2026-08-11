@@ -1,5 +1,6 @@
 use crate::commands::typed::{apply_cursor_requests, apply_plugin_edits};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
+use crate::ui::comp_layout;
 use helix_js::{CommandContext, PopupKeyResult, StyledLine};
 use helix_view::current_ref;
 use helix_view::graphics::Rect;
@@ -232,7 +233,7 @@ impl Component for PluginPanel {
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         match helix_js::render_popup(self.id, area.width, area.height) {
-            Ok(lines) => self.lines = lines,
+            Ok(content) => self.lines = comp_layout::render(content, (area.width, area.height)),
             Err(err) => self.lines = vec![StyledLine { text: format!("<plugin panel error: {err}>"), style: None }],
         }
         // 与 PluginPopup 同款样式逻辑：style 名映射主题 scope（未知 scope 返回默认 Style）

@@ -1,4 +1,5 @@
 mod completion;
+pub mod comp_layout;
 mod document;
 pub(crate) mod editor;
 mod info;
