@@ -8,6 +8,7 @@ description = "JavaScript plugin runtime for the Helix editor (PoC)"
 boa_engine = { workspace = true }
 anyhow = "1"
 libc = "0.2.186"
+globset = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true

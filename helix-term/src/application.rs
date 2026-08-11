@@ -313,7 +313,8 @@ impl Application {
             false
         };
         let term_events = helix_js::drain_term_events();
-        if term_events.is_empty() {
+        let async_events = helix_js::drain_async_events();
+        if term_events.is_empty() && async_events.is_empty() {
             return theme_changed;
         }
         let mut error = None;
@@ -323,6 +324,18 @@ impl Application {
                 helix_js::TermEvent::Chunk(id, _) | helix_js::TermEvent::Exit(id, _, _) => *id,
             };
             if let Err(err) = helix_js::resolve_term_event(id, event) {
+                error = Some(err);
+            }
+        }
+        for event in async_events {
+            // 异步 fs 事件：id 同样在变体内部；回调可能编辑文档/echo，尾部统一 drain
+            let id = match &event {
+                helix_js::AsyncEvent::FsRead(id, _)
+                | helix_js::AsyncEvent::FsWrite(id, _)
+                | helix_js::AsyncEvent::FsStat(id, _)
+                | helix_js::AsyncEvent::FsGlob(id, _) => *id,
+            };
+            if let Err(err) = helix_js::resolve_async_event(id, event) {
                 error = Some(err);
             }
         }

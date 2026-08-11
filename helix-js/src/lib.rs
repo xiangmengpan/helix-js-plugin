@@ -135,6 +135,25 @@ pub enum TermEvent {
     Exit(u64, i32, Option<String>),
 }
 
+/// 异步 fs 操作结果（stat 快照）
+#[derive(Debug, Clone)]
+pub struct FsStat {
+    pub size: u64,
+    pub is_dir: bool,
+    /// 修改时间（Unix 秒）
+    pub mtime: u64,
+}
+
+/// 异步 fs 事件（一次性 worker → 主线程；drain 后 resolve 到 JS 回调）。
+/// Result 的 Err 分支携带错误字符串（回调的 err 参数）。
+#[derive(Debug)]
+pub enum AsyncEvent {
+    FsRead(u64, std::result::Result<String, String>),
+    FsWrite(u64, std::result::Result<(), String>),
+    FsStat(u64, std::result::Result<FsStat, String>),
+    FsGlob(u64, std::result::Result<Vec<String>, String>),
+}
+
 /// 主线程 → worker 线程的控制指令（stdin 写入 / 杀进程）
 enum TermCtrl {
     Write(String),
@@ -331,11 +350,26 @@ thread_local! {
     // worker 先退出、清理后发生 resize → fd 陈旧返回 EBADF → Err，良性。
     #[cfg(unix)]
     static TERM_MASTERS: RefCell<HashMap<u64, std::os::fd::RawFd>> = RefCell::new(HashMap::new());
+    // 异步 fs 事件通道：与 TERM_EVENTS 同模式——发起线程持有 Sender 克隆，
+    // 一次性 worker 线程发结果，发起线程 drain 消费。
+    static ASYNC_EVENTS: RefCell<Option<std::sync::mpsc::Sender<AsyncEvent>>> = const { RefCell::new(None) };
+    static ASYNC_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<AsyncEvent>>> = const { RefCell::new(None) };
+    // 异步 fs id → JS 回调（持有 JsValue：线程退出时内容泄漏，同上）
+    static ASYNC_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
+    static NEXT_ASYNC_ID: Cell<u64> = const { Cell::new(1) };
 }
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
 fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
     TERM_CALLBACKS.with(|t| {
+        let mut slot = t.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 ASYNC_CALLBACKS：同上（内容泄漏）
+fn with_async_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
+    ASYNC_CALLBACKS.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })
@@ -350,6 +384,13 @@ pub fn init() {
             let (tx, rx) = std::sync::mpsc::channel();
             *t.borrow_mut() = Some(tx);
             TERM_EVENTS_RX.with(|r| *r.borrow_mut() = Some(rx));
+        }
+    });
+    ASYNC_EVENTS.with(|t| {
+        if t.borrow().is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            *t.borrow_mut() = Some(tx);
+            ASYNC_EVENTS_RX.with(|r| *r.borrow_mut() = Some(rx));
         }
     });
     CONTEXT.with(|cell| {
@@ -387,6 +428,10 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_spawn), JsString::from("spawn"), 1)
                 .function(NativeFunction::from_fn_ptr(js_term_write), JsString::from("term_write"), 2)
                 .function(NativeFunction::from_fn_ptr(js_term_kill), JsString::from("term_kill"), 1)
+                .function(NativeFunction::from_fn_ptr(js_read_file_async), JsString::from("read_file_async"), 2)
+                .function(NativeFunction::from_fn_ptr(js_write_file_async), JsString::from("write_file_async"), 3)
+                .function(NativeFunction::from_fn_ptr(js_stat_async), JsString::from("stat_async"), 2)
+                .function(NativeFunction::from_fn_ptr(js_glob_async), JsString::from("glob_async"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0);
             #[cfg(unix)]
@@ -1327,6 +1372,127 @@ fn js_term_resize(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_e
     Ok(JsValue::undefined())
 }
 
+/// 基础 glob：以模式最后一个分隔符为基目录递归 walk，globset 匹配完整路径字符串。
+/// literal_separator(true)：`*`/`?` 不跨目录分隔符（`**` 仍跨目录，globset 语义）。
+fn glob_matches(pattern: &str) -> std::result::Result<Vec<String>, String> {
+    use globset::GlobBuilder;
+    let matcher = GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| format!("invalid glob '{pattern}': {e}"))?
+        .compile_matcher();
+    let base = std::path::Path::new(pattern)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut out = Vec::new();
+    walk_glob(&base, &matcher, &mut out).map_err(|e| format!("glob_async('{pattern}'): {e}"))?;
+    out.sort();
+    Ok(out)
+}
+
+/// 递归 walk 目录树，匹配完整路径字符串（含目录本身——glob 常规语义）
+fn walk_glob(dir: &std::path::Path, matcher: &globset::GlobMatcher, out: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let pstr = path.to_string_lossy().into_owned();
+        if matcher.is_match(&pstr) {
+            out.push(pstr);
+        }
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            walk_glob(&path, matcher, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// 注册异步 fs 回调并 spawn 一次性 worker：操作在线程里执行，
+/// 结果（Ok 或 Err 字符串）经 ASYNC_EVENTS 通道送回发起线程。
+fn spawn_async_op<T: Send + 'static>(
+    id: u64,
+    op: impl FnOnce() -> std::result::Result<T, String> + Send + 'static,
+    mk: impl FnOnce(u64, std::result::Result<T, String>) -> AsyncEvent + Send + 'static,
+) {
+    let tx = ASYNC_EVENTS.with(|t| t.borrow().clone().expect("ASYNC_EVENTS initialized"));
+    std::thread::spawn(move || {
+        let _ = tx.send(mk(id, op()));
+    });
+}
+
+/// 校验回调参数（第二个/第三个参数必须是可调用函数）
+fn async_cb(args: &[JsValue], pos: usize, api: &str) -> boa_engine::JsResult<JsValue> {
+    let cb = args.get(pos).cloned().unwrap_or(JsValue::undefined());
+    if cb.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.{api}: callback must be a function"
+        )))));
+    }
+    Ok(cb)
+}
+
+fn js_read_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("read_file_async: path must be a string")))
+    })?;
+    let cb = async_cb(args, 1, "read_file_async")?;
+    let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    with_async_callbacks(|m| { m.insert(id, cb); });
+    spawn_async_op(id, move || {
+        std::fs::read_to_string(&path).map_err(|e| format!("read_file_async('{path}'): {e}"))
+    }, AsyncEvent::FsRead);
+    Ok(JsValue::from(id))
+}
+
+fn js_write_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("write_file_async: path must be a string")))
+    })?;
+    let content: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("write_file_async: content must be a string")))
+    })?;
+    let cb = async_cb(args, 2, "write_file_async")?;
+    let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    with_async_callbacks(|m| { m.insert(id, cb); });
+    spawn_async_op(id, move || {
+        std::fs::write(&path, &content).map_err(|e| format!("write_file_async('{path}'): {e}"))
+    }, AsyncEvent::FsWrite);
+    Ok(JsValue::from(id))
+}
+
+fn js_stat_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("stat_async: path must be a string")))
+    })?;
+    let cb = async_cb(args, 1, "stat_async")?;
+    let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    with_async_callbacks(|m| { m.insert(id, cb); });
+    spawn_async_op(id, move || {
+        std::fs::metadata(&path)
+            .map(|m| FsStat {
+                size: m.len(),
+                is_dir: m.is_dir(),
+                mtime: m.modified()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).map_err(std::io::Error::other))
+                    .unwrap_or(0),
+            })
+            .map_err(|e| format!("stat_async('{path}'): {e}"))
+    }, AsyncEvent::FsStat);
+    Ok(JsValue::from(id))
+}
+
+fn js_glob_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let pattern: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("glob_async: pattern must be a string")))
+    })?;
+    let cb = async_cb(args, 1, "glob_async")?;
+    let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    with_async_callbacks(|m| { m.insert(id, cb); });
+    spawn_async_op(id, move || glob_matches(&pattern), AsyncEvent::FsGlob);
+    Ok(JsValue::from(id))
+}
+
 /// 取走全部待处理进程事件（主线程轮询用）
 pub fn drain_term_events() -> Vec<TermEvent> {
     init();
@@ -1383,6 +1549,74 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 TERM_MASTERS.with(|m| m.borrow_mut().remove(&id));
             }
         }
+        Ok(())
+    })
+}
+
+/// 取走全部待处理异步 fs 事件（主线程轮询用）
+pub fn drain_async_events() -> Vec<AsyncEvent> {
+    init();
+    let mut events = Vec::new();
+    ASYNC_EVENTS_RX.with(|r| {
+        if let Some(rx) = r.borrow_mut().as_mut() {
+            while let Ok(e) = rx.try_recv() {
+                events.push(e);
+            }
+        }
+    });
+    events
+}
+
+/// stat 快照 → JS 对象 { size, is_dir, mtime }
+fn stat_to_js(st: &FsStat, ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    Ok(JsValue::from(
+        ObjectInitializer::new(ctx)
+            .property(JsString::from("size"), JsValue::from(st.size as f64), Attribute::all())
+            .property(JsString::from("is_dir"), JsValue::from(st.is_dir), Attribute::all())
+            .property(JsString::from("mtime"), JsValue::from(st.mtime as f64), Attribute::all())
+            .build(),
+    ))
+}
+
+/// 把一条异步 fs 事件投递到对应 id 的 JS 回调。
+/// 回调签名：read → (err, content)；write → (err)；stat → (err, {size,is_dir,mtime})；glob → (err, paths[])。
+/// err 成功为 null、失败为错误字符串。一次性语义：resolve 后从注册表移除（回调失败也移除）。
+pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let cb = with_async_callbacks(|m| m.remove(&id));
+        let Some(cb) = cb else { return Ok(()) }; // 已 resolve / 未知 id → no-op（幂等）
+        let func = cb.as_callable().and_then(JsFunction::from_object)
+            .ok_or_else(|| anyhow!("async fs {id} callback not callable"))?;
+        let (err, arg): (JsValue, Option<JsValue>) = match event {
+            AsyncEvent::FsRead(_, Ok(content)) => (JsValue::null(), Some(JsValue::from(JsString::from(content)))),
+            AsyncEvent::FsRead(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
+            AsyncEvent::FsWrite(_, Ok(())) => (JsValue::null(), None),
+            AsyncEvent::FsWrite(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
+            AsyncEvent::FsStat(_, Ok(st)) => (
+                JsValue::null(),
+                Some(stat_to_js(&st, engine).map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?),
+            ),
+            AsyncEvent::FsStat(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
+            AsyncEvent::FsGlob(_, Ok(paths)) => {
+                let arr = JsArray::new(engine);
+                for p in &paths {
+                    arr.push(JsValue::from(JsString::from(p.clone())), engine)
+                        .map_err(|e| anyhow!("async fs {id} glob result failed: {e}"))?;
+                }
+                (JsValue::null(), Some(JsValue::from(arr)))
+            }
+            AsyncEvent::FsGlob(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
+        };
+        let undefined = JsValue::undefined();
+        let mut call_args = vec![err];
+        if let Some(arg) = arg {
+            call_args.push(arg);
+        }
+        let _: JsValue = func.call(&undefined, &call_args, engine)
+            .map_err(|e| anyhow!("async fs {id} callback failed: {e}"))?;
         Ok(())
     })
 }
@@ -2661,6 +2895,22 @@ mod tests {
         }
     }
 
+    /// 轮询 drain_async_events 直到谓词命中或超时，事件累积进调用方传入的 vec
+    /// （跨调用共享累积：异步 fs 四个操作并发发送，后几次 wait 必须能看到先前已 drain 的事件）。
+    fn wait_for_async(all: &mut Vec<AsyncEvent>, pred: impl Fn(&AsyncEvent) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            all.extend(drain_async_events());
+            if all.iter().any(&pred) {
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("timed out waiting for async event");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     #[test]
     fn async_run_and_spawn() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -2803,6 +3053,85 @@ mod tests {
         assert_eq!(joined.len(), 19999, "streamed bytes intact across chunks");
         assert!(!joined.contains('\u{FFFD}'), "no replacement chars in streamed output");
         assert_eq!(joined.matches("中文").count(), 2857, "CJK lines preserved in streamed output");
+    }
+
+    /// 任务简报验证测试：四个异步 fs API（read/write/stat/glob）回调 → echo；
+    /// 错误路径 err 非空；参数类型校验。
+    /// 注（相对简报的测试侧调整）：wait_for_async 把事件累积进共享 vec（四个 worker
+    /// 并发发送，四次顺序 wait 需共享累积）；简报注释 "resolve 全部" 落实为逐事件 resolve。
+    #[test]
+    fn async_fs() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = std::env::temp_dir().join(format!("helix-js-fs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello fs").unwrap();
+        std::fs::write(dir.join("b.js"), "x").unwrap();
+
+        load_script(&format!(r#"
+        helix.register_command("fsd", () => {{
+            helix.read_file_async("{dir}/a.txt", (err, content) => {{
+                helix.echo("read:" + (err ?? "") + ":" + (content ?? ""));
+            }});
+            helix.write_file_async("{dir}/out.txt", "written", (err) => {{
+                helix.echo("write:" + (err ?? "ok"));
+            }});
+            helix.stat_async("{dir}/a.txt", (err, st) => {{
+                helix.echo("stat:" + st.size + ":" + st.is_dir);
+            }});
+            helix.glob_async("{dir}/*.js", (err, paths) => {{
+                helix.echo("glob:" + paths.length);
+            }});
+        }});
+    "#, dir = dir.display())).unwrap();
+
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("fsd", &ctx).unwrap());
+        // 轮询 drain_async_events 直到四个回调都到（wait_for_async 辅助，仿 wait_for_term_event）
+        let mut events = Vec::new();
+        wait_for_async(&mut events, |e| matches!(e, AsyncEvent::FsRead(_, _)));
+        wait_for_async(&mut events, |e| matches!(e, AsyncEvent::FsWrite(_, _)));
+        wait_for_async(&mut events, |e| matches!(e, AsyncEvent::FsStat(_, _)));
+        wait_for_async(&mut events, |e| matches!(e, AsyncEvent::FsGlob(_, _)));
+        // resolve 全部（事件里带 id）→ 断言回调 echo
+        for ev in events {
+            let id = match &ev {
+                AsyncEvent::FsRead(id, _) | AsyncEvent::FsWrite(id, _) | AsyncEvent::FsStat(id, _) | AsyncEvent::FsGlob(id, _) => *id,
+            };
+            resolve_async_event(id, ev).unwrap();
+        }
+        let msgs = take_messages();
+        assert!(msgs.iter().any(|m| m == "read::hello fs"), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m == "write:ok"), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.starts_with("stat:8:false")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m == "glob:1"), "{msgs:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap(), "written");
+
+        // 错误路径：读不存在 → err 非空
+        load_script(&format!(r#"
+        helix.register_command("fsbad", () => {{
+            helix.read_file_async("{dir}/nope.txt", (err, content) => {{
+                helix.echo("bad:" + (err !== null ? "err" : "noerr"));
+            }});
+        }});
+    "#, dir = dir.display())).unwrap();
+        assert!(run_command("fsbad", &ctx).unwrap());
+        let mut bad = Vec::new();
+        wait_for_async(&mut bad, |e| matches!(e, AsyncEvent::FsRead(_, _)));
+        // resolve → 断言
+        for ev in bad {
+            let id = match &ev {
+                AsyncEvent::FsRead(id, _) | AsyncEvent::FsWrite(id, _) | AsyncEvent::FsStat(id, _) | AsyncEvent::FsGlob(id, _) => *id,
+            };
+            resolve_async_event(id, ev).unwrap();
+        }
+        assert!(take_messages().iter().any(|m| m == "bad:err"));
+
+        // 类型校验
+        assert!(load_script(r#"helix.read_file_async(42, () => {});"#).is_err());
+        assert!(load_script(r#"helix.read_file_async("x", 42);"#).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 临时任务简报的验证测试。wait 条件用 Exit（chunk 是它的先导），
