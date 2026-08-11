@@ -599,7 +599,8 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
         let v = obj.get(JsString::from(key), ctx)?;
         if v.is_null_or_undefined() { Ok(None) } else { Ok(Some(v.try_js_into::<String>(ctx)?)) }
     };
-    let doc_obj = obj.get(JsString::from("doc"), ctx)?.as_object().cloned();
+    let doc_val = obj.get(JsString::from("doc"), ctx)?;
+    let doc_obj = doc_val.as_object();
     let path = match &doc_obj {
         Some(doc) => get_str(doc, "path")?.or(get_str(&obj, "path")?),
         None => get_str(&obj, "path")?,
