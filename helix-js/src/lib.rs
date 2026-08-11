@@ -955,6 +955,12 @@ pub fn load_script_named(name: &str, src: &str) -> Result<()> {
     })
 }
 
+/// 已加载脚本名（按加载顺序；供 :plugin list / status）
+pub fn loaded_scripts() -> Vec<String> {
+    init();
+    LOADED_SCRIPTS.with(|s| s.borrow().iter().map(|(name, _)| name.clone()).collect())
+}
+
 /// 清空所有插件状态（热重载用；id 计数器保留保证唯一性）。
 /// 注意：UI_REQUESTS/MESSAGES 不清——它们是命令边界 drain 的队列。
 fn reset_plugin_state() {
@@ -1404,6 +1410,17 @@ mod tests {
         init();
         load_script(r#"helix.echo("hello from js");"#).unwrap();
         assert_eq!(take_messages(), vec!["hello from js"]);
+    }
+
+    #[test]
+    fn loaded_scripts_list() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script_named("a.js", r#"helix.register_command("a", () => {});"#).unwrap();
+        load_script_named("b.js", r#"helix.register_command("b", () => {});"#).unwrap();
+        let names = loaded_scripts();
+        assert!(names.iter().any(|n| n == "a.js"));
+        assert!(names.iter().any(|n| n == "b.js"));
     }
 
     #[test]
