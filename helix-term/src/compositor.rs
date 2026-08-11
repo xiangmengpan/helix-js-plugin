@@ -17,7 +17,7 @@ pub enum EventResult {
 
 use crate::job::Jobs;
 use crate::ui::picker;
-use crate::ui::plugin_panel::PluginPanel;
+use crate::ui::plugin_panel::{layout_panels, PanelSide, PluginPanel};
 use helix_view::Editor;
 
 pub use helix_view::input::Event;
@@ -142,6 +142,21 @@ impl Compositor {
         self.layers
             .retain(|component| component.type_name() != type_name);
     }
+
+    /// 按面板实例 id（PluginPanel::id，open_panel 分配的 u64）移除对应层；
+    /// 多面板并存时各层以 u64 实例 id 区分（静态 id 只适用于单面板）。
+    pub fn remove_panel(&mut self, id: u64) -> Option<Box<dyn Component>> {
+        let panel_type = std::any::type_name::<PluginPanel>();
+        let idx = self.layers.iter().position(|layer| {
+            layer.type_name() == panel_type
+                && layer
+                    .as_any()
+                    .downcast_ref::<PluginPanel>()
+                    .map(|panel| panel.id() == id)
+                    .unwrap_or(false)
+        })?;
+        Some(self.layers.remove(idx))
+    }
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> bool {
         // If it is a key event, a macro is being recorded, and a macro isn't being replayed,
         // push the key event to the recording.
@@ -183,15 +198,32 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // 面板推挤：有 PluginPanel 层时按层分流——面板拿停靠区，其余层拿收缩后的剩余区；
-        // 无面板时全部层渲染全屏区（原逻辑）。
-        let split = self.find::<PluginPanel>().map(|panel| panel.split_area(area));
+        // 面板推挤（多面板）：先按 type_name 收集所有 PluginPanel 层为 owned
+        // (id, side, size)（避免借用冲突），排布出每面板区 + 各侧收缩后的剩余区；
+        // 面板层按各自区渲染，其余层按剩余区渲染。无面板时全部层渲染全屏区（原逻辑）。
         let panel_type = std::any::type_name::<PluginPanel>();
+        let panels: Vec<(u64, PanelSide, u16)> = self
+            .layers
+            .iter()
+            .filter(|layer| layer.type_name() == panel_type)
+            .filter_map(|layer| layer.as_any().downcast_ref::<PluginPanel>())
+            .map(|panel| (panel.id(), panel.side(), panel.size()))
+            .collect();
+        let (panel_rects, rest_area) = layout_panels(area, &panels);
         for layer in &mut self.layers {
-            let layer_area = match split {
-                Some((panel_area, _rest_area)) if layer.type_name() == panel_type => panel_area,
-                Some((_, rest_area)) => rest_area,
-                None => area,
+            let layer_area = if layer.type_name() == panel_type {
+                layer
+                    .as_any()
+                    .downcast_ref::<PluginPanel>()
+                    .and_then(|panel| {
+                        panel_rects
+                            .iter()
+                            .find(|(id, _)| *id == panel.id())
+                            .map(|(_, rect)| *rect)
+                    })
+                    .unwrap_or(rest_area)
+            } else {
+                rest_area
             };
             layer.render(layer_area, surface, cx);
         }
