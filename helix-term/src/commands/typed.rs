@@ -12,6 +12,7 @@ use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
 use helix_js::CommandContext;
+use crate::ui::plugin_terminal::PluginTerminal;
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
@@ -4195,6 +4196,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: panel_close,
         completer: CommandCompleter::none(),
         signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "term-native",
+        aliases: &[],
+        doc: "Open a native terminal panel (PoC demo: vte grid + pty).",
+        fun: term_native,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
     }
 ];
 
@@ -4490,6 +4499,33 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::OpenTerminal { view_id, pty_id, cmd, side, size } => {
+                eprintln!("[dbg] drain OpenTerminal view_id={view_id}");
+                // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）；
+                // cmd 由 JS 侧 spawn 完成，这里只用于错误提示不真正执行
+                match side.as_str() {
+                    "right" | "left" | "bottom" => {}
+                    other => bail!("open_terminal: unknown side '{other}'"),
+                }
+                if cmd.is_empty() {
+                    bail!("open_terminal: empty cmd");
+                }
+                let terminal = PluginTerminal::new(view_id, pty_id, size);
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.push(Box::new(terminal));
+                });
+            }
+            helix_js::UiRequest::TermFeed { view_id, chunk } => {
+                // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃
+                eprintln!("[dbg] TermFeed view_id={view_id} chunk={chunk:?}");
+                let id = format!("plugin-terminal-{view_id}");
+                let id: &'static str = Box::leak(id.into_boxed_str());
+                job::dispatch_blocking(move |_editor, compositor| {
+                    if let Some(terminal) = compositor.find_id::<PluginTerminal>(id) {
+                        terminal.feed(&chunk);
+                    }
+                });
+            }
             helix_js::UiRequest::MapKey { mode, key, command } => {
                 // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
                 let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
@@ -4694,6 +4730,34 @@ fn panel_close(_cx: &mut compositor::Context, _args: Args, event: PromptEvent) -
         return Ok(());
     }
     helix_js::close_last_panel().map_err(|e| anyhow!("panel-close: {e}"))?;
+    apply_ui_requests(helix_js::take_ui_requests())?;
+    Ok(())
+}
+
+/// :term-native 打开原生终端面板（PoC 演示命令）：注册两个隐藏命令——
+/// __term_native 走真实 JS API 路径（helix.open_terminal 入队 OpenTerminal）并执行；
+/// __term_feed 把模拟输出注入对应视图（集成测试用，绕开 pty 时序）。
+fn term_native(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let src = r#"
+        let tid;
+        helix.register_command("__term_native", () => {
+            tid = helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
+            helix.term_feed(tid, "hello from pty");
+        });
+    "#;
+    helix_js::load_script_named("term-native.js", src).map_err(|e| anyhow!("term-native: {e}"))?;
+    let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+    eprintln!("[dbg] running __term_native");
+    let r = helix_js::run_command("__term_native", &ctx);
+    eprintln!("[dbg] run_command result: {:?}", r.as_ref().map_err(|e| e.to_string()));
+    r.map_err(|e| anyhow!("term-native: {e}"))?;
+    let msgs = helix_js::take_messages();
+    if !msgs.is_empty() {
+        cx.editor.set_status(msgs.join(" "));
+    }
     apply_ui_requests(helix_js::take_ui_requests())?;
     Ok(())
 }

@@ -125,6 +125,20 @@ pub enum UiRequest {
         side: String,
     },
     MapKey { mode: String, key: String, command: String },
+    /// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
+    /// pty_id 是内部 spawn 的 pty 进程 id（term_write/term_resize/关闭时 kill 用）。
+    OpenTerminal {
+        view_id: u64,
+        pty_id: u64,
+        cmd: String,
+        side: String,
+        size: u16,
+    },
+    /// 把 PTY 输出块喂给对应终端视图（按 view_id 找层，找不到丢弃）
+    TermFeed {
+        view_id: u64,
+        chunk: String,
+    },
 }
 
 /// 异步进程事件（worker 线程 → 主线程；主线程 drain 后 resolve 到 JS 回调）
@@ -232,6 +246,8 @@ thread_local! {
     static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
     // 最近一次 open_panel 的面板 id（:panel-close 用，无面板时为 None）
     static LAST_PANEL_ID: Cell<Option<u64>> = const { Cell::new(None) };
+    // 原生终端视图 id 计数器（open_terminal 返回值；与 pty 进程 id 分开分配）
+    static NEXT_TERMINAL_VIEW_ID: Cell<u64> = const { Cell::new(1) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static BUFFER_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -387,6 +403,8 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_spawn), JsString::from("spawn"), 1)
                 .function(NativeFunction::from_fn_ptr(js_term_write), JsString::from("term_write"), 2)
                 .function(NativeFunction::from_fn_ptr(js_term_kill), JsString::from("term_kill"), 1)
+                .function(NativeFunction::from_fn_ptr(js_open_terminal), JsString::from("open_terminal"), 1)
+                .function(NativeFunction::from_fn_ptr(js_term_feed), JsString::from("term_feed"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0);
             #[cfg(unix)]
@@ -1276,24 +1294,34 @@ fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine:
 fn js_term_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let text: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sender = TERM_WORKERS.with(|m| m.borrow().get(&id).cloned()).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.term_write: unknown id")))
-    })?;
-    sender
-        .send(TermCtrl::Write(text))
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("helix.term_write: worker gone"))))?;
+    term_write(id, &text)
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
     Ok(JsValue::undefined())
+}
+
+/// 向进程 stdin 写数据（Rust 侧入口，PluginTerminal 按键直通用；js_term_write 转发到这里）。
+/// 不调 init()：可能从渲染/事件循环（CONTEXT 未借用）触发，但保持与 term_kill 同款约束。
+pub fn term_write(id: u64, text: &str) -> Result<()> {
+    let sender = TERM_WORKERS.with(|m| m.borrow().get(&id).cloned()).ok_or_else(|| anyhow!("term_write: unknown id"))?;
+    sender
+        .send(TermCtrl::Write(text.to_string()))
+        .map_err(|_| anyhow!("term_write: worker gone"))?;
+    Ok(())
 }
 
 fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sender = TERM_WORKERS.with(|m| m.borrow_mut().remove(&id)).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.term_kill: unknown id")))
-    })?;
-    sender
-        .send(TermCtrl::Kill)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("helix.term_kill: worker gone"))))?;
+    term_kill(id).map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
     Ok(JsValue::undefined())
+}
+
+/// 杀进程（Rust 侧入口，helix-term 关闭终端面板时用；js_term_kill 转发到这里）。
+/// 未知 id / worker 已退出 → Err。Kill 后 worker 的 Exit 事件照常发（回调幂等）。
+/// 不调 init()：可能从命令执行（CONTEXT 已借用）里触发，且 TERM_WORKERS 是普通 thread_local。
+pub fn term_kill(id: u64) -> Result<()> {
+    let sender = TERM_WORKERS.with(|m| m.borrow_mut().remove(&id)).ok_or_else(|| anyhow!("term_kill: unknown id"))?;
+    sender.send(TermCtrl::Kill).map_err(|_| anyhow!("term_kill: worker gone"))?;
+    Ok(())
 }
 
 /// 调整 PTY 窗口尺寸（rows/cols）。直连 master fd 做 TIOCSWINSZ：
@@ -1649,6 +1677,115 @@ fn js_close_panel(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_
     Ok(JsValue::undefined())
 }
 
+/// helix.open_terminal({ cmd, side, size, onExit? })：打开原生终端面板。
+/// 校验 cmd/side/size/onExit 后分配 view_id，内部 spawn pty（复用 spawn 机制）：
+/// onChunk 是 eval 工厂构造的桥接闭包 → helix.term_feed(view_id, chunk)（经 UiRequest 路由）；
+/// onExit 透传用户回调。入队 OpenTerminal 后返回 view_id（= 面板 id，可 move_panel/term_feed）。
+/// pty spawn 仅 Unix（与 js_spawn 的 pty 路径同约束）。
+fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_terminal: options object required")))
+    })?;
+    let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_terminal: 'cmd' must be a string")))
+    })?;
+    if cmd.is_empty() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "open_terminal: 'cmd' must not be empty",
+        ))));
+    }
+    let side: String = opts.get(JsString::from("side"), ctx)?.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_terminal: 'side' must be a string")))
+    })?;
+    if !PANEL_SIDES.contains(&side.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "open_terminal: unknown side '{side}' (expected right|left|bottom)"
+        )))));
+    }
+    let size = {
+        let v = opts.get(JsString::from("size"), ctx)?;
+        let n: f64 = v.try_js_into(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("open_terminal: 'size' must be a number")))
+        })?;
+        if !n.is_finite() || n < 1.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "open_terminal: 'size' must be an integer in [1, {}]",
+                u16::MAX
+            )))));
+        }
+        n as u16
+    };
+    let on_exit = opts.get(JsString::from("onExit"), ctx)?;
+    let on_exit = on_exit.as_callable().map(|_| on_exit);
+
+    let view_id = NEXT_TERMINAL_VIEW_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    eprintln!("[dbg-js] open_terminal view_id={view_id} side={side} size={size}");
+    #[cfg(unix)]
+    {
+        // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
+        let factory = ctx
+            .eval(Source::from_bytes(
+                "(function(vid) { return function(chunk) { helix.term_feed(vid, chunk); }; })",
+            ))
+            .map_err(|e| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "open_terminal: bridge factory: {e}"
+                ))))
+            })?;
+        let factory = factory.as_callable().and_then(JsFunction::from_object).ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from("open_terminal: internal bridge error")))
+        })?;
+        let undefined = JsValue::undefined();
+        let bridge = factory
+            .call(&undefined, &[JsValue::from(view_id)], ctx)
+            .map_err(|e| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!("open_terminal: bridge: {e}"))))
+            })?;
+        // spawn pty（与 js_spawn 的 pty 路径同款）：注册回调/worker/master → 起 worker
+        let pty_id = NEXT_TERM_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+        with_terms(|m| {
+            m.insert(pty_id, TermCallbacks { on_chunk: bridge, on_exit, is_run_async: false })
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        TERM_WORKERS.with(|m| m.borrow_mut().insert(pty_id, tx));
+        let term_tx = TERM_EVENTS.with(|t| t.borrow().clone().expect("TERM_EVENTS initialized"));
+        let (master, slave) = pty::open_pty().map_err(|e| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!("open_terminal: pty: {e}"))))
+        })?;
+        TERM_MASTERS.with(|m| m.borrow_mut().insert(pty_id, master.fd()));
+        spawn_pty_worker(pty_id, &cmd, term_tx, rx, master, slave);
+        UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenTerminal {
+            view_id,
+            pty_id,
+            cmd,
+            side,
+            size,
+        });
+        Ok(JsValue::from(view_id))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (cmd, side, size, on_exit);
+        Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "open_terminal: requires a unix platform",
+        ))))
+    }
+}
+
+/// helix.term_feed(view_id, chunk)：把 PTY 输出块入队 TermFeed，由 helix-term 按 view_id
+/// 找终端层喂进 vte 网格。层不存在时 helix-term 侧丢弃（feed 早于层 push 的竞态）。
+fn js_term_feed(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    eprintln!("[dbg-js] term_feed args={:?}", args);
+    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("term_feed: view_id must be a number")))
+    })?;
+    let chunk: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("term_feed: chunk must be a string")))
+    })?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermFeed { view_id, chunk });
+    Ok(JsValue::undefined())
+}
+
 /// 同步列目录（不递归）：read_dir → 错误条目跳过 → 按名字排序 → [{ name, is_dir, path }]
 fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
@@ -1928,6 +2065,31 @@ mod tests {
     /// v13 任务简报验证测试：read_dir 排序/is_dir、open_file、move_panel 入队 + 校验。
     /// 简报原文断言 count:2，但设置创建 3 个条目（a.txt、b.js、sub/）→ 按实际调整为 count:3；
     /// 排序断言 entries[0].name < entries[1].name 不受影响（a.txt < b.js）。
+    #[test]
+    fn open_terminal_api() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("ot", () => {
+            const pid = helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
+            helix.echo("pid:" + pid);
+            helix.term_feed(pid, "abc");
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("ot", &ctx).unwrap());
+        assert!(take_messages()[0].starts_with("pid:"));
+        let reqs = take_ui_requests();
+        assert!(matches!(&reqs[0], UiRequest::OpenTerminal { side, size, .. } if side == "right" && *size == 40));
+        assert!(matches!(&reqs[1], UiRequest::TermFeed { chunk, .. } if chunk == "abc"));
+        // 校验
+        assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "top", size: 10 });"#).is_err());
+        assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "right" });"#).is_err()); // 缺 size
+    }
+
     #[test]
     fn sidecar_apis() {
         let _guard = TEST_LOCK.lock().unwrap();
