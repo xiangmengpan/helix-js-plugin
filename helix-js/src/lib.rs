@@ -590,24 +590,28 @@ fn parse_pos(v: &JsValue, ctx: &mut Context, dflt: (usize, usize)) -> boa_engine
 }
 
 /// 解析 JS ctx 对象 → CommandContext（缺省：path=None/text=""/cursor=(0,0)/selection 全 0）
+/// 从 JS 对象读可选字符串字段
+fn js_get_str(obj: &boa_engine::JsObject, key: &str, ctx: &mut Context) -> boa_engine::JsResult<Option<String>> {
+    let v = obj.get(JsString::from(key), ctx)?;
+    if v.is_null_or_undefined() { Ok(None) } else { Ok(Some(v.try_js_into::<String>(ctx)?)) }
+}
+
 fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<CommandContext> {
     let dflt = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
     let Some(obj) = v.as_object() else { return Ok(dflt) };
     // 命令实际收到的 ctx 形状是 { doc: { path, text, ... }, cursor, selection }——
     // 兼容两层（doc.path ?? path），保证 lazy 转发不丢 path/text
-    let get_str = |obj: &boa_engine::JsObject, key: &str| -> boa_engine::JsResult<Option<String>> {
-        let v = obj.get(JsString::from(key), ctx)?;
-        if v.is_null_or_undefined() { Ok(None) } else { Ok(Some(v.try_js_into::<String>(ctx)?)) }
-    };
     let doc_val = obj.get(JsString::from("doc"), ctx)?;
     let doc_obj = doc_val.as_object();
     let path = match &doc_obj {
-        Some(doc) => get_str(doc, "path")?.or(get_str(&obj, "path")?),
-        None => get_str(&obj, "path")?,
+        Some(doc) => js_get_str(doc, "path", ctx)?.or(js_get_str(&obj, "path", ctx)?),
+        None => js_get_str(&obj, "path", ctx)?,
     };
     let text = match &doc_obj {
-        Some(doc) => get_str(doc, "text")?.unwrap_or_else(|| get_str(&obj, "text").ok().flatten().unwrap_or_default()),
-        None => get_str(&obj, "text")?.unwrap_or_default(),
+        Some(doc) => {
+            js_get_str(doc, "text", ctx)?.unwrap_or_else(|| js_get_str(&obj, "text", ctx).ok().flatten().unwrap_or_default())
+        }
+        None => js_get_str(&obj, "text", ctx)?.unwrap_or_default(),
     };
     let cursor = parse_pos(&obj.get(JsString::from("cursor"), ctx)?, ctx, (0, 0))?;
     let selection = {
