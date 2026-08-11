@@ -1,7 +1,7 @@
 //! 组件树布局引擎：把 JS render 返回的 CompNode 树渲染成样式化行（StyledLine）。
 //! 样式名不在此解析（helix-js 只透传字符串），由调用方经 theme.get 映射。
 
-use helix_js::{CompNode, Content, StyledLine, TextSpan};
+use helix_js::{CompNode, Content, StyledLine};
 
 /// 统一入口：Content::Lines 原样返回（旧行 API）；Content::Tree 走布局引擎。
 pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
