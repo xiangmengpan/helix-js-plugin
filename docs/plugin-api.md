@@ -297,7 +297,11 @@ helix.lazy(name, ...commands)
 helix.run_command(name, ctx?)
 helix.open_file(path)
 helix.move_panel(id, side)
-helix.read_dir(path)`
+helix.read_dir(path)
+// 方案二：
+helix.read_file_async / write_file_async / stat_async / glob_async
+helix.el("text"|"row"|"col"|"scroll", ...)
+helix.open_terminal({ cmd, side, size, onExit? })`
 
 清空全部覆盖，恢复启动时的基础主题。
 
@@ -345,7 +349,11 @@ helix.lazy("git.js", "gitbranch", "gitstatus");  // 首次 :gitbranch 或 :gitst
 ### `helix.run_command(name, ctx?)
 helix.open_file(path)
 helix.move_panel(id, side)
-helix.read_dir(path)`
+helix.read_dir(path)
+// 方案二：
+helix.read_file_async / write_file_async / stat_async / glob_async
+helix.el("text"|"row"|"col"|"scroll", ...)
+helix.open_terminal({ cmd, side, size, onExit? })`
 
 程序化调用插件命令（`ctx` 可选，缺省空快照；支持命令 ctx 形状）。lazy 桩的内部底座，也可直接脚本化。
 
@@ -357,7 +365,11 @@ helix.read_dir(path)`
 
 把面板移动到另一侧（`"right"|"left"|"bottom"`）。下一帧自动重排。
 
-### `helix.read_dir(path) -> [{ name, is_dir, path }]`
+### `helix.read_dir(path)
+// 方案二：
+helix.read_file_async / write_file_async / stat_async / glob_async
+helix.el("text"|"row"|"col"|"scroll", ...)
+helix.open_terminal({ cmd, side, size, onExit? }) -> [{ name, is_dir, path }]`
 
 结构化列出目录条目（同步，不递归，按名字排序）。文件树的构建原语。
 
@@ -367,11 +379,45 @@ helix.read_dir("/tmp").forEach(e => {
 });
 ```
 
+### 异步 fs（方案二）
+
+```js
+helix.read_file_async(path, (err, content) => {...})   // 读文件（UTF-8 lossy）
+helix.write_file_async(path, content, (err) => {...})   // 写文件
+helix.stat_async(path, (err, { is_dir, size, mtime }) => {...})
+helix.glob_async(pattern, (err, paths) => {...})        // * / ** / ?（相对 CWD）
+```
+
+worker 线程执行，回调在主线程事件循环，不阻塞编辑器。
+
+### 组件模型（方案二）
+
+`render` 可返回嵌套组件树（旧行数组仍兼容）：
+
+```js
+helix.el("text", "hello", { style: "error", width: 20 })  // 文本（style/截断）
+helix.el("row", [children], { gap: 1 })                   // 水平并排
+helix.el("col", [children], { gap: 0 })                   // 垂直堆叠
+helix.el("scroll", [children], { height: 10 })            // 高度裁剪（保留末 height 行）
+```
+
+组件可任意嵌套；`row` 各段样式不一致时整行样式坍缩为无。
+
+### 原生终端视图（方案二）
+
+```js
+helix.open_terminal({ cmd: "bash", side: "right", size: 44, onExit?: (code) => {} })
+```
+
+PTY 输出经 vte 解析成网格渲染（光标/颜色/清屏/滚回/alt screen 支持，vim/htop 可显示）；面板尺寸变化实时 TIOCSWINSZ；按键直通；Esc 关闭。返回面板 id（可 `move_panel`）。
+
 ## 13. 已知限制
 
 | 限制 | 说明 |
 |------|------|
-| **无异步语言特性** | boa 引擎无 `setTimeout`/网络；所有回调同步执行（异步只来自 `run_async`/`spawn` 回调） |
+| **无异步语言特性** | boa 引擎无 `setTimeout`/网络；异步只来自 `run_async`/`spawn`/`*_async` 回调 |
+| **终端视图非完整仿真器** | vte 网格支持光标/颜色/清屏/滚回/alt screen；宽字符、鼠标、选择复制不支持 |
+| **组件行样式坍缩** | row 混合样式整行坍缩为无样式（多 span 行模型未做） |
 | **弹窗 render 无 doc** | 只有 `onKey` 有 doc 参数；render 回调不能编辑 |
 | **事件 ctx 范围** | `save`/`mode-change` 等事件只带当前文档（其他分屏文档不触发） |
 | **无多光标** | 选区/光标 API 只操作主光标 |
@@ -410,6 +456,10 @@ helix.run_command(name, ctx?)
 helix.open_file(path)
 helix.move_panel(id, side)
 helix.read_dir(path)
+// 方案二：
+helix.read_file_async / write_file_async / stat_async / glob_async
+helix.el("text"|"row"|"col"|"scroll", ...)
+helix.open_terminal({ cmd, side, size, onExit? })
 
 命令 ctx：{ doc: { path, text, cursor, insert(), replace(), delete() },
             cursor: { row, col }, selection: { anchor, head } }
