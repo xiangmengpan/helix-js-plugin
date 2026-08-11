@@ -54,6 +54,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
                 // ponytail: StyledLine 是单 (text, style) 对，row 混合样式会坍缩为 None；
                 // 若需要逐段样式需把行模型升级为多 span。
                 let mut first_style: Option<&str> = None;
+                let mut saw_unstyled = false;
                 let mut styles_agree = true;
                 for (ci, part) in parts.iter().enumerate() {
                     if width_used >= viewport.0 as usize {
@@ -75,10 +76,13 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
                     width_used += seg.chars().count();
                     line.push_str(&seg);
                     if !seg.is_empty() {
+                        // 首个非空样式为 baseline；后续段样式不同、从有到无、或从无到有 → 整行样式不一致
                         match (first_style, seg_style) {
-                            (None, Some(s)) => first_style = Some(s),
+                            (None, Some(s)) if !saw_unstyled => first_style = Some(s),
+                            (None, Some(_)) => styles_agree = false,
                             (Some(a), Some(b)) if a != b => styles_agree = false,
                             (Some(_), None) => styles_agree = false,
+                            (None, None) => saw_unstyled = true,
                             _ => {}
                         }
                     }
@@ -119,6 +123,22 @@ mod tests {
 
     fn line(t: &str) -> StyledLine {
         StyledLine { text: t.into(), style: None }
+    }
+
+    #[test]
+    fn row_mixed_styles_collapse_to_none() {
+        // 无样式段在带样式段之前出现 → 整行样式为 None（对称性：从有到无同样不一致）
+        let node = CompNode::Row {
+            children: vec![
+                CompNode::Text { text: "a".into(), style: None, width: None },
+                CompNode::Text { text: "b".into(), style: Some("error".into()), width: None },
+            ],
+            gap: 0,
+        };
+        let out = layout(&node, (40, 10));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "ab");
+        assert_eq!(out[0].style, None, "mixed styles must collapse to None");
     }
 
     #[test]
