@@ -1,5 +1,6 @@
 use crate::commands::typed::{apply_cursor_requests, apply_plugin_edits};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
+use crate::ui::comp_layout;
 use helix_js::{CommandContext, PluginKey, PopupKeyResult, StyledLine};
 use helix_view::current_ref;
 use helix_view::graphics::Rect;
@@ -24,6 +25,14 @@ impl PluginPopup {
             id,
             lines: Vec::new(),
             size_hint,
+        }
+    }
+
+    /// 调 JS render 并布局成行：Lines 原样；Tree 走 comp_layout（viewport 约束）。
+    fn refresh(&mut self, viewport: (u16, u16)) {
+        match helix_js::render_popup(self.id, viewport.0, viewport.1) {
+            Ok(content) => self.lines = comp_layout::render(content, viewport),
+            Err(err) => self.lines = vec![StyledLine { text: format!("<plugin popup error: {err}>"), style: None }],
         }
     }
 }
@@ -98,10 +107,7 @@ impl Component for PluginPopup {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        match helix_js::render_popup(self.id, area.width, area.height) {
-            Ok(lines) => self.lines = lines,
-            Err(err) => self.lines = vec![StyledLine { text: format!("<plugin popup error: {err}>"), style: None }],
-        }
+        self.refresh((area.width, area.height));
         // 每行样式化 span：style 名直接映射到主题 scope（未知 scope 主题返回默认 Style，不 panic）
         let spans: Vec<Spans> = self
             .lines
@@ -120,6 +126,11 @@ impl Component for PluginPopup {
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        // 首帧 lines 为空时预布局（树内容需真实 viewport 才能算出尺寸；
+        // 否则 Popup 先按 required_size 得到 0×0，树布局永远被裁成空）
+        if self.lines.is_empty() {
+            self.refresh(viewport);
+        }
         let width = self
             .lines
             .iter()
