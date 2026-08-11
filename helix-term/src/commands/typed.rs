@@ -4555,11 +4555,16 @@ fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
 
 /// 从安装路径提取插件名：basename + 强制 .js 后缀 + 拒绝目录（目录 file_name() 为 None）
 fn plugin_name_from_path(path: &str) -> anyhow::Result<String> {
-    let name = std::path::Path::new(path)
+    let path = std::path::Path::new(path);
+    // 显式拒绝目录（尾斜杠目录的 file_name() 也会返回名字，不能依赖它）
+    if path.is_dir() {
+        return Err(anyhow!("invalid plugin path: '{}' (is a directory)", path.display()));
+    }
+    let name = path
         .file_name()
-        .ok_or_else(|| anyhow!("invalid plugin path: '{path}'"))?
+        .ok_or_else(|| anyhow!("invalid plugin path: '{}'", path.display()))?
         .to_str()
-        .ok_or_else(|| anyhow!("plugin path is not valid UTF-8: '{path}'"))?;
+        .ok_or_else(|| anyhow!("plugin path is not valid UTF-8: '{}'", path.display()))?;
     validate_plugin_name(name)?;
     Ok(name.to_string())
 }
