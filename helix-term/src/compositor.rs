@@ -282,6 +282,15 @@ impl Compositor {
             .and_then(|component| component.as_any_mut().downcast_mut())
     }
 
+    /// 按谓词找层（多实例同类型区分：终端层按 view_id 等自定义键查找，
+    /// 避免每事件构造 &'static id 字符串）
+    pub fn find_where<T: 'static>(&mut self, mut f: impl FnMut(&T) -> bool) -> Option<&mut T> {
+        self.layers
+            .iter_mut()
+            .filter_map(|component| component.as_any_mut().downcast_mut::<T>())
+            .find(|t| f(t))
+    }
+
     pub fn need_full_redraw(&mut self) {
         self.full_redraw = true;
     }

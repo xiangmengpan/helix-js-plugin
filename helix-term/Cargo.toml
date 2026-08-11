@@ -51,6 +51,8 @@ helix-vcs = { path = "../helix-vcs" }
 helix-loader = { path = "../helix-loader" }
 helix-js = { path = "../helix-js" }
 
+vte.workspace = true
+
 anyhow = "1"
 once_cell = "1.21"
 
