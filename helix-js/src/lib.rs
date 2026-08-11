@@ -595,22 +595,18 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
     let Some(obj) = v.as_object() else { return Ok(dflt) };
     // 命令实际收到的 ctx 形状是 { doc: { path, text, ... }, cursor, selection }——
     // 兼容两层（doc.path ?? path），保证 lazy 转发不丢 path/text
-    let mut read_str = |key: &str| -> boa_engine::JsResult<Option<String>> {
+    let get_str = |obj: &boa_engine::JsObject, key: &str| -> boa_engine::JsResult<Option<String>> {
         let v = obj.get(JsString::from(key), ctx)?;
         if v.is_null_or_undefined() { Ok(None) } else { Ok(Some(v.try_js_into::<String>(ctx)?)) }
     };
-    let doc_path = obj.get(JsString::from("doc"), ctx)?;
-    let path = if let Some(doc) = doc_path.as_object() {
-        let p = doc.get(JsString::from("path"), ctx)?;
-        if p.is_null_or_undefined() { read_str("path")? } else { Some(p.try_js_into::<String>(ctx)?) }
-    } else {
-        read_str("path")?
+    let doc_obj = obj.get(JsString::from("doc"), ctx)?.as_object().cloned();
+    let path = match &doc_obj {
+        Some(doc) => get_str(doc, "path")?.or(get_str(&obj, "path")?),
+        None => get_str(&obj, "path")?,
     };
-    let text = if let Some(doc) = doc_path.as_object() {
-        let t = doc.get(JsString::from("text"), ctx)?;
-        if t.is_null_or_undefined() { read_str("text")?.unwrap_or_default() } else { t.try_js_into::<String>(ctx)? }
-    } else {
-        read_str("text")?.unwrap_or_default()
+    let text = match &doc_obj {
+        Some(doc) => get_str(doc, "text")?.unwrap_or_else(|| get_str(&obj, "text").ok().flatten().unwrap_or_default()),
+        None => get_str(&obj, "text")?.unwrap_or_default(),
     };
     let cursor = parse_pos(&obj.get(JsString::from("cursor"), ctx)?, ctx, (0, 0))?;
     let selection = {
