@@ -33,6 +33,7 @@ mod test {
     mod plugin_layout;
     mod plugin_manager;
     mod plugin_multipanel;
+    mod plugin_entry;
     mod plugin_statusline;
     mod splits;
 }
