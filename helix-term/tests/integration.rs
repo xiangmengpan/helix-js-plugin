@@ -31,6 +31,7 @@ mod test {
     mod plugin_panel;
     mod plugin_theme;
     mod plugin_layout;
+    mod plugin_manager;
     mod plugin_statusline;
     mod splits;
 }
