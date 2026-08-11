@@ -22,10 +22,17 @@
 
 ## 1. 加载与生命周期
 
-- 插件放 `~/.config/helix/plugins/*.js`，启动时按文件名顺序自动加载
+- **唯一入口**：启动只自动加载 `~/.config/helix/plugins/init.js`；其他插件脚本必须经 `helix.load` 导入（不再全量扫描 `*.js`）
+- `:plugin-load <path>` 可手动加载任意文件
 - 每个插件在独立 IIFE 作用域求值（顶层 `let`/`const` 不跨插件共享；`helix` 全局对象除外）
-- `:plugin-reload` 清空全部插件状态（命令/处理器/钩子/主题覆盖）并按加载顺序重跑所有脚本
+- `:plugin-reload` 清空全部插件状态（命令/处理器/钩子/主题覆盖）并按加载顺序重跑；模块文件**重读磁盘**（init.js 本体重跑记录文本）
 - `helix` 全局对象是唯一的宿主 API 入口
+
+```js
+// ~/.config/helix/init.js —— 唯一入口示例
+helix.load("icons.js");                       // 立即导入
+helix.lazy("terminal.js", "term");            // 懒加载：首次 :term 才加载
+```
 
 ## 2. 命令注册与消息
 
@@ -283,7 +290,11 @@ helix.set_theme({ "ui.popup": "#ff79c6", "error": "red", "warning": "#f1fa8c" })
 - color 支持主题 palette 的颜色名或 `#rrggbb`；非法颜色条目忽略
 - 覆盖即时生效（重建主题并替换）；支持继承主题（inherits）正确解析
 
-### `helix.reset_theme()`
+### `helix.reset_theme()
+helix.load(name) -> exports
+helix.export(obj)
+helix.lazy(name, ...commands)
+helix.run_command(name, ctx?)`
 
 清空全部覆盖，恢复启动时的基础主题。
 
@@ -301,6 +312,36 @@ helix.set_theme({ "ui.popup": "#ff79c6", "error": "red", "warning": "#f1fa8c" })
 
 - `install`/`remove` 只操作 `~/.config/helix/plugins/` 目录（路径校验防逃逸）
 - `:plugin-reload` 是 `:plugin reload` 的别名（历史命令）
+
+## 12.5 模块导入与懒加载
+
+### `helix.load(name) -> exports`
+
+从插件目录加载脚本并返回其导出值。相对名（`"icons.js"`）解析到插件目录；绝对路径可用；`.js` 后缀强制。重复加载返回缓存；文件不存在/语法错误抛错。
+
+```js
+// mod.js 内：
+helix.export({ helper: () => 42 });
+// init.js 内：
+const mod = helix.load("mod.js");
+mod.helper();   // 42
+```
+
+### `helix.export(obj)`
+
+在当前脚本中声明导出（被 `helix.load` 的返回值拿到）。
+
+### `helix.lazy(name, ...commands)`
+
+注册命令桩：首次调用任一命令时才加载插件，然后转执行真实命令。
+
+```js
+helix.lazy("git.js", "gitbranch", "gitstatus");  // 首次 :gitbranch 或 :gitstatus 时加载 git.js
+```
+
+### `helix.run_command(name, ctx?)`
+
+程序化调用插件命令（`ctx` 可选，缺省空快照；支持命令 ctx 形状）。lazy 桩的内部底座，也可直接脚本化。
 
 ## 13. 已知限制
 
@@ -338,6 +379,10 @@ helix.set_buffer_icon(fn)
 helix.set_statusline(fn)
 helix.set_theme({ scope: color })
 helix.reset_theme()
+helix.load(name) -> exports
+helix.export(obj)
+helix.lazy(name, ...commands)
+helix.run_command(name, ctx?)
 
 命令 ctx：{ doc: { path, text, cursor, insert(), replace(), delete() },
             cursor: { row, col }, selection: { anchor, head } }
