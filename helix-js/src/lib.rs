@@ -1933,6 +1933,7 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
         let dir = std::env::temp_dir().join(format!("helix-js-sidecar-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         std::fs::write(dir.join("b.js"), "b").unwrap();
