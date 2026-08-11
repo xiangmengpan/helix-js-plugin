@@ -152,7 +152,14 @@ impl Application {
             let plugin_dir = helix_loader::config_dir().join("plugins");
             // js_load 相对名解析用：init.js 里 helix.load("xxx.js") 落到插件目录
             helix_js::set_plugins_dir(plugin_dir.clone());
-            let init_path = plugin_dir.join("init.js");
+            // 入口 init.js 位于配置根（~/.config/helix/init.js）；
+            // 回退兼容旧位置 plugins/init.js
+            let init_path = helix_loader::config_dir().join("init.js");
+            let init_path = if init_path.is_file() {
+                init_path
+            } else {
+                plugin_dir.join("init.js")
+            };
             if init_path.is_file() {
                 match std::fs::read_to_string(&init_path).and_then(|src| {
                     helix_js::load_script_named(&init_path.display().to_string(), &src)
