@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
@@ -238,6 +239,10 @@ thread_local! {
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static SCRIPT_EXPORTS: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
+    static LAST_EXPORT: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 主题覆盖：scope → 颜色字符串（set_theme 整体替换；reset_theme 清空）。
     // 只存字符串，无 JsValue，普通 RefCell 即可（随线程 drop）。
     static THEME_OVERRIDES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
@@ -249,6 +254,22 @@ thread_local! {
 fn with_registry<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
     REGISTRY.with(|r| {
         let mut slot = r.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 SCRIPT_EXPORTS：同上（内容泄漏）
+fn with_script_exports<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
+    SCRIPT_EXPORTS.with(|m| {
+        let mut slot = m.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 LAST_EXPORT：同上（内容泄漏）
+fn with_last_export<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+    LAST_EXPORT.with(|l| {
+        let mut slot = l.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })
 }
@@ -286,6 +307,8 @@ fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
 }
 static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
+/// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
+static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 // 事件通道按线程存放：回调注册表（TERM_CALLBACKS）是线程本地的，通道也必须同线程配对——
 // 全局单通道会被并发测试的 render 泵互偷（别的线程 drain 后 resolve 时找不到本线程的回调，静默丢弃）。
 // worker 在 std 线程上持发起线程的 Sender 克隆；drain 只读本线程的 Receiver。
@@ -345,6 +368,10 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_set_cursor), JsString::from("set_cursor"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_selection), JsString::from("set_selection"), 4)
                 .function(NativeFunction::from_fn_ptr(js_set_statusline), JsString::from("set_statusline"), 1)
+                .function(NativeFunction::from_fn_ptr(js_load), JsString::from("load"), 1)
+                .function(NativeFunction::from_fn_ptr(js_export), JsString::from("export"), 1)
+                .function(NativeFunction::from_fn_ptr(js_lazy), JsString::from("lazy"), 2)
+                .function(NativeFunction::from_fn_ptr(js_run_command), JsString::from("run_command"), 1)
                 .function(NativeFunction::from_fn_ptr(js_run), JsString::from("run"), 1)
                 .function(NativeFunction::from_fn_ptr(js_run_async), JsString::from("run_async"), 2)
                 .function(NativeFunction::from_fn_ptr(js_spawn), JsString::from("spawn"), 1)
@@ -431,6 +458,200 @@ fn js_register_command(
     }
     with_registry(|r| r.insert(name, func));
     Ok(JsValue::undefined())
+}
+
+/// 设置插件目录（js_load 相对名解析用）。OnceLock 只生效一次：helix-term 启动时调用。
+pub fn set_plugins_dir(dir: PathBuf) {
+    let _ = PLUGINS_DIR.set(dir);
+}
+
+/// helix.load(name)：从插件目录加载脚本（相对名或绝对路径），返回其 helix.export 的值；
+/// 重复加载返回缓存对象。`.js` 后缀强制（无则补）。文件缺失/语法错 → 抛错。
+/// 嵌套加载：内层 load 消费 LAST_EXPORT（take 语义），外层脚本自己的 export 随后设置。
+/// 直接用传入的 boa Context 调（不再借 CONTEXT 线程局部）——load 可能发生在命令运行中
+/// （lazy 桩），外层 run_command 正持有 CONTEXT 的 RefCell 借用，再借会 panic。
+fn js_load(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.load: name must be a string")))
+        })?;
+    if name.is_empty() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.load: name must not be empty",
+        ))));
+    }
+    let key = if name.ends_with(".js") { name } else { format!("{name}.js") };
+    if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
+        return Ok(cached);
+    }
+    let path = if Path::new(&key).is_absolute() {
+        PathBuf::from(&key)
+    } else {
+        PLUGINS_DIR.get().map(|d| d.join(&key)).ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.load: plugins dir not set")))
+        })?
+    };
+    let src = std::fs::read_to_string(&path).map_err(|e| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!("helix.load('{key}'): {e}"))))
+    })?;
+    eval_wrapped(ctx, &src).map_err(|e| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!("helix.load('{key}') failed: {e}"))))
+    })?;
+    let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
+    LOADED_SCRIPTS.with(|s| {
+        let mut s = s.borrow_mut();
+        if !s.iter().any(|(n, _)| n == &key) {
+            s.push((key.clone(), src));
+        }
+    });
+    with_script_exports(|m| m.insert(key, export.clone()));
+    Ok(export)
+}
+
+/// helix.export(obj)：声明当前脚本的导出（被 helix.load 的返回值拿到）。undefined/null 清空。
+fn js_export(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let arg = args.first().cloned().unwrap_or(JsValue::undefined());
+    with_last_export(|l| *l = if arg.is_null_or_undefined() { None } else { Some(arg) });
+    Ok(JsValue::undefined())
+}
+
+/// helix.lazy(name, ...cmds)：为每个 cmd 注册桩闭包——首次调用时加载 name 再转执行。
+/// 桩经 eval 工厂构造闭包（不经 REGISTRY 捕获 JsValue，避免闭包环境问题）。
+fn js_lazy(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    if args.len() < 2 {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.lazy: name and at least one command required",
+        ))));
+    }
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.lazy: name must be a string")))
+        })?;
+    if name.is_empty() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.lazy: name must not be empty",
+        ))));
+    }
+    let factory = ctx
+        .eval(Source::from_bytes(
+            "(function(n, c) { return function(ctx) { helix.load(n); helix.run_command(c, ctx); }; })",
+        ))
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.lazy: {e}")))))?;
+    let factory = factory
+        .as_callable()
+        .and_then(JsFunction::from_object)
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.lazy: internal factory error")))
+        })?;
+    let undefined = JsValue::undefined();
+    for cmd in &args[1..] {
+        let cmd: String = cmd.try_js_into(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.lazy: command names must be strings",
+            )))
+        })?;
+        if cmd.is_empty() || cmd.chars().any(char::is_whitespace) {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "invalid command name: {cmd:?}"
+            )))));
+        }
+        let closure = factory
+            .call(
+                &undefined,
+                &[
+                    JsValue::from(JsString::from(name.clone())),
+                    JsValue::from(JsString::from(cmd.clone())),
+                ],
+                ctx,
+            )
+            .map_err(|e| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!("helix.lazy: {e}"))))
+            })?;
+        with_registry(|r| r.insert(cmd, closure));
+    }
+    Ok(JsValue::undefined())
+}
+
+/// 解析 JS { row, col } → 坐标（字段缺失/非对象用缺省值）
+fn parse_pos(v: &JsValue, ctx: &mut Context, dflt: (usize, usize)) -> boa_engine::JsResult<(usize, usize)> {
+    let Some(obj) = v.as_object() else { return Ok(dflt) };
+    let row = obj.get(JsString::from("row"), ctx)?;
+    let col = obj.get(JsString::from("col"), ctx)?;
+    Ok((
+        if row.is_null_or_undefined() { dflt.0 } else { row.try_js_into::<usize>(ctx)? },
+        if col.is_null_or_undefined() { dflt.1 } else { col.try_js_into::<usize>(ctx)? },
+    ))
+}
+
+/// 解析 JS ctx 对象 → CommandContext（缺省：path=None/text=""/cursor=(0,0)/selection 全 0）
+fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<CommandContext> {
+    let dflt = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+    let Some(obj) = v.as_object() else { return Ok(dflt) };
+    let path = {
+        let p = obj.get(JsString::from("path"), ctx)?;
+        if p.is_null_or_undefined() { None } else { Some(p.try_js_into::<String>(ctx)?) }
+    };
+    let text = {
+        let t = obj.get(JsString::from("text"), ctx)?;
+        if t.is_null_or_undefined() { String::new() } else { t.try_js_into::<String>(ctx)? }
+    };
+    let cursor = parse_pos(&obj.get(JsString::from("cursor"), ctx)?, ctx, (0, 0))?;
+    let selection = {
+        let sel = obj.get(JsString::from("selection"), ctx)?;
+        if sel.is_null_or_undefined() {
+            ((0, 0), (0, 0))
+        } else {
+            let sel_obj = sel.as_object().ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "helix.run_command: 'selection' must be an object with anchor/head",
+                )))
+            })?;
+            let anchor = parse_pos(&sel_obj.get(JsString::from("anchor"), ctx)?, ctx, (0, 0))?;
+            let head = parse_pos(&sel_obj.get(JsString::from("head"), ctx)?, ctx, (0, 0))?;
+            (anchor, head)
+        }
+    };
+    Ok(CommandContext { path, text, cursor, selection })
+}
+
+/// helix.run_command(name, ctx?)：程序化调用插件命令。ctx 缺省空快照。
+/// 嵌套调用合法：直接用传入的 boa Context 调（不再借 CONTEXT，避开 RefCell 重入 panic）；
+/// 编辑/光标请求排队，由外层命令的 drain 应用。
+fn js_run_command(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.run_command: name must be a string")))
+        })?;
+    let command_ctx = parse_command_ctx(args.get(1).unwrap_or(&JsValue::undefined()), ctx)?;
+    let func = with_registry(|r| r.get(&name).cloned()).ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.run_command: '{name}' is not registered"
+        ))))
+    })?;
+    let func = func.as_callable().and_then(JsFunction::from_object).ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "registered value for '{name}' is not a function"
+        ))))
+    })?;
+    let arg = ctx_to_js(&command_ctx, ctx)
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.run_command: {e}")))))?;
+    let undefined = JsValue::undefined();
+    func.call(&undefined, &[arg], ctx)
+        .map(|_| JsValue::undefined())
+        .map_err(|e| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "helix.run_command('{name}') failed: {e}"
+            ))))
+        })
 }
 
 /// helix.map 允许的 mode 白名单
@@ -1228,6 +1449,9 @@ fn reset_plugin_state() {
     with_statusline_hook(|h| *h = None);
     LAST_PANEL_ID.with(|c| c.set(None));
     COMMAND_DOCS.with(|d| d.borrow_mut().clear());
+    // 导出缓存与 pending 导出随插件状态重置（reload 后按名重读磁盘重跑）
+    with_script_exports(|m| m.clear());
+    with_last_export(|l| *l = None);
     // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
     THEME_OVERRIDES.with(|o| o.borrow_mut().clear());
     THEME_DIRTY.with(|d| d.set(true));
@@ -1247,6 +1471,18 @@ pub fn reload_all() -> Result<()> {
     let scripts = LOADED_SCRIPTS.with(|s| s.borrow().clone());
     reset_plugin_state();
     for (name, src) in &scripts {
+        // 按名重读磁盘：js_load 记录的模块文件更新生效（相对名解析 PLUGINS_DIR，
+        // 绝对路径直接用）；读不到（load_script_named 的字符串脚本/目录已删）用记录 src 兜底
+        let disk_src = if Path::new(name).is_absolute() {
+            std::fs::read_to_string(name).ok()
+        } else {
+            PLUGINS_DIR
+                .get()
+                .map(|d| d.join(name))
+                .filter(|p| p.is_file())
+                .and_then(|p| std::fs::read_to_string(p).ok())
+        };
+        let src = disk_src.as_deref().unwrap_or(src);
         CONTEXT.with(|cell| -> Result<()> {
             let mut binding = cell.borrow_mut();
             let engine = binding.as_mut().expect("CONTEXT initialized");
@@ -2574,5 +2810,76 @@ mod tests {
         let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("ccmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["ok"]);
+    }
+
+    /// 统一入口：load/export 往返 + 缓存、lazy 桩、run_command 带 ctx、未知文件报错。
+    /// set_plugins_dir 是进程全局——测试用临时目录隔离。
+    // ponytail: tempdir 不 drop（std::mem::forget）——线程池复用线程，后续 reload 测试
+    // 会在本线程重跑 LOADED_SCRIPTS（含 init.js→load("exp.js")），目录被删会误伤；
+    // 泄漏几个 /tmp 小文件换确定性。
+    #[test]
+    fn entry_load_export_lazy() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        set_plugins_dir(dir.path().to_path_buf());
+
+        // 导出 + 加载往返
+        std::fs::write(dir.path().join("exp.js"), r#"helix.export({ a: 1, b: "x" });"#).unwrap();
+        load_script_named("init.js", r#"helix.load("exp.js");"#).unwrap();
+        // init.js 的 load 本身无法断言返回值——直接测 js_load 路径：
+        // 用 helix.run_command 间接：注册命令调用 load 并把结果 echo 出来
+        load_script_named(
+            "driver.js",
+            r#"
+        helix.register_command("load-exp", () => {
+            const mod = helix.load("exp.js");
+            helix.echo("a:" + mod.a + " b:" + mod.b);
+        });
+        helix.register_command("load-cached", () => {
+            const m1 = helix.load("exp.js");
+            const m2 = helix.load("exp.js");
+            helix.echo("same:" + (m1 === m2));
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("load-exp", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["a:1 b:x"]);
+        assert!(run_command("load-cached", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["same:true"]);
+
+        // lazy：桩首次调用时加载 + 转执行
+        std::fs::write(
+            dir.path().join("lazy.js"),
+            r#"helix.register_command("lazy-cmd", () => { helix.echo("lazy-ran"); });"#,
+        )
+        .unwrap();
+        load_script_named("lazy-driver.js", r#"helix.lazy("lazy.js", "lazy-cmd");"#).unwrap();
+        assert!(run_command("lazy-cmd", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["lazy-ran"]);
+
+        // run_command 带 ctx：命令读 ctx.cursor
+        load_script_named(
+            "rc.js",
+            r#"
+        helix.register_command("where", (c) => { helix.echo("at:" + c.cursor.row + "," + c.cursor.col); });
+        "#,
+        )
+        .unwrap();
+        load_script_named(
+            "rc-driver.js",
+            r#"helix.register_command("call-where", () => { helix.run_command("where", { cursor: { row: 3, col: 7 } }); });"#,
+        )
+        .unwrap();
+        assert!(run_command("call-where", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["at:3,7"]);
+
+        // 校验：未知文件 → 抛错
+        load_script_named("bad-driver.js", r#"helix.register_command("bad-load", () => { helix.load("nope.js"); });"#).unwrap();
+        assert!(run_command("bad-load", &ctx).is_err());
+
+        std::mem::forget(dir);
     }
 }

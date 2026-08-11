@@ -142,7 +142,7 @@ impl Application {
 
         let jobs = Jobs::new();
 
-        // Load JavaScript plugins from the config dir at startup (best effort).
+        // 统一入口：启动只加载 plugins/init.js（其余脚本经 init.js 的 helix.load 导入）。
         // MapKey/OpenPopup 经 apply_ui_requests 走 job 通道（JOB_QUEUE 已由 Jobs::new 建立，
         // EditorView 已入 compositor，事件循环启动后生效）。
         // 集成测试跳过：不能加载开发机的 ~/.config/helix/plugins（会污染测试的
@@ -150,35 +150,28 @@ impl Application {
         #[cfg(not(feature = "integration"))]
         {
             let plugin_dir = helix_loader::config_dir().join("plugins");
-            if plugin_dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().is_some_and(|ext| ext == "js") {
-                            match std::fs::read_to_string(&path).and_then(|src| {
-                                helix_js::load_script_named(&path.display().to_string(), &src)
-                                    .map_err(|e| std::io::Error::other(e.to_string()))
-                            }) {
-                                Ok(()) => {
-                                    for msg in helix_js::take_messages() {
-                                        editor.set_status(msg);
-                                    }
-                                    if let Err(err) = crate::commands::typed::apply_ui_requests(
-                                        helix_js::take_ui_requests(),
-                                    ) {
-                                        editor.set_error(format!(
-                                            "plugin '{}': {err}",
-                                            path.display()
-                                        ));
-                                    }
-                                }
-                                Err(err) => editor.set_error(format!(
-                                    "plugin '{}' failed: {err}",
-                                    path.display()
-                                )),
-                            }
+            // js_load 相对名解析用：init.js 里 helix.load("xxx.js") 落到插件目录
+            helix_js::set_plugins_dir(plugin_dir.clone());
+            let init_path = plugin_dir.join("init.js");
+            if init_path.is_file() {
+                match std::fs::read_to_string(&init_path).and_then(|src| {
+                    helix_js::load_script_named(&init_path.display().to_string(), &src)
+                        .map_err(|e| std::io::Error::other(e.to_string()))
+                }) {
+                    Ok(()) => {
+                        for msg in helix_js::take_messages() {
+                            editor.set_status(msg);
+                        }
+                        if let Err(err) = crate::commands::typed::apply_ui_requests(
+                            helix_js::take_ui_requests(),
+                        ) {
+                            editor.set_error(format!("plugin '{}': {err}", init_path.display()));
                         }
                     }
+                    Err(err) => editor.set_error(format!(
+                        "plugin '{}' failed: {err}",
+                        init_path.display()
+                    )),
                 }
             }
         }
