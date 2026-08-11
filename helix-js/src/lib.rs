@@ -117,6 +117,13 @@ pub enum UiRequest {
     ClosePanel {
         id: u64,
     },
+    OpenFile {
+        path: String,
+    },
+    MovePanel {
+        id: u64,
+        side: String,
+    },
     MapKey { mode: String, key: String, command: String },
 }
 
@@ -362,6 +369,9 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_open_popup), JsString::from("open_popup"), 1)
                 .function(NativeFunction::from_fn_ptr(js_open_panel), JsString::from("open_panel"), 1)
                 .function(NativeFunction::from_fn_ptr(js_close_panel), JsString::from("close_panel"), 1)
+                .function(NativeFunction::from_fn_ptr(js_read_dir), JsString::from("read_dir"), 1)
+                .function(NativeFunction::from_fn_ptr(js_open_file), JsString::from("open_file"), 1)
+                .function(NativeFunction::from_fn_ptr(js_move_panel), JsString::from("move_panel"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(js_on), JsString::from("on"), 2)
                 .function(NativeFunction::from_fn_ptr(js_map), JsString::from("map"), 3)
@@ -1639,6 +1649,62 @@ fn js_close_panel(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_
     Ok(JsValue::undefined())
 }
 
+/// 同步列目录（不递归）：read_dir → 错误条目跳过 → 按名字排序 → [{ name, is_dir, path }]
+fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("read_dir: path must be a string")))
+    })?;
+    let mut entries: Vec<(String, bool, String)> = std::fs::read_dir(&path)
+        .map_err(|e| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!("read_dir('{path}'): {e}"))))
+        })?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let full = entry.path().to_string_lossy().into_owned();
+            Some((name, is_dir, full))
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let arr = JsArray::new(ctx);
+    for (name, is_dir, path) in entries {
+        let obj = ObjectInitializer::new(ctx)
+            .property(JsString::from("name"), JsValue::from(JsString::from(name)), Attribute::all())
+            .property(JsString::from("is_dir"), JsValue::from(is_dir), Attribute::all())
+            .property(JsString::from("path"), JsValue::from(JsString::from(path)), Attribute::all())
+            .build();
+        arr.push(JsValue::from(obj), ctx)?;
+    }
+    Ok(JsValue::from(arr))
+}
+
+/// 入队 OpenFile（path 字符串校验）
+fn js_open_file(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("open_file: path must be a string")))
+    })?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenFile { path });
+    Ok(JsValue::undefined())
+}
+
+/// 入队 MovePanel（id 数字 + side 白名单校验）
+fn js_move_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("move_panel: id must be a number")))
+    })?;
+    let side: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("move_panel: side must be a string")))
+    })?;
+    if !PANEL_SIDES.contains(&side.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "move_panel: unknown side '{side}' (expected right|left|bottom)"
+        )))));
+    }
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::MovePanel { id, side });
+    Ok(JsValue::undefined())
+}
+
 fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let undefined = JsValue::undefined();
     let hook = args.first().unwrap_or(&undefined);
@@ -1858,6 +1924,60 @@ mod tests {
 
     // 多个测试共享全局运行时，用锁串行化避免消息队列竞争
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// v13 任务简报验证测试：read_dir 排序/is_dir、open_file、move_panel 入队 + 校验。
+    /// 简报原文断言 count:2，但设置创建 3 个条目（a.txt、b.js、sub/）→ 按实际调整为 count:3；
+    /// 排序断言 entries[0].name < entries[1].name 不受影响（a.txt < b.js）。
+    #[test]
+    fn sidecar_apis() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = std::env::temp_dir().join(format!("helix-js-sidecar-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("b.js"), "b").unwrap();
+
+        // 路径经 {:?}（JSON 字符串转义）注入脚本
+        let dir_str = dir.to_string_lossy();
+        let file_path = dir.join("a.txt");
+        let file_str = file_path.to_string_lossy();
+        let script = format!(
+            r#"
+        helix.register_command("sc", () => {{
+            const entries = helix.read_dir({dir:?});
+            helix.echo("count:" + entries.length + " sorted:" + (entries[0].name < entries[1].name));
+            const dirs = entries.filter(e => e.is_dir);
+            helix.echo("dirs:" + dirs.length + ":" + dirs[0].name);
+            helix.open_file({file:?});
+            helix.move_panel(7, "left");
+        }});
+        "#,
+            dir = dir_str,
+            file = file_str,
+        );
+        load_script(&script).unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("sc", &ctx).unwrap());
+        let msgs = take_messages();
+        assert!(msgs[0].starts_with("count:3 sorted:true"), "{msgs:?}");
+        assert_eq!(msgs[1], "dirs:1:sub");
+        let reqs = take_ui_requests();
+        assert!(matches!(&reqs[0], UiRequest::OpenFile { path } if path.ends_with("a.txt")));
+        assert!(matches!(&reqs[1], UiRequest::MovePanel { id: 7, side } if side == "left"));
+
+        // 校验：read_dir 不存在路径 → 抛错；move_panel 非法 side → 抛错；open_file 非字符串 → 抛错
+        load_script(
+            r#"
+        helix.register_command("bad1", () => { helix.read_dir("/nonexistent-helix-js-xyz"); });
+        helix.register_command("bad2", () => { helix.move_panel(7, "top"); });
+        helix.register_command("bad3", () => { helix.open_file(42); });
+        "#,
+        )
+        .unwrap();
+        assert!(run_command("bad1", &ctx).is_err());
+        assert!(run_command("bad2", &ctx).is_err());
+        assert!(run_command("bad3", &ctx).is_err());
+    }
 
     #[test]
     fn theme_overrides_api() {

@@ -157,6 +157,29 @@ impl Compositor {
         })?;
         Some(self.layers.remove(idx))
     }
+
+    /// 按面板实例 id 改停靠边（move_panel 请求；找不到该 id 返回 false）
+    pub fn set_panel_side(&mut self, id: u64, side: PanelSide) -> bool {
+        let panel_type = std::any::type_name::<PluginPanel>();
+        let Some(layer) = self.layers.iter_mut().find(|layer| {
+            layer.type_name() == panel_type
+                && layer
+                    .as_any()
+                    .downcast_ref::<PluginPanel>()
+                    .map(|panel| panel.id() == id)
+                    .unwrap_or(false)
+        }) else {
+            return false;
+        };
+        layer
+            .as_any_mut()
+            .downcast_mut::<PluginPanel>()
+            .map(|panel| {
+                panel.set_side(side);
+                true
+            })
+            .unwrap_or(false)
+    }
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> bool {
         // If it is a key event, a macro is being recorded, and a macro isn't being replayed,
         // push the key event to the recording.

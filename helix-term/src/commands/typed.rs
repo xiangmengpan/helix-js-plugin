@@ -4466,6 +4466,30 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.remove_panel(id);
                 });
             }
+            helix_js::UiRequest::OpenFile { path } => {
+                // open 是同步的（editor.open 直接返回），:open 语义（Action::Replace）；
+                // 错误经 set_error 上报（闭包内无 Result 传播路径）
+                let path = PathBuf::from(path);
+                job::dispatch_blocking(move |editor, _compositor| {
+                    if let Err(err) = editor.open(&path, Action::Replace) {
+                        editor.set_error(format!("open_file: {err}"));
+                    }
+                });
+            }
+            helix_js::UiRequest::MovePanel { id, side } => {
+                // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）
+                let side = match side.as_str() {
+                    "right" => ui::PanelSide::Right,
+                    "left" => ui::PanelSide::Left,
+                    "bottom" => ui::PanelSide::Bottom,
+                    other => bail!("move_panel: unknown side '{other}'"),
+                };
+                job::dispatch_blocking(move |editor, compositor| {
+                    if !compositor.set_panel_side(id, side) {
+                        editor.set_error(format!("move_panel: no panel with id {id}"));
+                    }
+                });
+            }
             helix_js::UiRequest::MapKey { mode, key, command } => {
                 // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
                 let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;

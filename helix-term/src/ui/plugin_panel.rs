@@ -45,6 +45,12 @@ impl PluginPanel {
         self.size
     }
 
+    /// 移动面板到另一侧（move_panel 请求；side 白名单在 JS 侧已校验）。
+    /// compositor 每帧枚举面板重排，改后自动生效。
+    pub(crate) fn set_side(&mut self, side: PanelSide) {
+        self.side = side;
+    }
+
     /// 按停靠边从全屏区切出面板区域：size 超界时 clamp 到 area 尺寸。
     /// 单面板场景用（N=1 特例；多面板排布走 layout_panels）。
     fn panel_area(&self, area: Rect) -> Rect {
