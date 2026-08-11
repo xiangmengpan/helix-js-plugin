@@ -407,7 +407,15 @@ helix.el("scroll", [children], { height: 10 })            // 高度裁剪（保�
 
 ```js
 helix.open_terminal({ cmd: "bash", side: "right", size: 44, onExit?: (code) => {} })
+
+helix.set_terminal_mode(id, "dock" | "fullscreen" | "floating" | "minimized")  // 切换模式
+helix.term_clear(id)          // 清空终端网格
+helix.resize_term(id, size)   // 调整面板尺寸（列宽/行高）
 ```
+
+- **模式**：dock（停靠推挤）/ fullscreen（占满）/ floating（居中悬浮，16 行）/ minimized（底部 1 行细条，按键穿透编辑器、进程保活）
+- **输出即时性**：worker 发事件即唤醒事件循环（~33ms 上屏），不再等 250ms idle
+- **pty raw mode**：输入即达 bash（readline 处理回显/Ctrl-C），无 canonical 缓冲；kill 杀整个进程组（`sh` 未 exec 的孙进程也杀）
 
 PTY 输出经 vte 解析成网格渲染（光标/颜色/清屏/滚回/alt screen 支持，vim/htop 可显示）；面板尺寸变化实时 TIOCSWINSZ；按键直通；Esc 关闭。返回面板 id（可 `move_panel`）。
 
