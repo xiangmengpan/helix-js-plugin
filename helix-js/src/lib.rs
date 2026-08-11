@@ -595,7 +595,7 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
     let Some(obj) = v.as_object() else { return Ok(dflt) };
     // 命令实际收到的 ctx 形状是 { doc: { path, text, ... }, cursor, selection }——
     // 兼容两层（doc.path ?? path），保证 lazy 转发不丢 path/text
-    let read_str = |key: &str| -> boa_engine::JsResult<Option<String>> {
+    let mut read_str = |key: &str| -> boa_engine::JsResult<Option<String>> {
         let v = obj.get(JsString::from(key), ctx)?;
         if v.is_null_or_undefined() { Ok(None) } else { Ok(Some(v.try_js_into::<String>(ctx)?)) }
     };
