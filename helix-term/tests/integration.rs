@@ -30,6 +30,8 @@ mod test {
     mod plugin_async;
     mod plugin_panel;
     mod plugin_terminal_view;
+    mod plugin_fsasync;
+    mod plugin_components;
     mod plugin_theme;
     mod plugin_layout;
     mod plugin_manager;
