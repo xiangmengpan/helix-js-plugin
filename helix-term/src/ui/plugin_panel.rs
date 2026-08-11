@@ -31,7 +31,22 @@ impl PluginPanel {
         Self { id, side, size, lines: Vec::new() }
     }
 
+    /// 面板实例 id（open_panel 分配的 u64，与 render 注册表共用）；
+    /// compositor 用它区分并存的多面板层（remove_panel / 排布收集）。
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn side(&self) -> PanelSide {
+        self.side
+    }
+
+    pub(crate) fn size(&self) -> u16 {
+        self.size
+    }
+
     /// 按停靠边从全屏区切出面板区域：size 超界时 clamp 到 area 尺寸。
+    /// 单面板场景用（N=1 特例；多面板排布走 layout_panels）。
     fn panel_area(&self, area: Rect) -> Rect {
         match self.side {
             PanelSide::Right => Rect::new(
@@ -52,7 +67,7 @@ impl PluginPanel {
 
     /// 把全屏区切成 (面板区, 编辑器区)：面板占停靠边 size，编辑器占剩余部分。
     /// size 超界时面板 clamp 到全尺寸、编辑器区对应维度为 0（saturating 不 panic）。
-    /// compositor.render 用此结果分流：面板层拿 panel，其余层拿 rest。
+    /// 单面板场景用（N=1 特例；多面板排布走 layout_panels）。
     pub fn split_area(&self, area: Rect) -> (Rect, Rect) {
         let panel = self.panel_area(area);
         let rest = match self.side {
@@ -77,6 +92,62 @@ impl PluginPanel {
         };
         (panel, rest)
     }
+}
+
+/// 多面板排布（纯函数，可单测）：给定全屏区与面板清单（按开层顺序），
+/// 返回每面板的矩形 + 各侧收缩后的剩余区。
+/// 排布规则：right 从右缘向内、left 从左缘向内、bottom 从底缘向上，先开的靠边；
+/// 各侧独立叠放（bottom 面板横跨全宽，不与左/右面板嵌套）。
+/// size 总和超界时 saturating clamp（不 panic）。
+/// N=1 时结果与 PluginPanel::split_area 一致（单面板 = 特例）。
+pub(crate) fn layout_panels(
+    area: Rect,
+    panels: &[(u64, PanelSide, u16)],
+) -> (Vec<(u64, Rect)>, Rect) {
+    let mut rects = Vec::with_capacity(panels.len());
+    let mut right_used = 0u16;
+    let mut left_used = 0u16;
+    let mut bottom_used = 0u16;
+    for (id, side, size) in panels {
+        let rect = match side {
+            PanelSide::Right => {
+                let w = (*size).min(area.width.saturating_sub(right_used));
+                let r = Rect::new(
+                    area.right().saturating_sub(right_used).saturating_sub(w),
+                    area.y,
+                    w,
+                    area.height,
+                );
+                right_used = right_used.saturating_add(*size);
+                r
+            }
+            PanelSide::Left => {
+                let w = (*size).min(area.width.saturating_sub(left_used));
+                let r = Rect::new(area.x.saturating_add(left_used), area.y, w, area.height);
+                left_used = left_used.saturating_add(*size);
+                r
+            }
+            PanelSide::Bottom => {
+                let h = (*size).min(area.height.saturating_sub(bottom_used));
+                let r = Rect::new(
+                    area.x,
+                    area.bottom().saturating_sub(bottom_used).saturating_sub(h),
+                    area.width,
+                    h,
+                );
+                bottom_used = bottom_used.saturating_add(*size);
+                r
+            }
+        };
+        rects.push((*id, rect));
+    }
+    let rest = Rect::new(
+        left_used,
+        area.y,
+        area.width.saturating_sub(left_used).saturating_sub(right_used),
+        area.height.saturating_sub(bottom_used),
+    );
+    (rects, rest)
 }
 
 impl Component for PluginPanel {
@@ -134,12 +205,12 @@ impl Component for PluginPanel {
         match result {
             Ok(PopupKeyResult::Close) => {
                 let id = self.id;
-                // 先通知 JS（触发 onClose，echo 消息入队），再按静态 id 移除层，最后把
+                // 先通知 JS（触发 onClose，echo 消息入队），再按实例 id 移除层，最后把
                 // echo 消息刷成状态栏（与命令路径取消息的约定一致）。
                 EventResult::Consumed(Some(Box::new(
                     move |compositor: &mut Compositor, cx: &mut Context| {
                         let _ = helix_js::close_popup(id);
-                        compositor.remove("plugin-panel");
+                        compositor.remove_panel(id);
                         let msgs = helix_js::take_messages();
                         if !msgs.is_empty() {
                             cx.editor.set_status(msgs.join(" "));
@@ -175,11 +246,8 @@ impl Component for PluginPanel {
         par.render(area, surface);
     }
 
-    // 静态 id：compositor.remove("plugin-panel") 按 id 移除层
-    // ponytail: 单面板 PoC——id 不区分实例，再次 open 会 replace_or_push 替换旧层
-    fn id(&self) -> Option<&'static str> {
-        Some("plugin-panel")
-    }
+    // 无静态 id：多面板下各层需独立标识，移除/排布一律走 u64 实例 id
+    //（compositor.remove_panel / layout_panels 收集）。
 }
 
 #[cfg(test)]
@@ -213,5 +281,48 @@ mod tests {
         let (panel, rest) = PluginPanel::new(1, PanelSide::Bottom, 500).split_area(area);
         assert_eq!(panel, Rect::new(0, 0, 100, 40));
         assert_eq!(rest, Rect::new(0, 0, 100, 0));
+    }
+
+    #[test]
+    fn layout_panels_right_side() {
+        let area = Rect::new(0, 0, 100, 40);
+        // 同侧多面板：先开的靠右缘，后开的向内叠
+        let (rects, rest) = layout_panels(area, &[(1, PanelSide::Right, 20), (2, PanelSide::Right, 10)]);
+        assert_eq!(rects, vec![(1, Rect::new(80, 0, 20, 40)), (2, Rect::new(70, 0, 10, 40))]);
+        assert_eq!(rest, Rect::new(0, 0, 70, 40));
+        // N=1 特例：与 split_area 一致
+        let (rects, rest) = layout_panels(area, &[(1, PanelSide::Right, 20)]);
+        assert_eq!(rects, vec![(1, Rect::new(80, 0, 20, 40))]);
+        assert_eq!(rest, Rect::new(0, 0, 80, 40));
+    }
+
+    #[test]
+    fn layout_panels_mixed_sides() {
+        let area = Rect::new(0, 0, 100, 40);
+        // 各侧独立叠放：left 从左上、bottom 从底缘（横跨全宽）；剩余区各侧收缩
+        let (rects, rest) = layout_panels(
+            area,
+            &[(1, PanelSide::Left, 10), (2, PanelSide::Bottom, 5), (3, PanelSide::Right, 15)],
+        );
+        assert_eq!(rects, vec![
+            (1, Rect::new(0, 0, 10, 40)),
+            (2, Rect::new(0, 35, 100, 5)),
+            (3, Rect::new(85, 0, 15, 40)),
+        ]);
+        assert_eq!(rest, Rect::new(10, 0, 75, 35));
+        // 无面板：剩余区 = 全屏
+        let (rects, rest) = layout_panels(area, &[]);
+        assert!(rects.is_empty());
+        assert_eq!(rest, area);
+    }
+
+    #[test]
+    fn layout_panels_clamps_oversized() {
+        // size 总和超屏 → saturating clamp 不 panic：首面板吃满全宽，后续宽度为 0
+        let area = Rect::new(0, 0, 100, 40);
+        let (rects, rest) = layout_panels(area, &[(1, PanelSide::Right, 500), (2, PanelSide::Right, 10)]);
+        assert_eq!(rects[0].1, Rect::new(0, 0, 100, 40));
+        assert_eq!(rects[1].1.width, 0);
+        assert_eq!(rest, Rect::new(0, 0, 0, 40));
     }
 }

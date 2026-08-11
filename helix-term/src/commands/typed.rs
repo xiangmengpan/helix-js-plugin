@@ -4447,14 +4447,15 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 };
                 let panel = ui::PluginPanel::new(id, side, size);
                 job::dispatch_blocking(move |_editor, compositor| {
-                    compositor.replace_or_push("plugin-panel", panel);
+                    // 多面板并存：直接推层（replace_or_push 的单面板替换语义已废弃）
+                    compositor.push(Box::new(panel));
                 });
             }
             helix_js::UiRequest::ClosePanel { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
-                    // 先清 render 注册表（幂等），再按静态 id 移除层
+                    // 先清 render 注册表（幂等），再按实例 id 移除对应层（多面板并存）
                     let _ = helix_js::close_popup(id);
-                    compositor.remove("plugin-panel");
+                    compositor.remove_panel(id);
                 });
             }
             helix_js::UiRequest::MapKey { mode, key, command } => {
