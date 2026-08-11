@@ -234,18 +234,23 @@ impl Component for PluginPanel {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         match helix_js::render_popup(self.id, area.width, area.height) {
             Ok(content) => self.lines = comp_layout::render(content, (area.width, area.height)),
-            Err(err) => self.lines = vec![StyledLine { text: format!("<plugin panel error: {err}>"), style: None }],
+            Err(err) => self.lines = vec![StyledLine::plain(format!("<plugin panel error: {err}>"))],
         }
         // 与 PluginPopup 同款样式逻辑：style 名映射主题 scope（未知 scope 返回默认 Style）
         let spans: Vec<Spans> = self
             .lines
             .iter()
             .map(|l| {
-                let span = match &l.style {
-                    Some(s) => Span::styled(l.text.clone(), cx.editor.theme.get(s)),
-                    None => Span::raw(l.text.clone()),
-                };
-                Spans::from(span)
+                // 多 span 行：每段独立样式（theme.get 未知 scope 返回默认 Style，不 panic）
+                Spans::from(
+                    l.spans
+                        .iter()
+                        .map(|span| match &span.style {
+                            Some(s) => Span::styled(span.text.clone(), cx.editor.theme.get(s)),
+                            None => Span::raw(span.text.clone()),
+                        })
+                        .collect::<Vec<Span>>(),
+                )
             })
             .collect();
         let text = TuiText::from(spans);

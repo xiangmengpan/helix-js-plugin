@@ -32,7 +32,7 @@ impl PluginPopup {
     fn refresh(&mut self, viewport: (u16, u16)) {
         match helix_js::render_popup(self.id, viewport.0, viewport.1) {
             Ok(content) => self.lines = comp_layout::render(content, viewport),
-            Err(err) => self.lines = vec![StyledLine { text: format!("<plugin popup error: {err}>"), style: None }],
+            Err(err) => self.lines = vec![StyledLine::plain(format!("<plugin popup error: {err}>"))],
         }
     }
 }
@@ -113,11 +113,16 @@ impl Component for PluginPopup {
             .lines
             .iter()
             .map(|l| {
-                let span = match &l.style {
-                    Some(s) => Span::styled(l.text.clone(), cx.editor.theme.get(s)),
-                    None => Span::raw(l.text.clone()),
-                };
-                Spans::from(span)
+                // 多 span 行：每段独立样式（theme.get 未知 scope 返回默认 Style，不 panic）
+                Spans::from(
+                    l.spans
+                        .iter()
+                        .map(|span| match &span.style {
+                            Some(s) => Span::styled(span.text.clone(), cx.editor.theme.get(s)),
+                            None => Span::raw(span.text.clone()),
+                        })
+                        .collect::<Vec<Span>>(),
+                )
             })
             .collect();
         let text = TuiText::from(spans);
@@ -134,7 +139,7 @@ impl Component for PluginPopup {
         let width = self
             .lines
             .iter()
-            .map(|l| l.text.chars().count() as u16)
+            .map(|l| l.spans.iter().map(|sp| sp.text.chars().count() as u16).sum())
             .max()
             .unwrap_or(0)
             .min(viewport.0);
@@ -187,7 +192,7 @@ mod tests {
     #[test]
     fn required_size_clamps_to_size_hint() {
         let mut p = PluginPopup::new(1, Some((10, 4)));
-        p.lines = vec![StyledLine { text: "W".repeat(20), style: None }; 10];
+        p.lines = vec![StyledLine::plain("W".repeat(20)); 10];
         assert_eq!(p.required_size((120, 30)), Some((10, 4)));
     }
 
@@ -195,8 +200,8 @@ mod tests {
     fn required_size_without_hint_uses_content() {
         let mut p = PluginPopup::new(1, None);
         p.lines = vec![
-            StyledLine { text: "abc".into(), style: None },
-            StyledLine { text: "a".into(), style: None },
+            StyledLine::plain("abc"),
+            StyledLine::plain("a"),
         ];
         assert_eq!(p.required_size((120, 30)), Some((3, 2)));
     }
@@ -204,7 +209,7 @@ mod tests {
     #[test]
     fn required_size_never_exceeds_viewport_width() {
         let mut p = PluginPopup::new(1, None);
-        p.lines = vec![StyledLine { text: "x".repeat(200), style: None }];
+        p.lines = vec![StyledLine::plain("x".repeat(200))];
         assert_eq!(p.required_size((50, 30)), Some((50, 1)));
     }
 }

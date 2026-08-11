@@ -262,11 +262,31 @@ struct PopupCallbacks {
     on_close: Option<JsValue>,
 }
 
-/// render 回调返回的一行：文本 + 可选样式名（主题 scope，如 "error"）
+/// 一段带样式的文本（多 span 行模型：一行可有多段不同样式）
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StyledLine {
+pub struct TextSpan {
     pub text: String,
     pub style: Option<String>,
+}
+
+/// render 回调返回的一行：多段样式文本（"error" 等主题 scope 名）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyledLine {
+    pub spans: Vec<TextSpan>,
+}
+
+impl StyledLine {
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self { spans: vec![TextSpan { text: text.into(), style: None }] }
+    }
+
+    pub fn styled(text: impl Into<String>, style: impl Into<String>) -> Self {
+        Self { spans: vec![TextSpan { text: text.into(), style: Some(style.into()) }] }
+    }
+
+    pub fn width(&self) -> usize {
+        self.spans.iter().map(|s| s.text.chars().count()).sum()
+    }
 }
 
 /// 组件树节点：render 返回单节点对象（含 type 字段）时解析出的布局树。
@@ -274,7 +294,7 @@ pub struct StyledLine {
 /// Scroll 高度裁剪容器（保留最后 height 行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompNode {
-    Text { text: String, style: Option<String>, width: Option<u16> },
+    Text { spans: Vec<TextSpan>, width: Option<u16> },
     Row { children: Vec<CompNode>, gap: u16 },
     Col { children: Vec<CompNode>, gap: u16 },
     Scroll { children: Vec<CompNode>, height: u16 },
@@ -2265,12 +2285,20 @@ fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::Js
     let mut props: Vec<(String, JsValue)> = vec![("type".into(), JsString::from(type_.clone()).into())];
     match type_.as_str() {
         "text" => {
-            let text: String = arg.try_js_into(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: 'text' expects a string"
-                ))))
-            })?;
-            props.push(("text".into(), JsString::from(text).into()));
+            // text 可为字符串或富文本段数组（[{text, style}, ...]）
+            if arg.try_js_into::<String>(ctx).is_ok() {
+                // 字符串直通
+            } else if arg
+                .try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
+                .is_ok()
+            {
+                // 数组直通（parse_node 解析）
+            } else {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: 'text' expects a string or an array of segments"
+                )))));
+            }
+            props.push(("text".into(), arg));
             if let Some(opts) = opts {
                 let obj = opts.as_object().ok_or_else(|| {
                     JsError::from_opaque(JsValue::from(JsString::from(format!(
@@ -2341,9 +2369,12 @@ fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_
                 ))))
             })?)
         };
-        Ok(StyledLine { text, style })
+        Ok(match style {
+            Some(style) => StyledLine::styled(text, style),
+            None => StyledLine::plain(text),
+        })
     } else if let Ok(text) = item.try_js_into::<String>(ctx) {
-        Ok(StyledLine { text, style: None })
+        Ok(StyledLine::plain(text))
     } else {
         Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
             "popup {id} render line {i} must be a string or an object with 'text'"
@@ -2424,17 +2455,43 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
         })?;
     match type_.as_str() {
         "text" => {
-            let text: String = obj
-                .get(JsString::from("text"), ctx)?
-                .try_js_into(ctx)
-                .map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: text node must have a string 'text' property"
-                    ))))
-                })?;
-            let style = obj_opt_str(&obj, "style", ctx, &api)?;
+            let text_val = obj.get(JsString::from("text"), ctx)?;
+            // 节点级 style 属性（字符串文本时整段应用）
+            let node_style = obj_opt_str(&obj, "style", ctx, &api)?;
+            // text 支持字符串或富文本段数组 [{text, style}, ...]
+            let spans = if let Ok(s) = text_val.try_js_into::<String>(ctx) {
+                vec![TextSpan { text: s, style: node_style }]
+            } else if let Ok(arr) =
+                text_val.try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
+            {
+                let mut spans = Vec::new();
+                let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
+                for i in 0..len {
+                    let item = arr.get(i, ctx)?;
+                    let obj = item.as_object().ok_or_else(|| {
+                        JsError::from_opaque(JsValue::from(JsString::from(format!(
+                            "{api}: rich text segments must be objects with 'text'"
+                        ))))
+                    })?;
+                    let t: String = obj
+                        .get(JsString::from("text"), ctx)?
+                        .try_js_into(ctx)
+                        .map_err(|_| {
+                            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                                "{api}: rich text segment must have a string 'text'"
+                            ))))
+                        })?;
+                    let st = obj_opt_str(&obj, "style", ctx, &api)?;
+                    spans.push(TextSpan { text: t, style: st });
+                }
+                spans
+            } else {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: text node 'text' must be a string or an array of segments"
+                )))));
+            };
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
-            Ok(CompNode::Text { text, style, width })
+            Ok(CompNode::Text { spans, width })
         }
         "row" | "col" => {
             let children = parse_children(&obj, ctx, id)?;
@@ -2903,9 +2960,9 @@ mod tests {
         assert_eq!(
             lines,
             Content::Lines(vec![
-                StyledLine { text: "a".into(), style: None },
-                StyledLine { text: "b".into(), style: None },
-                StyledLine { text: "c".into(), style: None },
+                StyledLine::plain("a"),
+                StyledLine::plain("b"),
+                StyledLine::plain("c"),
             ])
         );
 
@@ -3005,9 +3062,9 @@ mod tests {
         assert_eq!(
             lines,
             Content::Lines(vec![
-                StyledLine { text: "err: ".into(), style: Some("error".into()) },
-                StyledLine { text: "plain".into(), style: None },
-                StyledLine { text: "warn".into(), style: None },
+                StyledLine::styled("err: ", "error"),
+                StyledLine::plain("plain"),
+                StyledLine::plain("warn"),
             ])
         );
         close_popup(id).unwrap();
@@ -3975,7 +4032,7 @@ mod tests {
                 match &root {
                     CompNode::Col { children, .. } => {
                         assert_eq!(children.len(), 3);
-                        assert!(matches!(&children[0], CompNode::Text { text, style: Some(s), .. } if text == "title" && s == "error"));
+                        assert!(matches!(&children[0], CompNode::Text { spans, .. } if spans.len() == 1 && spans[0].text == "title" && spans[0].style.as_deref() == Some("error")));
                         assert!(matches!(&children[1], CompNode::Row { .. }));
                         assert!(matches!(&children[2], CompNode::Scroll { .. }));
                     }

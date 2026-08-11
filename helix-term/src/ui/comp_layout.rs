@@ -1,7 +1,7 @@
 //! 组件树布局引擎：把 JS render 返回的 CompNode 树渲染成样式化行（StyledLine）。
 //! 样式名不在此解析（helix-js 只透传字符串），由调用方经 theme.get 映射。
 
-use helix_js::{CompNode, Content, StyledLine};
+use helix_js::{CompNode, Content, StyledLine, TextSpan};
 
 /// 统一入口：Content::Lines 原样返回（旧行 API）；Content::Tree 走布局引擎。
 pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
@@ -18,11 +18,25 @@ pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
 ///   gap 列间距；总宽超 viewport 截断）
 /// - scroll → 按 col（无 gap）布局后保留最后 height 行（viewport 高度内）
 pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
+    use helix_js::TextSpan;
     match node {
-        CompNode::Text { text, style, width } => {
+        CompNode::Text { spans, width } => {
             let limit = width.unwrap_or(u16::MAX).min(viewport.0) as usize;
-            let text: String = text.chars().take(limit).collect();
-            vec![StyledLine { text, style: style.clone() }]
+            let mut taken = 0usize;
+            let mut out_spans = Vec::new();
+            for span in spans {
+                if taken >= limit {
+                    break;
+                }
+                let t: String = span
+                    .text
+                    .chars()
+                    .take(limit - taken)
+                    .collect();
+                taken += t.chars().count();
+                out_spans.push(TextSpan { text: t, style: span.style.clone() });
+            }
+            vec![StyledLine { spans: out_spans }]
         }
         CompNode::Col { children, gap } => {
             let mut out = Vec::new();
@@ -32,7 +46,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
                 }
                 // gap：子节点之间插空行（不超 viewport 高度）
                 if !out.is_empty() && *gap > 0 && out.len() < viewport.1 as usize {
-                    out.push(StyledLine { text: String::new(), style: None });
+                    out.push(StyledLine::plain(""));
                 }
                 for line in layout(child, viewport) {
                     if out.len() >= viewport.1 as usize {
@@ -48,47 +62,34 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             let rows = parts.iter().map(Vec::len).max().unwrap_or(0);
             let mut out = Vec::with_capacity(rows);
             for i in 0..rows {
-                let mut line = String::new();
+                // 多 span 行：每段独立样式（不再坍缩），gap 作为普通空格段
+                let mut spans: Vec<TextSpan> = Vec::new();
                 let mut width_used = 0usize;
-                // 段样式：各非空段样式一致才保留，否则 None
-                // ponytail: StyledLine 是单 (text, style) 对，row 混合样式会坍缩为 None；
-                // 若需要逐段样式需把行模型升级为多 span。
-                let mut first_style: Option<&str> = None;
-                let mut saw_unstyled = false;
-                let mut styles_agree = true;
                 for (ci, part) in parts.iter().enumerate() {
                     if width_used >= viewport.0 as usize {
                         break;
                     }
                     if ci > 0 {
                         let gap = (*gap as usize).min(viewport.0 as usize - width_used);
-                        line.push_str(&" ".repeat(gap));
+                        if gap > 0 {
+                            spans.push(TextSpan { text: " ".repeat(gap), style: None });
+                        }
                         width_used += gap;
                     }
-                    let seg_style = part.get(i).and_then(|l| l.style.as_deref());
-                    let seg: String = part
-                        .get(i)
-                        .map(|l| l.text.as_str())
-                        .unwrap_or("")
-                        .chars()
-                        .take(viewport.0 as usize - width_used)
-                        .collect();
-                    width_used += seg.chars().count();
-                    line.push_str(&seg);
-                    if !seg.is_empty() {
-                        // 首个非空样式为 baseline；后续段样式不同、从有到无、或从无到有 → 整行样式不一致
-                        match (first_style, seg_style) {
-                            (None, Some(s)) if !saw_unstyled => first_style = Some(s),
-                            (None, Some(_)) => styles_agree = false,
-                            (Some(a), Some(b)) if a != b => styles_agree = false,
-                            (Some(_), None) => styles_agree = false,
-                            (None, None) => saw_unstyled = true,
-                            _ => {}
+                    if let Some(line) = part.get(i) {
+                        let mut rem = viewport.0 as usize - width_used;
+                        for span in &line.spans {
+                            if rem == 0 {
+                                break;
+                            }
+                            let t: String = span.text.chars().take(rem).collect();
+                            rem -= t.chars().count();
+                            width_used += t.chars().count();
+                            spans.push(TextSpan { text: t, style: span.style.clone() });
                         }
                     }
                 }
-                let style = if styles_agree { first_style.map(str::to_string) } else { None };
-                out.push(StyledLine { text: line, style });
+                out.push(StyledLine { spans });
             }
             out
         }
@@ -110,11 +111,11 @@ mod tests {
     use super::*;
 
     fn text(t: &str) -> CompNode {
-        CompNode::Text { text: t.into(), style: None, width: None }
+        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: None }], width: None }
     }
 
     fn styled(t: &str, s: &str) -> CompNode {
-        CompNode::Text { text: t.into(), style: Some(s.into()), width: None }
+        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: Some(s.into()) }], width: None }
     }
 
     fn texts(ts: &[&str]) -> Vec<CompNode> {
@@ -122,23 +123,28 @@ mod tests {
     }
 
     fn line(t: &str) -> StyledLine {
-        StyledLine { text: t.into(), style: None }
+        StyledLine::plain(t)
+    }
+
+    fn line_text(l: &StyledLine) -> String {
+        l.spans.iter().map(|sp| sp.text.as_str()).collect()
     }
 
     #[test]
-    fn row_mixed_styles_collapse_to_none() {
-        // 无样式段在带样式段之前出现 → 整行样式为 None（对称性：从有到无同样不一致）
+    fn row_mixed_styles_keep_spans() {
+        // 多 span 行模型：row 混合样式不再坍缩——每段独立保留
         let node = CompNode::Row {
             children: vec![
-                CompNode::Text { text: "a".into(), style: None, width: None },
-                CompNode::Text { text: "b".into(), style: Some("error".into()), width: None },
+                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None },
+                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: Some("error".into()) }], width: None },
             ],
             gap: 0,
         };
         let out = layout(&node, (40, 10));
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].text, "ab");
-        assert_eq!(out[0].style, None, "mixed styles must collapse to None");
+        assert_eq!(line_text(&out[0]), "ab");
+        assert_eq!(out[0].spans[0].style, None);
+        assert_eq!(out[0].spans[1].style.as_deref(), Some("error"));
     }
 
     #[test]
@@ -146,19 +152,19 @@ mod tests {
         assert_eq!(layout(&text("hello"), (40, 10)), vec![line("hello")]);
         // width 截断
         assert_eq!(
-            layout(&CompNode::Text { text: "hello".into(), style: None, width: Some(3) }, (40, 10)),
+            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(3) }, (40, 10)),
             vec![line("hel")]
         );
         // viewport 宽度优先于 width
         assert_eq!(
-            layout(&CompNode::Text { text: "hello".into(), style: None, width: Some(10) }, (3, 10)),
+            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(10) }, (3, 10)),
             vec![line("hel")]
         );
     }
 
     #[test]
     fn text_style_kept() {
-        assert_eq!(layout(&styled("err", "error"), (40, 10)), vec![StyledLine { text: "err".into(), style: Some("error".into()) }]);
+        assert_eq!(layout(&styled("err", "error"), (40, 10)), vec![StyledLine::styled("err", "error")]);
     }
 
     #[test]
@@ -178,7 +184,9 @@ mod tests {
     #[test]
     fn row_side_by_side_with_gap() {
         let node = CompNode::Row { children: texts(&["left", "right"]), gap: 1 };
-        assert_eq!(layout(&node, (40, 10)), vec![line("left right")]);
+        let out = layout(&node, (40, 10));
+        assert_eq!(line_text(&out[0]), "left right");
+        assert_eq!(out[0].spans.len(), 3); // left + gap + right（每段独立 span）
     }
 
     #[test]
@@ -188,16 +196,20 @@ mod tests {
             children: vec![CompNode::Col { children: texts(&["a1", "a2"]), gap: 0 }, text("b")],
             gap: 0,
         };
-        assert_eq!(layout(&node, (40, 10)), vec![line("a1b"), line("a2")]);
+        let out = layout(&node, (40, 10));
+        assert_eq!(line_text(&out[0]), "a1b");
+        assert_eq!(line_text(&out[1]), "a2");
     }
 
     #[test]
     fn row_width_sum_and_viewport_truncation() {
         let node = CompNode::Row { children: texts(&["aaaa", "bbbb"]), gap: 1 };
         // 宽度求和 + gap
-        assert_eq!(layout(&node, (40, 10)), vec![line("aaaa bbbb")]);
+        let out = layout(&node, (40, 10));
+        assert_eq!(line_text(&out[0]), "aaaa bbbb");
         // 超 viewport 截断
-        assert_eq!(layout(&node, (6, 10)), vec![line("aaaa b")]);
+        let out = layout(&node, (6, 10));
+        assert_eq!(line_text(&out[0]), "aaaa b");
     }
 
     #[test]
@@ -219,23 +231,22 @@ mod tests {
             ],
             gap: 0,
         };
-        assert_eq!(
-            layout(&node, (40, 10)),
-            vec![
-                StyledLine { text: "title".into(), style: Some("error".into()) },
-                line("left right"),
-                line("s2"),
-            ]
-        );
+        let out = layout(&node, (40, 10));
+        assert_eq!(line_text(&out[0]), "title");
+        assert_eq!(out[0].spans[0].style.as_deref(), Some("error"));
+        assert_eq!(line_text(&out[1]), "left right");
+        assert_eq!(out[1].spans.len(), 3, "left + gap + right");
+        assert_eq!(line_text(&out[2]), "s2");
     }
 
     #[test]
     fn render_passthrough_lines_and_tree() {
         let lines = vec![line("x")];
         assert_eq!(render(Content::Lines(lines.clone()), (40, 10)), lines);
-        assert_eq!(
-            render(Content::Tree(CompNode::Row { children: texts(&["a", "b"]), gap: 0 }), (40, 10)),
-            vec![line("ab")]
+        let out = render(
+            Content::Tree(CompNode::Row { children: texts(&["a", "b"]), gap: 0 }),
+            (40, 10),
         );
+        assert_eq!(line_text(&out[0]), "ab");
     }
 }
