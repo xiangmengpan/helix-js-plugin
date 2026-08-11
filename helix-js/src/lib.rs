@@ -10,6 +10,97 @@ use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 
+/// 最小 PTY 封装：posix_openpt/grantpt/unlockpt/ptsname/open slave + TIOCSWINSZ。
+/// slave 返回 File 直接喂给 Command 的 Stdio（spawn 后父侧自动关闭）；
+/// master 由 worker 线程持有（Drop 关闭），term_resize 直连 master fd ioctl。
+// ponytail: 仅 Unix（Linux/macOS）。无 TIOCSCTTY/作业控制/信号转发——
+// 交互终端后续要完整的话，需把信号(SIGWINCH)与前后台管理接进 helix-term。
+#[cfg(unix)]
+mod pty {
+    use std::fs::File;
+    use std::os::fd::{FromRawFd, RawFd};
+
+    use anyhow::{anyhow, Result};
+
+    /// master fd 包装：Drop 时 close（worker 线程持有时保证 fd 生命周期）
+    pub struct Master(RawFd);
+
+    impl Master {
+        pub fn fd(&self) -> RawFd {
+            self.0
+        }
+
+        /// 把裸 fd 交给 File，不再 Drop close（防双关）
+        pub fn into_file(self) -> File {
+            let fd = self.0;
+            std::mem::forget(self);
+            unsafe { File::from_raw_fd(fd) }
+        }
+    }
+
+    impl Drop for Master {
+        fn drop(&mut self) {
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+
+    /// 打开新 PTY（默认 24×80），返回 (master, slave File)
+    pub fn open_pty() -> Result<(Master, File)> {
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            if master < 0 {
+                return Err(anyhow!("posix_openpt: {}", std::io::Error::last_os_error()));
+            }
+            if libc::grantpt(master) != 0 {
+                libc::close(master);
+                return Err(anyhow!("grantpt: {}", std::io::Error::last_os_error()));
+            }
+            if libc::unlockpt(master) != 0 {
+                libc::close(master);
+                return Err(anyhow!("unlockpt: {}", std::io::Error::last_os_error()));
+            }
+            let name = libc::ptsname(master);
+            if name.is_null() {
+                libc::close(master);
+                return Err(anyhow!("ptsname: {}", std::io::Error::last_os_error()));
+            }
+            let name = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+            let slave = libc::open(
+                std::ffi::CString::new(name)?.as_ptr(),
+                libc::O_RDWR | libc::O_NOCTTY,
+            );
+            if slave < 0 {
+                libc::close(master);
+                return Err(anyhow!("open slave: {}", std::io::Error::last_os_error()));
+            }
+            // 默认尺寸：内核新建 pty 的 winsize 是 0×0，stty size 会读成 "0 0"；
+            // 简报期望缺省 "24 80"。在子进程启动前设好（master ioctl 作用于同一 tty）。
+            set_winsize(master, 24, 80)?;
+            Ok((Master(master), File::from_raw_fd(slave)))
+        }
+    }
+
+    /// TIOCSWINSZ 设置 pty 窗口尺寸（master/slave fd 均可，作用于同一 tty 设备）。
+    /// 在 spawn 后立即调用也能在子进程启动前生效——winsize 是 tty 设备属性，
+    /// 不依赖子进程是否存在，因此无消息时序竞态。
+    pub fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> Result<()> {
+        unsafe {
+            let ws = libc::winsize {
+                ws_row: rows as libc::c_ushort,
+                ws_col: cols as libc::c_ushort,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            if libc::ioctl(fd, libc::TIOCSWINSZ, &ws) != 0 {
+                return Err(anyhow!("TIOCSWINSZ: {}", std::io::Error::last_os_error()));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
 #[derive(Debug)]
 pub enum UiRequest {
@@ -207,6 +298,11 @@ thread_local! {
     // 分配，若 map 全局则并发线程的同 id 互相覆盖（与 TERM_EVENTS 同模式）；
     // worker 线程不访问此表，只在发起线程的 Sender 克隆上发事件。
     static TERM_WORKERS: RefCell<HashMap<u64, std::sync::mpsc::Sender<TermCtrl>>> = RefCell::new(HashMap::new());
+    // 进程 id → pty master fd（term_resize 直连 ioctl 用）。
+    // 生命周期：worker 线程持 master 所有权；表在 Exit 清理时移除条目。
+    // worker 先退出、清理后发生 resize → fd 陈旧返回 EBADF → Err，良性。
+    #[cfg(unix)]
+    static TERM_MASTERS: RefCell<HashMap<u64, std::os::fd::RawFd>> = RefCell::new(HashMap::new());
 }
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
@@ -232,7 +328,10 @@ pub fn init() {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
             let engine = Box::leak(Box::new(Context::default()));
-            let helix = ObjectInitializer::new(engine)
+            // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
+            // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
+            let mut builder = ObjectInitializer::new(engine);
+            builder
                 .function(NativeFunction::from_fn_ptr(js_echo), JsString::from("echo"), 1)
                 .function(
                     NativeFunction::from_fn_ptr(js_register_command),
@@ -254,8 +353,10 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_term_write), JsString::from("term_write"), 2)
                 .function(NativeFunction::from_fn_ptr(js_term_kill), JsString::from("term_kill"), 1)
                 .function(NativeFunction::from_fn_ptr(js_set_theme), JsString::from("set_theme"), 1)
-                .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0)
-                .build();
+                .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0);
+            #[cfg(unix)]
+            builder.function(NativeFunction::from_fn_ptr(js_term_resize), JsString::from("term_resize"), 3);
+            let helix = builder.build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
                 .expect("register helix object");
@@ -755,6 +856,101 @@ fn spawn_worker(
     });
 }
 
+/// PTY worker：子进程 stdin/stdout/stderr 接 slave；父线程读 master 发 Chunk（流式），
+/// TermCtrl::Write 写 master 当 stdin，Kill 杀子进程。单读线程（pty 无 stderr 区分）。
+/// worker 持 master File（Drop 关闭）；slave 经 Stdio::from 交给子进程，spawn 后父侧关闭。
+#[cfg(unix)]
+fn spawn_pty_worker(
+    id: u64,
+    cmd: &str,
+    tx: std::sync::mpsc::Sender<TermEvent>,
+    ctrl_rx: std::sync::mpsc::Receiver<TermCtrl>,
+    master: pty::Master,
+    slave: std::fs::File,
+) {
+    let cmd = cmd.to_string();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut master = master.into_file();
+        // 子进程 stdin/stdout/stderr 都是 slave（dup 三份，spawn 后父侧副本关闭）
+        let stdin_slave = match slave.try_clone() {
+            Ok(f) => f,
+            Err(_) => {
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+        let stdout_slave = match slave.try_clone() {
+            Ok(f) => f,
+            Err(_) => {
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+        let mut child = match Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .env("TERM", "xterm-256color")
+            .stdin(Stdio::from(stdin_slave))
+            .stdout(Stdio::from(stdout_slave))
+            .stderr(Stdio::from(slave))
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+        // master 读端单独 dup（读写两端并发：写线程主循环 + 读线程）
+        let master_reader = match master.try_clone() {
+            Ok(f) => f,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        // pty 无聚合模式：output 缓冲不会被 read_stream 使用，占位传引用
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        {
+            let tx = tx.clone();
+            let done_tx = done_tx.clone();
+            let output = output.clone();
+            std::thread::spawn(move || {
+                read_stream(master_reader, id, false, &output, &tx);
+                let _ = done_tx.send(());
+            });
+        }
+        drop(done_tx);
+
+        // 主循环：写 master / kill；读线程 EOF（子进程退出关闭 slave → master 读 EIO）后收尾
+        loop {
+            while let Ok(msg) = ctrl_rx.try_recv() {
+                match msg {
+                    TermCtrl::Write(text) => {
+                        let _ = master.write_all(text.as_bytes());
+                        let _ = master.flush();
+                    }
+                    TermCtrl::Kill => {
+                        let _ = child.kill();
+                    }
+                }
+            }
+            if done_rx.try_recv().is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let _ = tx.send(TermEvent::Exit(id, code, None));
+        // master File drop → 关闭 fd（TERM_MASTERS 里的裸 fd 变陈旧，resize 报 EBADF，良性）
+    });
+}
+
 fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let cb = args.get(1).cloned().unwrap_or(JsValue::undefined());
@@ -792,19 +988,47 @@ fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine:
     }
     let on_exit = opts.get(JsString::from("onExit"), ctx)?;
     let on_exit = on_exit.as_callable().map(|_| on_exit);
+    // pty: bool，缺省 false（管道模式）。非布尔 → 报错
+    let pty = {
+        let v = opts.get(JsString::from("pty"), ctx)?;
+        if v.is_null_or_undefined() {
+            false
+        } else {
+            v.try_js_into::<bool>(ctx).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "helix.spawn: 'pty' must be a boolean",
+                )))
+            })?
+        }
+    };
     let id = NEXT_TERM_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
     with_terms(|m| {
         m.insert(id, TermCallbacks { on_chunk, on_exit, is_run_async: false })
     });
     let (tx, rx) = std::sync::mpsc::channel();
     TERM_WORKERS.with(|m| m.borrow_mut().insert(id, tx));
-    spawn_worker(
-        id,
-        &cmd,
-        false,
-        TERM_EVENTS.with(|t| t.borrow().clone().expect("TERM_EVENTS initialized")),
-        rx,
-    );
+    let term_tx = TERM_EVENTS.with(|t| t.borrow().clone().expect("TERM_EVENTS initialized"));
+    if pty {
+        #[cfg(unix)]
+        {
+            let (master, slave) = pty::open_pty().map_err(|e| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "helix.spawn: pty: {e}"
+                ))))
+            })?;
+            // 先注册 master fd 再起 worker：spawn 返回后 JS 立即可 term_resize
+            TERM_MASTERS.with(|m| m.borrow_mut().insert(id, master.fd()));
+            spawn_pty_worker(id, &cmd, term_tx, rx, master, slave);
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.spawn: pty requires a unix platform",
+            ))));
+        }
+    } else {
+        spawn_worker(id, &cmd, false, term_tx, rx);
+    }
     Ok(JsValue::from(id))
 }
 
@@ -828,6 +1052,37 @@ fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa
     sender
         .send(TermCtrl::Kill)
         .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("helix.term_kill: worker gone"))))?;
+    Ok(JsValue::undefined())
+}
+
+/// 调整 PTY 窗口尺寸（rows/cols）。直连 master fd 做 TIOCSWINSZ：
+/// winsize 是 tty 设备属性，spawn 后立即调用也在子进程启动前生效，无消息时序竞态。
+/// 非 pty worker / 未知 id → Err。
+#[cfg(unix)]
+pub fn term_resize(id: u64, rows: u16, cols: u16) -> Result<()> {
+    init();
+    let fd = TERM_MASTERS
+        .with(|m| m.borrow().get(&id).copied())
+        .ok_or_else(|| anyhow!("term_resize: unknown id (not a pty worker)"))?;
+    pty::set_winsize(fd, rows, cols)
+}
+
+#[cfg(unix)]
+fn js_term_resize(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: id must be a number")))
+    })?;
+    let rows: u16 = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: rows must be a number")))
+    })?;
+    let cols: u16 = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: cols must be a number")))
+    })?;
+    let fd = TERM_MASTERS.with(|m| m.borrow().get(&id).copied()).ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: unknown id")))
+    })?;
+    pty::set_winsize(fd, rows, cols)
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.term_resize: {e}")))))?;
     Ok(JsValue::undefined())
 }
 
@@ -883,6 +1138,8 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 }
                 with_terms(|m| m.remove(&id));
                 TERM_WORKERS.with(|m| m.borrow_mut().remove(&id));
+                #[cfg(unix)]
+                TERM_MASTERS.with(|m| m.borrow_mut().remove(&id));
             }
         }
         Ok(())
@@ -2162,6 +2419,128 @@ mod tests {
         assert_eq!(joined.len(), 19999, "streamed bytes intact across chunks");
         assert!(!joined.contains('\u{FFFD}'), "no replacement chars in streamed output");
         assert_eq!(joined.matches("中文").count(), 2857, "CJK lines preserved in streamed output");
+    }
+
+    /// 临时任务简报的验证测试。wait 条件用 Exit（chunk 是它的先导），
+    /// 返回的全部事件按序 resolve（先 Chunk 后 Exit），保证通道不残留。
+    /// 注意：编译报错调整——简报原文 `events[0]` 按值取会 move，改为 `&events[0]`；
+    /// `assert!(true, ...)` 触发 clippy::assertions_on_constants，删除。
+    #[test]
+    #[cfg(unix)]
+    fn pty_spawn() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("pty-tty", () => {
+            const id = helix.spawn({ pty: true, cmd: "tty", onChunk: (c) => helix.echo("out:" + c.trim()), onExit: (code) => helix.echo("exit:" + code) });
+        });
+        helix.register_command("pty-size", () => {
+            const id = helix.spawn({ pty: true, cmd: "stty size", onChunk: (c) => helix.echo("size:" + c.trim()), onExit: (code) => helix.echo("sizeexit:" + code) });
+        });
+        helix.register_command("pty-cat", () => {
+            const id = helix.spawn({ pty: true, cmd: "cat", onChunk: (c) => helix.echo("pty:" + c.trim()), onExit: (code) => helix.echo("ptyexit:" + code) });
+            helix.term_write(id, "hello-pty\n\u{0004}");
+        });
+        helix.register_command("pty-badresize", () => { helix.term_resize(999, 1, 1); });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+
+        // tty：stdin 是 pty → 输出 /dev/pts/N（CRLF 行尾，用 contains 断言）
+        assert!(run_command("pty-tty", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        for ev in &events {
+            match ev {
+                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Exit(id, code, stdout) => {
+                    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
+                }
+            }
+        }
+        assert!(
+            take_messages().iter().any(|m| m.contains("/dev/pts/")),
+            "tty command sees a pty"
+        );
+
+        // stty size：默认 winsize 24×80（输出顺序 rows cols）
+        assert!(run_command("pty-size", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        for ev in &events {
+            match ev {
+                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Exit(id, code, stdout) => {
+                    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
+                }
+            }
+        }
+        assert!(
+            take_messages().iter().any(|m| m.contains("24 80")),
+            "default winsize 24x80"
+        );
+
+        // 写 master → 子进程 stdin：cat 回显 + tty 驱动 echo → Ctrl-D(\u{0004}) EOF 退出
+        assert!(run_command("pty-cat", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        for ev in &events {
+            match ev {
+                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Exit(id, code, stdout) => {
+                    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
+                }
+            }
+        }
+        // take_messages 是消费型：先取一次再断言两条
+        let msgs = take_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("hello-pty")),
+            "write to master reaches child: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("ptyexit:0")),
+            "Ctrl-D EOF exits cat cleanly: {msgs:?}"
+        );
+
+        // 校验：pty 非布尔 / resize 未知 id → 报错
+        assert!(load_script(r#"helix.spawn({ pty: "yes", cmd: "tty", onChunk: () => {} });"#).is_err());
+        assert!(run_command("pty-badresize", &ctx).is_err());
+    }
+
+    /// spawn 后立即 term_resize → 子进程 stty size 读到新值。
+    /// 实现用 master fd 直连 ioctl（spawn 返回时已注册），无消息时序问题。
+    #[test]
+    #[cfg(unix)]
+    fn pty_resize() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("pty-resize", () => {
+            const id = helix.spawn({ pty: true, cmd: "stty size", onChunk: (c) => helix.echo("size:" + c.trim()), onExit: (code) => helix.echo("resizeexit:" + code) });
+            helix.term_resize(id, 40, 100);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("pty-resize", &ctx).unwrap());
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        for ev in &events {
+            match ev {
+                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Exit(id, code, stdout) => {
+                    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
+                }
+            }
+        }
+        let msgs = take_messages();
+        // stty size 输出顺序是 rows cols（简报写 "100 40"，实为行列反了）：
+        // term_resize(40, 100) → "40 100"，以实际输出为准
+        assert!(
+            msgs.iter().any(|m| m.contains("40 100")),
+            "resize applied before stty runs: {msgs:?}"
+        );
     }
 
     #[test]

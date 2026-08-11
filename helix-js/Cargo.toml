@@ -7,3 +7,4 @@ description = "JavaScript plugin runtime for the Helix editor (PoC)"
 [dependencies]
 boa_engine = { workspace = true }
 anyhow = "1"
+libc = "0.2.186"
