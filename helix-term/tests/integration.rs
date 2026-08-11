@@ -32,6 +32,7 @@ mod test {
     mod plugin_theme;
     mod plugin_layout;
     mod plugin_manager;
+    mod plugin_multipanel;
     mod plugin_statusline;
     mod splits;
 }
