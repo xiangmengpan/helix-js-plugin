@@ -294,7 +294,10 @@ helix.set_theme({ "ui.popup": "#ff79c6", "error": "red", "warning": "#f1fa8c" })
 helix.load(name) -> exports
 helix.export(obj)
 helix.lazy(name, ...commands)
-helix.run_command(name, ctx?)`
+helix.run_command(name, ctx?)
+helix.open_file(path)
+helix.move_panel(id, side)
+helix.read_dir(path)`
 
 清空全部覆盖，恢复启动时的基础主题。
 
@@ -339,9 +342,30 @@ mod.helper();   // 42
 helix.lazy("git.js", "gitbranch", "gitstatus");  // 首次 :gitbranch 或 :gitstatus 时加载 git.js
 ```
 
-### `helix.run_command(name, ctx?)`
+### `helix.run_command(name, ctx?)
+helix.open_file(path)
+helix.move_panel(id, side)
+helix.read_dir(path)`
 
 程序化调用插件命令（`ctx` 可选，缺省空快照；支持命令 ctx 形状）。lazy 桩的内部底座，也可直接脚本化。
+
+### `helix.open_file(path)`
+
+在编辑器中打开文件（当前视图替换打开；目录/不存在抛错）。文件树面板的"打开"动作。
+
+### `helix.move_panel(id, side)`
+
+把面板移动到另一侧（`"right"|"left"|"bottom"`）。下一帧自动重排。
+
+### `helix.read_dir(path) -> [{ name, is_dir, path }]`
+
+结构化列出目录条目（同步，不递归，按名字排序）。文件树的构建原语。
+
+```js
+helix.read_dir("/tmp").forEach(e => {
+  helix.echo((e.is_dir ? "[d] " : "    ") + e.name);
+});
+```
 
 ## 13. 已知限制
 
@@ -383,6 +407,9 @@ helix.load(name) -> exports
 helix.export(obj)
 helix.lazy(name, ...commands)
 helix.run_command(name, ctx?)
+helix.open_file(path)
+helix.move_panel(id, side)
+helix.read_dir(path)
 
 命令 ctx：{ doc: { path, text, cursor, insert(), replace(), delete() },
             cursor: { row, col }, selection: { anchor, head } }
