@@ -22,7 +22,7 @@
 
 ## 1. 加载与生命周期
 
-- **唯一入口**：启动只自动加载 `~/.config/helix/plugins/init.js`；其他插件脚本必须经 `helix.load` 导入（不再全量扫描 `*.js`）
+- **唯一入口**：启动只自动加载 `~/.config/helix/init.js`（配置根；兼容旧位置 `plugins/init.js`）；其他插件脚本必须经 `helix.load` 导入（不再全量扫描 `*.js`）
 - `:plugin-load <path>` 可手动加载任意文件
 - 每个插件在独立 IIFE 作用域求值（顶层 `let`/`const` 不跨插件共享；`helix` 全局对象除外）
 - `:plugin-reload` 清空全部插件状态（命令/处理器/钩子/主题覆盖）并按加载顺序重跑；模块文件**重读磁盘**（init.js 本体重跑记录文本）
