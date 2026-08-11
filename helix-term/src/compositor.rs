@@ -235,11 +235,13 @@ impl Compositor {
             .filter_map(|layer| layer.as_any().downcast_ref::<PluginPanel>())
             .map(|panel| (panel.id(), panel.side(), panel.size()))
             .collect();
+        // 仅 dock 模式的终端参与面板推挤；fullscreen/floating/minimized 走各自区域
         panels.extend(
             self.layers
                 .iter()
                 .filter(|layer| layer.type_name() == term_type)
                 .filter_map(|layer| layer.as_any().downcast_ref::<PluginTerminal>())
+                .filter(|term| term.mode() == crate::ui::plugin_terminal::TermMode::Dock)
                 .map(|term| (term.view_id(), term.side(), term.size())),
         );
         let (panel_rects, rest_area) = layout_panels(area, &panels);
@@ -259,11 +261,12 @@ impl Compositor {
                 layer
                     .as_any()
                     .downcast_ref::<PluginTerminal>()
-                    .and_then(|term| {
-                        panel_rects
+                    .map(|term| {
+                        let dock_rect = panel_rects
                             .iter()
                             .find(|(id, _)| *id == term.view_id())
-                            .map(|(_, rect)| *rect)
+                            .map(|(_, rect)| *rect);
+                        term.area_for(area, dock_rect)
                     })
                     .unwrap_or(rest_area)
             } else {

@@ -31,6 +31,7 @@ mod test {
     mod plugin_panel;
     mod plugin_terminal_view;
     mod plugin_fsasync;
+    mod plugin_terminal_modes;
     mod plugin_components;
     mod plugin_theme;
     mod plugin_layout;

@@ -4519,6 +4519,42 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.push(Box::new(terminal));
                 });
             }
+            helix_js::UiRequest::TermMode { view_id, mode } => {
+                let Some(tm) = crate::ui::plugin_terminal::TermMode::from_str(&mode) else {
+                    bail!("set_terminal_mode: unknown mode '{mode}'");
+                };
+                job::dispatch_blocking(move |_editor, compositor| {
+                    if let Some(term) = compositor
+                        .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+                            t.view_id() == view_id
+                        })
+                    {
+                        term.set_mode(tm);
+                    }
+                });
+            }
+            helix_js::UiRequest::TermClear { view_id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    if let Some(term) = compositor
+                        .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+                            t.view_id() == view_id
+                        })
+                    {
+                        term.clear();
+                    }
+                });
+            }
+            helix_js::UiRequest::TermResize { view_id, size } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    if let Some(term) = compositor
+                        .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+                            t.view_id() == view_id
+                        })
+                    {
+                        term.set_size(size);
+                    }
+                });
+            }
             helix_js::UiRequest::TermFeed { view_id, chunk } => {
                 // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃。
                 // find_where 按实例的 view_id 字段匹配，不在热路径上每次 leak 一个 id 字符串。

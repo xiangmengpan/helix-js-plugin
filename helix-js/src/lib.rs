@@ -146,6 +146,20 @@ pub enum UiRequest {
         view_id: u64,
         chunk: String,
     },
+    /// 终端显示模式：dock / fullscreen / floating / minimized
+    TermMode {
+        view_id: u64,
+        mode: String,
+    },
+    /// 清空终端网格
+    TermClear {
+        view_id: u64,
+    },
+    /// 运行中调整终端面板尺寸（列宽或行高）
+    TermResize {
+        view_id: u64,
+        size: u16,
+    },
 }
 
 /// 带唤醒的发送端：worker 发事件时触发宿主注册的唤醒回调（即时重绘），
@@ -511,6 +525,9 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_glob_async), JsString::from("glob_async"), 2)
                 .function(NativeFunction::from_fn_ptr(js_open_terminal), JsString::from("open_terminal"), 1)
                 .function(NativeFunction::from_fn_ptr(js_term_feed), JsString::from("term_feed"), 2)
+                .function(NativeFunction::from_fn_ptr(js_set_terminal_mode), JsString::from("set_terminal_mode"), 2)
+                .function(NativeFunction::from_fn_ptr(js_term_clear), JsString::from("term_clear"), 1)
+                .function(NativeFunction::from_fn_ptr(js_resize_term), JsString::from("resize_term"), 2)
                 .function(NativeFunction::from_fn_ptr(js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0);
             #[cfg(unix)]
@@ -2104,6 +2121,31 @@ fn js_term_feed(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_eng
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermFeed { view_id, chunk });
     Ok(JsValue::undefined())
 }
+fn js_set_terminal_mode(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let mode: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    if !["dock", "fullscreen", "floating", "minimized"].contains(&mode.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.set_terminal_mode: unknown mode '{mode}'"
+        )))));
+    }
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermMode { view_id, mode });
+    Ok(JsValue::undefined())
+}
+
+fn js_term_clear(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermClear { view_id });
+    Ok(JsValue::undefined())
+}
+
+fn js_resize_term(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let size: u16 = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermResize { view_id, size });
+    Ok(JsValue::undefined())
+}
+
 
 /// 同步列目录（不递归）：read_dir → 错误条目跳过 → 按名字排序 → [{ name, is_dir, path }]
 fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -3655,6 +3697,38 @@ mod tests {
     /// 返回的全部事件按序 resolve（先 Chunk 后 Exit），保证通道不残留。
     /// 注意：编译报错调整——简报原文 `events[0]` 按值取会 move，改为 `&events[0]`；
     /// `assert!(true, ...)` 触发 clippy::assertions_on_constants，删除。
+    #[test]
+    fn terminal_modes_api() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+            helix.register_command("tm", () => {
+                const id = helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
+                helix.set_terminal_mode(id, "fullscreen");
+                helix.set_terminal_mode(id, "minimized");
+                helix.term_clear(id);
+                helix.resize_term(id, 60);
+            });
+            "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("tm", &ctx).unwrap());
+        let reqs = take_ui_requests();
+        assert!(matches!(&reqs[0], UiRequest::OpenTerminal { .. }));
+        assert!(matches!(&reqs[1], UiRequest::TermMode { mode, .. } if mode == "fullscreen"));
+        assert!(matches!(&reqs[2], UiRequest::TermMode { mode, .. } if mode == "minimized"));
+        assert!(matches!(&reqs[3], UiRequest::TermClear { .. }));
+        assert!(matches!(&reqs[4], UiRequest::TermResize { size, .. } if *size == 60));
+        // 非法 mode → 命令报错
+        load_script(r#"helix.register_command("tm-bad2", () => { helix.set_terminal_mode(1, "sideways"); });"#).unwrap();
+        assert!(run_command("tm-bad2", &ctx).is_err());
+        // 类型校验（load 时即报错）
+        assert!(load_script(r#"helix.term_clear("x");"#).is_err());
+        assert!(load_script(r#"helix.resize_term(1, "wide");"#).is_err());
+    }
+
     #[test]
     #[cfg(unix)]
     fn pty_spawn() {
