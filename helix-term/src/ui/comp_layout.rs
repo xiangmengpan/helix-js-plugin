@@ -109,6 +109,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use helix_js::TextSpan;
 
     fn text(t: &str) -> CompNode {
         CompNode::Text { spans: vec![TextSpan { text: t.into(), style: None }], width: None }
