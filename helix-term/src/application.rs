@@ -347,6 +347,9 @@ impl Application {
                 error = error.or(Some(err));
             }
         }
+        // 输出立即上屏：处理过事件就请求重绘（约 33ms 内事件循环唤醒再 pump），
+        // 替代“等下一次按键或 idle(250ms) 才泵”——终端回显/输出不再滞后。
+        helix_event::request_redraw();
         let edits = helix_js::take_edits();
         if !edits.is_empty() {
             if let Err(err) = crate::commands::typed::apply_plugin_edits(&mut self.editor, &edits) {

@@ -4509,7 +4509,12 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 if cmd.is_empty() {
                     bail!("open_terminal: empty cmd");
                 }
-                let terminal = PluginTerminal::new(view_id, pty_id, size);
+                let side_enum = match side.as_str() {
+                    "right" => crate::ui::plugin_panel::PanelSide::Right,
+                    "left" => crate::ui::plugin_panel::PanelSide::Left,
+                    _ => crate::ui::plugin_panel::PanelSide::Bottom,
+                };
+                let terminal = PluginTerminal::new(view_id, pty_id, side_enum, size);
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.push(Box::new(terminal));
                 });

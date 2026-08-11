@@ -586,14 +586,38 @@ pub struct PluginTerminal {
     view_id: u64,
     pty_id: u64,
     grid: TerminalGrid,
+    side: crate::ui::plugin_panel::PanelSide,
+    size: u16,
     /// 上次渲染尺寸（None = 尚未渲染；首次渲染触发 resize + TIOCSWINSZ）
     last_size: Option<(u16, u16)>,
 }
 
 impl PluginTerminal {
-    pub fn new(view_id: u64, pty_id: u64, cols: u16) -> Self {
+    pub fn new(
+        view_id: u64,
+        pty_id: u64,
+        side: crate::ui::plugin_panel::PanelSide,
+        size: u16,
+    ) -> Self {
         let id: &'static str = Box::leak(format!("plugin-terminal-{view_id}").into_boxed_str());
-        Self { id, view_id, pty_id, grid: TerminalGrid::new(24, cols.max(1)), last_size: None }
+        let cols = size.max(1);
+        Self {
+            id,
+            view_id,
+            pty_id,
+            grid: TerminalGrid::new(24, cols),
+            side,
+            size,
+            last_size: None,
+        }
+    }
+
+    pub(crate) fn side(&self) -> crate::ui::plugin_panel::PanelSide {
+        self.side
+    }
+
+    pub(crate) fn size(&self) -> u16 {
+        self.size
     }
 
     pub fn view_id(&self) -> u64 {

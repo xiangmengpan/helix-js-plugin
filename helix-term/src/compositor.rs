@@ -18,6 +18,7 @@ pub enum EventResult {
 use crate::job::Jobs;
 use crate::ui::picker;
 use crate::ui::plugin_panel::{layout_panels, PanelSide, PluginPanel};
+use crate::ui::plugin_terminal::PluginTerminal;
 use helix_view::Editor;
 
 pub use helix_view::input::Event;
@@ -224,14 +225,23 @@ impl Compositor {
         // 面板推挤（多面板）：先按 type_name 收集所有 PluginPanel 层为 owned
         // (id, side, size)（避免借用冲突），排布出每面板区 + 各侧收缩后的剩余区；
         // 面板层按各自区渲染，其余层按剩余区渲染。无面板时全部层渲染全屏区（原逻辑）。
+        // 面板与原生终端都参与推挤布局（type_name 收集，avoid borrow conflicts）
         let panel_type = std::any::type_name::<PluginPanel>();
-        let panels: Vec<(u64, PanelSide, u16)> = self
+        let term_type = std::any::type_name::<PluginTerminal>();
+        let mut panels: Vec<(u64, PanelSide, u16)> = self
             .layers
             .iter()
             .filter(|layer| layer.type_name() == panel_type)
             .filter_map(|layer| layer.as_any().downcast_ref::<PluginPanel>())
             .map(|panel| (panel.id(), panel.side(), panel.size()))
             .collect();
+        panels.extend(
+            self.layers
+                .iter()
+                .filter(|layer| layer.type_name() == term_type)
+                .filter_map(|layer| layer.as_any().downcast_ref::<PluginTerminal>())
+                .map(|term| (term.view_id(), term.side(), term.size())),
+        );
         let (panel_rects, rest_area) = layout_panels(area, &panels);
         for layer in &mut self.layers {
             let layer_area = if layer.type_name() == panel_type {
@@ -242,6 +252,17 @@ impl Compositor {
                         panel_rects
                             .iter()
                             .find(|(id, _)| *id == panel.id())
+                            .map(|(_, rect)| *rect)
+                    })
+                    .unwrap_or(rest_area)
+            } else if layer.type_name() == term_type {
+                layer
+                    .as_any()
+                    .downcast_ref::<PluginTerminal>()
+                    .and_then(|term| {
+                        panel_rects
+                            .iter()
+                            .find(|(id, _)| *id == term.view_id())
                             .map(|(_, rect)| *rect)
                     })
                     .unwrap_or(rest_area)
