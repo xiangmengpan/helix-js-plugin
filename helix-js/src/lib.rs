@@ -1719,7 +1719,6 @@ fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 
     let view_id = NEXT_TERMINAL_VIEW_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
-    eprintln!("[dbg-js] open_terminal view_id={view_id} side={side} size={size}");
     #[cfg(unix)]
     {
         // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
@@ -1775,7 +1774,6 @@ fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
 /// helix.term_feed(view_id, chunk)：把 PTY 输出块入队 TermFeed，由 helix-term 按 view_id
 /// 找终端层喂进 vte 网格。层不存在时 helix-term 侧丢弃（feed 早于层 push 的竞态）。
 fn js_term_feed(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    eprintln!("[dbg-js] term_feed args={:?}", args);
     let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("term_feed: view_id must be a number")))
     })?;

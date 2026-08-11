@@ -32,8 +32,11 @@ impl Default for TerminalCell {
 const SCROLLBACK_MAX: usize = 1000;
 
 /// vte 解析出的终端网格：cols×rows 单元 + 光标 + 滚回 + alt screen 备份。
-#[derive(Debug, Clone)]
+/// 不派生 Debug/Clone：vte::Parser 只有 Default（解析器跨 feed 调用持久，块边界
+/// 切开的 CSI/OSC 序列才不损坏）。
 pub struct TerminalGrid {
+    /// vte 状态机（一次创建、反复 advance）：块边界落在逃逸序列中间时状态保留到下一块
+    parser: vte::Parser,
     cols: u16,
     rows: u16,
     cells: Vec<TerminalCell>,
@@ -58,6 +61,7 @@ impl TerminalGrid {
         let rows = rows.max(1);
         let cols = cols.max(1);
         Self {
+            parser: vte::Parser::new(),
             cols,
             rows,
             cells: vec![TerminalCell::default(); rows as usize * cols as usize],
@@ -101,11 +105,14 @@ impl TerminalGrid {
         self.scrollback_len
     }
 
-    /// 把一块字节喂进 vte 解析器（chunk 内部必须完整——UTF-8 字符被块边界切开时
-    /// vte 会按非法字节处理；read_stream 已保证 Chunk 事件落在字符边界，见其尾部缓冲）。
+    /// 把一块字节喂进 vte 解析器（复用同一 parser：块边界切开的 CSI/OSC 序列
+    /// 跨 feed 调用保持状态）。chunk 内部字节无需完整——read_stream 只保证
+    /// UTF-8 字符不跨块，逃逸序列跨块由本持久 parser 承接。
     pub fn feed(&mut self, bytes: &[u8]) {
-        let mut parser = vte::Parser::new();
+        // parser 与 Perform 实现都借 &mut self：临时取出解析器、喂完放回（vte::Parser: Default）
+        let mut parser = std::mem::take(&mut self.parser);
         parser.advance(self, bytes);
+        self.parser = parser;
     }
 
     fn idx(&self, row: u16, col: u16) -> usize {
@@ -278,7 +285,9 @@ impl TerminalGrid {
         }
     }
 
-    /// 尺寸变化：截断/填充网格，光标 clamp，滚回行按新宽度截断
+    /// 尺寸变化：截断/填充网格，光标 clamp，滚回行按新宽度截断。
+    /// alt screen 挂起时主屏备份（alt_saved）也按新尺寸重排——否则 exit_alt
+    /// 把旧尺寸 cells 塞回新网格 → 越界 panic（UI 线程崩溃）。
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -286,14 +295,14 @@ impl TerminalGrid {
             return;
         }
         let old_cols = self.cols;
-        let mut new_cells = vec![TerminalCell::default(); rows as usize * cols as usize];
-        for r in 0..rows.min(self.rows) {
-            for c in 0..cols.min(old_cols) {
-                new_cells[r as usize * cols as usize + c as usize] =
-                    self.cells[r as usize * old_cols as usize + c as usize].clone();
-            }
+        let old_rows = self.rows;
+        self.cells = resize_cells(&self.cells, old_rows, old_cols, rows, cols);
+        if let Some((cells, cursor)) = &mut self.alt_saved {
+            // alt_saved 是进 alt 时从 self.cells mem::take 的主屏备份，尺寸同 (old_rows, old_cols)
+            *cells = resize_cells(cells, old_rows, old_cols, rows, cols);
+            cursor.0 = cursor.0.min(rows - 1);
+            cursor.1 = cursor.1.min(cols - 1);
         }
-        self.cells = new_cells;
         self.cols = cols;
         self.rows = rows;
         self.cursor.0 = self.cursor.0.min(rows - 1);
@@ -331,6 +340,25 @@ impl TerminalGrid {
             }
         }
     }
+}
+
+/// 网格内容按新尺寸重排：旧区域（min(rows,old_rows)×min(cols,old_cols) 交集）保留，
+/// 新区域填空白，越界截断。resize 主屏与 alt_saved 共用。
+fn resize_cells(
+    old: &[TerminalCell],
+    old_rows: u16,
+    old_cols: u16,
+    rows: u16,
+    cols: u16,
+) -> Vec<TerminalCell> {
+    let mut new_cells = vec![TerminalCell::default(); rows as usize * cols as usize];
+    for r in 0..rows.min(old_rows) {
+        for c in 0..cols.min(old_cols) {
+            new_cells[r as usize * cols as usize + c as usize] =
+                old[r as usize * old_cols as usize + c as usize].clone();
+        }
+    }
+    new_cells
 }
 
 /// ANSI 16 色 → tui Color（0-7 基础色 / 90-97 亮色）
@@ -385,7 +413,9 @@ impl Perform for TerminalGrid {
             b'\t' => {                                    // 下一个 tab stop（8 格）
                 self.cursor.1 = (self.cursor.1 / 8 + 1) * 8;
                 if self.cursor.1 >= self.cols {
-                    self.cursor.1 = self.cols - 1;
+                    // 目标在/超过末列：光标停末列并置延迟 wrap（下一字符换行，
+                    // 与 print 的末列语义一致；真实 xterm 同行为）
+                    self.cursor.1 = self.cols;
                 }
             }
             0x08 => self.cursor.1 = self.cursor.1.saturating_sub(1), // BS
@@ -398,20 +428,21 @@ impl Perform for TerminalGrid {
     }
 
     fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
-        // 私有模式：?1049h/l 切换 alt screen（?25h/l 光标显隐等忽略）
-        let private = params
-            .iter()
-            .next()
-            .and_then(|p| p.first())
-            .copied()
-            .unwrap_or(0);
-        if private == 1049 {
-            match action {
-                'h' => self.enter_alt(),
-                'l' => self.exit_alt(),
+        // 私有模式仅当带 ? intermediate 才生效（DECSET/DECRST）：CSI ?1049h/l 切
+        // alt screen，其余（?25h/l 光标显隐等）忽略；无 ? 的 CSI 1049h 不是私有模式。
+        if _intermediates.contains(&b'?') {
+            let mode = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0);
+            match (mode, action) {
+                (1049, 'h') => self.enter_alt(),
+                (1049, 'l') => self.exit_alt(),
                 _ => {}
             }
             return;
+        }
+        // 光标移动类 CSI 先清除延迟 wrap 状态（真实终端：任何光标移动都取消待定换行，
+        // 只动行的 A/B 若不处理会让末列待定换行错误地延续到下一字符）
+        if matches!(action, 'A' | 'B' | 'C' | 'D' | 'G' | 'H' | 'f') {
+            self.cursor.1 = self.cursor.1.min(self.cols - 1);
         }
         // CSI 参数读取：缺失/0 → 默认值
         let param = |i: usize, dflt: u16| {
@@ -637,6 +668,24 @@ mod tests {
     }
 
     #[test]
+    fn feed_keeps_parser_state_across_chunks() {
+        let mut g = grid(2, 8);
+        // CSI 序列被块边界切开：parser 必须跨 feed 调用持久，否则 \x1b[3 状态丢失
+        g.feed(b"\x1b[3");
+        g.feed(b"2mX");
+        // 完整序列 \x1b[32mX = 绿色；若每次 feed 新建 parser，SGR 参数丢失 → X 无色
+        assert_eq!(
+            cell_at(&g, 0, 0),
+            TerminalCell { ch: 'X', fg: Some(Color::Green), bg: None, bold: false }
+        );
+        assert_eq!(line_text(&g, 0), "X       ");
+        // OSC/其他长序列同理：块边界切开的中间态不落地为可见字符
+        g.feed(b"\x1b]0;ti");
+        g.feed(b"tle\x07");
+        assert_eq!(line_text(&g, 0), "X       "); // 标题文本未被当作内容打印
+    }
+
+    #[test]
     fn feed_print_and_wrap() {
         let mut g = grid(3, 5);
         g.feed(b"hello");
@@ -730,6 +779,30 @@ mod tests {
     }
 
     #[test]
+    fn alt_screen_resize_then_exit_no_panic() {
+        let mut g = grid(3, 6);
+        g.feed(b"main");
+        // 进 alt：主屏 3×6 备份进 alt_saved
+        g.feed(b"\x1b[?1049h");
+        assert!(g.in_alt());
+        g.feed(b"alt");
+        // alt 中 resize（放大）：alt_saved 必须同步重排，否则 exit_alt 恢复旧尺寸 → 越界
+        g.resize(4, 10);
+        g.feed(b"!"); // 写字符不 panic
+        g.feed(b"\x1b[?1049l"); // 退出：恢复重排后的主屏
+        assert!(!g.in_alt());
+        assert_eq!(line_text(&g, 0), "main      "); // 10 列：main 保留，其余空白
+        assert_eq!(g.rows(), 4);
+        // 缩小路径同样安全：再进 alt → 缩到 2×4 → 退出
+        g.feed(b"\x1b[?1049h");
+        g.resize(2, 4);
+        g.feed(b"\x1b[?1049l");
+        assert_eq!(line_text(&g, 0), "main");
+        g.feed(b"Z"); // 写字符不 panic
+        assert_eq!(line_text(&g, 0), "maiZ");
+    }
+
+    #[test]
     fn resize_truncate_and_fill() {
         let mut g = grid(3, 5);
         g.feed(b"abcdefghijklmno"); // 15 字符写满 3×5
@@ -777,11 +850,14 @@ mod tests {
 
     #[test]
     fn tab_and_backspace() {
-        let mut g = grid(1, 8);
+        let mut g = grid(2, 8);
         g.feed(b"a\tb");
-        assert_eq!(line_text(&g, 0), "a      b"); // tab 到第 8 列
+        // tab 目标第 8 列 = 末列 → 延迟 wrap：'b' 换行到下一行（真实 xterm 同行为）
+        assert_eq!(line_text(&g, 0), "a       ");
+        assert_eq!(line_text(&g, 1), "b       ");
+        assert_eq!(g.cursor(), (1, 1));
         g.feed(b"\x08\x08");
-        assert_eq!(g.cursor(), (0, 6));
+        assert_eq!(g.cursor(), (1, 0));
     }
 
     #[test]

@@ -4500,7 +4500,6 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 });
             }
             helix_js::UiRequest::OpenTerminal { view_id, pty_id, cmd, side, size } => {
-                eprintln!("[dbg] drain OpenTerminal view_id={view_id}");
                 // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）；
                 // cmd 由 JS 侧 spawn 完成，这里只用于错误提示不真正执行
                 match side.as_str() {
@@ -4516,12 +4515,12 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 });
             }
             helix_js::UiRequest::TermFeed { view_id, chunk } => {
-                // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃
-                eprintln!("[dbg] TermFeed view_id={view_id} chunk={chunk:?}");
-                let id = format!("plugin-terminal-{view_id}");
-                let id: &'static str = Box::leak(id.into_boxed_str());
+                // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃。
+                // find_where 按实例的 view_id 字段匹配，不在热路径上每次 leak 一个 id 字符串。
                 job::dispatch_blocking(move |_editor, compositor| {
-                    if let Some(terminal) = compositor.find_id::<PluginTerminal>(id) {
+                    if let Some(terminal) =
+                        compositor.find_where::<PluginTerminal>(|t| t.view_id() == view_id)
+                    {
                         terminal.feed(&chunk);
                     }
                 });
@@ -4750,10 +4749,7 @@ fn term_native(cx: &mut compositor::Context, _args: Args, event: PromptEvent) ->
     "#;
     helix_js::load_script_named("term-native.js", src).map_err(|e| anyhow!("term-native: {e}"))?;
     let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
-    eprintln!("[dbg] running __term_native");
-    let r = helix_js::run_command("__term_native", &ctx);
-    eprintln!("[dbg] run_command result: {:?}", r.as_ref().map_err(|e| e.to_string()));
-    r.map_err(|e| anyhow!("term-native: {e}"))?;
+    helix_js::run_command("__term_native", &ctx).map_err(|e| anyhow!("term-native: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));
