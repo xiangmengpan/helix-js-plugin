@@ -1372,20 +1372,28 @@ fn js_term_resize(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_e
     Ok(JsValue::undefined())
 }
 
-/// 基础 glob：以模式最后一个分隔符为基目录递归 walk，globset 匹配完整路径字符串。
-/// literal_separator(true)：`*`/`?` 不跨目录分隔符（`**` 仍跨目录，globset 语义）。
+/// 基础 glob：基目录 = 模式中首个元字符（`*`/`?`/`[`）之前的字面前缀递归 walk
+/// （如 `dir/**/*.js` → `dir`，裸模式 `*.js` → `.`；无元字符 → 整模式为字面路径取父目录），
+/// globset 匹配完整路径字符串。literal_separator(true)：`*`/`?` 不跨目录分隔符
+/// （`**` 仍跨目录，含零层，globset 语义）。
+/// 前导 `./` 归一化：globset 裸模式不匹配 `./x` 候选（`*` 不跨 `/`），模式与候选统一去掉。
 fn glob_matches(pattern: &str) -> std::result::Result<Vec<String>, String> {
     use globset::GlobBuilder;
+    let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
     let matcher = GlobBuilder::new(pattern)
         .literal_separator(true)
         .build()
         .map_err(|e| format!("invalid glob '{pattern}': {e}"))?
         .compile_matcher();
-    let base = std::path::Path::new(pattern)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let base = match pattern.find(['*', '?', '[']) {
+        Some(0) => std::path::PathBuf::from("."),
+        Some(i) => std::path::PathBuf::from(&pattern[..i]),
+        None => std::path::Path::new(pattern)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(".")),
+    };
     let mut out = Vec::new();
     walk_glob(&base, &matcher, &mut out).map_err(|e| format!("glob_async('{pattern}'): {e}"))?;
     out.sort();
@@ -1397,9 +1405,11 @@ fn walk_glob(dir: &std::path::Path, matcher: &globset::GlobMatcher, out: &mut Ve
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        let pstr = path.to_string_lossy().into_owned();
-        if matcher.is_match(&pstr) {
-            out.push(pstr);
+        // 基目录为 `.` 时路径带前导 `./`，globset 裸模式（`*.js`）不匹配 → 统一去掉
+        let pstr = path.to_string_lossy();
+        let pstr = pstr.strip_prefix("./").unwrap_or(&pstr);
+        if matcher.is_match(pstr) {
+            out.push(pstr.to_owned());
         }
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             walk_glob(&path, matcher, out)?;
@@ -1434,7 +1444,7 @@ fn async_cb(args: &[JsValue], pos: usize, api: &str) -> boa_engine::JsResult<JsV
 
 fn js_read_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("read_file_async: path must be a string")))
+        JsError::from_opaque(JsValue::from(JsString::from("helix.read_file_async: path must be a string")))
     })?;
     let cb = async_cb(args, 1, "read_file_async")?;
     let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
@@ -1447,10 +1457,10 @@ fn js_read_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
 
 fn js_write_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("write_file_async: path must be a string")))
+        JsError::from_opaque(JsValue::from(JsString::from("helix.write_file_async: path must be a string")))
     })?;
     let content: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("write_file_async: content must be a string")))
+        JsError::from_opaque(JsValue::from(JsString::from("helix.write_file_async: content must be a string")))
     })?;
     let cb = async_cb(args, 2, "write_file_async")?;
     let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
@@ -1463,7 +1473,7 @@ fn js_write_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
 
 fn js_stat_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("stat_async: path must be a string")))
+        JsError::from_opaque(JsValue::from(JsString::from("helix.stat_async: path must be a string")))
     })?;
     let cb = async_cb(args, 1, "stat_async")?;
     let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
@@ -1484,7 +1494,7 @@ fn js_stat_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
 
 fn js_glob_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let pattern: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("glob_async: pattern must be a string")))
+        JsError::from_opaque(JsValue::from(JsString::from("helix.glob_async: pattern must be a string")))
     })?;
     let cb = async_cb(args, 1, "glob_async")?;
     let id = NEXT_ASYNC_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
@@ -3107,6 +3117,29 @@ mod tests {
         assert!(msgs.iter().any(|m| m == "glob:1"), "{msgs:?}");
         assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap(), "written");
 
+        // review: ** 中缀（`dir/**/*.js`）——嵌套目录也要命中（独立回合：wait_for_async 为
+        // any 语义，同一事件类型不能连续 wait 两次）
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/deep.js"), "d").unwrap();
+        load_script(&format!(r#"
+        helix.register_command("fsd2", () => {{
+            helix.glob_async("{dir}/**/*.js", (err, paths) => {{
+                helix.echo("glob2:" + (err ?? "") + ":" + paths.length);
+            }});
+        }});
+    "#, dir = dir.display())).unwrap();
+        assert!(run_command("fsd2", &ctx).unwrap());
+        let mut g2 = Vec::new();
+        wait_for_async(&mut g2, |e| matches!(e, AsyncEvent::FsGlob(_, _)));
+        for ev in g2 {
+            let id = match &ev {
+                AsyncEvent::FsRead(id, _) | AsyncEvent::FsWrite(id, _) | AsyncEvent::FsStat(id, _) | AsyncEvent::FsGlob(id, _) => *id,
+            };
+            resolve_async_event(id, ev).unwrap();
+        }
+        let msgs2 = take_messages();
+        assert!(msgs2.iter().any(|m| m == "glob2::2"), "** 应命中根目录+嵌套: {msgs2:?}");
+
         // 错误路径：读不存在 → err 非空
         load_script(&format!(r#"
         helix.register_command("fsbad", () => {{
@@ -3131,6 +3164,29 @@ mod tests {
         assert!(load_script(r#"helix.read_file_async(42, () => {});"#).is_err());
         assert!(load_script(r#"helix.read_file_async("x", 42);"#).is_err());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// review 回归：裸模式 `*.js`（基目录 = `.`，cwd 内匹配）——验证字面前缀基目录 +
+    /// 前导 `./` 归一化。chdir 受 TEST_LOCK 保护（同进程单测串行，本 crate 全部测试取锁）。
+    #[test]
+    fn glob_bare_pattern() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = std::env::temp_dir().join(format!("helix-js-glob-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("x.js"), "x").unwrap();
+        std::fs::write(dir.join("y.txt"), "y").unwrap();
+        std::fs::write(dir.join("sub/z.js"), "z").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let bare = glob_matches("*.js");
+        let dbl = glob_matches("**/*.js");
+        let explicit = glob_matches("./*.js"); // ./ 归一化与裸模式一致
+        std::env::set_current_dir(cwd).unwrap();
+        assert_eq!(bare.unwrap(), vec!["x.js"], "裸 * 不跨目录分隔符");
+        assert_eq!(dbl.unwrap(), vec!["sub/z.js", "x.js"], "** 跨目录（含零层）");
+        assert_eq!(explicit.unwrap(), vec!["x.js"], "前导 ./ 归一化");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
