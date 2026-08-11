@@ -152,6 +152,9 @@ impl Application {
             let plugin_dir = helix_loader::config_dir().join("plugins");
             // js_load 相对名解析用：init.js 里 helix.load("xxx.js") 落到插件目录
             helix_js::set_plugins_dir(plugin_dir.clone());
+            // 跨线程唤醒：worker 发事件 → request_redraw → 事件循环 33ms 内重绘。
+            // 这是终端/异步输出即时上屏的关键（chunk 到达不等 idle）。
+            helix_js::set_term_wake(Box::new(|| helix_event::request_redraw()));
             // 入口 init.js 位于配置根（~/.config/helix/init.js）；
             // 回退兼容旧位置 plugins/init.js
             let init_path = helix_loader::config_dir().join("init.js");

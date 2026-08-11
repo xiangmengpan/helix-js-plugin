@@ -77,6 +77,13 @@ mod pty {
             // 默认尺寸：内核新建 pty 的 winsize 是 0×0，stty size 会读成 "0 0"；
             // 简报期望缺省 "24 80"。在子进程启动前设好（master ioctl 作用于同一 tty）。
             set_winsize(master.fd(), 24, 80)?; // 失败时 master/slave 由 Drop 兜底关闭
+            // raw mode：关 canonical 缓冲/回显/信号生成——输入即达子进程（bash/readline
+            // 自己处理回显与 Ctrl-C），消除"输入缓冲、字母成批"的观感。
+            let mut termios: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(master.fd(), &mut termios) == 0 {
+                libc::cfmakeraw(&mut termios);
+                libc::tcsetattr(master.fd(), libc::TCSANOW, &termios);
+            }
             Ok((master, slave))
         }
     }
@@ -139,6 +146,41 @@ pub enum UiRequest {
         view_id: u64,
         chunk: String,
     },
+}
+
+/// 带唤醒的发送端：worker 发事件时触发宿主注册的唤醒回调（即时重绘），
+/// send 签名与 std Sender 一致，既有调用点零改动。
+struct WakeSender<T> {
+    inner: std::sync::mpsc::Sender<T>,
+}
+
+impl<T> Clone for WakeSender<T> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
+impl<T> WakeSender<T> {
+    fn send(&self, t: T) -> Result<(), std::sync::mpsc::SendError<T>> {
+        let r = self.inner.send(t);
+        // 发送时查当前注册的唤醒回调（set_term_wake 随时生效）
+        if let Some(wake) = TERM_WAKE.get() {
+            (wake)();
+        }
+        r
+    }
+}
+
+/// 宿主注册的跨线程唤醒回调（helix-term 启动时设置：request_redraw）
+static TERM_WAKE: OnceLock<std::sync::Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// 注册跨线程唤醒回调（worker 发事件时调用；未注册时 no-op）
+pub fn set_term_wake(f: Box<dyn Fn() + Send + Sync>) {
+    let _ = TERM_WAKE.set(std::sync::Arc::from(f));
+}
+
+fn wake_sender<T>(inner: std::sync::mpsc::Sender<T>) -> WakeSender<T> {
+    WakeSender { inner }
 }
 
 /// 异步进程事件（worker 线程 → 主线程；主线程 drain 后 resolve 到 JS 回调）
@@ -373,7 +415,7 @@ static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 // 全局单通道会被并发测试的 render 泵互偷（别的线程 drain 后 resolve 时找不到本线程的回调，静默丢弃）。
 // worker 在 std 线程上持发起线程的 Sender 克隆；drain 只读本线程的 Receiver。
 thread_local! {
-    static TERM_EVENTS: RefCell<Option<std::sync::mpsc::Sender<TermEvent>>> = const { RefCell::new(None) };
+    static TERM_EVENTS: RefCell<Option<WakeSender<TermEvent>>> = const { RefCell::new(None) };
     static TERM_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<TermEvent>>> = const { RefCell::new(None) };
     // 进程 id → 控制通道（term_write / term_kill 用）。按线程存放：id 由本线程计数器
     // 分配，若 map 全局则并发线程的同 id 互相覆盖（与 TERM_EVENTS 同模式）；
@@ -386,7 +428,7 @@ thread_local! {
     static TERM_MASTERS: RefCell<HashMap<u64, std::os::fd::RawFd>> = RefCell::new(HashMap::new());
     // 异步 fs 事件通道：与 TERM_EVENTS 同模式——发起线程持有 Sender 克隆，
     // 一次性 worker 线程发结果，发起线程 drain 消费。
-    static ASYNC_EVENTS: RefCell<Option<std::sync::mpsc::Sender<AsyncEvent>>> = const { RefCell::new(None) };
+    static ASYNC_EVENTS: RefCell<Option<WakeSender<AsyncEvent>>> = const { RefCell::new(None) };
     static ASYNC_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<AsyncEvent>>> = const { RefCell::new(None) };
     // 异步 fs id → JS 回调（持有 JsValue：线程退出时内容泄漏，同上）
     static ASYNC_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
@@ -416,14 +458,14 @@ pub fn init() {
     TERM_EVENTS.with(|t| {
         if t.borrow().is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
-            *t.borrow_mut() = Some(tx);
+            *t.borrow_mut() = Some(wake_sender(tx));
             TERM_EVENTS_RX.with(|r| *r.borrow_mut() = Some(rx));
         }
     });
     ASYNC_EVENTS.with(|t| {
         if t.borrow().is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
-            *t.borrow_mut() = Some(tx);
+            *t.borrow_mut() = Some(wake_sender(tx));
             ASYNC_EVENTS_RX.with(|r| *r.borrow_mut() = Some(rx));
         }
     });
@@ -1034,7 +1076,7 @@ fn read_stream<R: std::io::Read>(
     id: u64,
     aggregate: bool,
     output: &std::sync::Mutex<Vec<u8>>,
-    tx: &std::sync::mpsc::Sender<TermEvent>,
+    tx: &WakeSender<TermEvent>,
 ) {
     let mut buf = [0u8; TERM_CHUNK_SIZE];
     let mut tail: Vec<u8> = Vec::with_capacity(3); // 跨块的不完整 UTF-8 尾部（最长序列 3 字节）
@@ -1089,7 +1131,7 @@ fn spawn_worker(
     id: u64,
     cmd: &str,
     aggregate: bool,
-    tx: std::sync::mpsc::Sender<TermEvent>,
+    tx: WakeSender<TermEvent>,
     stdin_rx: std::sync::mpsc::Receiver<TermCtrl>,
 ) {
     let cmd = cmd.to_string();
@@ -1150,6 +1192,7 @@ fn spawn_worker(
                         }
                     }
                     TermCtrl::Kill => {
+                        // pipe worker 未设 process_group：杀直接子进程（sh 单命令会 exec，等于杀目标）
                         let _ = child.kill();
                     }
                 }
@@ -1183,10 +1226,12 @@ fn spawn_worker(
 /// TermCtrl::Write 写 master 当 stdin，Kill 杀子进程。单读线程（pty 无 stderr 区分）。
 /// worker 持 master File（Drop 关闭）；slave 经 Stdio::from 交给子进程，spawn 后父侧关闭。
 #[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 fn spawn_pty_worker(
     id: u64,
     cmd: &str,
-    tx: std::sync::mpsc::Sender<TermEvent>,
+    tx: WakeSender<TermEvent>,
     ctrl_rx: std::sync::mpsc::Receiver<TermCtrl>,
     master: pty::Master,
     slave: std::fs::File,
@@ -1218,6 +1263,7 @@ fn spawn_pty_worker(
             .stdin(Stdio::from(stdin_slave))
             .stdout(Stdio::from(stdout_slave))
             .stderr(Stdio::from(slave))
+            .process_group(0) // 子进程自成进程组：kill 杀整组（sh 未 exec 时的孙进程也杀）
             .spawn()
         {
             Ok(c) => c,
@@ -1226,6 +1272,11 @@ fn spawn_pty_worker(
                 return;
             }
         };
+        // 子进程进程组设为 pty 前台组（交互 bash 的 job control 正常；tcsetpgrp 失败静默）
+        #[cfg(unix)]
+        unsafe {
+            libc::tcsetpgrp(std::os::unix::io::AsRawFd::as_raw_fd(&master), child.id() as libc::pid_t);
+        }
         // master 读端单独 dup（读写两端并发：写线程主循环 + 读线程）
         let master_reader = match master.try_clone() {
             Ok(f) => f,
@@ -1259,6 +1310,13 @@ fn spawn_pty_worker(
                         let _ = master.flush();
                     }
                     TermCtrl::Kill => {
+                        #[cfg(unix)]
+                        unsafe {
+                            // 杀整个进程组（-pgid）：sh 未 exec 时孙进程（如 cat）也一并杀，
+                            // 否则孤儿进程持住 slave fd → master 读永不 EIO → worker 挂死
+                            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+                        }
+                        #[cfg(not(unix))]
                         let _ = child.kill();
                     }
                 }
@@ -2523,6 +2581,34 @@ mod tests {
     /// 简报原文断言 count:2，但设置创建 3 个条目（a.txt、b.js、sub/）→ 按实际调整为 count:3；
     /// 排序断言 entries[0].name < entries[1].name 不受影响（a.txt < b.js）。
     #[test]
+    fn term_wake_fires_on_event() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fired2 = fired.clone();
+        set_term_wake(Box::new(move || {
+            fired2.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+        load_script(
+            r#"
+            helix.register_command("wk", () => {
+                helix.spawn({ pty: false, cmd: "echo wake-test", onChunk: () => {}, onExit: () => {} });
+            });
+            "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("wk", &ctx).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !fired.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            // 消费事件（让 worker 继续/完成），wake 在 send 时触发
+            let _ = drain_term_events();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "wake should fire on event send");
+    }
+
+    #[test]
     fn open_terminal_api() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
@@ -3583,8 +3669,8 @@ mod tests {
             const id = helix.spawn({ pty: true, cmd: "stty size", onChunk: (c) => helix.echo("size:" + c.trim()), onExit: (code) => helix.echo("sizeexit:" + code) });
         });
         helix.register_command("pty-cat", () => {
-            const id = helix.spawn({ pty: true, cmd: "cat", onChunk: (c) => helix.echo("pty:" + c.trim()), onExit: (code) => helix.echo("ptyexit:" + code) });
-            helix.term_write(id, "hello-pty\n\u{0004}");
+            const id = helix.spawn({ pty: true, cmd: "cat", onChunk: (c) => { helix.echo("pty:" + c.trim()); helix.term_kill(id); }, onExit: (code) => helix.echo("ptyexit:" + code) });
+            helix.term_write(id, "hello-pty\n"); // raw mode 下 \u{4} 不是 EOF——echo 到达后 kill
         });
         helix.register_command("pty-badresize", () => { helix.term_resize(999, 1, 1); });
         "#,
@@ -3624,26 +3710,29 @@ mod tests {
             "default winsize 24x80"
         );
 
-        // 写 master → 子进程 stdin：cat 回显 + tty 驱动 echo → Ctrl-D(\u{0004}) EOF 退出
+        // 写 master → 子进程 stdin：cat 回显；raw mode 下 \u{4} 非 EOF——onChunk 里 kill。
+        // 轮询 drain + resolve（让 onChunk 的 kill 生效）直到 Exit。
         assert!(run_command("pty-cat", &ctx).unwrap());
-        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
-        for ev in &events {
-            match ev {
-                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
-                TermEvent::Exit(id, code, stdout) => {
-                    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
-                }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got_exit = false;
+        while !got_exit && std::time::Instant::now() < deadline {
+            for e in drain_term_events() {
+                let is_exit = matches!(e, TermEvent::Exit(_, _, _));
+                let id = match &e { TermEvent::Chunk(id, _) | TermEvent::Exit(id, _, _) => *id };
+                let _ = resolve_term_event(id, e);
+                if is_exit { got_exit = true; }
             }
+            if !got_exit { std::thread::sleep(std::time::Duration::from_millis(20)); }
         }
-        // take_messages 是消费型：先取一次再断言两条
+        assert!(got_exit, "cat should exit after kill");
         let msgs = take_messages();
         assert!(
             msgs.iter().any(|m| m.contains("hello-pty")),
-            "write to master reaches child: {msgs:?}"
+            "cat echo missing: {msgs:?}"
         );
         assert!(
-            msgs.iter().any(|m| m.contains("ptyexit:0")),
-            "Ctrl-D EOF exits cat cleanly: {msgs:?}"
+            msgs.iter().any(|m| m.contains("ptyexit:-1")),
+            "kill exits cat: {msgs:?}"
         );
 
         // 校验：pty 非布尔 / resize 未知 id → 报错
