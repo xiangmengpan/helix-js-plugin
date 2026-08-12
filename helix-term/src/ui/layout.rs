@@ -219,6 +219,18 @@ impl LayoutTree {
     }
 
     /// 序列化布局（不包含组件内容，只含叶子 id 与类型标记）
+    /// 重置树内面板/终端的脏格 diff（测试向不同 surface 渲染时用）
+    pub fn reset_plugin_diffs(&mut self) {
+        for comp in self.components.values_mut() {
+            if let Some(p) = comp
+                .as_any_mut()
+                .downcast_mut::<crate::ui::plugin_panel::PluginPanel>()
+            {
+                p.reset_render_state();
+            }
+        }
+    }
+
     pub fn dump(&self) -> LayoutDump {
         fn dump_node(node: &LayoutNode) -> serde_json::Value {
             match node {
@@ -369,9 +381,9 @@ fn prune(node: &mut LayoutNode, target: u64) -> bool {
                 let sibling = std::mem::replace(&mut **first, LayoutNode::Leaf { id: u64::MAX });
                 *node = sibling;
                 false
-            } else if prune(first, target) || prune(second, target) {
-                false // 一侧整体被移除（单子树退化），保持另一侧
             } else {
+                // 递归剪除（父节点保留，子侧就地收缩）
+                let _ = prune(first, target) || prune(second, target);
                 false
             }
         }

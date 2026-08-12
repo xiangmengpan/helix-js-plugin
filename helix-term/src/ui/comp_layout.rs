@@ -128,52 +128,23 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
 }
 
 
-use helix_view::graphics::{Color, Style};
+use helix_view::graphics::Style;
 
 // ── 脏格增量渲染（方案乙③）──
 
-/// 逐格 diff 渲染器：与上次输出对比，只把变化的格写入 surface。
-/// 终端输出流、状态更新等高频重绘场景下显著减少 surface 写入。
+/// 插件面板/弹窗渲染器：全量渲染（每帧清区域 + 写全部行）。
+/// 不做跨帧 diff——终端外部清空 surface（切 tab、OS 重绘、resize）时 diff 状态失效
+/// 会导致内容不重画/错位；面板区域小，全量成本可忽略，termina 后端自带终端级 diff。
 #[derive(Default)]
-pub struct DiffRenderer {
-    last: Vec<u64>,
-}
-
-
-fn color_hash(c: &Color) -> u64 {
-    match c {
-        Color::Reset => 0,
-        Color::Black => 1,
-        Color::Red => 2,
-        Color::Green => 3,
-        Color::Yellow => 4,
-        Color::Blue => 5,
-        Color::Magenta => 6,
-        Color::Cyan => 7,
-        Color::Gray => 8,
-        Color::LightGray => 9,
-        Color::LightRed => 10,
-        Color::LightGreen => 11,
-        Color::LightYellow => 12,
-        Color::LightBlue => 13,
-        Color::LightMagenta => 14,
-        Color::LightCyan => 15,
-        Color::White => 16,
-        Color::Rgb(r, g, b) => 1000 + (*r as u64) * 65536 + (*g as u64) * 256 + *b as u64,
-        
-        Color::Indexed(n) => 3000 + *n as u64,
-    }
-}
-
-fn cell_hash(ch: char, style: &Style) -> u64 {
-    (ch as u64) * 31
-        + (style.add_modifier.bits() as u64) * 7
-        + color_hash(&style.fg.unwrap_or(Color::Reset)) * 3
-        + color_hash(&style.bg.unwrap_or(Color::Reset))
-}
+pub struct DiffRenderer;
 
 impl DiffRenderer {
-    /// 渲染 lines 到 surface（area 左上角起），只画与上次不同的格。
+    /// 全量渲染 lines 到 surface（area 左上角起）：先清空区域，再写全部行。
+    ///
+    /// 样式全量解析：scope 样式缺 fg → 回退 ui.text（bg-only 样式/无样式行文字可读），
+    /// 缺 bg → 回退 ui.background（面板/弹窗背景与编辑器一致）。写格前先 reset，
+    /// 清掉残留颜色——否则 Cell::set_style 只覆盖 Some 字段，被取消选中的行会
+    /// 永远留着旧高亮背景（残影），且 fg=Reset 的文字在暗背景下不可见。
     pub fn render(
         &mut self,
         lines: &[StyledLine],
@@ -181,57 +152,53 @@ impl DiffRenderer {
         surface: &mut tui::buffer::Buffer,
         theme: &helix_view::Theme,
     ) {
+        let default_fg = theme.get("ui.text").fg;
+        let default_bg = theme.get("ui.background").bg;
+        let resolve = |mut style: Style| -> Style {
+            if style.fg.is_none() {
+                style.fg = default_fg;
+            }
+            if style.bg.is_none() {
+                style.bg = default_bg;
+            }
+            style
+        };
         let width = area.width as usize;
         let max_rows = area.height as usize;
-        let mut hashes: Vec<u64> = Vec::with_capacity(width * lines.len().min(max_rows));
+        let blank = resolve(Style::default());
+        // 全量：先清区域（背景），再写内容——无跨帧状态，外部清空 surface 后必然完整重画
+        for y in 0..max_rows {
+            for x in 0..width {
+                let cell = &mut surface[(area.x + x as u16, area.y + y as u16)];
+                cell.reset();
+                cell.set_symbol(" ");
+                cell.set_style(blank);
+            }
+        }
         for (y, line) in lines.iter().take(max_rows).enumerate() {
             let mut x = 0usize;
             for span in &line.spans {
-                let style = span
-                    .style
-                    .as_ref()
-                    .map(|s| theme.get(s))
-                    .unwrap_or_default();
+                let style = resolve(
+                    span.style
+                        .as_ref()
+                        .map(|s| theme.get(s))
+                        .unwrap_or_default(),
+                );
                 for ch in span.text.chars() {
                     if x >= width {
                         break;
                     }
-                    let h = cell_hash(ch, &style);
-                    hashes.push(h);
-                    let idx = y * width + x;
-                    if self.last.get(idx) != Some(&h) {
-                        let cell = &mut surface[(area.x + x as u16, area.y + y as u16)];
-                        cell.set_symbol(&ch.to_string());
-                        cell.set_style(style);
-                    }
+                    let cell = &mut surface[(area.x + x as u16, area.y + y as u16)];
+                    cell.reset();
+                    cell.set_symbol(&ch.to_string());
+                    cell.set_style(style);
                     x += 1;
                 }
                 if x >= width {
                     break;
                 }
             }
-            // 行尾空格（清掉上次更长的内容）
-            for x2 in x..width {
-                let h = cell_hash(' ', &Style::default());
-                hashes.push(h);
-                let idx = y * width + x2;
-                if self.last.get(idx) != Some(&h) {
-                    let cell = &mut surface[(area.x + x2 as u16, area.y + y as u16)];
-                    cell.set_symbol(" ");
-                    cell.set_style(helix_view::graphics::Style::default());
-                }
-            }
         }
-        // 内容变短：清掉多出的旧行
-        let old_rows = self.last.len().div_ceil(width);
-        for y in lines.len().min(max_rows)..old_rows.min(max_rows) {
-            for x2 in 0..width {
-                let cell = &mut surface[(area.x + x2 as u16, area.y + y as u16)];
-                cell.set_symbol(" ");
-                cell.set_style(helix_view::graphics::Style::default());
-            }
-        }
-        self.last = hashes;
     }
 }
 
@@ -258,6 +225,28 @@ mod tests {
 
     fn line_text(l: &StyledLine) -> String {
         l.spans.iter().map(|sp| sp.text.as_str()).collect()
+    }
+
+    #[test]
+    fn scroll_full_window_outputs_all_rows() {
+        // 模拟 filetree：viewport (32, 40)，scroll height 39，children 39 行
+        let children: Vec<CompNode> = (0..39).map(|i| text(&format!("row{i:02}"))).collect();
+        let node = CompNode::Scroll { children, height: 39 };
+        let out = layout(&node, (32, 40));
+        assert_eq!(out.len(), 39, "scroll 应输出全部 39 行，实际 {}", out.len());
+        // 行内容应是前 39 行（skip=0）
+        assert_eq!(line_text(&out[0]), "row00");
+        assert_eq!(line_text(&out[38]), "row38");
+    }
+
+    #[test]
+    fn scroll_truncates_to_viewport() {
+        // children 100 行，viewport 高度 40，height 39 → 保留最后 39 行
+        let children: Vec<CompNode> = (0..100).map(|i| text(&format!("r{i:03}"))).collect();
+        let node = CompNode::Scroll { children, height: 39 };
+        let out = layout(&node, (32, 40));
+        assert_eq!(out.len(), 39, "scroll 应截断到 39 行");
+        assert_eq!(line_text(&out[0]), "r061", "保留最后 39 行的第一行");
     }
 
     #[test]
@@ -380,4 +369,3 @@ mod tests {
         assert_eq!(line_text(&out[0]), "ab");
     }
 }
-

@@ -615,22 +615,14 @@ pub struct PluginTerminal {
     view_id: u64,
     pty_id: u64,
     grid: TerminalGrid,
-    side: crate::ui::plugin_panel::PanelSide,
     size: u16,
     mode: TermMode,
-    /// 悬浮模式位置（默认居中）
-    float_pos: Option<(u16, u16)>,
     /// 上次渲染尺寸（None = 尚未渲染；首次渲染触发 resize + TIOCSWINSZ）
     last_size: Option<(u16, u16)>,
 }
 
 impl PluginTerminal {
-    pub fn new(
-        view_id: u64,
-        pty_id: u64,
-        side: crate::ui::plugin_panel::PanelSide,
-        size: u16,
-    ) -> Self {
+    pub fn new(view_id: u64, pty_id: u64, size: u16) -> Self {
         let id: &'static str = Box::leak(format!("plugin-terminal-{view_id}").into_boxed_str());
         let cols = size.max(1);
         Self {
@@ -638,24 +630,10 @@ impl PluginTerminal {
             view_id,
             pty_id,
             grid: TerminalGrid::new(24, cols),
-            side,
             size,
             mode: TermMode::Dock,
-            float_pos: None,
             last_size: None,
         }
-    }
-
-    pub(crate) fn side(&self) -> crate::ui::plugin_panel::PanelSide {
-        self.side
-    }
-
-    pub fn size(&self) -> u16 {
-        self.size
-    }
-
-    pub fn mode(&self) -> TermMode {
-        self.mode
     }
 
     pub(crate) fn set_mode(&mut self, mode: TermMode) {
@@ -668,23 +646,6 @@ impl PluginTerminal {
 
     pub(crate) fn clear(&mut self) {
         self.grid.clear();
-    }
-
-    /// 按模式计算本终端的渲染区域（dock 用 layout_panels 给的 dock_rect）
-    pub(crate) fn area_for(&self, area: Rect, dock_rect: Option<Rect>) -> Rect {
-        match self.mode {
-            TermMode::Dock => dock_rect.unwrap_or(area),
-            TermMode::Fullscreen => area,
-            TermMode::Floating => {
-                let (w, h) = (self.size.max(20).min(area.width), 16.min(area.height));
-                let (x, y) = self.float_pos.unwrap_or((
-                    area.x + area.width.saturating_sub(w) / 2,
-                    area.y + area.height.saturating_sub(h) / 2,
-                ));
-                Rect::new(x, y, w, h)
-            }
-            TermMode::Minimized => Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
-        }
     }
 
     pub fn view_id(&self) -> u64 {
@@ -766,27 +727,6 @@ mod tests {
 
     fn cell_at(g: &TerminalGrid, row: u16, col: u16) -> TerminalCell {
         *g.cell(row, col).unwrap()
-    }
-
-    #[test]
-    fn area_for_modes() {
-        use crate::ui::plugin_panel::PanelSide;
-        let area = Rect::new(0, 0, 100, 40);
-        let mut t = PluginTerminal::new(1, 1, PanelSide::Right, 30);
-        // dock：用 layout 给的 rect
-        assert_eq!(t.area_for(area, Some(Rect::new(70, 0, 30, 40))), Rect::new(70, 0, 30, 40));
-        // fullscreen：全屏
-        t.set_mode(TermMode::Fullscreen);
-        assert_eq!(t.area_for(area, None), area);
-        // minimized：底部 1 行
-        t.set_mode(TermMode::Minimized);
-        assert_eq!(t.area_for(area, None), Rect::new(0, 39, 100, 1));
-        // floating：默认居中（宽 30，高 16）
-        t.set_mode(TermMode::Floating);
-        let f = t.area_for(area, None);
-        assert_eq!(f.height, 16);
-        assert_eq!(f.x, (100 - 30) / 2);
-        assert_eq!(f.y, (40 - 16) / 2);
     }
 
     #[test]
