@@ -184,7 +184,9 @@ const id = helix.spawn({
   onExit: (code) => { /* 退出码 */ },
 });
 helix.term_write(id, "ls\n");      // 写 stdin（或 PTY master）
-helix.term_kill(id);               // 杀进程（pty 模式杀整个进程组）
+helix.term_kill(id)
+helix.term_list()                        // [{view_id, cmd}] 当前终端
+helix.term_close(view_id)                // 按 id 关闭终端;               // 杀进程（pty 模式杀整个进程组）
 helix.term_resize(id, rows, cols); // 仅 PTY：设置窗口尺寸（TIOCSWINSZ，默认 24×80；Unix-only）
 ```
 
@@ -400,15 +402,26 @@ helix.term_feed(view, chunk);    // 内部桥接（open_terminal 内部使用，
 |------|------|
 | `dock`（默认） | 停靠推挤（布局树叶子） |
 | `fullscreen` | 占满整个编辑区 |
-| `floating` | 居中悬浮（16 行，最小 20 列） |
+| `floating` | **居中悬浮窗（带边框，60%×70% 视口），不占 split 布局，渲染在最上层** |
 | `minimized` | 底部 1 行细条；按键穿透编辑器、进程保活 |
 
 ### 终端能力
 
-- vte 解析：光标 / SGR 颜色 / 粗体 / 清屏 / 滚回（上限 1000 行，只存不显示）/ alt screen（vim、htop 可显示）。
-- 按键直通 pty（raw mode，输入即达）；面板尺寸变化实时 TIOCSWINSZ；Esc 关闭（Drop 时杀 pty，杀整个进程组）。
-- 宽字符 / 组合字符 / 鼠标 / 选择复制**不支持**（PoC）。
+- vte 解析：光标 / SGR 颜色 / 粗体 / 清屏 / 滚回 / alt screen（vim、htop 可显示）。
+- **C-\ 模式切换**（lazyvim 语义）：insert → 终端 normal（滚动缓冲 j/k/gg/G/PageUp/PageDown 查看）；
+  normal 再 C-\ → 回 helix（收起浮窗 + 聚焦编辑器）；normal 内 i/a/Esc 回 insert、q 关闭。
+- 滚动缓冲**可查看**（normal 模式滚动，不干扰 pty 活动输出）。
+- **宽字符（CJK）支持**（主格+占位格，背景连续）。
+- 按键直通 pty（raw mode，含方向键/Ctrl 组合 xterm 应序）；面板尺寸变化实时 TIOCSWINSZ；
+  Esc 关闭（Drop 时杀 pty，杀整个进程组）。
+- 组合字符 / 鼠标 / 选择复制**暂不支持**（后续）。
 - PTY 仅 Unix。
+
+### 终端管理
+
+- `helix.term_list() -> [{ view_id, cmd }]`：当前打开的终端（注册表在 Rust 侧，reload 后仍准确）。
+- `helix.term_close(view_id)`：按 id 关闭指定终端（替代 remove_type 关全部）。
+- 配套插件 `plugins/terminal.js`：`:term` 浮动 toggle、`:vterm`/`:hterm` 分屏、`:term-list`、`:term-close`。
 
 ---
 
@@ -637,6 +650,8 @@ helix.run_async(cmd, cb)                        // cb(err, out)
 helix.spawn({ cmd, pty?, onChunk, onExit }) -> id
 helix.term_write(id, text)
 helix.term_kill(id)
+helix.term_list()                        // [{view_id, cmd}] 当前终端
+helix.term_close(view_id)                // 按 id 关闭终端
 helix.term_resize(id, rows, cols)               // pty TIOCSWINSZ，Unix
 helix.on(event, fn)                             // save | mode-change | buffer-open | buffer-close | doc-change
 helix.map(mode, key, commandOrFn)

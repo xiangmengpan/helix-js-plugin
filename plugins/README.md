@@ -52,6 +52,20 @@ helix.load("statusline.js");   // init.js 已含；依赖 icons.js
 - 左侧保持 helix 默认（可在 `config.toml` 的 `[statusline]` 调整元素）
 - 自定义分段：`helix.set_statusline((ctx) => [{ text, style? }, "str", ...])`
 
+## terminal.js — 终端管理器（lazyvim 风格）
+
+依赖 Rust 增强：浮动终端层、C-\ 模式穿透、滚动缓冲、term_list/term_close、宽字符。Unix pty。
+
+| 命令 | 行为 |
+|------|------|
+| `:term` | 浮动终端 toggle（单例复用：开 → 居中浮窗；再开 → 关闭） |
+| `:vterm` / `:hterm` | 右侧 / 底部 分屏终端 |
+| `:term-list` | 列出所有终端（view_id + cmd） |
+| `:term-close` | 关闭浮动单例（无则最近打开的） |
+
+终端内按键：`C-\` 切 normal（j/k/gg/G/PageUp/PageDown 滚动缓冲查看）；normal 再 `C-\` 回编辑器（收起浮窗）；
+normal 内 `i`/`a`/`Esc` 回输入、`q` 关闭；insert 模式 `Esc` 关闭。
+
 ## filetree.js — 侧边文件树面板
 
 类 lazyvim/neo-tree 的目录树。`:filetree` 开关面板，`:filetree-reveal` 定位当前文件。

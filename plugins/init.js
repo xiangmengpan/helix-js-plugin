@@ -2,6 +2,7 @@
 helix.load("icons.js");
 helix.load("filetree.js");
 helix.load("statusline.js");
+helix.load("terminal.js");
 
 // 方案 3 可选：状态栏 mode 图标（整行替换默认状态栏，默认不启用）
 // const icons = helix.load("icons.js");

@@ -12,11 +12,13 @@ use vte::{Params, Perform};
 
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 
-/// 单个终端网格单元：字符 + SGR 颜色 + 粗体。
-/// 宽字符/组合字符 PoC 不处理（单 char 一格，render 时逐格写）。
+/// 单个终端网格单元：字符 + SGR 颜色 + 粗体 + 显示宽度。
+/// 宽字符（CJK）：主格 width=2，后续格 width=0 标记占位（render 跳过、背景连续）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCell {
     pub ch: char,
+    /// 显示宽度：0 = 被前一个宽字符占用的占位格，1 = 普通，2 = 宽字符主格
+    pub width: u8,
     pub fg: Option<Color>,
     pub bg: Option<Color>,
     pub bold: bool,
@@ -24,7 +26,7 @@ pub struct TerminalCell {
 
 impl Default for TerminalCell {
     fn default() -> Self {
-        Self { ch: ' ', fg: None, bg: None, bold: false }
+        Self { ch: ' ', width: 1, fg: None, bg: None, bold: false }
     }
 }
 
@@ -50,6 +52,8 @@ pub struct TerminalGrid {
     scrollback: VecDeque<Vec<TerminalCell>>,
     /// 累计滚出行数（含被 SCROLLBACK_MAX 裁剪掉的）
     scrollback_len: usize,
+    /// 终端 normal 模式的滚动查看偏移（0 = 显示活动区；>0 从滚回显示 offset 行）
+    scroll_offset: usize,
     // 当前 SGR 属性（print 时写到单元格）
     fg: Option<Color>,
     bg: Option<Color>,
@@ -71,6 +75,7 @@ impl TerminalGrid {
             alt: false,
             scrollback: VecDeque::new(),
             scrollback_len: 0,
+            scroll_offset: 0,
             fg: None,
             bg: None,
             bold: false,
@@ -103,6 +108,31 @@ impl TerminalGrid {
 
     pub fn scrollback_len(&self) -> usize {
         self.scrollback_len
+    }
+
+    /// 滚动查看偏移（0 = 活动区底部）；上限为实际保留的滚回行数
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// 设置滚动查看偏移（终端 normal 模式滚动缓冲；clamp 到可用滚回）
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset.min(self.scrollback.len());
+    }
+
+    /// 滚动偏移增加 n（向滚回深处/顶部）；clamp
+    pub fn scroll_up_view(&mut self, n: usize) {
+        self.set_scroll_offset(self.scroll_offset.saturating_add(n));
+    }
+
+    /// 滚动偏移减少 n（向活动区/底部）；clamp
+    pub fn scroll_down_view(&mut self, n: usize) {
+        self.set_scroll_offset(self.scroll_offset.saturating_sub(n));
+    }
+
+    /// 滚回有可见行（normal 模式滚动时判断）
+    pub fn has_scrollback(&self) -> bool {
+        !self.scrollback.is_empty()
     }
 
     /// 把一块字节喂进 vte 解析器（复用同一 parser：块边界切开的 CSI/OSC 序列
@@ -291,7 +321,7 @@ impl TerminalGrid {
     /// 清空网格（保留尺寸与光标位置）
     pub fn clear(&mut self) {
         for cell in &mut self.cells {
-            *cell = TerminalCell { ch: ' ', fg: None, bg: None, bold: false };
+            *cell = TerminalCell { ch: ' ', width: 1, fg: None, bg: None, bold: false };
         }
         self.cursor = (0, 0);
     }
@@ -320,21 +350,37 @@ impl TerminalGrid {
         }
     }
 
-    /// 把网格画到 surface（area 左上角起，逐格写 symbol + style）
+    /// 把网格画到 surface（area 左上角起，逐格写 symbol + style）。
+    /// scroll_offset > 0 时顶部显示滚回行（纯查看，不改 pty 状态），活动区在底部。
     pub fn render(&self, area: Rect, surface: &mut Surface) {
+        let sb = &self.scrollback;
+        let scroll_rows = self.scroll_offset.min(sb.len());
+        let sb_start = sb.len() - scroll_rows;
         for row in 0..area.height {
-            let grid_row = row as usize;
-            if grid_row >= self.rows as usize {
-                break;
-            }
-            let base = grid_row * self.cols as usize;
-            for col in 0..area.width {
-                let grid_col = col as usize;
-                if grid_col >= self.cols as usize {
+            let display_row = row as usize;
+            let (line, line_row): (&[TerminalCell], usize) = if display_row < scroll_rows {
+                // 滚回区：显示 scrollback[sb_start + display_row]
+                (&sb[sb_start + display_row], display_row)
+            } else {
+                let grid_row = display_row - scroll_rows;
+                if grid_row >= self.rows as usize {
                     break;
                 }
-                let cell = &self.cells[base + grid_col];
-                let Some(surface_cell) = surface.get_mut(area.x + col, area.y + row) else {
+                // 活动区：cells[grid_row]
+                let base = grid_row * self.cols as usize;
+                (&self.cells[base..base + self.cols as usize], display_row)
+            };
+            for col in 0..area.width {
+                let grid_col = col as usize;
+                if grid_col >= line.len() {
+                    break;
+                }
+                let cell = line[grid_col];
+                // 占位格（宽字符的第二个半格）：跳过，保持空格/背景连续
+                if cell.width == 0 {
+                    continue;
+                }
+                let Some(surface_cell) = surface.get_mut(area.x + col, area.y + line_row as u16) else {
                     continue;
                 };
                 let mut style = Style::default();
@@ -406,12 +452,38 @@ impl Perform for TerminalGrid {
             self.linefeed();
         }
         let (fg, bg, bold) = (self.fg, self.bg, self.bold);
-        let cell = self.cell_mut(self.cursor.0, self.cursor.1);
-        cell.ch = c;
-        cell.fg = fg;
-        cell.bg = bg;
-        cell.bold = bold;
-        self.cursor.1 += 1;
+        // 宽字符（CJK）：主格 + 下一格占位（width 0）；末列时占位格丢弃
+        let w = helix_core::unicode::width::UnicodeWidthChar::width(c).unwrap_or(1) as u8;
+        if w > 1 {
+            let cell = self.cell_mut(self.cursor.0, self.cursor.1);
+            cell.ch = c;
+            cell.width = 2;
+            cell.fg = fg;
+            cell.bg = bg;
+            cell.bold = bold;
+            self.cursor.1 += 1;
+            if self.cursor.1 < self.cols {
+                let next = self.cell_mut(self.cursor.0, self.cursor.1);
+                next.ch = ' ';
+                next.width = 0;
+                next.fg = fg;
+                next.bg = bg;
+                next.bold = bold;
+            }
+            self.cursor.1 += 1;
+            if self.cursor.1 >= self.cols {
+                // 宽字符到达末列：置延迟 wrap（与 print 末列语义一致）
+                self.cursor.1 = self.cols;
+            }
+        } else {
+            let cell = self.cell_mut(self.cursor.0, self.cursor.1);
+            cell.ch = c;
+            cell.width = 1;
+            cell.fg = fg;
+            cell.bg = bg;
+            cell.bold = bold;
+            self.cursor.1 += 1;
+        }
     }
 
     fn execute(&mut self, byte: u8) {
@@ -570,16 +642,38 @@ impl TerminalGrid {
 }
 
 /// 把按键转成发给 pty 的字节序列。
-/// Esc 是关闭面板的专用键（终端内程序无法用 Esc——PoC 取舍，简报明示）。
-/// 方向键等无终端应序列，PoC 不发送。
-// ponytail: 缺箭头/Home/End 应序列与 Ctrl 组合（如 C-c 直传字符本身），
-// 交互程序完整支持时补 xterm 应序列表。
+/// 支持：普通字符、Ctrl 组合（C-a → \x01 等）、Enter/Backspace/Tab、
+/// 方向键/Home/End/PageUp/PageDown/Delete/Insert（xterm 应序）。
 fn key_to_term_bytes(key: &helix_view::input::KeyEvent) -> Option<String> {
+    use helix_view::input::{KeyCode, KeyModifiers};
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        helix_view::input::KeyCode::Char(c) => Some(c.to_string()),
-        helix_view::input::KeyCode::Enter => Some("\r".into()),
-        helix_view::input::KeyCode::Backspace => Some("\u{7f}".into()),
-        helix_view::input::KeyCode::Tab => Some("\t".into()),
+        KeyCode::Char(c) => {
+            if ctrl {
+                // Ctrl 组合：C-a..C-z → \x01..\x1a；C-\ → 由 handle_event 拦截不在此
+                let b = (c.to_ascii_lowercase() as u8) & 0x1f;
+                if (1..=26).contains(&b) {
+                    Some((b as char).to_string())
+                } else {
+                    None
+                }
+            } else {
+                Some(c.to_string())
+            }
+        }
+        KeyCode::Enter => Some("\r".into()),
+        KeyCode::Backspace => Some("\u{7f}".into()),
+        KeyCode::Tab => Some("\t".into()),
+        KeyCode::Up => Some("\x1b[A".into()),
+        KeyCode::Down => Some("\x1b[B".into()),
+        KeyCode::Right => Some("\x1b[C".into()),
+        KeyCode::Left => Some("\x1b[D".into()),
+        KeyCode::Home => Some("\x1b[H".into()),
+        KeyCode::End => Some("\x1b[F".into()),
+        KeyCode::PageUp => Some("\x1b[5~".into()),
+        KeyCode::PageDown => Some("\x1b[6~".into()),
+        KeyCode::Delete => Some("\x1b[3~".into()),
+        KeyCode::Insert => Some("\x1b[2~".into()),
         _ => None,
     }
 }
@@ -609,6 +703,14 @@ impl TermMode {
     }
 }
 
+/// 终端输入模式（lazyvim 语义）：Insert = 键直通 pty；Normal = 终端内导航（滚动缓冲）。
+/// C-\ 切换：Insert → Normal（滚动查看）；Normal → 回 helix（聚焦编辑器）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermInputMode {
+    Insert,
+    Normal,
+}
+
 pub struct PluginTerminal {
     /// find_id 路由用的静态 id（每实例 Box::leak，组件生命周期同层）
     id: &'static str,
@@ -617,6 +719,7 @@ pub struct PluginTerminal {
     grid: TerminalGrid,
     size: u16,
     mode: TermMode,
+    input_mode: TermInputMode,
     /// 上次渲染尺寸（None = 尚未渲染；首次渲染触发 resize + TIOCSWINSZ）
     last_size: Option<(u16, u16)>,
 }
@@ -632,6 +735,7 @@ impl PluginTerminal {
             grid: TerminalGrid::new(24, cols),
             size,
             mode: TermMode::Dock,
+            input_mode: TermInputMode::Insert,
             last_size: None,
         }
     }
@@ -670,23 +774,91 @@ impl Component for PluginTerminal {
         let Event::Key(key) = event else {
             return EventResult::Ignored(None);
         };
+        use helix_view::input::{KeyCode, KeyModifiers};
         // minimized：不消费按键，编辑器照常工作
         if self.mode == TermMode::Minimized {
             return EventResult::Ignored(None);
         }
-        // Esc → 关闭面板（kill pty 由 Drop 兜底）
-        if key.code == helix_view::input::KeyCode::Esc {
-            return EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, _cx: &mut Context| {
-                // ponytail: remove_type 无 id 匹配——多终端并存时 Esc 关全部；
-                // 需要 compositor remove-by-id 时再加（并行 wave 冲突面上不动 compositor.rs）
-                compositor.remove_type::<PluginTerminal>();
-            })));
+        // C-\：Insert → Normal（终端内滚动查看）；Normal → 回 Insert 并聚焦编辑器
+        let is_ctrl_backslash =
+            key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('\\'));
+        if is_ctrl_backslash {
+            match self.input_mode {
+                TermInputMode::Insert => {
+                    self.input_mode = TermInputMode::Normal;
+                    EventResult::Consumed(None)
+                }
+                TermInputMode::Normal => {
+                    self.input_mode = TermInputMode::Insert;
+                    // 回 helix：收起浮窗（若浮动）+ 焦点切回编辑器叶子（终端保留）
+                    EventResult::Consumed(Some(Box::new(
+                        |compositor: &mut Compositor, _cx: &mut Context| {
+                            compositor.unfloat();
+                            compositor.layout_tree().focus(0);
+                        },
+                    )))
+                }
+            }
+        } else if self.input_mode == TermInputMode::Normal {
+            // 终端 normal 模式：导航滚动缓冲；i/a/Esc 回 insert；q 关闭
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.grid.scroll_down_view(1);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.grid.scroll_up_view(1);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::PageDown => {
+                    self.grid.scroll_down_view(self.grid.rows() as usize);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::PageUp => {
+                    self.grid.scroll_up_view(self.grid.rows() as usize);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('g') => {
+                    self.grid.scroll_up_view(self.grid.scrollback_len());
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('G') => {
+                    self.grid.set_scroll_offset(0);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Esc => {
+                    self.input_mode = TermInputMode::Insert;
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('q') => EventResult::Consumed(Some(Box::new(
+                    |compositor: &mut Compositor, _cx: &mut Context| {
+                        compositor.remove_type::<PluginTerminal>();
+                    },
+                ))),
+                // 其余键直通 pty（C-c 中断等）
+                _ => {
+                    if let Some(bytes) = key_to_term_bytes(key) {
+                        let _ = helix_js::term_write(self.pty_id, &bytes);
+                    }
+                    EventResult::Consumed(None)
+                }
+            }
+        } else {
+            // Insert 模式
+            // Esc → 关闭面板（kill pty 由 Drop 兜底）
+            if key.code == KeyCode::Esc {
+                return EventResult::Consumed(Some(Box::new(
+                    |compositor: &mut Compositor, _cx: &mut Context| {
+                        compositor.remove_type::<PluginTerminal>();
+                    },
+                )));
+            }
+            if let Some(bytes) = key_to_term_bytes(key) {
+                // 按键直通 pty（非阻塞；worker 已退出时静默）
+                let _ = helix_js::term_write(self.pty_id, &bytes);
+            }
+            EventResult::Consumed(None)
         }
-        if let Some(bytes) = key_to_term_bytes(key) {
-            // 按键直通 pty（非阻塞；worker 已退出时静默）
-            let _ = helix_js::term_write(self.pty_id, &bytes);
-        }
-        EventResult::Consumed(None)
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, _cx: &mut Context) {
@@ -730,6 +902,72 @@ mod tests {
     }
 
     #[test]
+    fn wide_chars_occupy_two_cells() {
+        // CJK 宽字符：主格 width=2，下一格占位 width=0；render 跳过占位格
+        let mut g = grid(1, 6);
+        g.feed("中".as_bytes());
+        let main = cell_at(&g, 0, 0);
+        assert_eq!(main.ch, '中');
+        assert_eq!(main.width, 2, "宽字符主格 width=2");
+        let place = cell_at(&g, 0, 1);
+        assert_eq!(place.width, 0, "宽字符占位格 width=0");
+        assert_eq!(g.cursor(), (0, 2), "宽字符占 2 列光标");
+        // 后续普通字符接着写
+        g.feed(b"ab");
+        assert_eq!(cell_at(&g, 0, 2).ch, 'a');
+        assert_eq!(cell_at(&g, 0, 3).ch, 'b');
+        // 清屏重置 width
+        g.clear();
+        assert_eq!(cell_at(&g, 0, 0).width, 1, "清屏后 width 重置");
+        // 行尾宽字符：占位格丢弃，置延迟 wrap（下一字符换行）
+        let mut g2 = grid(2, 3);
+        g2.feed("abc".as_bytes()); // 光标到末列 (0,3)
+        g2.feed("中".as_bytes());   // wrap 到下一行再写（末列宽字符先 wrap）
+        assert_eq!(g2.cursor(), (1, 2), "末列宽字符 wrap 后占 2 格");
+    }
+
+    #[test]
+    fn scroll_view_offsets_render() {
+        // 终端 normal 模式滚动缓冲：scroll_offset 让滚回行显示在顶部，活动区在底部
+        let mut g = grid(2, 4);
+        // 2 行网格，3 次 LF 后 2 行滚出（ab、ef），活动区剩 gh
+        g.feed(b"ab\r\ncd\r\nef\r\ngh");
+        assert_eq!(g.scrollback_len(), 2, "2 行滚回");
+        assert!(g.has_scrollback());
+        assert_eq!(g.scroll_offset(), 0);
+
+        // 上滚 1 行：显示最后 1 行滚回（ef）+ 活动区第 0 行（gh）
+        g.scroll_up_view(1);
+        assert_eq!(g.scroll_offset(), 1);
+        g.scroll_up_view(999); // clamp 到可用滚回
+        assert_eq!(g.scroll_offset(), 2);
+
+        // 回到底部
+        g.set_scroll_offset(0);
+        assert_eq!(g.scroll_offset(), 0);
+        g.scroll_up_view(1);
+        g.scroll_down_view(1);
+        assert_eq!(g.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn key_to_term_bytes_ctrl_and_arrows() {
+        use helix_view::input::{KeyCode, KeyModifiers, KeyEvent};
+        let k = |code: KeyCode, ctrl: bool| KeyEvent {
+            code,
+            modifiers: if ctrl { KeyModifiers::CONTROL } else { KeyModifiers::NONE },
+        };
+        assert_eq!(key_to_term_bytes(&k(KeyCode::Char('c'), true)).as_deref(), Some("\x03"), "C-c");
+        assert_eq!(key_to_term_bytes(&k(KeyCode::Char('a'), true)).as_deref(), Some("\x01"), "C-a");
+        assert_eq!(key_to_term_bytes(&k(KeyCode::Char('x'), false)).as_deref(), Some("x"));
+        assert_eq!(key_to_term_bytes(&k(KeyCode::Up, false)).as_deref(), Some("\x1b[A"), "上箭头");
+        assert_eq!(key_to_term_bytes(&k(KeyCode::PageDown, false)).as_deref(), Some("\x1b[6~"), "PageDown");
+        assert_eq!(key_to_term_bytes(&k(KeyCode::Home, false)).as_deref(), Some("\x1b[H"), "Home");
+        // C-\ 不在 key_to_term_bytes（handle_event 拦截）
+        assert_eq!(key_to_term_bytes(&k(KeyCode::Char('\\'), true)), None, "C-\\ 应被拦截");
+    }
+
+    #[test]
     fn feed_keeps_parser_state_across_chunks() {
         let mut g = grid(2, 8);
         // CSI 序列被块边界切开：parser 必须跨 feed 调用持久，否则 \x1b[3 状态丢失
@@ -738,7 +976,7 @@ mod tests {
         // 完整序列 \x1b[32mX = 绿色；若每次 feed 新建 parser，SGR 参数丢失 → X 无色
         assert_eq!(
             cell_at(&g, 0, 0),
-            TerminalCell { ch: 'X', fg: Some(Color::Green), bg: None, bold: false }
+            TerminalCell { ch: 'X', fg: Some(Color::Green), bg: None, bold: false, width: 1 }
         );
         assert_eq!(line_text(&g, 0), "X       ");
         // OSC/其他长序列同理：块边界切开的中间态不落地为可见字符
@@ -808,11 +1046,11 @@ mod tests {
         let mut g = grid(2, 12);
         // "red"(3) + "bold-green"(10) = 13 字符 → 第 13 个 wrap 到第 1 行
         g.feed(b"\x1b[31mred\x1b[1;32mbold-green\x1b[0mplain");
-        assert_eq!(cell_at(&g, 0, 0), TerminalCell { ch: 'r', fg: Some(Color::Red), bg: None, bold: false });
-        assert_eq!(cell_at(&g, 0, 3), TerminalCell { ch: 'b', fg: Some(Color::Green), bg: None, bold: true });
+        assert_eq!(cell_at(&g, 0, 0), TerminalCell { ch: 'r', fg: Some(Color::Red), bg: None, bold: false, width: 1 });
+        assert_eq!(cell_at(&g, 0, 3), TerminalCell { ch: 'b', fg: Some(Color::Green), bg: None, bold: true, width: 1 });
         // 第 13 个字符（bold-green 的 n）wrap 到第 1 行
-        assert_eq!(cell_at(&g, 1, 0), TerminalCell { ch: 'n', fg: Some(Color::Green), bg: None, bold: true });
-        assert_eq!(cell_at(&g, 1, 4), TerminalCell { ch: 'i', fg: None, bg: None, bold: false });
+        assert_eq!(cell_at(&g, 1, 0), TerminalCell { ch: 'n', fg: Some(Color::Green), bg: None, bold: true, width: 1 });
+        assert_eq!(cell_at(&g, 1, 4), TerminalCell { ch: 'i', fg: None, bg: None, bold: false, width: 1 });
         // 256 色与真彩色
         g.feed(b"\x1b[38;5;42mX\x1b[48;2;1;2;3mY");
         assert_eq!(cell_at(&g, 1, 6).fg, Some(Color::Indexed(42)));

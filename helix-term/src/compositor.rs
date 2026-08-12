@@ -389,6 +389,21 @@ impl Compositor {
         &mut self.main_tree
     }
 
+    /// 浮动叶子（终端 Floating 模式）：返回当前浮动叶子 id
+    pub fn floating(&self) -> Option<u64> {
+        self.main_tree.floating()
+    }
+
+    /// 设置浮动叶子（渲染在最上层浮窗）；组件不存在时 no-op
+    pub fn set_float(&mut self, id: u64) {
+        self.main_tree.set_float(id);
+    }
+
+    /// 取消浮动（终端回其 split 位置）
+    pub fn unfloat(&mut self) {
+        self.main_tree.unfloat();
+    }
+
     pub fn reset_plugin_diffs(&mut self) {
         for layer in &mut self.layers {
             if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::PluginPanel>() {

@@ -4626,6 +4626,30 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         })
                     {
                         term.set_mode(tm);
+                        // Floating：叶子浮动到视口中央浮窗（最上层）；其他模式取消浮动
+                        let leaf_id = compositor
+                            .layout_tree()
+                            .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+                                t.view_id() == view_id
+                            });
+                        match (tm, leaf_id) {
+                            (crate::ui::plugin_terminal::TermMode::Floating, Some(id)) => {
+                                compositor.set_float(id);
+                            }
+                            _ => compositor.unfloat(),
+                        }
+                    }
+                });
+            }
+            helix_js::UiRequest::TermClose { view_id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    if let Some(id) = compositor
+                        .layout_tree()
+                        .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+                            t.view_id() == view_id
+                        })
+                    {
+                        compositor.remove_leaf(id);
                     }
                 });
             }

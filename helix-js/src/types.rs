@@ -69,6 +69,8 @@ pub enum UiRequest {
     CacheLayout(String),
     /// 切换基准主题（set_theme_name；helix-term 加载 + set_theme + 清覆盖）
     SetTheme { name: String },
+    /// 按 view_id 关闭指定终端（term_close；解决 remove_type 关全部的问题）
+    TermClose { view_id: u64 },
 }
 
 /// 带唤醒的发送端：worker 发事件时触发宿主注册的唤醒回调（即时重绘），

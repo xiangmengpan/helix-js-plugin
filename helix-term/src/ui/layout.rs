@@ -34,6 +34,8 @@ pub struct LayoutTree {
     next_id: u64,
     /// 缩放中的叶子 id（占满全区，其他叶子隐藏）
     zoomed: Option<u64>,
+    /// 浮动叶子 id（终端 Floating 模式：不占 split 布局，渲染在视口中央浮窗，最上层）
+    float: Option<u64>,
 }
 
 /// 叶子布局结果：每个叶子的 id + Rect
@@ -76,11 +78,55 @@ impl Default for LayoutTree {
             active: 0,
             next_id: 1,
             zoomed: None,
+            float: None,
         }
     }
 }
 
 impl LayoutTree {
+    /// 浮动叶子 id
+    pub fn floating(&self) -> Option<u64> {
+        self.float
+    }
+
+    /// 把叶子设为浮动（渲染在最上层浮窗；其他叶子照常布局）。仅当组件存在。
+    pub fn set_float(&mut self, id: u64) {
+        if self.components.contains_key(&id) {
+            self.float = Some(id);
+            self.active = id;
+        }
+    }
+
+    /// 取消浮动（叶子回到其 split 位置）
+    pub fn unfloat(&mut self) {
+        self.float = None;
+    }
+
+    pub fn is_float(&self) -> bool {
+        self.float.is_some()
+    }
+
+    /// 浮动浮窗矩形：视口居中，宽 60%、高 70%（带边框），最小 40×10
+    pub fn float_rect(area: Rect) -> Rect {
+        let w = (area.width as f32 * 0.6).round().clamp(40.0, area.width.max(1) as f32) as u16;
+        let h = (area.height as f32 * 0.7).round().clamp(10.0, area.height.max(1) as f32) as u16;
+        Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + (area.height - h) / 2,
+            w,
+            h,
+        )
+    }
+
+    /// 按组件类型 + 谓词找叶子 id（终端 view_id → 叶子 id 映射用）
+    pub fn find_leaf_id<T: 'static>(&self, mut f: impl FnMut(&T) -> bool) -> Option<u64> {
+        self.components.iter().find_map(|(id, c)| {
+            c.as_any()
+                .downcast_ref::<T>()
+                .filter(|t| f(t))
+                .map(|_| *id)
+        })
+    }
     /// 设置主编辑器叶子（id=0，特殊：事件路由的兜底目标）
     pub fn set_editor(&mut self, component: Box<dyn Component>) {
         self.components.insert(0, component);
@@ -253,7 +299,8 @@ impl LayoutTree {
         }
     }
 
-    /// 渲染：每个叶子在自己的矩形里渲染组件；缩放时只有被缩放的叶子渲染
+    /// 渲染：每个叶子在自己的矩形里渲染组件；缩放时只有被缩放的叶子渲染；
+    /// 浮动叶子最后画（最上层，居中浮窗 + 边框），其他叶子照常布局。
     pub fn render(&mut self, area: Rect, surface: &mut tui::buffer::Buffer, cx: &mut Context) {
         if let Some(zoomed) = self.zoomed {
             if let Some(comp) = self.components.get_mut(&zoomed) {
@@ -264,15 +311,53 @@ impl LayoutTree {
         let mut rects = Vec::new();
         layout_node(&self.root, area, &mut rects);
         for (id, rect) in rects {
+            // 浮动叶子不占 split 布局（跳过；其 rect 仍保留为 dock 位置）
+            if Some(id) == self.float {
+                continue;
+            }
             if let Some(comp) = self.components.get_mut(&id) {
                 comp.render(rect, surface, cx);
             }
         }
+        // 浮动叶子：最上层浮窗（边框 + 内区）
+        if let Some(fid) = self.float {
+            if let Some(comp) = self.components.get_mut(&fid) {
+                let outer = Self::float_rect(area);
+                let inner = Rect::new(outer.x + 1, outer.y + 1, outer.width.saturating_sub(2), outer.height.saturating_sub(2));
+                // 边框 + 背景（ui.popup 配色）
+                let border_style = cx.editor.theme.get("ui.popup");
+                let bg_style = cx.editor.theme.get("ui.background");
+                for y in 0..outer.height {
+                    for x in 0..outer.width {
+                        let (ch, style) = if x == 0 && y == 0 {
+                            ('┌', border_style)
+                        } else if x == outer.width - 1 && y == 0 {
+                            ('┐', border_style)
+                        } else if x == 0 && y == outer.height - 1 {
+                            ('└', border_style)
+                        } else if x == outer.width - 1 && y == outer.height - 1 {
+                            ('┘', border_style)
+                        } else if y == 0 || y == outer.height - 1 {
+                            ('─', border_style)
+                        } else if x == 0 || x == outer.width - 1 {
+                            ('│', border_style)
+                        } else {
+                            (' ', bg_style)
+                        };
+                        if let Some(cell) = surface.get_mut(outer.x + x, outer.y + y) {
+                            cell.set_symbol(&ch.to_string());
+                            cell.set_style(style);
+                        }
+                    }
+                }
+                comp.render(inner, surface, cx);
+            }
+        }
     }
 
-    /// 事件路由：活动叶子优先；Ignored → 编辑器叶子（id=0）兜底
+    /// 事件路由：浮动叶子优先，其次活动叶子；Ignored → 编辑器叶子（id=0）兜底
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        let target = self.active();
+        let target = self.float.unwrap_or_else(|| self.active());
         if let Some(comp) = self.components.get_mut(&target) {
             match comp.handle_event(event, cx) {
                 EventResult::Ignored(cb) if target != 0 => {

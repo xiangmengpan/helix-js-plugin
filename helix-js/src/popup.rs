@@ -184,6 +184,7 @@ pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 
     let view_id = crate::state::next_terminal_view_id();
+    crate::state::register_term(view_id, cmd.clone());
     #[cfg(unix)]
     {
         // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
@@ -928,6 +929,47 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
             Err(_) => None,
         }
     })
+}
+
+/// 当前打开的终端列表：[{ view_id, cmd }]（注册表在 Rust 侧，reload 后仍准确）
+pub(crate) fn js_term_list(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let arr = boa_engine::object::builtins::JsArray::new(ctx);
+    for (view_id, cmd) in crate::state::list_terms() {
+        let item = ObjectInitializer::new(ctx)
+            .property(JsString::from("view_id"), JsValue::from(view_id), Attribute::all())
+            .property(JsString::from("cmd"), JsValue::from(JsString::from(cmd)), Attribute::all())
+            .build();
+        arr.push(item, ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.term_list: push")))
+        })?;
+    }
+    Ok(arr.into())
+}
+
+/// 按 view_id 关闭指定终端（UI 请求：helix-term 移除对应叶子并杀 pty）
+pub(crate) fn js_term_close(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let Some(v) = args.first() else {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.term_close: expected view_id",
+        ))));
+    };
+    let view_id: f64 = v.try_js_into(_ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.term_close: view_id must be a number",
+        )))
+    })?;
+    if view_id < 0.0 || view_id.fract() != 0.0 {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.term_close: view_id must be a non-negative integer",
+        ))));
+    }
+    crate::state::UI_REQUESTS
+        .get()
+        .expect("UI_REQUESTS initialized")
+        .lock()
+        .expect("ui requests lock")
+        .push(crate::types::UiRequest::TermClose { view_id: view_id as u64 });
+    Ok(JsValue::undefined())
 }
 
 /// 调 bufferline 图标钩子；未注册 / 返回 null / 报错 → None。

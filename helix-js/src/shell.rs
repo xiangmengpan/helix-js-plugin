@@ -388,6 +388,7 @@ pub(crate) fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Cont
 /// 未知 id / worker 已退出 → Err。Kill 后 worker 的 Exit 事件照常发（回调幂等）。
 /// 不调 init()：可能从命令执行（CONTEXT 已借用）里触发，且 TERM_WORKERS 是普通 thread_local。
 pub fn term_kill(id: u64) -> Result<()> {
+    crate::state::unregister_term(id);
     let sender = crate::state::with_term_workers(|m| m.remove(&id)).ok_or_else(|| anyhow!("term_kill: unknown id"))?;
     sender.send(TermCtrl::Kill).map_err(|_| anyhow!("term_kill: worker gone"))?;
     Ok(())

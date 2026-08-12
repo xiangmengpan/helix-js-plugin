@@ -98,7 +98,9 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(theme::js_get_style), JsString::from("get_style"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_theme_info), JsString::from("theme_info"), 0)
                 .function(NativeFunction::from_fn_ptr(theme::js_set_theme_name), JsString::from("set_theme_name"), 1)
-                .function(NativeFunction::from_fn_ptr(icons::js_set_diagnostic_icons), JsString::from("set_diagnostic_icons"), 1);
+                .function(NativeFunction::from_fn_ptr(icons::js_set_diagnostic_icons), JsString::from("set_diagnostic_icons"), 1)
+                .function(NativeFunction::from_fn_ptr(popup::js_term_list), JsString::from("term_list"), 0)
+                .function(NativeFunction::from_fn_ptr(popup::js_term_close), JsString::from("term_close"), 1);
             #[cfg(unix)]
             builder.function(NativeFunction::from_fn_ptr(shell::js_term_resize), JsString::from("term_resize"), 3);
             let helix = builder.build();

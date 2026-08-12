@@ -254,6 +254,36 @@ pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new()
 pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
+
+/// 终端实例注册表（view_id → cmd；term_list 查询、reload 后仍准确）
+static OPEN_TERMS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+
+pub(crate) fn register_term(view_id: u64, cmd: String) {
+    OPEN_TERMS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("open terms lock")
+        .insert(view_id, cmd);
+}
+
+pub(crate) fn unregister_term(view_id: u64) {
+    OPEN_TERMS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("open terms lock")
+        .remove(&view_id);
+}
+
+/// 当前打开的终端列表（view_id, cmd）
+pub(crate) fn list_terms() -> Vec<(u64, String)> {
+    OPEN_TERMS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("open terms lock")
+        .iter()
+        .map(|(id, cmd)| (*id, cmd.clone()))
+        .collect()
+}
 // 事件通道按线程存放：回调注册表（TERM_CALLBACKS）是线程本地的，通道也必须同线程配对——
 // 全局单通道会被并发测试的 render 泵互偷（别的线程 drain 后 resolve 时找不到本线程的回调，静默丢弃）。
 // worker 在 std 线程上持发起线程的 Sender 克隆；drain 只读本线程的 Receiver。
