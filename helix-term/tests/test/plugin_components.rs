@@ -236,3 +236,72 @@ async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_split_terminal_leaf() -> anyhow::Result<()> {
+    // 布局树 API：split 终端叶子 → 关闭
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("sl.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("split.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        let lid = null;
+        helix.register_command("sp-open", () => { lid = helix.split("right", { terminal: { cmd: "cat", size: 20 } }); helix.echo("id:" + lid); });
+        helix.register_command("sp-panel", () => { lid = helix.split("right", { panel: { render: () => ["P"], size: 20 } }); });
+        helix.register_command("sp-close", () => { helix.close_leaf(lid); });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(":sp-open<ret>"),
+                Some(&|app| {
+                    let has_term = app.compositor.has_component(std::any::type_name::<
+                        helix_term::ui::plugin_terminal::PluginTerminal,
+                    >());
+                    assert!(has_term, "split should create a terminal leaf");
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.as_ref().starts_with("id:"), "split returns leaf id");
+                }),
+            ),
+            // 终端叶子活动时吞掉所有按键（Esc 关闭终端本身）
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    let has_term = app.compositor.has_component(std::any::type_name::<
+                        helix_term::ui::plugin_terminal::PluginTerminal,
+                    >());
+                    assert!(!has_term, "Esc should close the terminal leaf");
+                }),
+            ),
+            // 面板叶子可穿透按键——用 close_leaf 命令关闭
+            (
+                Some(":sp-panel<ret>"),
+                Some(&|app| {
+                    let has = app.compositor.has_component(std::any::type_name::<
+                        helix_term::ui::plugin_panel::PluginPanel,
+                    >());
+                    assert!(has, "panel leaf should exist");
+                }),
+            ),
+            (
+                Some(":sp-close<ret>"),
+                Some(&|app| {
+                    let has = app.compositor.has_component(std::any::type_name::<
+                        helix_term::ui::plugin_panel::PluginPanel,
+                    >());
+                    assert!(!has, "close_leaf should remove the panel leaf");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
