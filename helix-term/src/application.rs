@@ -619,9 +619,8 @@ impl Application {
                     })
             })
             .unwrap_or_else(|| editor.theme_loader.default_theme(true_color));
-        // 捕获插件主题覆盖的基准 toml（按最终应用的主题名：default/base16_default 无实体文件，用编译期 const）
-        crate::commands::typed::set_base_theme(&editor.theme_loader, theme.name());
         let _ = editor.set_theme(theme);
+        crate::commands::typed::sync_theme_snapshot(editor);
     }
 
     #[cfg(windows)]

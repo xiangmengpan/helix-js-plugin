@@ -20,22 +20,97 @@ use helix_view::expansion;
 use serde_json::Value;
 use ui::completers::{self, Completer};
 
-/// 插件主题覆盖的基准 toml：应用最终主题后由 load_configured_theme / :theme 捕获。
-/// 用 load_resolved（继承已解析、palette 已合并），保证含 inherits 的主题 set/reset 不丢父主题样式。
-/// 用 Mutex<Option> 而非 OnceLock：config-refresh / 自适应模式切换会重新捕获。
-static BASE_THEME_TOML: Mutex<Option<toml::Value>> = Mutex::new(None);
+/// 当前生效主题快照（get_style/theme_info 查询用；:theme/apply_theme_overrides 更新）。
+/// 进程级静态 + 多 app 并行（integration 测试）会互相覆盖——真实环境单 app 正确；
+/// 测试里样式值的精确断言走 app 局部的 editor.theme，不依赖此快照。
+static CURRENT_THEME: Mutex<Option<helix_view::theme::Theme>> = Mutex::new(None);
 
-pub(crate) fn set_base_theme(loader: &helix_view::theme::Loader, name: &str) {
-    *BASE_THEME_TOML.lock().expect("base theme lock") = loader.load_resolved(name).ok();
+/// 可用主题名列表（list_themes 用；初始化时从 loader 扫描）
+static AVAILABLE_THEMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// 把当前主题同步进快照 + 注册 JS 查询回调（get_style/theme_info）
+pub(crate) fn sync_theme_snapshot(editor: &Editor) {
+    *CURRENT_THEME.lock().expect("theme snapshot lock") = Some(editor.theme.clone());
+    if AVAILABLE_THEMES.lock().expect("themes lock").is_empty() {
+        *AVAILABLE_THEMES.lock().expect("themes lock") = editor.theme_loader.names();
+    }
+    helix_js::set_theme_style_cb(Box::new(|scope| {
+        let theme = CURRENT_THEME.lock().expect("theme snapshot lock").clone()?;
+        let st = theme.get(scope);
+        Some(helix_js::StyleInfo {
+            fg: st.fg.and_then(color_to_hex),
+            bg: st.bg.and_then(color_to_hex),
+            modifiers: style_modifiers(&st),
+        })
+    }));
+    helix_js::set_theme_info_cb(Box::new(|| {
+        let name = CURRENT_THEME
+            .lock()
+            .expect("theme snapshot lock")
+            .as_ref()
+            .map(|t| t.name().to_string())
+            .unwrap_or_default();
+        let themes = AVAILABLE_THEMES.lock().expect("themes lock").clone();
+        (name, themes)
+    }));
 }
 
-/// 覆盖集 → toml 值 `{ scope: { fg: color } }`（merge_themes 的 child 形状）
-fn theme_overrides_value(overrides: &HashMap<String, String>) -> toml::Value {
+/// Color → hex 字符串（named/Reset → None）
+fn color_to_hex(c: helix_view::graphics::Color) -> Option<String> {
+    match c {
+        helix_view::graphics::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+        _ => None,
+    }
+}
+
+/// Style 的 modifiers → 名字数组（tui bitflag 子集）
+fn style_modifiers(st: &helix_view::graphics::Style) -> Vec<String> {
+    use helix_view::graphics::Modifier;
+    let mut out = Vec::new();
+    if st.add_modifier.contains(Modifier::BOLD) {
+        out.push("bold".into());
+    }
+    if st.add_modifier.contains(Modifier::DIM) {
+        out.push("dim".into());
+    }
+    if st.add_modifier.contains(Modifier::ITALIC) {
+        out.push("italic".into());
+    }
+    if st.underline_style.is_some() {
+        out.push("underline".into());
+    }
+    if st.add_modifier.contains(Modifier::REVERSED) {
+        out.push("reversed".into());
+    }
+    if st.add_modifier.contains(Modifier::CROSSED_OUT) {
+        out.push("strikethrough".into());
+    }
+    if st.underline_style.is_some() {
+        out.push("underline".into());
+    }
+    out
+}
+
+/// 覆盖集 → toml 值 `{ scope: { fg?, bg?, modifiers? } }`（merge_themes 的 child 形状）
+fn theme_overrides_value(overrides: &HashMap<String, helix_js::StyleOverride>) -> toml::Value {
     let mut map = toml::map::Map::new();
-    for (scope, color) in overrides {
-        let mut style = toml::map::Map::new();
-        style.insert("fg".to_string(), toml::Value::String(color.clone()));
-        map.insert(scope.clone(), toml::Value::Table(style));
+    for (scope, style) in overrides {
+        let mut s = toml::map::Map::new();
+        if let Some(fg) = &style.fg {
+            s.insert("fg".to_string(), toml::Value::String(fg.clone()));
+        }
+        if let Some(bg) = &style.bg {
+            s.insert("bg".to_string(), toml::Value::String(bg.clone()));
+        }
+        if !style.modifiers.is_empty() {
+            let mods: Vec<toml::Value> = style
+                .modifiers
+                .iter()
+                .map(|m| toml::Value::String(m.clone()))
+                .collect();
+            s.insert("modifiers".to_string(), toml::Value::Array(mods));
+        }
+        map.insert(scope.clone(), toml::Value::Table(s));
     }
     toml::Value::Table(map)
 }
@@ -43,19 +118,26 @@ fn theme_overrides_value(overrides: &HashMap<String, String>) -> toml::Value {
 /// 把插件覆盖集合并进基准主题并应用（None/空 → 还原基准）。
 /// 走 Editor::set_theme：更新 syn_loader scope 集（新 scope 高亮索引）、
 /// 刷新并广播 ConfigEvent::ThemeChanged（终端背景）与 ui.selection 校验。
-pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&HashMap<String, String>>) {
-    let base = BASE_THEME_TOML
-        .lock()
-        .expect("base theme lock")
-        .clone()
-        .unwrap_or_else(|| helix_view::theme::DEFAULT_THEME_DATA.clone());
+pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&HashMap<String, helix_js::StyleOverride>>) {
+    // 基准从当前主题名现场加载（app 局部，避免全局静态在多 app 并行时互相覆盖）；
+    // load_resolved 特判 default/base16_default，含 inherits 的主题解析父样式。
+    let name = editor.theme.name().to_string();
+    let base = editor
+        .theme_loader
+        .load_resolved(&name)
+        .unwrap_or_else(|_| helix_view::theme::DEFAULT_THEME_DATA.clone());
     let merged = match overrides {
         Some(ov) if !ov.is_empty() => {
             editor.theme_loader.merge_themes(base, theme_overrides_value(ov))
         }
         _ => base,
     };
-    let _ = editor.set_theme(helix_view::theme::Theme::from(merged));
+    let mut theme = helix_view::theme::Theme::from(merged);
+    // Theme::from(toml) 不保留名字：补回基准名（current_theme 查询依赖）
+    theme.set_name(&name);
+    let _ = editor.set_theme(theme);
+    sync_theme_snapshot(editor);
+    emit_plugin_event(editor, "theme-change", None);
 }
 
 #[derive(Clone)]
@@ -1189,8 +1271,8 @@ fn theme(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
                     bail!("Unsupported theme: theme requires true color support");
                 }
                 cx.editor.set_theme(theme)?;
-                // 主题切换后基准过期：重新捕获，插件 set_theme/reset_theme 才能基于新主题合并
-                set_base_theme(&cx.editor.theme_loader, theme_name);
+                sync_theme_snapshot(cx.editor);
+                emit_plugin_event(cx.editor, "theme-change", None);
             } else {
                 let name = cx.editor.theme.name().to_string();
 
@@ -4462,7 +4544,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     "bottom" => ui::PanelSide::Bottom,
                     other => bail!("open_panel: unknown side '{other}'"),
                 };
-                let panel = ui::PluginPanel::new(id, side, size);
+                let panel = ui::PluginPanel::new(id, side);
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 布局树：切分活动叶子，面板成为新叶子（side 决定方向/新叶子位置）
                     use crate::ui::layout::SplitDir;
@@ -4521,7 +4603,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     "left" => crate::ui::plugin_panel::PanelSide::Left,
                     _ => crate::ui::plugin_panel::PanelSide::Bottom,
                 };
-                let terminal = PluginTerminal::new(view_id, pty_id, side_enum, size);
+                let terminal = PluginTerminal::new(view_id, pty_id, size);
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 布局树：终端成为叶子
                     use crate::ui::layout::SplitDir;
@@ -4569,7 +4651,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::SplitLeaf { id, dir, kind, cmd, size } => {
+            helix_js::UiRequest::SplitLeaf { id, dir, kind, size, .. } => {
                 use crate::ui::layout::SplitDir;
                 let (dir, first) = match dir.as_str() {
                     "right" => (SplitDir::H, false),
@@ -4580,14 +4662,11 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 };
                 job::dispatch_blocking(move |_editor, compositor| {
                     let component: Box<dyn Component> = match kind.as_str() {
-                        "terminal" => {
-                            let cmd = cmd.clone().unwrap_or_else(|| "bash --norc --noprofile".to_string());
-                            Box::new(crate::ui::plugin_terminal::PluginTerminal::new(
-                                id, id, crate::ui::plugin_panel::PanelSide::Right, size,
-                            ))
-                        }
+                        "terminal" => Box::new(crate::ui::plugin_terminal::PluginTerminal::new(
+                            id, id, size,
+                        )),
                         _ => {
-                            Box::new(crate::ui::PluginPanel::new(id, crate::ui::plugin_panel::PanelSide::Right, size))
+                            Box::new(crate::ui::PluginPanel::new(id, crate::ui::plugin_panel::PanelSide::Right))
                         }
                     };
                     // 用预分配 id 直接建叶子（split 的 id 由 JS 分配，回调已注册）
@@ -4621,6 +4700,31 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             }
             helix_js::UiRequest::CacheLayout(json) => {
                 helix_js::cache_layout(&json);
+            }
+            helix_js::UiRequest::SetTheme { name } => {
+                // 复用 :theme Validate 逻辑：加载 + set_theme + 重捕获基准 + 清插件覆盖
+                job::dispatch_blocking(move |editor, _compositor| {
+                    let true_color = editor.config.load().true_color || crate::true_color();
+                    let theme = match editor.theme_loader.load(&name) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            editor.set_error(format!("set_theme_name: 加载主题 '{name}' 失败: {e}"));
+                            return;
+                        }
+                    };
+                    if !(true_color || theme.is_16_color()) {
+                        editor.set_error(format!("set_theme_name: 主题 '{name}' 需要 true color 支持"));
+                        return;
+                    }
+                    if let Err(e) = editor.set_theme(theme) {
+                        editor.set_error(format!("set_theme_name: {e}"));
+                        return;
+                    }
+                    // 清插件覆盖（切基准后旧覆盖不再适用）
+                    helix_js::reset_theme();
+                    sync_theme_snapshot(editor);
+                    emit_plugin_event(editor, "theme-change", None);
+                });
             }
             helix_js::UiRequest::TermFeed { view_id, chunk } => {
                 // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃。
