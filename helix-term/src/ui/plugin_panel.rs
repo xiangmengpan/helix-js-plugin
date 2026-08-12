@@ -214,6 +214,11 @@ impl Component for PluginPanel {
         if !msgs.is_empty() {
             cx.editor.set_status(msgs.join(" "));
         }
+        // 面板/弹窗 onKey 里发起的 UI 请求（open_file / move_panel / set_terminal_mode 等）
+        // 即时应用——否则请求搁置到下一个 :命令才被 drain
+        if let Err(err) = crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests()) {
+            cx.editor.set_error(err.to_string());
+        }
         match result {
             Ok(PopupKeyResult::Close) => {
                 let id = self.id;

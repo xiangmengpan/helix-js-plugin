@@ -84,6 +84,12 @@ impl Component for PluginPopup {
                     if !msgs.is_empty() {
                         cx.editor.set_status(msgs.join(" "));
                     }
+                    // 节点事件（button onPress 等）里发起的 UI 请求同样即时应用
+                    if let Err(err) =
+                        crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
+                    {
+                        cx.editor.set_error(err.to_string());
+                    }
                 };
                 match key.name.as_str() {
                     "Enter" | "Space" => {
@@ -139,6 +145,11 @@ impl Component for PluginPopup {
         let msgs = helix_js::take_messages();
         if !msgs.is_empty() {
             cx.editor.set_status(msgs.join(" "));
+        }
+        // 面板/弹窗 onKey 里发起的 UI 请求（open_file / move_panel / set_terminal_mode 等）
+        // 即时应用——否则请求搁置到下一个 :命令才被 drain
+        if let Err(err) = crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests()) {
+            cx.editor.set_error(err.to_string());
         }
         match result {
             Ok(PopupKeyResult::Close) => {

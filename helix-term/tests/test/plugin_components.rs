@@ -1,3 +1,4 @@
+use helix_view::current_ref;
 use super::*;
 
 use helix_term::application::Application;
@@ -165,6 +166,67 @@ async fn plugin_node_focus_events() -> anyhow::Result<()> {
                 Some(&|app| {
                     let (status, _) = app.editor.get_status().unwrap();
                     assert_eq!(status.as_ref(), "CANCELED");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
+    // 面板 onKey 里调 helix.open_file → 文件必须在 buffer 打开（UI 请求即时应用）
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("pf.txt");
+    std::fs::write(&file, "x\n")?;
+    let target = dir.path().join("target.txt");
+    std::fs::write(&target, "TARGET-CONTENT\n")?;
+    let plugin_path = dir.path().join("openfile.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("pf-panel", () => {
+            helix.open_panel({
+                side: "right", size: 30,
+                render: () => ["enter to open"],
+                onKey: (key) => {
+                    if (key.name === "Enter") { helix.open_file("TARGET"); return "handled"; }
+                    return "ignore";
+                },
+            });
+        });
+        "#,
+        // TARGET 用路径拼接注入
+    )?;
+    // 注入 TARGET 绝对路径
+    let plugin_src = std::fs::read_to_string(&plugin_path)?;
+    let plugin_src = plugin_src.replace("TARGET", &target.display().to_string());
+    std::fs::write(&plugin_path, plugin_src)?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (Some(":pf-panel<ret>"), None),
+            (Some("<ret>"), None),
+            // open_file 走 job 通道异步——settle 一轮再断言
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    // 目标文件应已打开为当前文档
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "TARGET-CONTENT\n",
+                        "open_file from panel onKey should open the file in a buffer"
+                    );
+                    assert!(
+                        doc.path().map(|p| p.ends_with("target.txt")).unwrap_or(false),
+                        "current doc should be target.txt"
+                    );
                 }),
             ),
         ],
