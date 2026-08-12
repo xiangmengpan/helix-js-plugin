@@ -419,6 +419,32 @@ helix.resize_term(id, size)   // 调整面板尺寸（列宽/行高）
 
 PTY 输出经 vte 解析成网格渲染（光标/颜色/清屏/滚回/alt screen 支持，vim/htop 可显示）；面板尺寸变化实时 TIOCSWINSZ；按键直通；Esc 关闭。返回面板 id（可 `move_panel`）。
 
+### 富文本行与多 span（方案乙）
+
+`helix.el("text", [...])` 支持富文本段数组——一行多色：
+
+```js
+helix.el("text", [
+  { text: "标题 ", style: "error" },
+  { text: "尾注", style: "comment" },
+])
+```
+
+### 节点事件与焦点（方案乙）
+
+`button` / `input` 控件节点带 `id` + 处理器；Tab/Shift-Tab 在可聚焦节点间移动焦点，Enter 触发聚焦按钮的 `onPress`，输入框按键路由到 `onKey`：
+
+```js
+helix.el("button", "OK", { id: "btn1", onPress: () => {...} })
+helix.el("input", { id: "in1", value: "...", onKey: (k) => {...} })
+```
+
+`render(focus)` 回调收到当前焦点节点 id——JS 据此渲染焦点样式（如高亮）。
+
+### 脏格增量渲染（方案乙）
+
+弹窗/面板渲染改为逐格 diff——只把变化的格写入屏幕（终端输出流、高频更新场景显著减少重绘开销）。对插件透明。
+
 ## 13. 已知限制
 
 | 限制 | 说明 |
