@@ -341,6 +341,26 @@ impl Compositor {
         self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, new_id)
     }
 
+    /// 用预分配 id 切分（JS 已注册回调；id 由 JS 侧分配）
+    pub fn split_leaf_prealloc(
+        &mut self,
+        id: u64,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        new_size: u16,
+        component: Box<dyn Component>,
+    ) {
+        let active = self.main_tree.active();
+        let total = if dir == crate::ui::layout::SplitDir::H { self.area.width } else { self.area.height };
+        let share = if new_first {
+            new_size as f32 / total.max(1) as f32
+        } else {
+            1.0 - new_size as f32 / total.max(1) as f32
+        };
+        let ratio = share.clamp(0.1, 0.9);
+        let _ = self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, id);
+    }
+
     pub fn area(&self) -> Rect {
         self.area
     }

@@ -4569,6 +4569,59 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::SplitLeaf { id, dir, kind, cmd, size } => {
+                use crate::ui::layout::SplitDir;
+                let (dir, first) = match dir.as_str() {
+                    "right" => (SplitDir::H, false),
+                    "left" => (SplitDir::H, true),
+                    "bottom" => (SplitDir::V, false),
+                    "top" => (SplitDir::V, true),
+                    other => bail!("split: unknown dir '{other}'"),
+                };
+                job::dispatch_blocking(move |_editor, compositor| {
+                    let component: Box<dyn Component> = match kind.as_str() {
+                        "terminal" => {
+                            let cmd = cmd.clone().unwrap_or_else(|| "bash --norc --noprofile".to_string());
+                            Box::new(crate::ui::plugin_terminal::PluginTerminal::new(
+                                id, id, crate::ui::plugin_panel::PanelSide::Right, size,
+                            ))
+                        }
+                        _ => {
+                            Box::new(crate::ui::PluginPanel::new(id, crate::ui::plugin_panel::PanelSide::Right, size))
+                        }
+                    };
+                    // 用预分配 id 直接建叶子（split 的 id 由 JS 分配，回调已注册）
+                    compositor.split_leaf_prealloc(id, dir, first, size, component);
+                });
+            }
+            helix_js::UiRequest::CloseLeaf { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.remove_leaf(id);
+                });
+            }
+            helix_js::UiRequest::ZoomLeaf { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.zoom_leaf(id);
+                });
+            }
+            helix_js::UiRequest::Unzoom => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.unzoom();
+                });
+            }
+            helix_js::UiRequest::ResizeLeaf { id, ratio } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.resize_leaf(id, ratio);
+                });
+            }
+            helix_js::UiRequest::FocusLeaf { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.focus_leaf(id);
+                });
+            }
+            helix_js::UiRequest::CacheLayout(json) => {
+                helix_js::cache_layout(&json);
+            }
             helix_js::UiRequest::TermFeed { view_id, chunk } => {
                 // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃。
                 // find_where 按实例的 view_id 字段匹配，不在热路径上每次 leak 一个 id 字符串。

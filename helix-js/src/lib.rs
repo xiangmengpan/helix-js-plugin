@@ -160,6 +160,21 @@ pub enum UiRequest {
         view_id: u64,
         size: u16,
     },
+    /// 布局树：切分活动叶子（id 预分配；面板回调已注册在 POPUPS）
+    SplitLeaf {
+        id: u64,
+        dir: String,
+        kind: String, // "terminal" | "panel"
+        cmd: Option<String>,
+        size: u16,
+    },
+    CloseLeaf { id: u64 },
+    ZoomLeaf { id: u64 },
+    Unzoom,
+    ResizeLeaf { id: u64, ratio: f32 },
+    FocusLeaf { id: u64 },
+    /// 把布局树序列化结果缓存到 helix-js（get_layout 读取）
+    CacheLayout(String),
 }
 
 /// 带唤醒的发送端：worker 发事件时触发宿主注册的唤醒回调（即时重绘），
@@ -459,6 +474,8 @@ static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
 /// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
 static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
+static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 // 事件通道按线程存放：回调注册表（TERM_CALLBACKS）是线程本地的，通道也必须同线程配对——
 // 全局单通道会被并发测试的 render 泵互偷（别的线程 drain 后 resolve 时找不到本线程的回调，静默丢弃）。
 // worker 在 std 线程上持发起线程的 Sender 克隆；drain 只读本线程的 Receiver。
@@ -503,6 +520,7 @@ fn with_async_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T
 pub fn init() {
     MESSAGES.get_or_init(Default::default);
     UI_REQUESTS.get_or_init(Default::default);
+    let _ = LAST_LAYOUT.get_or_init(Default::default);
     TERM_EVENTS.with(|t| {
         if t.borrow().is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -562,6 +580,14 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(js_set_terminal_mode), JsString::from("set_terminal_mode"), 2)
                 .function(NativeFunction::from_fn_ptr(js_term_clear), JsString::from("term_clear"), 1)
                 .function(NativeFunction::from_fn_ptr(js_resize_term), JsString::from("resize_term"), 2)
+                .function(NativeFunction::from_fn_ptr(js_split), JsString::from("split"), 2)
+                .function(NativeFunction::from_fn_ptr(js_close_leaf), JsString::from("close_leaf"), 1)
+                .function(NativeFunction::from_fn_ptr(js_zoom_leaf), JsString::from("zoom"), 1)
+                .function(NativeFunction::from_fn_ptr(js_unzoom), JsString::from("unzoom"), 0)
+                .function(NativeFunction::from_fn_ptr(js_resize_leaf), JsString::from("resize_leaf"), 2)
+                .function(NativeFunction::from_fn_ptr(js_focus_leaf), JsString::from("focus"), 1)
+                .function(NativeFunction::from_fn_ptr(js_get_layout), JsString::from("get_layout"), 0)
+                .function(NativeFunction::from_fn_ptr(js_restore_layout), JsString::from("restore_layout"), 1)
                 .function(NativeFunction::from_fn_ptr(js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(js_reset_theme), JsString::from("reset_theme"), 0);
             #[cfg(unix)]
@@ -2231,6 +2257,115 @@ fn js_resize_term(_this: &JsValue, args: &[JsValue], context: &mut Context) -> b
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermResize { view_id, size });
     Ok(JsValue::undefined())
 }
+/// 布局树 API：split(dir, {terminal:{cmd}} | {panel:{render,onKey}}) -> leaf_id（预分配）
+fn js_split(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let dir: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    if !["right", "left", "top", "bottom"].contains(&dir.as_str()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.split: unknown dir '{dir}'"
+        )))));
+    }
+    let opts = args.get(1).unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.split: opts object required")))
+    })?;
+    // 新叶子预分配 id（面板回调注册在 POPUPS 下）
+    let id = NEXT_TERMINAL_VIEW_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+    let (kind, cmd, size) = if let Some(term) = opts.get(JsString::from("terminal"), ctx)?.as_object() {
+        let cmd: String = term.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
+        let size: u16 = obj_opt_u16(&term, "size", ctx, "helix.split")?.unwrap_or(30);
+        ("terminal".to_string(), Some(cmd), size)
+    } else if let Some(panel) = opts.get(JsString::from("panel"), ctx)?.as_object() {
+        let render = panel.get(JsString::from("render"), ctx)?;
+        if render.as_callable().is_none() {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.split: panel render must be a function",
+            ))));
+        }
+        let on_key = panel.get(JsString::from("onKey"), ctx)?;
+        let size: u16 = obj_opt_u16(&panel, "size", ctx, "helix.split")?.unwrap_or(30);
+        with_popups(|p| {
+            p.insert(id, PopupCallbacks {
+                render,
+                on_key: on_key.as_callable().map(|_| on_key),
+                on_close: None,
+            })
+        });
+        ("panel".to_string(), None, size)
+    } else {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.split: opts must have 'terminal' or 'panel'",
+        ))));
+    };
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::SplitLeaf { id, dir, kind, cmd, size });
+    Ok(JsValue::from(id))
+}
+
+fn js_close_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::CloseLeaf { id });
+    Ok(JsValue::undefined())
+}
+
+fn js_zoom_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ZoomLeaf { id });
+    Ok(JsValue::undefined())
+}
+
+fn js_unzoom(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::Unzoom);
+    Ok(JsValue::undefined())
+}
+
+fn js_resize_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let ratio: f64 = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ResizeLeaf { id, ratio: ratio as f32 });
+    Ok(JsValue::undefined())
+}
+
+fn js_focus_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::FocusLeaf { id });
+    Ok(JsValue::undefined())
+}
+
+/// 读取最近一次布局树序列化（helix-term 树变更时缓存；可能滞后一个操作）
+fn js_get_layout(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let json = LAST_LAYOUT.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();
+    if json.is_empty() {
+        return Ok(JsValue::null());
+    }
+    // 用 JSON.parse 解析缓存字符串
+    ctx.eval(Source::from_bytes(format!("JSON.parse({json:?})").as_str()))
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("get_layout: {e}")))))
+}
+
+/// 恢复布局树：序列化传入的布局对象为 JSON，宿主据此重建
+fn js_restore_layout(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let dump = args.first().cloned().unwrap_or(JsValue::undefined());
+    if dump.is_null_or_undefined() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.restore_layout: layout object required",
+        ))));
+    }
+    // 用 JSON.stringify 序列化传入对象
+    let json: String = ctx
+        .eval(Source::from_bytes("JSON.stringify(arguments[0])"))
+        .and_then(|v| v.try_js_into::<String>(ctx))
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("restore_layout: {e}")))))?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::CacheLayout(json));
+    Ok(JsValue::undefined())
+}
+
+/// helix-term 写入布局缓存
+pub fn cache_layout(json: &str) {
+    let _ = LAST_LAYOUT.get_or_init(Default::default);
+    if let Some(m) = LAST_LAYOUT.get() {
+        *m.lock().unwrap() = json.to_string();
+    }
+}
+
 
 
 /// 同步列目录（不递归）：read_dir → 错误条目跳过 → 按名字排序 → [{ name, is_dir, path }]
