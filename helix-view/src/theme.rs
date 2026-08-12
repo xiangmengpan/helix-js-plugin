@@ -170,7 +170,7 @@ impl Loader {
     }
 
     pub fn read_names(path: &Path) -> Vec<String> {
-        std::fs::read_dir(path)
+        let mut names: Vec<String> = std::fs::read_dir(path)
             .map(|entries| {
                 entries
                     .filter_map(|entry| {
@@ -181,7 +181,22 @@ impl Loader {
                     })
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// 所有搜索目录中的主题名（高优先级目录在前，去重保序）
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for dir in &self.theme_dirs {
+            for name in Self::read_names(dir) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
     }
 
     /// Loads the raw toml value of a theme file, without resolving inheritance.
@@ -442,6 +457,11 @@ impl Theme {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// 设置主题名（插件覆盖合并出的 Theme 保留基准名，供 current_theme 查询）
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.into();
     }
 
     pub fn get(&self, scope: &str) -> Style {
