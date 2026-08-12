@@ -93,6 +93,9 @@ function shq(s) {
 
 // ============================ 状态 ============================
 
+// 统一图标源（icons.js 的 exports；load 后填充，node 测试环境为 null 走字符回退）
+let ICONS = null;
+
 const S = {
   root: null,          // 当前树根目录
   tree: null,          // 根 Node（虚拟容器）
@@ -293,7 +296,15 @@ function reveal(file_path) {
 function row_el(row, selected, is_current) {
   const { node, depth } = row;
   const indent = "  ".repeat(depth);
-  const glyph = node.is_dir ? (node.expanded ? "▾ " : "▸ ") : "  ";
+  // 图标：目录（展开/折叠）或文件类型图标；无 icons.js 时回退 ▸/▾/空格
+  let glyph;
+  if (ICONS) {
+    glyph = node.is_dir
+      ? ICONS.getDirIcon(node.expanded) + " "
+      : ICONS.getFileIcon(node.name) + " ";
+  } else {
+    glyph = node.is_dir ? (node.expanded ? "▾ " : "▸ ") : "  ";
+  }
   const style = selected ? "ui.selection" : is_current ? "ui.popup" : node.is_dir ? "ui.virtual" : null;
   return helix.el("text", indent + glyph + node.name, { style });
 }
@@ -516,6 +527,12 @@ function on_buffer_open(doc) {
 // ============================ 注册（node 环境跳过） ============================
 
 if (typeof helix !== "undefined") {
+  // 统一图标映射表（bufferline/树/状态栏/诊断共用）
+  try {
+    ICONS = helix.load("icons.js") || null;
+  } catch (e) {
+    ICONS = null; // icons.js 缺失时退回 ▸/▾ 字符
+  }
   helix.register_command("filetree", toggle_panel, "切换文件树面板");
   helix.register_command("filetree-reveal", (ctx) => {
     // 命令 ctx 形状是 { doc: { path, ... }, cursor, selection }（兼容旧顶层 path）

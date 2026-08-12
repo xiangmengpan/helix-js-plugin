@@ -7,12 +7,36 @@
 把 `.js` 文件复制到 `~/.config/helix/plugins/`，并在 `~/.config/helix/init.js` 中 `helix.load(...)`：
 
 ```bash
-cp plugins/filetree.js ~/.config/helix/plugins/
-cp plugins/init.js ~/.config/helix/init.js   # 入口示例（自动加载 filetree）
+cp plugins/{icons.js,filetree.js} ~/.config/helix/plugins/
+cp plugins/init.js ~/.config/helix/init.js   # 入口示例（自动加载 icons + filetree）
 ```
 
 > 启动只自动加载 `~/.config/helix/init.js`；其他插件必须经 `helix.load` 导入。
 > 修改插件后 `:plugin-reload` 生效（重读磁盘 + 重置插件状态）。
+
+## icons.js — 统一图标映射表（nerd font）
+
+唯一图标源：方案 1（bufferline 文件类型图标，load 即自动注册）、方案 2（filetree 树内图标）、
+方案 3（状态栏 mode 图标）、方案 4（诊断标记图标，Rust 侧 `helix.set_diagnostic_icons`）都从这里取。
+
+| 映射 | 内容 | 获取 |
+|------|------|------|
+| `ICONS.file` | 扩展名 → 文件类型图标（rust/js/ts/md/py/...） | `getFileIcon(path)` |
+| `ICONS.special` | 特殊文件名（README/Dockerfile/Cargo.toml/...） | `getFileIcon(path)`（优先匹配） |
+| `ICONS.dir` | 目录图标（折叠/展开） | `getDirIcon(expanded)` |
+| `ICONS.mode` | 状态栏模式图标 | `getModeIcon(mode)` |
+| `ICONS.diagnostic` | 诊断标记图标 | `getDiagnosticIcon(sev)` |
+| `ICONS.git` | git 变更状态图标 | `getGitIcon(status)` |
+
+```js
+helix.load("icons.js");                          // 自动注册 bufferline 图标
+const icons = helix.load("icons.js");            // 其他插件取映射表
+icons.getFileIcon("src/main.rs");                // rust 图标
+helix.set_diagnostic_icons(icons.ICONS.diagnostic); // 方案 4：诊断标记列图标
+```
+
+**前提**：终端使用 nerd font（Windows Terminal 设置字体 / vscode `terminal.integrated.fontFamily`）。
+图标表可自行增删（`ICONS.file` 是普通对象）。
 
 ## filetree.js — 侧边文件树面板
 
