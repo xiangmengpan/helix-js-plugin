@@ -231,6 +231,16 @@ enum TermCtrl {
 }
 
 /// 一个进程 id 的 JS 回调集（resolve 时需要克隆出容器外调用）
+struct NodeHandlers {
+    on_press: Option<JsValue>,
+    on_key: Option<JsValue>,
+}
+
+thread_local! {
+    static NODE_HANDLERS: RefCell<Option<&'static mut HashMap<(u64, String), NodeHandlers>>> =
+        const { RefCell::new(None) };
+}
+
 struct TermCallbacks {
     on_chunk: JsValue,
     on_exit: Option<JsValue>,
@@ -294,10 +304,14 @@ impl StyledLine {
 /// Scroll 高度裁剪容器（保留最后 height 行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompNode {
-    Text { spans: Vec<TextSpan>, width: Option<u16> },
+    Text { spans: Vec<TextSpan>, width: Option<u16>, id: Option<String> },
     Row { children: Vec<CompNode>, gap: u16 },
     Col { children: Vec<CompNode>, gap: u16 },
     Scroll { children: Vec<CompNode>, height: u16 },
+    /// 可聚焦按钮：Enter/Space 触发 onPress（id 必填）
+    Button { label: Vec<TextSpan>, width: Option<u16>, id: String },
+    /// 可聚焦输入框：按键路由到 onKey（id 必填，value 由 JS 侧状态渲染）
+    Input { value: String, width: Option<u16>, id: String },
 }
 
 /// render 回调的返回：数组（字符串/样式对象）→ 旧行 API；单节点对象（含 type）→ 组件树
@@ -1806,6 +1820,58 @@ pub fn take_edits() -> Vec<Edit> {
     CURRENT_EDITS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
+/// 触发节点事件（焦点路由）：onPress → 无参调用；onKey → 传键名
+pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Result<()> {
+    init();
+    CONTEXT.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("CONTEXT initialized");
+        let handlers = NODE_HANDLERS.with(|h| {
+            let mut slot = h.borrow_mut();
+            slot.get_or_insert_with(|| Box::leak(Box::default()))
+                .get(&(view_id, node_id.to_string()))
+                .map(|hd| NodeHandlers { on_press: hd.on_press.clone(), on_key: hd.on_key.clone() })
+        });
+        let Some(handlers) = handlers else { return Ok(()) };
+        let undefined = JsValue::undefined();
+        match key {
+            None => {
+                // button 按下（Enter/Space）
+                if let Some(f) = handlers.on_press {
+                    let func = f.as_callable().and_then(JsFunction::from_object)
+                        .ok_or_else(|| anyhow!("node {node_id} onPress not callable"))?;
+                    let _: JsValue = func.call(&undefined, &[], engine)
+                        .map_err(|e| anyhow!("node {node_id} onPress failed: {e}"))?;
+                }
+            }
+            Some(k) => {
+                // input 按键
+                if let Some(f) = handlers.on_key {
+                    let func = f.as_callable().and_then(JsFunction::from_object)
+                        .ok_or_else(|| anyhow!("node {node_id} onKey not callable"))?;
+                    let _: JsValue = func.call(&undefined, &[JsValue::from(JsString::from(k.to_string()))], engine)
+                        .map_err(|e| anyhow!("node {node_id} onKey failed: {e}"))?;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// 收集组件树中的可聚焦节点 id（button/input，树序）
+pub fn focusable_node_ids(node: &CompNode, out: &mut Vec<String>) {
+    match node {
+        CompNode::Button { id, .. } => out.push(id.clone()),
+        CompNode::Input { id, .. } => out.push(id.clone()),
+        CompNode::Row { children, .. } | CompNode::Col { children, .. } | CompNode::Scroll { children, .. } => {
+            for c in children {
+                focusable_node_ids(c, out);
+            }
+        }
+        CompNode::Text { .. } => {}
+    }
+}
+
 /// 取走并清空光标/选区请求队列（helix-term 消费）
 pub fn take_cursor_requests() -> Vec<CursorRequest> {
     init();
@@ -2021,7 +2087,7 @@ fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_en
     let id = NEXT_POPUP_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
     LAST_PANEL_ID.with(|c| c.set(Some(id)));
     with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPanel { id, side, size });
+        UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPanel { id, side, size });
     Ok(JsValue::from(id))
 }
 
@@ -2313,6 +2379,56 @@ fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::Js
                 }
             }
         }
+        "button" => {
+            // button(label, { id, onPress, style })
+            props.push(("text".into(), arg));
+            if let Some(opts) = opts {
+                let obj = opts.as_object().ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: options must be an object"
+                    ))))
+                })?;
+                let id_val = obj.get(JsString::from("id"), ctx)?;
+                if id_val.try_js_into::<String>(ctx).is_err() {
+                    return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: 'button' requires an 'id' string"
+                    )))));
+                }
+                props.push(("id".into(), id_val));
+                for key in ["onPress", "onKey", "style", "width"] {
+                    let v = obj.get(JsString::from(key), ctx)?;
+                    if !v.is_null_or_undefined() {
+                        props.push((key.into(), v));
+                    }
+                }
+            } else {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: 'button' requires options with 'id'"
+                )))));
+            }
+        }
+        "input" => {
+            // input({ id, value, onKey, width })
+            let obj = arg.as_object().ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: 'input' expects an options object"
+                ))))
+            })?;
+            let id_val = obj.get(JsString::from("id"), ctx)?;
+            if id_val.try_js_into::<String>(ctx).is_err() {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: 'input' requires an 'id' string"
+                )))));
+            }
+            props.push(("id".into(), id_val));
+            props.push(("value".into(), obj.get(JsString::from("value"), ctx)?));
+            for key in ["onKey", "onPress", "width"] {
+                let v = obj.get(JsString::from(key), ctx)?;
+                if !v.is_null_or_undefined() {
+                    props.push((key.into(), v));
+                }
+            }
+        }
         "row" | "col" | "scroll" => {
             let _: JsArray = arg.try_js_into(ctx).map_err(|_| {
                 JsError::from_opaque(JsValue::from(JsString::from(format!(
@@ -2384,7 +2500,7 @@ fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_
 
 /// 调 JS render 回调，返回内容：数组 → Content::Lines（旧行 API）；单节点对象（含 type）→ Content::Tree。
 /// ctx 对象 { width, height }。
-pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Content> {
+pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
     init();
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
@@ -2398,7 +2514,13 @@ pub fn render_popup(id: u64, width: u16, height: u16) -> Result<Content> {
         let func = render.as_callable().and_then(JsFunction::from_object)
             .ok_or_else(|| anyhow!("popup {id} render is not a function"))?;
         let undefined = JsValue::undefined();
-        let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine)
+        // render(focus, ctx)：focus 为当前焦点节点 id（JS 侧据此渲染焦点样式）
+        let focus_arg = match focus {
+            Some(f) => JsValue::from(JsString::from(f.to_string())),
+            None => JsValue::null(),
+        };
+        let value: JsValue = func
+            .call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine)
             .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
         // 数组 → 旧行 API；单对象含 type → 组件树（数组也是对象，数组判断在前）
         if let Ok(arr) = value.try_js_into::<JsArray>(engine) {
@@ -2491,7 +2613,9 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
                 )))));
             };
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
-            Ok(CompNode::Text { spans, width })
+            let node_id = obj_opt_str(&obj, "id", ctx, &api)?;
+            register_node_handlers(&obj, ctx, id, node_id.as_deref())?;
+            Ok(CompNode::Text { spans, width, id: node_id })
         }
         "row" | "col" => {
             let children = parse_children(&obj, ctx, id)?;
@@ -2507,10 +2631,103 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             let height = obj_opt_u16(&obj, "height", ctx, &api)?.unwrap_or(0);
             Ok(CompNode::Scroll { children, height })
         }
+        "button" => {
+            let node_id: String = obj
+                .get(JsString::from("id"), ctx)?
+                .try_js_into(ctx)
+                .map_err(|_| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: button node must have a string 'id'"
+                    ))))
+                })?;
+            let label = parse_text_spans(&obj, ctx, &api)?;
+            let width = obj_opt_u16(&obj, "width", ctx, &api)?;
+            register_node_handlers(&obj, ctx, id, Some(&node_id))?;
+            Ok(CompNode::Button { label, width, id: node_id })
+        }
+        "input" => {
+            let node_id: String = obj
+                .get(JsString::from("id"), ctx)?
+                .try_js_into(ctx)
+                .map_err(|_| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: input node must have a string 'id'"
+                    ))))
+                })?;
+            let value: String = obj
+                .get(JsString::from("value"), ctx)?
+                .try_js_into(ctx)
+                .unwrap_or_default();
+            let width = obj_opt_u16(&obj, "width", ctx, &api)?;
+            register_node_handlers(&obj, ctx, id, Some(&node_id))?;
+            Ok(CompNode::Input { value, width, id: node_id })
+        }
         other => Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: unknown node type '{other}' (expected text|row|col|scroll)"
+            "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
         ))))),
     }
+}
+
+/// 解析富文本段数组 [{text, style}, ...] 或字符串 → Vec<TextSpan>
+fn parse_text_spans(obj: &boa_engine::JsObject, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Vec<TextSpan>> {
+    let text_val = obj.get(JsString::from("text"), ctx)?;
+    let node_style = obj_opt_str(obj, "style", ctx, api)?;
+    if let Ok(s) = text_val.try_js_into::<String>(ctx) {
+        Ok(vec![TextSpan { text: s, style: node_style }])
+    } else if let Ok(arr) = text_val.try_js_into::<boa_engine::object::builtins::JsArray>(ctx) {
+        let mut spans = Vec::new();
+        let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
+        for i in 0..len {
+            let item = arr.get(i, ctx)?;
+            let seg_obj = item.as_object().ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: rich text segments must be objects with 'text'"
+                ))))
+            })?;
+            let t: String = seg_obj
+                .get(JsString::from("text"), ctx)?
+                .try_js_into(ctx)
+                .map_err(|_| {
+                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        "{api}: rich text segment must have a string 'text'"
+                    ))))
+                })?;
+            let st = obj_opt_str(&seg_obj, "style", ctx, api)?;
+            spans.push(TextSpan { text: t, style: st });
+        }
+        Ok(spans)
+    } else {
+        Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: 'text' must be a string or an array of segments"
+        )))))
+    }
+}
+
+/// 注册节点事件处理器（id + onPress/onKey 存在时）：存 NODE_HANDLERS[(view_id, node_id)]
+fn register_node_handlers(
+    obj: &boa_engine::JsObject,
+    ctx: &mut Context,
+    view_id: u64,
+    node_id: Option<&str>,
+) -> boa_engine::JsResult<()> {
+    let Some(node_id) = node_id else { return Ok(()) };
+    let on_press = obj.get(JsString::from("onPress"), ctx)?;
+    let on_key = obj.get(JsString::from("onKey"), ctx)?;
+    if on_press.as_callable().is_none() && on_key.as_callable().is_none() {
+        return Ok(());
+    }
+    NODE_HANDLERS.with(|h| {
+        let mut slot = h.borrow_mut();
+        let map = slot.get_or_insert_with(|| Box::leak(Box::default()));
+        map.insert(
+            (view_id, node_id.to_string()),
+            NodeHandlers {
+                on_press: on_press.as_callable().map(|_| on_press),
+                on_key: on_key.as_callable().map(|_| on_key),
+            },
+        );
+    });
+    Ok(())
 }
 
 /// 解析容器节点的 children 数组：每项必须是节点对象（递归 parse_node）
@@ -2956,7 +3173,7 @@ mod tests {
         let UiRequest::OpenPopup { id, .. } = reqs[0] else { unreachable!("expected OpenPopup") };
         assert_eq!(id, 1); // 自增从 1 开始
 
-        let lines = render_popup(id, 40, 10).unwrap();
+        let lines = render_popup(id, 40, 10, None).unwrap();
         assert_eq!(
             lines,
             Content::Lines(vec![
@@ -2974,7 +3191,7 @@ mod tests {
 
         close_popup(id).unwrap();
         assert_eq!(take_messages(), vec!["closed:null"]);
-        assert!(render_popup(id, 40, 10).is_err()); // 已关闭，注册表移除
+        assert!(render_popup(id, 40, 10, None).is_err()); // 已关闭，注册表移除
     }
 
     #[test]
@@ -3000,7 +3217,7 @@ mod tests {
             UiRequest::OpenPopup { id, .. } => id,
             _ => unreachable!("expected OpenPopup"),
         };
-        assert!(render_popup(id, 40, 10).is_err());
+        assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
 
         // 参数缺失/类型错误 → JS 报错
@@ -3058,7 +3275,7 @@ mod tests {
         )
         .unwrap();
         let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
-        let lines = render_popup(id, 40, 10).unwrap();
+        let lines = render_popup(id, 40, 10, None).unwrap();
         assert_eq!(
             lines,
             Content::Lines(vec![
@@ -3071,7 +3288,7 @@ mod tests {
         // 非法元素（缺 text / 非字符串非对象）→ Err
         load_script(r#"helix.open_popup({ render: () => [{ style: "error" }] });"#).unwrap();
         let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
-        assert!(render_popup(id, 40, 10).is_err());
+        assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
     }
 
@@ -3755,6 +3972,41 @@ mod tests {
     /// 注意：编译报错调整——简报原文 `events[0]` 按值取会 move，改为 `&events[0]`；
     /// `assert!(true, ...)` 触发 clippy::assertions_on_constants，删除。
     #[test]
+    fn node_events_and_focusables() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+            helix.open_popup({
+                render: (focus) => helix.el("col", [
+                    helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), style: focus === "btn1" ? "error" : null }),
+                    helix.el("input", { id: "in1", value: "abc", onKey: (k) => helix.echo("key:" + k) }),
+                ]),
+            });
+            "#,
+        )
+        .unwrap();
+        let id = match &take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => *id, other => panic!("expected OpenPopup, got {other:?}") };
+        // render 传 focus → JS render(focus, ctx) 收到（focus 样式分支由 JS 处理，这里验证渲染不崩 + focusables 收集）
+        let content = render_popup(id, 60, 20, Some("btn1")).unwrap();
+        let mut focusables = Vec::new();
+        if let Content::Tree(node) = &content {
+            focusable_node_ids(node, &mut focusables);
+        }
+        assert_eq!(focusables, vec!["btn1".to_string(), "in1".to_string()]);
+        // 事件分发：button onPress
+        assert!(dispatch_node_event(id, "btn1", None).is_ok());
+        // input onKey
+        assert!(dispatch_node_event(id, "in1", Some("a")).is_ok());
+        let msgs = take_messages();
+        assert!(msgs.contains(&"pressed".to_string()), "{msgs:?}");
+        assert!(msgs.contains(&"key:a".to_string()), "{msgs:?}");
+        // 未知节点 → Ok（无处理器）
+        assert!(dispatch_node_event(id, "nope", None).is_ok());
+        close_popup(id).unwrap();
+    }
+
+    #[test]
     fn terminal_modes_api() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
@@ -4026,7 +4278,7 @@ mod tests {
 
         let reqs = take_ui_requests();
         let id = match &reqs[0] { UiRequest::OpenPopup { id, .. } => *id, _ => unreachable!("expected OpenPopup") };
-        match render_popup(id, 40, 10).unwrap() {
+        match render_popup(id, 40, 10, None).unwrap() {
             Content::Tree(root) => {
                 assert!(matches!(&root, CompNode::Col { .. }));
                 match &root {
@@ -4045,7 +4297,7 @@ mod tests {
         // 非法节点类型 → Err
         load_script(r#"helix.open_popup({ render: () => ({ type: "bogus" }) });"#).unwrap();
         let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
-        assert!(render_popup(id, 40, 10).is_err());
+        assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
     }
 }

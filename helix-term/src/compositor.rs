@@ -315,6 +315,23 @@ impl Compositor {
             .find(|t| f(t))
     }
 
+    /// 重置全部插件面板/弹窗的脏格 diff 状态（测试向不同 surface 渲染时用）
+    pub fn reset_plugin_diffs(&mut self) {
+        for layer in &mut self.layers {
+            if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::PluginPanel>() {
+                p.reset_render_state();
+            }
+            if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::plugin_popup::PluginPopup>() {
+                p.reset_render_state();
+            }
+        }
+    }
+
+    /// 按类型统计层数量（测试/诊断）
+    pub fn count_type(&self, type_name: &str) -> usize {
+        self.layers.iter().filter(|l| l.type_name() == type_name).count()
+    }
+
     pub fn need_full_redraw(&mut self) {
         self.full_redraw = true;
     }

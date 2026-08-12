@@ -5,8 +5,6 @@ use helix_js::{CommandContext, PopupKeyResult, StyledLine};
 use helix_view::current_ref;
 use helix_view::graphics::Rect;
 use tui::buffer::Buffer as Surface;
-use tui::text::{Span, Spans, Text as TuiText};
-use tui::widgets::{Paragraph, Widget, Wrap};
 
 use super::plugin_popup::key_to_plugin_key;
 
@@ -25,11 +23,18 @@ pub struct PluginPanel {
     side: PanelSide,
     size: u16,
     lines: Vec<StyledLine>,
+    /// 脏格 diff 渲染器（只重绘变化格）
+    diff: crate::ui::comp_layout::DiffRenderer,
 }
 
 impl PluginPanel {
     pub fn new(id: u64, side: PanelSide, size: u16) -> Self {
-        Self { id, side, size, lines: Vec::new() }
+        Self { id, side, size, lines: Vec::new(), diff: Default::default() }
+    }
+
+    /// 清空脏格 diff 状态（测试向不同 surface 渲染时需要重置）
+    pub fn reset_render_state(&mut self) {
+        self.diff = Default::default();
     }
 
     /// 面板实例 id（open_panel 分配的 u64，与 render 注册表共用）；
@@ -232,30 +237,12 @@ impl Component for PluginPanel {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        match helix_js::render_popup(self.id, area.width, area.height) {
+        match helix_js::render_popup(self.id, area.width, area.height, None) {
             Ok(content) => self.lines = comp_layout::render(content, (area.width, area.height)),
             Err(err) => self.lines = vec![StyledLine::plain(format!("<plugin panel error: {err}>"))],
         }
-        // 与 PluginPopup 同款样式逻辑：style 名映射主题 scope（未知 scope 返回默认 Style）
-        let spans: Vec<Spans> = self
-            .lines
-            .iter()
-            .map(|l| {
-                // 多 span 行：每段独立样式（theme.get 未知 scope 返回默认 Style，不 panic）
-                Spans::from(
-                    l.spans
-                        .iter()
-                        .map(|span| match &span.style {
-                            Some(s) => Span::styled(span.text.clone(), cx.editor.theme.get(s)),
-                            None => Span::raw(span.text.clone()),
-                        })
-                        .collect::<Vec<Span>>(),
-                )
-            })
-            .collect();
-        let text = TuiText::from(spans);
-        let par = Paragraph::new(&text).wrap(Wrap { trim: false });
-        par.render(area, surface);
+        // 脏格 diff 渲染：只重绘变化格（方案乙③）
+        self.diff.render(&self.lines, area, surface, &cx.editor.theme);
     }
 
     // 无静态 id：多面板下各层需独立标识，移除/排布一律走 u64 实例 id

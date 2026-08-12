@@ -20,7 +20,7 @@ pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
 pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
     use helix_js::TextSpan;
     match node {
-        CompNode::Text { spans, width } => {
+        CompNode::Text { spans, width, .. } => {
             let limit = width.unwrap_or(u16::MAX).min(viewport.0) as usize;
             let mut taken = 0usize;
             let mut out_spans = Vec::new();
@@ -93,6 +93,27 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             }
             out
         }
+        CompNode::Button { label, width, .. } => {
+            // 渲染为 [ label ]（焦点样式由 JS 侧 render(focus) 控制）
+            let limit = width.unwrap_or(u16::MAX).min(viewport.0.saturating_sub(2)) as usize;
+            let mut spans = vec![TextSpan { text: "[ ".into(), style: None }];
+            let mut taken = 0usize;
+            for span in label {
+                if taken >= limit {
+                    break;
+                }
+                let t: String = span.text.chars().take(limit - taken).collect();
+                taken += t.chars().count();
+                spans.push(TextSpan { text: t, style: span.style.clone() });
+            }
+            spans.push(TextSpan { text: " ]".into(), style: None });
+            vec![StyledLine { spans }]
+        }
+        CompNode::Input { value, width, .. } => {
+            let limit = width.unwrap_or(u16::MAX).min(viewport.0) as usize;
+            let text: String = value.chars().take(limit).collect();
+            vec![StyledLine::plain(text)]
+        }
         CompNode::Scroll { children, height } => {
             let h = (*height).min(viewport.1) as usize;
             if h == 0 {
@@ -106,17 +127,125 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
     }
 }
 
+
+use helix_view::graphics::{Color, Style};
+
+// ── 脏格增量渲染（方案乙③）──
+
+/// 逐格 diff 渲染器：与上次输出对比，只把变化的格写入 surface。
+/// 终端输出流、状态更新等高频重绘场景下显著减少 surface 写入。
+#[derive(Default)]
+pub struct DiffRenderer {
+    last: Vec<u64>,
+}
+
+
+fn color_hash(c: &Color) -> u64 {
+    match c {
+        Color::Reset => 0,
+        Color::Black => 1,
+        Color::Red => 2,
+        Color::Green => 3,
+        Color::Yellow => 4,
+        Color::Blue => 5,
+        Color::Magenta => 6,
+        Color::Cyan => 7,
+        Color::Gray => 8,
+        Color::LightGray => 9,
+        Color::LightRed => 10,
+        Color::LightGreen => 11,
+        Color::LightYellow => 12,
+        Color::LightBlue => 13,
+        Color::LightMagenta => 14,
+        Color::LightCyan => 15,
+        Color::White => 16,
+        Color::Rgb(r, g, b) => 1000 + (*r as u64) * 65536 + (*g as u64) * 256 + *b as u64,
+        
+        Color::Indexed(n) => 3000 + *n as u64,
+    }
+}
+
+fn cell_hash(ch: char, style: &Style) -> u64 {
+    (ch as u64) * 31
+        + (style.add_modifier.bits() as u64) * 7
+        + color_hash(&style.fg.unwrap_or(Color::Reset)) * 3
+        + color_hash(&style.bg.unwrap_or(Color::Reset))
+}
+
+impl DiffRenderer {
+    /// 渲染 lines 到 surface（area 左上角起），只画与上次不同的格。
+    pub fn render(
+        &mut self,
+        lines: &[StyledLine],
+        area: helix_view::graphics::Rect,
+        surface: &mut tui::buffer::Buffer,
+        theme: &helix_view::Theme,
+    ) {
+        let width = area.width as usize;
+        let max_rows = area.height as usize;
+        let mut hashes: Vec<u64> = Vec::with_capacity(width * lines.len().min(max_rows));
+        for (y, line) in lines.iter().take(max_rows).enumerate() {
+            let mut x = 0usize;
+            for span in &line.spans {
+                let style = span
+                    .style
+                    .as_ref()
+                    .map(|s| theme.get(s))
+                    .unwrap_or_default();
+                for ch in span.text.chars() {
+                    if x >= width {
+                        break;
+                    }
+                    let h = cell_hash(ch, &style);
+                    hashes.push(h);
+                    let idx = y * width + x;
+                    if self.last.get(idx) != Some(&h) {
+                        let cell = &mut surface[(area.x + x as u16, area.y + y as u16)];
+                        cell.set_symbol(&ch.to_string());
+                        cell.set_style(style);
+                    }
+                    x += 1;
+                }
+                if x >= width {
+                    break;
+                }
+            }
+            // 行尾空格（清掉上次更长的内容）
+            for x2 in x..width {
+                let h = cell_hash(' ', &Style::default());
+                hashes.push(h);
+                let idx = y * width + x2;
+                if self.last.get(idx) != Some(&h) {
+                    let cell = &mut surface[(area.x + x2 as u16, area.y + y as u16)];
+                    cell.set_symbol(" ");
+                    cell.set_style(helix_view::graphics::Style::default());
+                }
+            }
+        }
+        // 内容变短：清掉多出的旧行
+        let old_rows = self.last.len().div_ceil(width);
+        for y in lines.len().min(max_rows)..old_rows.min(max_rows) {
+            for x2 in 0..width {
+                let cell = &mut surface[(area.x + x2 as u16, area.y + y as u16)];
+                cell.set_symbol(" ");
+                cell.set_style(helix_view::graphics::Style::default());
+            }
+        }
+        self.last = hashes;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use helix_js::TextSpan;
 
     fn text(t: &str) -> CompNode {
-        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: None }], width: None }
+        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: None }], width: None, id: None }
     }
 
     fn styled(t: &str, s: &str) -> CompNode {
-        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: Some(s.into()) }], width: None }
+        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: Some(s.into()) }], width: None, id: None }
     }
 
     fn texts(ts: &[&str]) -> Vec<CompNode> {
@@ -136,8 +265,8 @@ mod tests {
         // 多 span 行模型：row 混合样式不再坍缩——每段独立保留
         let node = CompNode::Row {
             children: vec![
-                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None },
-                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: Some("error".into()) }], width: None },
+                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None, id: None },
+                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: Some("error".into()) }], width: None, id: None },
             ],
             gap: 0,
         };
@@ -153,12 +282,12 @@ mod tests {
         assert_eq!(layout(&text("hello"), (40, 10)), vec![line("hello")]);
         // width 截断
         assert_eq!(
-            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(3) }, (40, 10)),
+            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(3), id: None }, (40, 10)),
             vec![line("hel")]
         );
         // viewport 宽度优先于 width
         assert_eq!(
-            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(10) }, (3, 10)),
+            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(10), id: None }, (3, 10)),
             vec![line("hel")]
         );
     }
@@ -251,3 +380,4 @@ mod tests {
         assert_eq!(line_text(&out[0]), "ab");
     }
 }
+

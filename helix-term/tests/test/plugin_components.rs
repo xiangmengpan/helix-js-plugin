@@ -76,7 +76,26 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
     pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
     pump(&mut app, ":tree-popup<ret>").await?;
 
-    let rows = render_rows(&mut app, area);
+    // DiffRenderer 有持久状态：app 真实 surface 已渲染过，不能复用其 diff——
+    // 从弹窗层读 lines，用全新 DiffRenderer 渲染到测试 buffer。
+    let popup = app
+        .compositor
+        .find::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>()
+        .expect("popup layer");
+    let lines: Vec<helix_js::StyledLine> = popup.contents().lines().to_vec();
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let mut diff = helix_term::ui::comp_layout::DiffRenderer::default();
+    diff.render(&lines, area, &mut buf, &app.editor.theme);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            buf.content
+                .iter()
+                .skip(y as usize * area.width as usize)
+                .take(area.width as usize)
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect();
     let joined = rows.join("\n");
     assert!(rows.iter().any(|r| r.contains("title")), "title row missing: {joined:?}");
     assert!(
@@ -96,6 +115,62 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
     pump(&mut app, "<esc>:q!<ret>").await?;
     let errs = app.close().await;
     assert!(errs.is_empty(), "close errors: {errs:?}");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_node_focus_events() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("nf.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("focus.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("focus-popup", () => {
+            helix.open_popup({
+                render: (focus) => helix.el("col", [
+                    helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("PRESSED"), style: focus === "btn1" ? "error" : null }),
+                    helix.el("button", "cancel", { id: "btn2", onPress: () => helix.echo("CANCELED") }),
+                ]),
+            });
+        });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(":focus-popup<ret>"),
+                Some(&|app| {
+                    let popup_type = std::any::type_name::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>();
+                    assert!(app.compositor.has_component(popup_type), "popup open");
+                }),
+            ),
+            // Tab 聚焦第一个按钮（btn1），Enter 触发 onPress
+            (
+                Some("<tab><ret>"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "PRESSED", "onPress should fire on Enter after Tab-focus");
+                    assert!(matches!(severity, helix_core::diagnostic::Severity::Info));
+                }),
+            ),
+            // 再 Tab 聚焦 btn2，Enter → CANCELED
+            (
+                Some("<tab><ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "CANCELED");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
 
     Ok(())
 }

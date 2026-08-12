@@ -7,8 +7,6 @@ use helix_view::graphics::Rect;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use tui::buffer::Buffer as Surface;
-use tui::text::{Span, Spans, Text as TuiText};
-use tui::widgets::{Paragraph, Widget, Wrap};
 
 /// JS 插件弹窗的内容组件：内容由 JS `render` 回调绘制，按键由 JS `onKey` 回调处理。
 /// 作为 `ui::Popup` 的内容使用；图层弹出/边框/滚动由外层 Popup 负责。
@@ -17,6 +15,12 @@ pub struct PluginPopup {
     lines: Vec<StyledLine>,
     /// open_popup 的 width/height 尺寸上限（两者都提供时才生效）
     size_hint: Option<(u16, u16)>,
+    /// 当前焦点节点 id（Tab/Shift-Tab 在可聚焦节点间移动；None = 无节点焦点）
+    focus: Option<String>,
+    /// 可聚焦节点 id 列表（树序，渲染时刷新）
+    focusables: Vec<String>,
+    /// 脏格 diff 渲染器（只重绘变化格）
+    diff: crate::ui::comp_layout::DiffRenderer,
 }
 
 impl PluginPopup {
@@ -25,13 +29,33 @@ impl PluginPopup {
             id,
             lines: Vec::new(),
             size_hint,
+            focus: None,
+            focusables: Vec::new(),
+            diff: Default::default(),
         }
+    }
+
+    /// 清空脏格 diff 状态（测试向不同 surface 渲染时需要重置）
+    pub fn reset_render_state(&mut self) {
+        self.diff = Default::default();
+    }
+
+    /// 测试/调试访问器：当前布局行
+    pub fn lines(&self) -> &[StyledLine] {
+        &self.lines
     }
 
     /// 调 JS render 并布局成行：Lines 原样；Tree 走 comp_layout（viewport 约束）。
     fn refresh(&mut self, viewport: (u16, u16)) {
-        match helix_js::render_popup(self.id, viewport.0, viewport.1) {
-            Ok(content) => self.lines = comp_layout::render(content, viewport),
+        match helix_js::render_popup(self.id, viewport.0, viewport.1, self.focus.as_deref()) {
+            Ok(content) => {
+                // 收集可聚焦节点（Button/Input 的 id，树序）
+                self.focusables.clear();
+                if let helix_js::Content::Tree(node) = &content {
+                    helix_js::focusable_node_ids(node, &mut self.focusables);
+                }
+                self.lines = comp_layout::render(content, viewport);
+            }
             Err(err) => self.lines = vec![StyledLine::plain(format!("<plugin popup error: {err}>"))],
         }
     }
@@ -45,6 +69,39 @@ impl Component for PluginPopup {
         let Some(key) = key_to_plugin_key(key_event) else {
             return EventResult::Ignored(None);
         };
+        // 节点焦点路由（方案乙）：Tab 移动焦点；焦点在 button/input 时按键直接路由，
+        // 不经过弹窗级 onKey。
+        if !self.focusables.is_empty() {
+            if key.name == "Tab" {
+                let idx = self.focusables.iter().position(|f| Some(f) == self.focus.as_ref());
+                let next = idx.map(|i| (i + 1) % self.focusables.len()).unwrap_or(0);
+                self.focus = Some(self.focusables[next].clone());
+                return EventResult::Consumed(None);
+            }
+            if let Some(fid) = self.focus.as_ref() {
+                let drain_msgs = |cx: &mut Context| {
+                    let msgs = helix_js::take_messages();
+                    if !msgs.is_empty() {
+                        cx.editor.set_status(msgs.join(" "));
+                    }
+                };
+                match key.name.as_str() {
+                    "Enter" | "Space" => {
+                        if helix_js::dispatch_node_event(self.id, fid, None).is_ok() {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    key_name if key_name.chars().count() == 1 || key_name == "Backspace" || key_name == "Delete" => {
+                        if helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok() {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         // 构建当前文档快照（弹窗是模态层，打开期间文档不变；每次按键重新序列化）
         let ctx = {
             let (view, doc) = current_ref!(cx.editor);
@@ -108,26 +165,8 @@ impl Component for PluginPopup {
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         self.refresh((area.width, area.height));
-        // 每行样式化 span：style 名直接映射到主题 scope（未知 scope 主题返回默认 Style，不 panic）
-        let spans: Vec<Spans> = self
-            .lines
-            .iter()
-            .map(|l| {
-                // 多 span 行：每段独立样式（theme.get 未知 scope 返回默认 Style，不 panic）
-                Spans::from(
-                    l.spans
-                        .iter()
-                        .map(|span| match &span.style {
-                            Some(s) => Span::styled(span.text.clone(), cx.editor.theme.get(s)),
-                            None => Span::raw(span.text.clone()),
-                        })
-                        .collect::<Vec<Span>>(),
-                )
-            })
-            .collect();
-        let text = TuiText::from(spans);
-        let par = Paragraph::new(&text).wrap(Wrap { trim: false });
-        par.render(area, surface);
+        // 脏格 diff 渲染：只重绘变化格（方案乙③）
+        self.diff.render(&self.lines, area, surface, &cx.editor.theme);
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
