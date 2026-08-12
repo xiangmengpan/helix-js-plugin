@@ -447,15 +447,21 @@ helix.restore_layout(layout);          // 目前只写入缓存（树重建未�
 
 ### `helix.set_statusline(fn)`
 
-状态栏右侧自定义文本，每帧渲染时调用。
+状态栏右侧自定义分段文本，每帧渲染时调用。
 
 ```js
-helix.set_statusline((ctx) => `${ctx.cursor.row}:${ctx.cursor.col}`);
+helix.set_statusline((ctx) => `${ctx.cursor.row}:${ctx.cursor.col}`);            // 字符串 = 单段
+helix.set_statusline((ctx) => [
+  { text: " N ", style: "ui.statusline.normal" },   // mode 色块（分段着色）
+  ctx.path ? ctx.path.split("/").pop() : "",
+  { text: String(ctx.diagnostics_error), style: "error" },
+]);
 ```
 
-- `ctx = { path, mode, cursor: { row, col } }`（轻量快照，不含全文）。
-- 返回字符串或 null（null = 不显示）；`set_statusline(null)` 清除。
-- ⚠️ 每帧调用——不要在钩子里跑 `helix.run`（同步阻塞）或重逻辑。
+- `ctx = { path, mode, cursor: { row, col }, total_lines, diagnostics_error, diagnostics_warning }`（轻量快照，不含全文）。
+- 返回 `null`（不显示）/ `string`（单段）/ 数组 `[ "str" | { text, style? } ]`（多段，每段可带 theme scope 着色，style 为 `null` 或缺省时跟随状态栏基样式）。
+- `set_statusline(null)` 清除；非法参数报错。
+- ⚠️ 每帧调用——不要在钩子里跑 `helix.run`（同步阻塞）或重逻辑；建议配合 `plugins/icons.js` 取图标。
 
 ### `helix.set_buffer_icon(fn)`
 

@@ -38,6 +38,20 @@ helix.set_diagnostic_icons(icons.ICONS.diagnostic); // 方案 4：诊断标记�
 **前提**：终端使用 nerd font（Windows Terminal 设置字体 / vscode `terminal.integrated.fontFamily`）。
 图标表可自行增删（`ICONS.file` 是普通对象）。
 
+## statusline.js — 状态栏美化（lazyvim 风格右侧信息）
+
+依赖 `set_statusline` 分段样式（Rust 增强）：右侧从右到左显示
+mode 色块 → 文件名（带类型图标）→ git 分支（异步缓存）→ 诊断计数（红/黄）→ 行:列 → 百分比 → 总行数。
+
+```js
+helix.load("statusline.js");   // init.js 已含；依赖 icons.js
+```
+
+- mode 色块用主题自带 `ui.statusline.normal/insert/select` scope（跟随主题）
+- git 分支在 buffer-open 时 `run_async` 查询一次并缓存（状态栏渲染零开销）
+- 左侧保持 helix 默认（可在 `config.toml` 的 `[statusline]` 调整元素）
+- 自定义分段：`helix.set_statusline((ctx) => [{ text, style? }, "str", ...])`
+
 ## filetree.js — 侧边文件树面板
 
 类 lazyvim/neo-tree 的目录树。`:filetree` 开关面板，`:filetree-reveal` 定位当前文件。

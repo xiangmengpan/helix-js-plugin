@@ -87,7 +87,7 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     }
 
     // JS 插件状态栏钩子：追加到 right parts（整体保持右对齐，插件文本位于最右侧）
-    if let Some(text) = helix_js::statusline_text(&helix_js::StatuslineCtx {
+    if let Some(parts) = helix_js::statusline_parts(&helix_js::StatuslineCtx {
         path: context.doc.path().map(|p| p.to_string_lossy().into_owned()),
         mode: match context.editor.mode() {
             Mode::Normal => "normal".to_string(),
@@ -105,8 +105,21 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
                 pos - context.doc.text().line_to_char(context.doc.text().char_to_line(pos)),
             )
         },
+        total_lines: context.doc.text().len_lines(),
+        diagnostics_error: context.doc.diagnostics().iter().filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Error)).count(),
+        diagnostics_warning: context.doc.diagnostics().iter().filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Warning)).count(),
     }) {
-        append(&mut context.parts.right, text.into(), base_style);
+        // 分段渲染：每段可带独立 theme scope（mode 色块 / error / warning / 弱化等）
+        for part in parts {
+            let span_style = part
+                .style
+                .as_deref()
+                .map(|s| context.editor.theme.get(s))
+                .unwrap_or_default();
+            let mut span: Span = part.text.into();
+            span.style = span_style;
+            append(&mut context.parts.right, span, base_style);
+        }
     }
 
     surface.set_spans(

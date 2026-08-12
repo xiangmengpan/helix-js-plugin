@@ -203,6 +203,16 @@ pub struct StatuslineCtx {
     pub path: Option<String>,
     pub mode: String,
     pub cursor: (usize, usize),
+    pub total_lines: usize,
+    pub diagnostics_error: usize,
+    pub diagnostics_warning: usize,
+}
+
+/// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatuslinePart {
+    pub text: String,
+    pub style: Option<String>,
 }
 
 /// 一次文档编辑请求（坐标基于命令开始时的原始快照，0-based 行列）

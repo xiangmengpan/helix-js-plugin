@@ -865,8 +865,9 @@ pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], _context: &mu
     Ok(JsValue::undefined())
 }
 
-/// 调状态栏钩子；无钩子 / 返回 null / 非字符串 / 抛错 → None
-pub fn statusline_text(ctx: &StatuslineCtx) -> Option<String> {
+/// 调状态栏钩子；返回分段（每段可带 theme scope）。
+/// 回调返回 null/undefined → None；字符串 → 单段；数组 [{text, style?} | "str", ...] → 多段。
+pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
     crate::init();
     let hook = with_statusline_hook(|h| h.clone())?;
     crate::state::with_engine(|engine| {
@@ -886,10 +887,46 @@ pub fn statusline_text(ctx: &StatuslineCtx) -> Option<String> {
             )
             .property(JsString::from("mode"), JsValue::from(JsString::from(ctx.mode.clone())), Attribute::all())
             .property(JsString::from("cursor"), JsValue::from(cursor), Attribute::all())
+            .property(JsString::from("total_lines"), JsValue::from(ctx.total_lines as f64), Attribute::all())
+            .property(JsString::from("diagnostics_error"), JsValue::from(ctx.diagnostics_error as f64), Attribute::all())
+            .property(JsString::from("diagnostics_warning"), JsValue::from(ctx.diagnostics_warning as f64), Attribute::all())
             .build();
         let undefined = JsValue::undefined();
         let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine).ok()?;
-        value.try_js_into::<String>(engine).ok()
+        if value.is_null_or_undefined() {
+            return None;
+        }
+        // 数组 → 多段（每项：字符串 或 { text, style? }）
+        if let Some(obj) = value.as_object() {
+            if let Ok(arr) = boa_engine::object::builtins::JsArray::from_object(obj.clone()) {
+                let mut parts = Vec::new();
+                let len: u64 = arr.length(engine).unwrap_or(0);
+                for i in 0..len {
+                    if let Ok(item) = arr.get(i, engine) {
+                        if let Ok(text) = item.try_js_into::<String>(engine) {
+                            parts.push(StatuslinePart { text, style: None });
+                        } else if let Some(seg) = item.as_object() {
+                            if let Ok(text) = seg
+                                .get(JsString::from("text"), engine)
+                                .and_then(|v| v.try_js_into::<String>(engine))
+                            {
+                                let style = seg
+                                    .get(JsString::from("style"), engine)
+                                    .ok()
+                                    .and_then(|v| v.try_js_into::<String>(engine).ok());
+                                parts.push(StatuslinePart { text, style });
+                            }
+                        }
+                    }
+                }
+                return Some(parts);
+            }
+        }
+        // 字符串 → 单段
+        match value.try_js_into::<String>(engine) {
+            Ok(text) => Some(vec![StatuslinePart { text, style: None }]),
+            Err(_) => None,
+        }
     })
 }
 

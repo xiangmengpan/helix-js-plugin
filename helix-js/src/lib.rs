@@ -734,26 +734,52 @@ mod tests {
     fn statusline_hook() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
-        assert_eq!(statusline_text(&StatuslineCtx { path: None, mode: "normal".into(), cursor: (0, 0) }), None);
+        let ctx = StatuslineCtx {
+            path: Some("/tmp/a.rs".into()),
+            mode: "insert".into(),
+            cursor: (3, 7),
+            total_lines: 100,
+            diagnostics_error: 2,
+            diagnostics_warning: 1,
+        };
+        assert_eq!(statusline_parts(&ctx), None);
 
+        // 字符串 → 单段（style None）
+        load_script(r#"helix.set_statusline((ctx) => ctx.mode + ":" + ctx.cursor.row);"#).unwrap();
+        assert_eq!(
+            statusline_parts(&ctx),
+            Some(vec![StatuslinePart { text: "insert:3".into(), style: None }])
+        );
+
+        // 数组 → 多段（字符串项 / {text, style} 项混用；style 透传）
         load_script(
             r#"
-        helix.set_statusline((ctx) => ctx.mode + ":" + ctx.cursor.row);
+        helix.set_statusline((ctx) => [
+            { text: " N ", style: "ui.statusline.normal" },
+            ctx.mode + ":" + ctx.cursor.row,
+            { text: String(ctx.diagnostics_error), style: "error" },
+        ]);
         "#,
         )
         .unwrap();
-        let ctx = StatuslineCtx { path: Some("/tmp/a.rs".into()), mode: "insert".into(), cursor: (3, 7) };
-        assert_eq!(statusline_text(&ctx), Some("insert:3".to_string()));
+        assert_eq!(
+            statusline_parts(&ctx),
+            Some(vec![
+                StatuslinePart { text: " N ".into(), style: Some("ui.statusline.normal".into()) },
+                StatuslinePart { text: "insert:3".into(), style: None },
+                StatuslinePart { text: "2".into(), style: Some("error".into()) },
+            ])
+        );
 
         // 返回 null → None
         load_script(r#"helix.set_statusline(() => null);"#).unwrap();
-        assert_eq!(statusline_text(&ctx), None);
+        assert_eq!(statusline_parts(&ctx), None);
         // 抛错 → None
         load_script(r#"helix.set_statusline(() => { throw new Error("boom"); });"#).unwrap();
-        assert_eq!(statusline_text(&ctx), None);
+        assert_eq!(statusline_parts(&ctx), None);
         // set_statusline(null) 清除
         load_script(r#"helix.set_statusline(null);"#).unwrap();
-        assert_eq!(statusline_text(&ctx), None);
+        assert_eq!(statusline_parts(&ctx), None);
         // 非法参数 → JS 报错
         assert!(load_script(r#"helix.set_statusline(42);"#).is_err());
     }
