@@ -4464,12 +4464,19 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 };
                 let panel = ui::PluginPanel::new(id, side, size);
                 job::dispatch_blocking(move |_editor, compositor| {
-                    // 多面板并存：直接推层（replace_or_push 的单面板替换语义已废弃）
-                    compositor.push(Box::new(panel));
+                    // 布局树：切分活动叶子，面板成为新叶子（side 决定方向/新叶子位置）
+                    use crate::ui::layout::SplitDir;
+                    let (dir, first) = match side {
+                        ui::PanelSide::Right => (SplitDir::H, false),
+                        ui::PanelSide::Left => (SplitDir::H, true),
+                        ui::PanelSide::Bottom => (SplitDir::V, false),
+                    };
+                    let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(panel));
                 });
             }
             helix_js::UiRequest::ClosePanel { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.remove_leaf(id);
                     // 先清 render 注册表（幂等），再按实例 id 移除对应层（多面板并存）
                     let _ = helix_js::close_popup(id);
                     compositor.remove_panel(id);
@@ -4516,7 +4523,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 };
                 let terminal = PluginTerminal::new(view_id, pty_id, side_enum, size);
                 job::dispatch_blocking(move |_editor, compositor| {
-                    compositor.push(Box::new(terminal));
+                    // 布局树：终端成为叶子
+                    use crate::ui::layout::SplitDir;
+                    let (dir, first) = match side_enum {
+                        crate::ui::plugin_panel::PanelSide::Right => (SplitDir::H, false),
+                        crate::ui::plugin_panel::PanelSide::Left => (SplitDir::H, true),
+                        crate::ui::plugin_panel::PanelSide::Bottom => (SplitDir::V, false),
+                    };
+                    let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal));
                 });
             }
             helix_js::UiRequest::TermMode { view_id, mode } => {
@@ -4572,7 +4586,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(view) = compositor.find::<ui::EditorView>() {
                         view.keymaps.insert_binding(mode, &keys, cmd);
-                    }
+                    } 
                 });
             }
         }

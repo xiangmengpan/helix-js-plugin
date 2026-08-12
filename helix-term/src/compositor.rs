@@ -17,8 +17,7 @@ pub enum EventResult {
 
 use crate::job::Jobs;
 use crate::ui::picker;
-use crate::ui::plugin_panel::{layout_panels, PanelSide, PluginPanel};
-use crate::ui::plugin_terminal::PluginTerminal;
+use crate::ui::plugin_panel::{PanelSide, PluginPanel};
 use helix_view::Editor;
 
 pub use helix_view::input::Event;
@@ -78,7 +77,10 @@ pub trait Component: Any + AnyComponent {
 }
 
 pub struct Compositor {
+    /// 瞬态覆盖层（弹窗/菜单/提示）——不参与布局，渲染在主区域之上
     layers: Vec<Box<dyn Component>>,
+    /// 主区域布局树：编辑器/终端/面板都是叶子（tmux 式二分树）
+    main_tree: crate::ui::layout::LayoutTree,
     area: Rect,
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
@@ -88,6 +90,7 @@ pub struct Compositor {
 impl Compositor {
     pub fn new(area: Rect) -> Self {
         Self {
+            main_tree: Default::default(),
             layers: Vec::new(),
             area,
             last_picker: None,
@@ -142,7 +145,9 @@ impl Compositor {
         let type_name = std::any::type_name::<T>();
         self.layers
             .retain(|component| component.type_name() != type_name);
-    }
+        // 布局树里的同类组件（如终端叶子）也移除
+        self.main_tree.remove_component_type::<T>();
+}
 
     /// 按面板实例 id（PluginPanel::id，open_panel 分配的 u64）移除对应层；
     /// 多面板并存时各层以 u64 实例 id 区分（静态 id 只适用于单面板）。
@@ -214,6 +219,23 @@ impl Compositor {
             };
         }
 
+        // 瞬态层未消费 → 布局树（活动叶子优先，忽略则编辑器叶子兜底）
+        if !consumed {
+            match self.main_tree.handle_event(event, cx) {
+                EventResult::Consumed(Some(callback)) => {
+                    callbacks.push(callback);
+                    consumed = true;
+                }
+                EventResult::Consumed(None) => {
+                    consumed = true;
+                }
+                EventResult::Ignored(Some(callback)) => {
+                    callbacks.push(callback);
+                }
+                EventResult::Ignored(None) => {}
+            }
+        }
+
         for callback in callbacks {
             callback(self, cx)
         }
@@ -222,57 +244,11 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // 面板推挤（多面板）：先按 type_name 收集所有 PluginPanel 层为 owned
-        // (id, side, size)（避免借用冲突），排布出每面板区 + 各侧收缩后的剩余区；
-        // 面板层按各自区渲染，其余层按剩余区渲染。无面板时全部层渲染全屏区（原逻辑）。
-        // 面板与原生终端都参与推挤布局（type_name 收集，avoid borrow conflicts）
-        let panel_type = std::any::type_name::<PluginPanel>();
-        let term_type = std::any::type_name::<PluginTerminal>();
-        let mut panels: Vec<(u64, PanelSide, u16)> = self
-            .layers
-            .iter()
-            .filter(|layer| layer.type_name() == panel_type)
-            .filter_map(|layer| layer.as_any().downcast_ref::<PluginPanel>())
-            .map(|panel| (panel.id(), panel.side(), panel.size()))
-            .collect();
-        // 仅 dock 模式的终端参与面板推挤；fullscreen/floating/minimized 走各自区域
-        panels.extend(
-            self.layers
-                .iter()
-                .filter(|layer| layer.type_name() == term_type)
-                .filter_map(|layer| layer.as_any().downcast_ref::<PluginTerminal>())
-                .filter(|term| term.mode() == crate::ui::plugin_terminal::TermMode::Dock)
-                .map(|term| (term.view_id(), term.side(), term.size())),
-        );
-        let (panel_rects, rest_area) = layout_panels(area, &panels);
+        // 主区域布局树：编辑器/终端/面板叶子各自在矩形里渲染
+        self.main_tree.render(area, surface, cx);
+        // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上
         for layer in &mut self.layers {
-            let layer_area = if layer.type_name() == panel_type {
-                layer
-                    .as_any()
-                    .downcast_ref::<PluginPanel>()
-                    .and_then(|panel| {
-                        panel_rects
-                            .iter()
-                            .find(|(id, _)| *id == panel.id())
-                            .map(|(_, rect)| *rect)
-                    })
-                    .unwrap_or(rest_area)
-            } else if layer.type_name() == term_type {
-                layer
-                    .as_any()
-                    .downcast_ref::<PluginTerminal>()
-                    .map(|term| {
-                        let dock_rect = panel_rects
-                            .iter()
-                            .find(|(id, _)| *id == term.view_id())
-                            .map(|(_, rect)| *rect);
-                        term.area_for(area, dock_rect)
-                    })
-                    .unwrap_or(rest_area)
-            } else {
-                rest_area
-            };
-            layer.render(layer_area, surface, cx);
+            layer.render(area, surface, cx);
         }
     }
 
@@ -289,14 +265,21 @@ impl Compositor {
         self.layers
             .iter()
             .any(|component| component.type_name() == type_name)
-    }
+    
+        || self.main_tree.has_component(type_name)
+}
 
     pub fn find<T: 'static>(&mut self) -> Option<&mut T> {
         let type_name = std::any::type_name::<T>();
-        self.layers
+        if let Some(c) = self
+            .layers
             .iter_mut()
             .find(|component| component.type_name() == type_name)
             .and_then(|component| component.as_any_mut().downcast_mut())
+        {
+            return Some(c);
+        }
+        self.main_tree.find_component::<T>()
     }
 
     pub fn find_id<T: 'static>(&mut self, id: &'static str) -> Option<&mut T> {
@@ -309,13 +292,83 @@ impl Compositor {
     /// 按谓词找层（多实例同类型区分：终端层按 view_id 等自定义键查找，
     /// 避免每事件构造 &'static id 字符串）
     pub fn find_where<T: 'static>(&mut self, mut f: impl FnMut(&T) -> bool) -> Option<&mut T> {
-        self.layers
+        if let Some(c) = self
+            .layers
             .iter_mut()
             .filter_map(|component| component.as_any_mut().downcast_mut::<T>())
             .find(|t| f(t))
+        {
+            return Some(c);
+        }
+        self.main_tree.find_component_where::<T>(f)
     }
 
     /// 重置全部插件面板/弹窗的脏格 diff 状态（测试向不同 surface 渲染时用）
+    /// 设置主编辑器（布局树的 id=0 叶子；替换原来的 push EditorView）
+    pub fn set_main_editor(&mut self, component: Box<dyn Component>) {
+        self.main_tree.set_editor(component);
+    }
+
+    /// 把活动叶子按方向切分，新叶子挂 component（new_first=false：右/下侧）；返回新叶子 id
+    pub fn split_leaf(
+        &mut self,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        component: Box<dyn Component>,
+    ) -> Option<u64> {
+        let active = self.main_tree.active();
+        self.main_tree.split_side(active, dir, new_first, component)
+    }
+
+    /// 同上，但新叶子占新叶子 side 的 ratio 份额（按区域尺寸换算成 first 的 ratio）
+    pub fn split_leaf_with_ratio(
+        &mut self,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        new_size: u16,
+        component: Box<dyn Component>,
+    ) -> Option<u64> {
+        let active = self.main_tree.active();
+        let total = if dir == crate::ui::layout::SplitDir::H { self.area.width } else { self.area.height };
+        let share = if new_first {
+            new_size as f32 / total.max(1) as f32
+        } else {
+            1.0 - new_size as f32 / total.max(1) as f32
+        };
+        let ratio = share.clamp(0.1, 0.9);
+        let new_id = self.main_tree.next_id_for_split();
+        // 直接构造带 ratio 的 split
+        self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, new_id)
+    }
+
+    pub fn area(&self) -> Rect {
+        self.area
+    }
+
+    pub fn remove_leaf(&mut self, id: u64) {
+        self.main_tree.remove(id);
+    }
+
+    pub fn zoom_leaf(&mut self, id: u64) {
+        self.main_tree.zoom(id);
+    }
+
+    pub fn unzoom(&mut self) {
+        self.main_tree.unzoom();
+    }
+
+    pub fn resize_leaf(&mut self, id: u64, ratio: f32) {
+        self.main_tree.resize(id, ratio);
+    }
+
+    pub fn focus_leaf(&mut self, id: u64) {
+        self.main_tree.focus(id);
+    }
+
+    pub fn layout_tree(&mut self) -> &mut crate::ui::layout::LayoutTree {
+        &mut self.main_tree
+    }
+
     pub fn reset_plugin_diffs(&mut self) {
         for layer in &mut self.layers {
             if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::PluginPanel>() {
@@ -330,7 +383,9 @@ impl Compositor {
     /// 按类型统计层数量（测试/诊断）
     pub fn count_type(&self, type_name: &str) -> usize {
         self.layers.iter().filter(|l| l.type_name() == type_name).count()
-    }
+    
+        + self.main_tree.count_type(type_name)
+}
 
     pub fn need_full_redraw(&mut self) {
         self.full_redraw = true;

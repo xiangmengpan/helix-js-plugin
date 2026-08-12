@@ -3,6 +3,7 @@ pub mod comp_layout;
 mod document;
 pub(crate) mod editor;
 mod info;
+pub mod layout;
 pub mod lsp;
 mod markdown;
 pub mod menu;
@@ -828,3 +829,4 @@ mod tests {
         assert_eq!(get_child_if_single_dir(root.path()), None);
     }
 }
+

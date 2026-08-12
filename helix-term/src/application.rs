@@ -138,7 +138,8 @@ impl Application {
         // ponytail: 启动快照——config-reload 不再热更新键位（需重启才能重载插件绑定）。
         let editor_view =
             Box::new(ui::EditorView::new(Keymaps::new(config.load().keys.clone())));
-        compositor.push(editor_view);
+        // 编辑器成为布局树的主叶子（id=0）
+        compositor.set_main_editor(editor_view);
 
         let jobs = Jobs::new();
 

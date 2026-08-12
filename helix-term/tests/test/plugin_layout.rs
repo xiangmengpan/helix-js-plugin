@@ -9,11 +9,12 @@ async fn panel_shrinks_editor() -> anyhow::Result<()> {
     std::fs::write(&file, "x\n")?;
 
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    // 直接推面板层（等价于 JS open_panel 的 replace_or_push 路径，绕过事件循环——
-    // 测试助手会在序列末尾发 :q! 退出应用、清空 view tree，无法再渲染）
-    app.compositor.replace_or_push(
-        "plugin-panel",
-        helix_term::ui::PluginPanel::new(1, helix_term::ui::PanelSide::Right, 20),
+    // 面板作为布局树叶子（split 编辑器叶子，右侧 20 列）
+    app.compositor.split_leaf_with_ratio(
+        helix_term::ui::layout::SplitDir::H,
+        false,
+        20,
+        Box::new(helix_term::ui::PluginPanel::new(1, helix_term::ui::PanelSide::Right, 20)),
     );
 
     // 渲染 compositor 到 Buffer，断言编辑器区域被面板收缩：
