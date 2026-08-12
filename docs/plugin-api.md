@@ -467,6 +467,17 @@ helix.set_buffer_icon((path) => path?.endsWith(".rs") ? "🦀" : null);
 
 - 返回图标字符串或 null（null = 默认行为）；单例，重复调用覆盖。
 
+### `helix.set_diagnostic_icons({ error?, warning?, info?, hint? })`
+
+诊断标记列图标（gutter 诊断符号；未设置时用默认 ●）。
+
+```js
+helix.set_diagnostic_icons({ error: "✗", warning: "!", info: "ℹ", hint: "?" });
+```
+
+- 值可为任意字符串（nerd font 字形 / unicode / 字符）；非字符串或空串忽略；整体替换。
+- 建议从统一映射表 `plugins/icons.js`（`ICONS.diagnostic`）取图标。
+
 ---
 
 ## 15. 主题
@@ -649,6 +660,7 @@ helix.stat_async(path, cb)                      // cb(err, {is_dir, size, mtime}
 helix.glob_async(pattern, cb)
 helix.set_statusline(fn)                        // fn({path, mode, cursor}) -> string|null
 helix.set_buffer_icon(fn)                       // fn(path) -> string|null
+helix.set_diagnostic_icons({...})               // 诊断标记列图标（gutter）
 helix.set_theme({ scope: color | {fg,bg,modifiers} })
 helix.reset_theme()
 helix.get_style(scope)

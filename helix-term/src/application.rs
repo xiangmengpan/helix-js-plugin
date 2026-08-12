@@ -316,6 +316,11 @@ impl Application {
         } else {
             false
         };
+        // 诊断标记图标（JS set_diagnostic_icons 后同步到 gutter 渲染）
+        let diag_icons = helix_js::take_diagnostic_icons();
+        if !diag_icons.is_empty() {
+            helix_view::gutter::set_diagnostic_icons(diag_icons);
+        }
         let term_events = helix_js::drain_term_events();
         let async_events = helix_js::drain_async_events();
         if term_events.is_empty() && async_events.is_empty() {

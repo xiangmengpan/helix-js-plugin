@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::fmt::Write;
+use std::sync::Mutex;
 
 use helix_core::syntax::config::LanguageServerFeature;
 
@@ -10,6 +12,19 @@ use crate::{
 
 fn count_digits(n: usize) -> usize {
     (usize::checked_ilog10(n).unwrap_or(0) + 1) as usize
+}
+
+/// 诊断标记图标（severity 名 → 图标字符；helix-term 从 JS set_diagnostic_icons 注入，
+/// 空表 = 默认 ●）。helix-view 不依赖 helix-js，用注入模式解耦。
+static DIAGNOSTIC_ICONS: std::sync::OnceLock<Mutex<HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+/// 设置诊断图标集（helix-term 在 JS 侧变化时同步）
+pub fn set_diagnostic_icons(icons: HashMap<String, String>) {
+    *DIAGNOSTIC_ICONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("diag icons lock") = icons;
 }
 
 pub type GutterFn<'doc> = Box<dyn FnMut(usize, bool, bool, &mut String) -> Option<Style> + 'doc>;
@@ -77,13 +92,21 @@ pub fn diagnostic<'doc>(
                         })
                 });
             diagnostics_on_line.max_by_key(|d| d.severity).map(|d| {
-                write!(out, "●").ok();
-                match d.severity {
-                    Some(Severity::Error) => error,
-                    Some(Severity::Warning) | None => warning,
-                    Some(Severity::Info) => info,
-                    Some(Severity::Hint) => hint,
-                }
+                let (key, style) = match d.severity {
+                    Some(Severity::Error) => ("error", error),
+                    Some(Severity::Warning) | None => ("warning", warning),
+                    Some(Severity::Info) => ("info", info),
+                    Some(Severity::Hint) => ("hint", hint),
+                };
+                let icon = DIAGNOSTIC_ICONS
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .expect("diag icons lock")
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| "●".to_string());
+                write!(out, "{icon}").ok();
+                style
             })
         },
     )
