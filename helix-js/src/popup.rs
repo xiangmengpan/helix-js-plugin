@@ -852,12 +852,21 @@ pub fn close_last_panel() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::null());
+    // 第二参 { replace: true }：整个状态栏由 JS 控制（left/right 分栏）
+    let mut replace = false;
+    if let Some(opts) = args.get(1).and_then(|o| o.as_object()) {
+        if let Ok(v) = opts.get(JsString::from("replace"), context) {
+            replace = v.try_js_into::<bool>(context).unwrap_or(false);
+        }
+    }
     if arg.is_null_or_undefined() {
         with_statusline_hook(|h| *h = None);
+        crate::state::set_statusline_replace(false);
     } else if arg.as_callable().is_some() {
         with_statusline_hook(|h| *h = Some(arg));
+        crate::state::set_statusline_replace(replace);
     } else {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.set_statusline: expected a function or null",
@@ -897,7 +906,7 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
         if value.is_null_or_undefined() {
             return None;
         }
-        // 数组 → 多段（每项：字符串 或 { text, style? }）
+        // 数组 → 多段（每项：字符串 或 { text, style?, right? }）
         if let Some(obj) = value.as_object() {
             if let Ok(arr) = boa_engine::object::builtins::JsArray::from_object(obj.clone()) {
                 let mut parts = Vec::new();
@@ -905,7 +914,7 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 for i in 0..len {
                     if let Ok(item) = arr.get(i, engine) {
                         if let Ok(text) = item.try_js_into::<String>(engine) {
-                            parts.push(StatuslinePart { text, style: None });
+                            parts.push(StatuslinePart { text, style: None, right: false });
                         } else if let Some(seg) = item.as_object() {
                             if let Ok(text) = seg
                                 .get(JsString::from("text"), engine)
@@ -915,7 +924,12 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                                     .get(JsString::from("style"), engine)
                                     .ok()
                                     .and_then(|v| v.try_js_into::<String>(engine).ok());
-                                parts.push(StatuslinePart { text, style });
+                                let right = seg
+                                    .get(JsString::from("right"), engine)
+                                    .ok()
+                                    .and_then(|v| v.try_js_into::<bool>(engine).ok())
+                                    .unwrap_or(false);
+                                parts.push(StatuslinePart { text, style, right });
                             }
                         }
                     }
@@ -925,7 +939,7 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
         }
         // 字符串 → 单段
         match value.try_js_into::<String>(engine) {
-            Ok(text) => Some(vec![StatuslinePart { text, style: None }]),
+            Ok(text) => Some(vec![StatuslinePart { text, style: None, right: false }]),
             Err(_) => None,
         }
     })

@@ -155,6 +155,19 @@ pub(crate) fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T)
     })
 }
 
+thread_local! {
+    // 状态栏替换模式（set_statusline(fn, { replace: true })；false = 追加右侧）。随线程
+    static STATUSLINE_REPLACE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn set_statusline_replace(v: bool) {
+    STATUSLINE_REPLACE.with(|r| r.set(v));
+}
+
+pub fn statusline_replaces() -> bool {
+    STATUSLINE_REPLACE.with(|r| r.get())
+}
+
 /// 访问 NODE_HANDLERS：同上（内容泄漏）
 pub(crate) fn with_node_handlers<T>(f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T) -> T {
     NODE_HANDLERS.with(|h| {

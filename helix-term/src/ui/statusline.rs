@@ -59,9 +59,79 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
 
     surface.set_style(viewport.with_height(1), base_style);
 
-    // Left side of the status line.
-
     let config = context.editor.config();
+    let js_ctx = helix_js::StatuslineCtx {
+        path: context.doc.path().map(|p| p.to_string_lossy().into_owned()),
+        mode: match context.editor.mode() {
+            Mode::Normal => "normal".to_string(),
+            Mode::Insert => "insert".to_string(),
+            Mode::Select => "select".to_string(),
+        },
+        cursor: {
+            let pos = context
+                .doc
+                .selection(context.view.id)
+                .primary()
+                .cursor(context.doc.text().slice(..));
+            (
+                context.doc.text().char_to_line(pos),
+                pos - context.doc.text().line_to_char(context.doc.text().char_to_line(pos)),
+            )
+        },
+        total_lines: context.doc.text().len_lines(),
+        diagnostics_error: context
+            .doc
+            .diagnostics()
+            .iter()
+            .filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Error))
+            .count(),
+        diagnostics_warning: context
+            .doc
+            .diagnostics()
+            .iter()
+            .filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Warning))
+            .count(),
+    };
+    let js_parts = helix_js::statusline_parts(&js_ctx);
+    let js_replace = helix_js::statusline_replaces();
+
+    if js_replace {
+        // 全替换模式：整个状态栏由 JS 控制（left/right 分栏，right 段右对齐）
+        if let Some(parts) = js_parts {
+            for part in parts {
+                let span_style = part
+                    .style
+                    .as_deref()
+                    .map(|s| context.editor.theme.get(s))
+                    .unwrap_or_default();
+                let mut span: Span = part.text.into();
+                span.style = span_style;
+                if part.right {
+                    append(&mut context.parts.right, span, base_style);
+                } else {
+                    append(&mut context.parts.left, span, base_style);
+                }
+            }
+        }
+        surface.set_spans(
+            viewport.x,
+            viewport.y,
+            &context.parts.left,
+            context.parts.left.width() as u16,
+        );
+        surface.set_spans(
+            viewport.x
+                + viewport
+                    .width
+                    .saturating_sub(context.parts.right.width() as u16),
+            viewport.y,
+            &context.parts.right,
+            context.parts.right.width() as u16,
+        );
+        return;
+    }
+
+    // Left side of the status line.
 
     for element_id in &config.statusline.left {
         let render = get_render_function(*element_id);
@@ -86,29 +156,8 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         })
     }
 
-    // JS 插件状态栏钩子：追加到 right parts（整体保持右对齐，插件文本位于最右侧）
-    if let Some(parts) = helix_js::statusline_parts(&helix_js::StatuslineCtx {
-        path: context.doc.path().map(|p| p.to_string_lossy().into_owned()),
-        mode: match context.editor.mode() {
-            Mode::Normal => "normal".to_string(),
-            Mode::Insert => "insert".to_string(),
-            Mode::Select => "select".to_string(),
-        },
-        cursor: {
-            let pos = context
-                .doc
-                .selection(context.view.id)
-                .primary()
-                .cursor(context.doc.text().slice(..));
-            (
-                context.doc.text().char_to_line(pos),
-                pos - context.doc.text().line_to_char(context.doc.text().char_to_line(pos)),
-            )
-        },
-        total_lines: context.doc.text().len_lines(),
-        diagnostics_error: context.doc.diagnostics().iter().filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Error)).count(),
-        diagnostics_warning: context.doc.diagnostics().iter().filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Warning)).count(),
-    }) {
+    // JS 插件状态栏钩子（追加模式）：追加到 right parts（右对齐，插件文本位于最右侧）
+    if let Some(parts) = js_parts {
         // 分段渲染：每段可带独立 theme scope（mode 色块 / error / warning / 弱化等）
         for part in parts {
             let span_style = part

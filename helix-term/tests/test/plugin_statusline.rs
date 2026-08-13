@@ -1,6 +1,17 @@
-use super::*;
+use std::time::Duration;
 
+use helix_term::application::Application;
+use helix_term::job::Jobs;
 use helix_view::current_ref;
+use helix_view::input::parse_macro;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
+#[cfg(windows)]
+use crossterm::event::{Event, KeyEvent};
+#[cfg(not(windows))]
+use termina::event::{Event, KeyEvent};
+
+use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_renders() -> anyhow::Result<()> {
@@ -47,5 +58,75 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+/// replace 模式：整个状态栏由 JS 控制（默认组件不渲染），左右分栏（right 段右对齐）
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("sl.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slr.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: " L ", style: "ui.statusline.insert" },
+            "MID",
+            { text: " R ", style: "error", right: true },
+        ], { replace: true });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    // 渲染状态栏行（最后一行）
+    let area = helix_view::graphics::Rect::new(0, 0, 80, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let mut jobs = Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+    };
+    // 渲染状态栏（RenderContext 构造）
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+        );
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+    let row0: String = buf
+        .content
+        .iter()
+        .take(80)
+        .map(|c| c.symbol.as_str())
+        .collect();
+    // replace 模式：左对齐 " L MID"，右对齐 " R " 靠右
+    assert!(row0.starts_with(" L MID"), "left 区从左侧渲染: {row0:?}");
+    assert!(row0.contains(" R "), "right 区右对齐存在: {row0:?}");
+    assert!(!row0.contains("sl.txt"), "replace 模式不显示默认文件名组件: {row0:?}");
+
+    // 退出并关闭
+    for key_event in parse_macro("<esc>:q!<ret>")? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    let event_loop = app.event_loop(&mut rx_stream);
+    tokio::time::timeout(Duration::from_millis(500), event_loop).await?;
+    let errs = app.close().await;
+    assert!(errs.is_empty(), "close errors: {errs:?}");
     Ok(())
 }

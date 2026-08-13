@@ -750,7 +750,7 @@ mod tests {
         load_script(r#"helix.set_statusline((ctx) => ctx.mode + ":" + ctx.cursor.row);"#).unwrap();
         assert_eq!(
             statusline_parts(&ctx),
-            Some(vec![StatuslinePart { text: "insert:3".into(), style: None }])
+            Some(vec![StatuslinePart { text: "insert:3".into(), style: None, right: false }])
         );
 
         // 数组 → 多段（字符串项 / {text, style} 项混用；style 透传）
@@ -759,7 +759,7 @@ mod tests {
         helix.set_statusline((ctx) => [
             { text: " N ", style: "ui.statusline.normal" },
             ctx.mode + ":" + ctx.cursor.row,
-            { text: String(ctx.diagnostics_error), style: "error" },
+            { text: String(ctx.diagnostics_error), style: "error", right: true },
         ]);
         "#,
         )
@@ -767,9 +767,9 @@ mod tests {
         assert_eq!(
             statusline_parts(&ctx),
             Some(vec![
-                StatuslinePart { text: " N ".into(), style: Some("ui.statusline.normal".into()) },
-                StatuslinePart { text: "insert:3".into(), style: None },
-                StatuslinePart { text: "2".into(), style: Some("error".into()) },
+                StatuslinePart { text: " N ".into(), style: Some("ui.statusline.normal".into()), right: false },
+                StatuslinePart { text: "insert:3".into(), style: None, right: false },
+                StatuslinePart { text: "2".into(), style: Some("error".into()), right: true },
             ])
         );
 

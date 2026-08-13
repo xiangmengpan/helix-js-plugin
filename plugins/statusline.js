@@ -78,7 +78,7 @@ function render(ctx) {
 // ============================ 注册 ============================
 
 if (typeof helix !== "undefined") {
-  helix.set_statusline(render);
+  helix.set_statusline(render, { replace: true });
   helix.on("buffer-open", (doc) => { refreshGit(doc && doc.path); });
 }
 
