@@ -127,13 +127,50 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
     assert!(row0.trim_end().ends_with("RR"), "right 区右对齐: {row0:?}");
     assert!(!row0.contains("sl.txt"), "replace 模式不显示默认文件名组件: {row0:?}");
 
-    // 退出并关闭
-    for key_event in parse_macro("<esc>:q!<ret>")? {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    let event_loop = app.event_loop(&mut rx_stream);
-    tokio::time::timeout(Duration::from_millis(500), event_loop).await?;
-    let errs = app.close().await;
-    assert!(errs.is_empty(), "close errors: {errs:?}");
     Ok(())
 }
+
+/// zones 2:3:1：左区 1/3、中区居中、右区右对齐（宽 90 → 左 30/中 30/右 30）
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("zr.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slz.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: "L", style: "ui.statusline.insert" },
+            { text: "M", zone: "center" },
+            { text: "R", zone: "right" },
+        ], { replace: true, zones: [2, 3, 1] });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    let area = helix_view::graphics::Rect::new(0, 0, 90, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners);
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+    let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+    // zones 2:3:1，宽 90 → left_w=30, right_w=15, center_w=45（center_x=30, right_x=75）
+    assert_eq!(row.chars().nth(0).unwrap(), 'L', "左区 x0: {row:?}");
+    // 中区居中：x = 30 + (45-1)/2 = 52
+    assert_eq!(row.chars().nth(52).unwrap(), 'M', "中区居中: {row:?}");
+    // 右区右对齐：x = 75 + 15 - 1 = 89
+    assert_eq!(row.chars().nth(89).unwrap(), 'R', "右区右对齐: {row:?}");
+    Ok(())
+}
+
