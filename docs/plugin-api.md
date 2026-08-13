@@ -467,13 +467,13 @@ helix.set_statusline((ctx) => `${ctx.cursor.row}:${ctx.cursor.col}`);           
 helix.set_statusline((ctx) => [
   { text: " N ", style: "ui.statusline.normal" },   // mode 色块（分段着色）
   ctx.path ? ctx.path.split("/").pop() : "",
-  { text: String(ctx.diagnostics_error), style: "error", right: true }, // 右对齐
+  { text: String(ctx.diagnostics_error), style: "error", zone: "right" }, // 右区
 ]);
 ```
 
 - `ctx = { path, mode, cursor: { row, col }, total_lines, diagnostics_error, diagnostics_warning }`（轻量快照，不含全文）。
 - 返回 `null`（不显示）/ `string`（单段）/ 数组 `[ "str" | { text, style?, right? } ]`（多段，每段可带 theme scope 着色；`right: true` 的段右对齐）。
-- **replace 模式**：`helix.set_statusline(fn, { replace: true })`——整个状态栏由 JS 控制（默认组件不渲染），`right` 段靠右、其余靠左分栏。默认（无第二参）仍是追加到右侧。
+- **replace 模式**：`helix.set_statusline(fn, { replace: true, zones: [左, 中, 右] })`——整个状态栏由 JS 控制（默认组件不渲染），按 `zones` 比例（默认 `[1,1,1]`）分左/中/右三区：左区靠左、中区居中、右区右对齐；段间自动 1 空格 gap。分段用 `zone: "left" | "center" | "right"`（默认 left）。默认（无第二参）仍是追加到右侧。
 - `set_statusline(null)` 清除（同时退出 replace 模式）；非法参数报错。
 - ⚠️ 每帧调用——不要在钩子里跑 `helix.run`（同步阻塞）或重逻辑；建议配合 `plugins/icons.js` 取图标。
 

@@ -72,10 +72,10 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
         &plugin_path,
         r#"
         helix.set_statusline((ctx) => [
-            { text: " L ", style: "ui.statusline.insert" },
-            "MID",
-            { text: " R ", style: "error", right: true },
-        ], { replace: true });
+            { text: "LL", style: "ui.statusline.insert" },
+            { text: "CC", zone: "center" },
+            { text: "RR", zone: "right" },
+        ], { replace: true, zones: [1, 1, 1] });
         "#,
     )?;
 
@@ -115,9 +115,16 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
         .take(80)
         .map(|c| c.symbol.as_str())
         .collect();
-    // replace 模式：左对齐 " L MID"，右对齐 " R " 靠右
-    assert!(row0.starts_with(" L MID"), "left 区从左侧渲染: {row0:?}");
-    assert!(row0.contains(" R "), "right 区右对齐存在: {row0:?}");
+    // replace 模式 + zones 1:1:1（宽 80 → 左 26 / 中 26 / 右 26）：
+    // 左区 "LL" 在 x0，中区 "CC" 在 x≈27（居中），右区 "RR" 在右侧
+    assert!(row0.starts_with("LL"), "left 区从左渲染: {row0:?}");
+    // 左区段间 gap：left 区右边界（x=26）应为空格
+    assert_eq!(row0.chars().nth(2).unwrap(), ' ', "left 区段尾 gap: {row0:?}");
+    // 中区居中：left_w=26, right_w=26, center_w=80-52=28，内容 "CC" 居中 → x=26+(28-2)/2=39
+    assert_eq!(row0.chars().nth(39).unwrap(), 'C', "center 区居中: {row0:?}");
+    assert_eq!(row0.chars().nth(40).unwrap(), 'C', "center 区第二字符: {row0:?}");
+    // 右区右对齐（末尾 "RR"）
+    assert!(row0.trim_end().ends_with("RR"), "right 区右对齐: {row0:?}");
     assert!(!row0.contains("sl.txt"), "replace 模式不显示默认文件名组件: {row0:?}");
 
     // 退出并关闭

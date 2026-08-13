@@ -211,12 +211,12 @@ pub struct StatuslineCtx {
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。
-/// right=true 的段右对齐（replace 模式下分栏）；false/默认靠左。
+/// zone 决定 replace 模式下的区域："left"（默认）| "center" | "right"（右对齐）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatuslinePart {
     pub text: String,
     pub style: Option<String>,
-    pub right: bool,
+    pub zone: Option<String>,
 }
 
 /// 一次文档编辑请求（坐标基于命令开始时的原始快照，0-based 行列）

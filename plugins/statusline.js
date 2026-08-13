@@ -78,7 +78,7 @@ function render(ctx) {
 // ============================ 注册 ============================
 
 if (typeof helix !== "undefined") {
-  helix.set_statusline(render, { replace: true });
+  helix.set_statusline(render, { replace: true, zones: [2, 3, 1] });
   helix.on("buffer-open", (doc) => { refreshGit(doc && doc.path); });
 }
 

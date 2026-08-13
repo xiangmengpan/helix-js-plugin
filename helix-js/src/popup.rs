@@ -860,6 +860,32 @@ pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], context: &mut
         if let Ok(v) = opts.get(JsString::from("replace"), context) {
             replace = v.try_js_into::<bool>(context).unwrap_or(false);
         }
+        // zones: [左, 中, 右] 区域比例（replace 模式；缺省 1:1:1）
+        if let Ok(z) = opts.get(JsString::from("zones"), context) {
+            if let Some(arr) = z
+                .as_object()
+                .and_then(|o| boa_engine::object::builtins::JsArray::from_object(o.clone()).ok())
+            {
+                let mut zones = [1u16, 1, 1];
+                let mut ok = true;
+                for (i, slot) in zones.iter_mut().enumerate() {
+                    if let Ok(item) = arr.get(i as u64, context) {
+                        match item.try_js_into::<f64>(context) {
+                            Ok(n) if n >= 0.0 && n <= u16::MAX as f64 && n.fract() == 0.0 => {
+                                *slot = n as u16;
+                            }
+                            _ => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if ok {
+                    crate::state::set_statusline_zones(zones);
+                }
+            }
+        }
     }
     if arg.is_null_or_undefined() {
         with_statusline_hook(|h| *h = None);
@@ -914,7 +940,7 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 for i in 0..len {
                     if let Ok(item) = arr.get(i, engine) {
                         if let Ok(text) = item.try_js_into::<String>(engine) {
-                            parts.push(StatuslinePart { text, style: None, right: false });
+                            parts.push(StatuslinePart { text, style: None, zone: None });
                         } else if let Some(seg) = item.as_object() {
                             if let Ok(text) = seg
                                 .get(JsString::from("text"), engine)
@@ -924,12 +950,23 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                                     .get(JsString::from("style"), engine)
                                     .ok()
                                     .and_then(|v| v.try_js_into::<String>(engine).ok());
+                                let zone = seg
+                                    .get(JsString::from("zone"), engine)
+                                    .ok()
+                                    .and_then(|v| v.try_js_into::<String>(engine).ok());
+                                // 兼容旧字段 right:true → zone "right"
                                 let right = seg
                                     .get(JsString::from("right"), engine)
                                     .ok()
                                     .and_then(|v| v.try_js_into::<bool>(engine).ok())
                                     .unwrap_or(false);
-                                parts.push(StatuslinePart { text, style, right });
+                                let zone = match zone.as_deref() {
+                                    Some("center") => Some("center".to_string()),
+                                    Some("right") => Some("right".to_string()),
+                                    _ if right => Some("right".to_string()),
+                                    _ => None,
+                                };
+                                parts.push(StatuslinePart { text, style, zone });
                             }
                         }
                     }
@@ -939,7 +976,7 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
         }
         // 字符串 → 单段
         match value.try_js_into::<String>(engine) {
-            Ok(text) => Some(vec![StatuslinePart { text, style: None, right: false }]),
+            Ok(text) => Some(vec![StatuslinePart { text, style: None, zone: None }]),
             Err(_) => None,
         }
     })

@@ -96,7 +96,17 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     let js_replace = helix_js::statusline_replaces();
 
     if js_replace {
-        // 全替换模式：整个状态栏由 JS 控制（left/right 分栏，right 段右对齐）
+        // 全替换模式：按 zones 比例分左/中/右三区，每区段间 1 空格 gap
+        let [zl, zc, zr] = helix_js::statusline_zones();
+        let sum = (zl + zc + zr).max(1) as u32;
+        let w = viewport.width as u32;
+        let left_w = (w * zl as u32 / sum) as u16;
+        let right_w = (w * zr as u32 / sum) as u16;
+        let center_w = viewport.width.saturating_sub(left_w).saturating_sub(right_w);
+        let center_x = left_w;
+        let right_x = left_w.saturating_add(center_w);
+
+        let mut spans: [Spans<'_>; 3] = Default::default();
         if let Some(parts) = js_parts {
             for part in parts {
                 let span_style = part
@@ -106,27 +116,30 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
                     .unwrap_or_default();
                 let mut span: Span = part.text.into();
                 span.style = span_style;
-                if part.right {
-                    append(&mut context.parts.right, span, base_style);
-                } else {
-                    append(&mut context.parts.left, span, base_style);
+                let idx = match part.zone.as_deref() {
+                    Some("center") => 1,
+                    Some("right") => 2,
+                    _ => 0,
+                };
+                // 段间 gap：除首段外前插 1 空格（无样式）
+                if !spans[idx].0.is_empty() {
+                    append(&mut spans[idx], Span::from(" "), base_style);
                 }
+                append(&mut spans[idx], span, base_style);
             }
         }
-        surface.set_spans(
-            viewport.x,
-            viewport.y,
-            &context.parts.left,
-            context.parts.left.width() as u16,
-        );
+        surface.set_spans(viewport.x, viewport.y, &spans[0], left_w);
+        // center 区：居中（内容宽 < 区域宽时居中）
+        let center_offset = center_w.saturating_sub(spans[1].width() as u16) / 2;
+        surface.set_spans(viewport.x + center_x + center_offset, viewport.y, &spans[1], center_w);
+        // right 区：右对齐（起点 = right_x + right_w - 内容宽）
         surface.set_spans(
             viewport.x
-                + viewport
-                    .width
-                    .saturating_sub(context.parts.right.width() as u16),
+                + right_x
+                + right_w.saturating_sub(spans[2].width() as u16),
             viewport.y,
-            &context.parts.right,
-            context.parts.right.width() as u16,
+            &spans[2],
+            right_w,
         );
         return;
     }

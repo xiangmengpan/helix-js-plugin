@@ -158,6 +158,8 @@ pub(crate) fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T)
 thread_local! {
     // 状态栏替换模式（set_statusline(fn, { replace: true })；false = 追加右侧）。随线程
     static STATUSLINE_REPLACE: Cell<bool> = const { Cell::new(false) };
+    // replace 模式的左:中:右区域比例（默认 1:1:1）
+    static STATUSLINE_ZONES: RefCell<[u16; 3]> = const { RefCell::new([1, 1, 1]) };
 }
 
 pub(crate) fn set_statusline_replace(v: bool) {
@@ -166,6 +168,16 @@ pub(crate) fn set_statusline_replace(v: bool) {
 
 pub fn statusline_replaces() -> bool {
     STATUSLINE_REPLACE.with(|r| r.get())
+}
+
+/// 设置 replace 模式区域比例 [左, 中, 右]（0 允许：该区不分配宽度）
+pub(crate) fn set_statusline_zones(zones: [u16; 3]) {
+    STATUSLINE_ZONES.with(|z| *z.borrow_mut() = zones);
+}
+
+/// replace 模式区域比例 [左, 中, 右]
+pub fn statusline_zones() -> [u16; 3] {
+    STATUSLINE_ZONES.with(|z| *z.borrow())
 }
 
 /// 访问 NODE_HANDLERS：同上（内容泄漏）
