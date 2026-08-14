@@ -558,25 +558,21 @@ impl Compositor {
         }
     }
 
-    /// 窗口模式:方向聚焦(h/j/k/l)
+    /// 窗口模式:方向聚焦(h/j/k/l)。委托 focus_leaf_dir(内部 neighbor_leaf+focus,含缓存同步)
     fn window_mode_focus(&mut self, c: char) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
-        if let Some(nb) = self.main_tree.neighbor_leaf(a, dir, side) {
-            self.main_tree.focus(nb);
-        }
+        let _ = self.focus_leaf_dir(a, dir, side);
     }
 
-    /// 窗口模式:与方向邻居交换内容(H/J/K/L)
+    /// 窗口模式:与方向邻居交换内容(H/J/K/L)。委托 swap_leaf_dir(含缓存同步)
     fn window_mode_swap(&mut self, c: char) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
-        if let Some(nb) = self.main_tree.neighbor_leaf(a, dir, side) {
-            let _ = self.main_tree.swap(a, nb);
-        }
+        let _ = self.swap_leaf_dir(a, dir, side);
     }
 
-    /// 窗口模式:方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)
+    /// 窗口模式:方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)。委托 resize_leaf_dir(含缓存同步)
     fn window_mode_resize(&mut self, c: char) {
         let (dir, delta) = match c {
             'h' => (crate::ui::layout::SplitDir::H, -0.05),
@@ -585,8 +581,7 @@ impl Compositor {
             'k' => (crate::ui::layout::SplitDir::V, 0.05),
             _ => unreachable!(),
         };
-        self.main_tree
-            .resize_leaf_dir(self.main_tree.active(), dir, delta);
+        let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta);
     }
 
     /// 窗口模式:关闭活动叶子(编辑器叶子 id=0 不可关)
@@ -597,14 +592,15 @@ impl Compositor {
         }
     }
 
-    /// 窗口模式:最小化/还原(z)。已最小化 → 还原;否则最小化活动叶子(编辑器除外)
+    /// 窗口模式:最小化/还原(z)。已最小化 → 还原;否则最小化活动叶子(编辑器除外)。
+    /// 委托 minimize_leaf(含缓存同步)
     fn window_mode_minimize(&mut self) {
         if let Some(m) = self.main_tree.minimized() {
-            self.main_tree.set_minimized(m, false);
+            self.minimize_leaf(m, false);
         } else {
             let a = self.main_tree.active();
             if a != 0 {
-                self.main_tree.set_minimized(a, true);
+                self.minimize_leaf(a, true);
             }
         }
     }
