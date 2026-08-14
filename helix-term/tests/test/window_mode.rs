@@ -166,6 +166,23 @@ async fn window_mode_not_entered_in_insert() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 弹窗/菜单打开时自动退出窗口模式(否则弹窗按键被模式键位吞掉)
+#[tokio::test(flavor = "multi_thread")]
+async fn window_mode_exits_on_popup_open() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, "<C-w>").await?;
+    assert!(app.compositor.window_mode_active(), "C-w 进模式");
+    // 打开一个弹窗层(仿 filetree prompt:push popup 类 layer)
+    let popup = helix_term::ui::Popup::new(
+        "plugin-popup",
+        helix_term::ui::PluginPopup::new(99, Some((10, 5))),
+    )
+    .position(Some(helix_core::Position::new(0, 0)));
+    app.compositor.push(Box::new(popup));
+    assert!(!app.compositor.window_mode_active(), "弹窗打开自动退模式");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;

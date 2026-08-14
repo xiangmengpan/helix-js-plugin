@@ -123,6 +123,10 @@ impl Compositor {
 
     /// Add a layer to be rendered in front of all existing layers.
     pub fn push(&mut self, mut layer: Box<dyn Component>) {
+        // 窗口模式下打开弹窗/菜单:自动退模式(否则弹窗按键被模式键位吞掉)
+        if self.window_mode_active() && layer.id().is_some() {
+            self.window_mode = WindowMode::Inactive;
+        }
         // immediately clear last_picker field to avoid excessive memory
         // consumption for picker with many items
         if layer.id() == Some(picker::ID) {
