@@ -659,18 +659,12 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// which-key 插件：C-w 布局组（编辑器 normal）导航叶子焦点，infobox 组提示随 keymap 自动生效。
+/// 窗口模式全局性：终端焦点下 C-w 直接进模式并导航邻居（无需 C-\ 回编辑器）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("wk.txt");
     std::fs::write(&file, "x\n")?;
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let whichkey_plugin = format!("{home}/.config/helix/plugins/features/which-key.js");
-    if !std::path::Path::new(&whichkey_plugin).exists() {
-        return Ok(());
-    }
-    let layout_plugin = format!("{home}/.config/helix/plugins/lib/layout.js");
     let opener = dir.path().join("wk_open.js");
     std::fs::write(
         &opener,
@@ -680,20 +674,13 @@ async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
         });
         "#,
     )?;
-
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(&format!(
-        ":plugin-load {}<ret>:plugin-load {}<ret>:plugin-load {}<ret>:wk-open<ret>",
-        layout_plugin,
-        whichkey_plugin,
-        opener.display()
-    ))? {
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>:wk-open<ret>", opener.display()))? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
-
     let term_type = std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>();
     for _ in 0..20 {
         if app.compositor.has_component(term_type) {
@@ -702,17 +689,7 @@ async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(app.compositor.has_component(term_type), "终端应就位");
-
-    // 回编辑器（C-\\ ×2），然后 C-w l 聚焦右邻居（终端）、C-w h 回编辑器
-    let ctrl_bs = Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
-        code: helix_view::input::KeyCode::Char('\\'),
-        modifiers: helix_view::input::KeyModifiers::CONTROL,
-    }));
-    tx.send(Ok(ctrl_bs.clone()))?;
-    tx.send(Ok(ctrl_bs.clone()))?;
-    app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.compositor.layout_tree().active(), 0, "回编辑器");
-
+    // 活动叶子=终端(1)；终端焦点直接 C-w l/h——不吞键，进模式并导航
     let cw = |c: char| {
         Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
             code: helix_view::input::KeyCode::Char(c),
@@ -721,24 +698,16 @@ async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
     };
     tx.send(Ok(cw('w')))?;
     tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
-        code: helix_view::input::KeyCode::Char('l'),
-        modifiers: helix_view::input::KeyModifiers::NONE,
-    }))))?;
-    app.event_loop_until_idle(&mut rx_stream).await;
-    assert_ne!(app.compositor.layout_tree().active(), 0, "C-w l 应聚焦右邻居（终端）");
-    // 终端焦点 C-w 被吞（删词，设计如此）——回编辑器后再 C-w h
-    tx.send(Ok(ctrl_bs.clone()))?;
-    tx.send(Ok(ctrl_bs.clone()))?;
-    app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.compositor.layout_tree().active(), 0, "回编辑器");
-    tx.send(Ok(cw('w')))?;
-    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
         code: helix_view::input::KeyCode::Char('h'),
         modifiers: helix_view::input::KeyModifiers::NONE,
     }))))?;
+    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
+        code: helix_view::input::KeyCode::Esc,
+        modifiers: helix_view::input::KeyModifiers::NONE,
+    }))))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.compositor.layout_tree().active(), 0, "C-w h 在编辑器焦点可导航");
-
+    assert_eq!(app.compositor.layout_tree().active(), 0, "终端焦点 C-w h 直接聚焦左邻居(编辑器)");
+    assert!(!app.compositor.window_mode_active(), "Esc 退出窗口模式");
     Ok(())
 }
 
