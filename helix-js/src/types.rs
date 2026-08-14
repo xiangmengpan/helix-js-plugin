@@ -81,6 +81,8 @@ pub enum UiRequest {
     SwapLeaves { id1: u64, id2: u64 },
     /// 最小化/恢复叶子（渲染为底部标题横条，不占布局）
     MinimizeLeaf { id: u64, minimized: bool },
+    /// 设置/取消叶子 fixed 标记（fixed 叶子不被 swap/resize/close/minimize/equalize）
+    LayoutFix { id: u64, fixed: bool },
     FocusLeaf { id: u64 },
     /// 把布局树序列化结果缓存到 helix-js（get_layout 读取）
     CacheLayout(String),

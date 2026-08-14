@@ -98,6 +98,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir), JsString::from("layout_focus"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir), JsString::from("layout_swap_dir"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_equalize_leaf), JsString::from("layout_equalize"), 1)
+                .function(NativeFunction::from_fn_ptr(layout::js_layout_fix), JsString::from("layout_fix"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf), JsString::from("focus"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_get_layout), JsString::from("get_layout"), 0)
                 .function(NativeFunction::from_fn_ptr(layout::js_restore_layout), JsString::from("restore_layout"), 1)

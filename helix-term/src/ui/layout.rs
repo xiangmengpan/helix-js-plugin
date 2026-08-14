@@ -38,6 +38,8 @@ pub struct LayoutTree {
     float: Option<u64>,
     /// 最小化叶子 id（不占布局，渲染为底部一条标题横条；单例）
     minimized: Option<u64>,
+    /// 固定叶子 id 集合（fixed：不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
+    fixed: std::collections::HashSet<u64>,
 }
 
 /// 叶子布局结果：每个叶子的 id + Rect
@@ -121,11 +123,26 @@ impl Default for LayoutTree {
             zoomed: None,
             float: None,
             minimized: None,
+            fixed: Default::default(),
         }
     }
 }
 
 impl LayoutTree {
+    /// 设置/取消叶子的 fixed 标记（fixed 叶子不被 swap/resize/remove/minimize/equalize 操作）
+    pub fn set_fixed(&mut self, id: u64, fixed: bool) {
+        if fixed {
+            self.fixed.insert(id);
+        } else {
+            self.fixed.remove(&id);
+        }
+    }
+
+    /// 叶子是否 fixed
+    pub fn is_fixed(&self, id: u64) -> bool {
+        self.fixed.contains(&id)
+    }
+
     /// 浮动叶子 id
     pub fn floating(&self) -> Option<u64> {
         self.float
@@ -256,10 +273,11 @@ impl LayoutTree {
         Some(new_id)
     }
 
-    /// 移除叶子：其父 Split 收缩为兄弟子树；组件随之销毁（Drop）
-    pub fn remove(&mut self, id: u64) {
-        if id == 0 {
-            return; // 编辑器叶子不可移除
+    /// 移除叶子：其父 Split 收缩为兄弟子树；组件随之销毁（Drop）。
+    /// fixed 叶子 / 编辑器叶子(id=0) / 不存在的 id → false，不操作。
+    pub fn remove(&mut self, id: u64) -> bool {
+        if id == 0 || self.fixed.contains(&id) || !self.components.contains_key(&id) {
+            return false; // 编辑器叶子不可移除；fixed 叶子免疫
         }
         self.components.remove(&id);
         prune(&mut self.root, id);
@@ -276,6 +294,7 @@ impl LayoutTree {
         if self.minimized == Some(id) {
             self.minimized = None;
         }
+        true
     }
 
     /// 缩放：叶子占满全区（其他叶子隐藏）；再次调用取消
@@ -306,6 +325,9 @@ impl LayoutTree {
     /// 按方向调整叶子份额：dir 必须匹配其直接父 Split 的方向（H=左右 / V=上下）
     /// 才生效；delta>0 增大该叶子、<0 减小（clamp 到 [0.05, 0.95]）。返回是否调整。
     pub fn resize_leaf_dir(&mut self, id: u64, dir: SplitDir, delta: f32) -> bool {
+        if self.fixed.contains(&id) {
+            return false; // fixed 叶子不可 resize
+        }
         fn adjust(node: &mut LayoutNode, id: u64, dir: SplitDir, delta: f32) -> bool {
             match node {
                 LayoutNode::Leaf { .. } => false,
@@ -335,8 +357,13 @@ impl LayoutTree {
     /// 交换两个叶子的组件引用：树结构/比例/id/焦点全不动，只换内容。
     /// 任一 id 不存在或相同 → false。
     pub fn swap(&mut self, id1: u64, id2: u64) -> bool {
-        if id1 == id2 || !self.components.contains_key(&id1) || !self.components.contains_key(&id2) {
-            return false;
+        if id1 == id2
+            || !self.components.contains_key(&id1)
+            || !self.components.contains_key(&id2)
+            || self.fixed.contains(&id1)
+            || self.fixed.contains(&id2)
+        {
+            return false; // fixed 叶子不可 swap
         }
         let c1 = self.components.remove(&id1).unwrap();
         let c2 = self.components.remove(&id2).unwrap();
@@ -407,6 +434,9 @@ impl LayoutTree {
 
     /// 目标叶子所在（最内层）Split 恢复 50/50。
     pub fn equalize(&mut self, id: u64) {
+        if self.fixed.contains(&id) {
+            return; // fixed 叶子所在 Split 不可均衡
+        }
         fn eq(node: &mut LayoutNode, id: u64) {
             match node {
                 LayoutNode::Leaf { .. } => {}
@@ -431,8 +461,8 @@ impl LayoutTree {
     /// 最小化叶子：不占布局空间，渲染为底部一条标题横条（单例：再调用切换到新叶子）。
     /// minimized=false 恢复。最小化时若该叶子正被聚焦/缩放，焦点回编辑器。
     pub fn set_minimized(&mut self, id: u64, minimized: bool) {
-        if !self.components.contains_key(&id) {
-            return;
+        if !self.components.contains_key(&id) || self.fixed.contains(&id) {
+            return; // fixed 叶子不可最小化
         }
         if minimized {
             self.minimized = Some(id);
@@ -515,25 +545,44 @@ impl LayoutTree {
     }
 
     pub fn dump(&self) -> LayoutDump {
-        fn dump_node(node: &LayoutNode) -> serde_json::Value {
+        let fixed = &self.fixed;
+        fn dump_node(node: &LayoutNode, fixed: &std::collections::HashSet<u64>) -> serde_json::Value {
             match node {
                 LayoutNode::Leaf { id } => {
-                    serde_json::json!({ "type": "leaf", "id": id })
+                    serde_json::json!({ "type": "leaf", "id": id, "fixed": fixed.contains(id) })
                 }
                 LayoutNode::Split { dir, ratio, first, second } => serde_json::json!({
                     "type": "split",
                     "dir": match dir { SplitDir::H => "h", SplitDir::V => "v" },
                     "ratio": ratio,
-                    "first": dump_node(first),
-                    "second": dump_node(second),
+                    "first": dump_node(first, fixed),
+                    "second": dump_node(second, fixed),
                 }),
             }
         }
+        fn collect_leafs(
+            node: &LayoutNode,
+            fixed: &std::collections::HashSet<u64>,
+            out: &mut Vec<LeafInfo>,
+        ) {
+            match node {
+                LayoutNode::Leaf { id } => {
+                    out.push(LeafInfo { id: *id, fixed: fixed.contains(id) });
+                }
+                LayoutNode::Split { first, second, .. } => {
+                    collect_leafs(first, fixed, out);
+                    collect_leafs(second, fixed, out);
+                }
+            }
+        }
+        let mut leafs = Vec::new();
+        collect_leafs(&self.root, fixed, &mut leafs);
         LayoutDump {
-            tree: dump_node(&self.root),
+            tree: dump_node(&self.root, fixed),
             active: self.active,
             zoomed: self.zoomed,
             minimized: self.minimized,
+            leafs,
         }
     }
 
@@ -815,6 +864,15 @@ pub struct LayoutDump {
     pub active: u64,
     pub zoomed: Option<u64>,
     pub minimized: Option<u64>,
+    /// 叶子扁平列表（树序；测试/JS 读 fixed 用）
+    pub leafs: Vec<LeafInfo>,
+}
+
+/// 叶子信息（dump 的 leafs 元素）
+#[derive(Clone, serde::Serialize)]
+pub struct LeafInfo {
+    pub id: u64,
+    pub fixed: bool,
 }
 
 pub(crate) trait EventResultExt {
@@ -974,6 +1032,30 @@ mod tests {
         // 无效 swap：不存在 id / 相同 id
         assert!(!tree.swap(0, 999));
         assert!(!tree.swap(tid, tid));
+    }
+
+    #[test]
+    fn fixed_leaf_skipped_by_ops() {
+        // fixed 叶子:swap/resize/remove 直接拒绝;焦点可穿过;取消标记后恢复可操作
+        let mut tree = LayoutTree::default();
+        tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
+        let panel = tree
+            .split_side(0, SplitDir::H, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .unwrap();
+        tree.set_fixed(panel, true);
+        assert!(!tree.resize_leaf_dir(panel, SplitDir::H, 0.1), "fixed 不可 resize");
+        assert!(!tree.remove(panel), "fixed 不可 remove");
+        assert!(!tree.swap(0, panel), "fixed 不可 swap");
+        // 焦点可穿过 fixed 叶子
+        assert_eq!(tree.focus_dir(0, SplitDir::H, false), Some(panel), "焦点可移到 fixed");
+        // dump 输出含 fixed 字段
+        let dump = tree.dump();
+        let l = dump.leafs.iter().find(|l| l.id == panel).unwrap();
+        assert!(l.fixed, "dump 含 fixed 字段");
+        assert!(!dump.leafs.iter().find(|l| l.id == 0).unwrap().fixed, "编辑器默认不 fixed");
+        // 取消标记后恢复可操作
+        tree.set_fixed(panel, false);
+        assert!(tree.remove(panel), "取消 fixed 后可 remove");
     }
 
     #[test]

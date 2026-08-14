@@ -619,6 +619,17 @@ impl Compositor {
         }
     }
 
+    /// 设置叶子 fixed 标记（fixed 叶子不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
+    pub fn set_leaf_fixed(&mut self, id: u64, fixed: bool) {
+        self.main_tree.set_fixed(id, fixed);
+        self.sync_layout_cache();
+    }
+
+    /// 叶子是否 fixed
+    pub fn leaf_fixed(&self, id: u64) -> bool {
+        self.main_tree.is_fixed(id)
+    }
+
     /// 布局树变更后同步 dump 缓存（get_layout 实时性；否则返回 null/旧值）
     fn sync_layout_cache(&mut self) {
         let json = serde_json::to_string(&self.main_tree.dump()).unwrap_or_default();

@@ -158,6 +158,24 @@ pub(crate) fn js_equalize_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
     Ok(JsValue::undefined())
 }
 
+/// helix.layout_fix(id, fixed)：设置/取消叶子 fixed 标记
+/// （fixed 叶子不被 swap/resize/close/minimize/equalize，可被焦点穿过）
+pub(crate) fn js_layout_fix(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: f64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("layout_fix: id must be a number")))
+    })?;
+    if id < 0.0 || id.fract() != 0.0 {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "layout_fix: id must be a non-negative integer",
+        ))));
+    }
+    let fixed: bool = args.get(1).cloned().unwrap_or(JsValue::from(false)).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("layout_fix: fixed must be a boolean")))
+    })?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::LayoutFix { id: id as u64, fixed });
+    Ok(JsValue::undefined())
+}
+
 /// 读取最近一次布局树序列化（helix-term 树变更时缓存；可能滞后一个操作）
 pub(crate) fn js_get_layout(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let json = LAST_LAYOUT.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();

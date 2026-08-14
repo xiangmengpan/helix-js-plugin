@@ -183,6 +183,38 @@ async fn window_mode_exits_on_popup_open() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// fixed 叶子:set_leaf_fixed 标记生效;模式内 x 不关闭;get_layout/dump 输出 fixed 字段
+#[tokio::test(flavor = "multi_thread")]
+async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    app.compositor.split_leaf_with_ratio(
+        SplitDir::H,
+        false,
+        40,
+        Box::new(PluginPanel::new(1, PanelSide::Right)),
+    );
+    // 面板(id=1)设为固定
+    let dump = app.compositor.layout_tree().dump();
+    let fixed_id = dump.leafs.iter().find(|l| l.id == 1).unwrap().id;
+    app.compositor.set_leaf_fixed(fixed_id, true);
+    assert!(
+        app.compositor.layout_tree().is_fixed(fixed_id),
+        "fixed 标记生效"
+    );
+    // 模式内 x 不关闭 fixed 叶子
+    pump(&mut app, "<C-w>x<esc>").await?;
+    let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
+    assert!(
+        app.compositor.has_component(panel_type),
+        "fixed 叶子不被 x 关闭"
+    );
+    // dump 输出 fixed 字段
+    let dump = app.compositor.layout_tree().dump();
+    let f = dump.leafs.iter().find(|l| l.id == fixed_id).unwrap();
+    assert!(f.fixed, "dump 含 fixed 字段");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;

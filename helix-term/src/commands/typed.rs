@@ -4776,6 +4776,11 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.minimize_leaf(id, minimized);
                 });
             }
+            helix_js::UiRequest::LayoutFix { id, fixed } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.set_leaf_fixed(id, fixed);
+                });
+            }
             helix_js::UiRequest::FocusLeafDir { id, dir } => {
                 use crate::ui::layout::SplitDir;
                 let (dir, first) = match dir.as_str() {
