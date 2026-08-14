@@ -15,6 +15,13 @@ pub enum EventResult {
     Consumed(Option<Callback>),
 }
 
+/// 全局窗口模式(C-w):任何叶子焦点下生效;模式键直调布局树。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WindowMode {
+    Inactive,
+    Active,
+}
+
 use crate::job::Jobs;
 use crate::ui::picker;
 use crate::ui::plugin_panel::{PanelSide, PluginPanel};
@@ -85,6 +92,7 @@ pub struct Compositor {
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
+    pub(crate) window_mode: WindowMode,
 }
 
 impl Compositor {
@@ -95,7 +103,13 @@ impl Compositor {
             area,
             last_picker: None,
             full_redraw: false,
+            window_mode: WindowMode::Inactive,
         }
+    }
+
+    /// 测试/状态栏访问:当前是否处于窗口模式
+    pub fn window_mode_active(&self) -> bool {
+        matches!(self.window_mode, WindowMode::Active)
     }
 
     pub fn size(&self) -> Rect {
@@ -196,6 +210,29 @@ impl Compositor {
             }
         }
 
+        use helix_view::input::{KeyCode, KeyModifiers};
+        // 窗口模式:任何焦点下 C-w 进入,模式内 Esc/C-w 退出(其他键 Ignored,任务 2 填充)
+        if self.window_mode_active() {
+            if let Event::Key(key) = event {
+                let esc = matches!(key.code, KeyCode::Esc);
+                let ctrl_w = key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('w'));
+                if esc || ctrl_w {
+                    self.window_mode = WindowMode::Inactive;
+                    return true;
+                }
+            }
+            return true; // 模式消费所有键(任务 2 改为键位表分发)
+        }
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('w'))
+            {
+                self.window_mode = WindowMode::Active;
+                return true;
+            }
+        }
+
         let mut callbacks = Vec::new();
         let mut consumed = false;
 
@@ -262,6 +299,7 @@ impl Compositor {
             view,
             is_focused,
             &spinners,
+            self.window_mode_active(),
         );
         crate::ui::statusline::render(&mut context, statusline_area, surface);
     }

@@ -44,6 +44,7 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
                         view,
                         true,
                         &spinners,
+                        false,
                     );
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -106,6 +107,7 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
             view,
             true,
             &spinners,
+            false,
         );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
@@ -163,7 +165,7 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
         let (view, doc) = current_ref!(app.editor);
-        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false);
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -207,7 +209,7 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
         let (view, doc) = current_ref!(app.editor);
-        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false);
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();

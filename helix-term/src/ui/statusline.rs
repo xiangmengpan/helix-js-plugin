@@ -21,6 +21,7 @@ pub struct RenderContext<'a> {
     pub view: &'a View,
     pub focused: bool,
     pub spinners: &'a ProgressSpinners,
+    pub window_mode: bool,
     pub parts: RenderBuffer<'a>,
 }
 
@@ -31,6 +32,7 @@ impl<'a> RenderContext<'a> {
         view: &'a View,
         focused: bool,
         spinners: &'a ProgressSpinners,
+        window_mode: bool,
     ) -> Self {
         RenderContext {
             editor,
@@ -38,6 +40,7 @@ impl<'a> RenderContext<'a> {
             view,
             focused,
             spinners,
+            window_mode,
             parts: RenderBuffer::default(),
         }
     }
@@ -145,6 +148,14 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     }
 
     // Left side of the status line.
+
+    if context.window_mode {
+        append(
+            &mut context.parts.left,
+            Span::from("[WINDOW] "),
+            base_style,
+        );
+    }
 
     for element_id in &config.statusline.left {
         let render = get_render_function(*element_id);

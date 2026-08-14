@@ -42,4 +42,5 @@ mod test {
     mod plugin_entry;
     mod plugin_statusline;
     mod splits;
+    mod window_mode;
 }
