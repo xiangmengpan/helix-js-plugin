@@ -28,6 +28,7 @@ use crate::ui::plugin_panel::{PanelSide, PluginPanel};
 use helix_view::Editor;
 
 pub use helix_view::input::Event;
+use helix_view::document::Mode;
 
 pub struct Context<'a> {
     pub editor: &'a mut Editor,
@@ -211,22 +212,81 @@ impl Compositor {
         }
 
         use helix_view::input::{KeyCode, KeyModifiers};
-        // 窗口模式:任何焦点下 C-w 进入,模式内 Esc/C-w 退出(其他键 Ignored,任务 2 填充)
+        // 窗口模式:normal/select 模式 C-w 进入;insert 模式 C-w 保留原义(删词,vim 惯例)
         if self.window_mode_active() {
             if let Event::Key(key) = event {
-                let esc = matches!(key.code, KeyCode::Esc);
-                let ctrl_w = key.modifiers.contains(KeyModifiers::CONTROL)
-                    && matches!(key.code, KeyCode::Char('w'));
-                if esc || ctrl_w {
-                    self.window_mode = WindowMode::Inactive;
-                    return true;
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let ch = match key.code {
+                    KeyCode::Char(c) => Some(c),
+                    _ => None,
+                };
+                // 键位表:C-hjkl resize > Esc/C-w 退出 > hjkl 聚焦 / HJKL 交换 / x 关闭 / z 最小化 / f 最大化
+                match ch {
+                    Some(c) if ctrl && matches!(c, 'h' | 'j' | 'k' | 'l') => {
+                        self.window_mode_resize(c);
+                        return true;
+                    }
+                    Some(c) if c == 'w' && ctrl => {
+                        self.window_mode = WindowMode::Inactive;
+                        return true;
+                    }
+                    _ if matches!(key.code, KeyCode::Esc) => {
+                        self.window_mode = WindowMode::Inactive;
+                        return true;
+                    }
+                    Some('h') => {
+                        self.window_mode_focus('h');
+                        return true;
+                    }
+                    Some('j') => {
+                        self.window_mode_focus('j');
+                        return true;
+                    }
+                    Some('k') => {
+                        self.window_mode_focus('k');
+                        return true;
+                    }
+                    Some('l') => {
+                        self.window_mode_focus('l');
+                        return true;
+                    }
+                    Some('H') => {
+                        self.window_mode_swap('h');
+                        return true;
+                    }
+                    Some('J') => {
+                        self.window_mode_swap('j');
+                        return true;
+                    }
+                    Some('K') => {
+                        self.window_mode_swap('k');
+                        return true;
+                    }
+                    Some('L') => {
+                        self.window_mode_swap('l');
+                        return true;
+                    }
+                    Some('x') => {
+                        self.window_mode_close();
+                        return true;
+                    }
+                    Some('z') => {
+                        self.window_mode_minimize();
+                        return true;
+                    }
+                    Some('f') => {
+                        self.window_mode_zoom();
+                        return true;
+                    }
+                    _ => return true, // 模式吞掉未知键(保持模式)
                 }
             }
-            return true; // 模式消费所有键(任务 2 改为键位表分发)
+            return true;
         }
         if let Event::Key(key) = event {
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('w'))
+                && cx.editor.mode() != Mode::Insert
             {
                 self.window_mode = WindowMode::Active;
                 return true;
@@ -485,6 +545,78 @@ impl Compositor {
     /// 最小化叶子 id
     pub fn minimized_leaf(&self) -> Option<u64> {
         self.main_tree.minimized_leaf()
+    }
+
+    /// 方向字符 → (SplitDir, 是否 first 侧)。h/k → first;l/j → second。
+    fn window_dir(c: char) -> (crate::ui::layout::SplitDir, bool) {
+        match c {
+            'h' => (crate::ui::layout::SplitDir::H, true),
+            'l' => (crate::ui::layout::SplitDir::H, false),
+            'k' => (crate::ui::layout::SplitDir::V, true),
+            'j' => (crate::ui::layout::SplitDir::V, false),
+            _ => unreachable!(),
+        }
+    }
+
+    /// 窗口模式:方向聚焦(h/j/k/l)
+    fn window_mode_focus(&mut self, c: char) {
+        let (dir, side) = Self::window_dir(c);
+        let a = self.main_tree.active();
+        if let Some(nb) = self.main_tree.neighbor_leaf(a, dir, side) {
+            self.main_tree.focus(nb);
+        }
+    }
+
+    /// 窗口模式:与方向邻居交换内容(H/J/K/L)
+    fn window_mode_swap(&mut self, c: char) {
+        let (dir, side) = Self::window_dir(c);
+        let a = self.main_tree.active();
+        if let Some(nb) = self.main_tree.neighbor_leaf(a, dir, side) {
+            let _ = self.main_tree.swap(a, nb);
+        }
+    }
+
+    /// 窗口模式:方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)
+    fn window_mode_resize(&mut self, c: char) {
+        let (dir, delta) = match c {
+            'h' => (crate::ui::layout::SplitDir::H, -0.05),
+            'l' => (crate::ui::layout::SplitDir::H, 0.05),
+            'j' => (crate::ui::layout::SplitDir::V, -0.05),
+            'k' => (crate::ui::layout::SplitDir::V, 0.05),
+            _ => unreachable!(),
+        };
+        self.main_tree
+            .resize_leaf_dir(self.main_tree.active(), dir, delta);
+    }
+
+    /// 窗口模式:关闭活动叶子(编辑器叶子 id=0 不可关)
+    fn window_mode_close(&mut self) {
+        let a = self.main_tree.active();
+        if a != 0 {
+            self.remove_leaf(a);
+        }
+    }
+
+    /// 窗口模式:最小化/还原(z)。已最小化 → 还原;否则最小化活动叶子(编辑器除外)
+    fn window_mode_minimize(&mut self) {
+        if let Some(m) = self.main_tree.minimized() {
+            self.main_tree.set_minimized(m, false);
+        } else {
+            let a = self.main_tree.active();
+            if a != 0 {
+                self.main_tree.set_minimized(a, true);
+            }
+        }
+    }
+
+    /// 窗口模式:最大化/还原(f)
+    fn window_mode_zoom(&mut self) {
+        let a = self.main_tree.active();
+        if self.main_tree.zoomed() == Some(a) {
+            self.unzoom();
+        } else {
+            self.zoom_leaf(a);
+        }
     }
 
     /// 布局树变更后同步 dump 缓存（get_layout 实时性；否则返回 null/旧值）

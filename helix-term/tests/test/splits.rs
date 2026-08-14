@@ -136,21 +136,24 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
     // window would cause a panic since it would point outside of the document.
 
     // The key sequence here:
-    // * <C-w>v       Create a vertical split of the current buffer.
+    // * :vsplit<ret> Create a vertical split of the current buffer.
     //                Both views look at the same doc.
     // * [<space>     Add a line ending to the beginning of the document.
     //                The cursor is now at line 2 in window 2.
     // * <C-s>        Save that selection to the jumplist in window 2.
-    // * <C-w>w       Switch to window 1.
+    // * <space>ww    Switch to window 1 (rotate_view).
     // * kd           Delete line 1 in window 1.
-    // * <C-w>q       Close window 1, focusing window 2.
+    // * <space>wq    Close window 1, focusing window 2 (wclose).
     // * d            Delete line 1 in window 2.
     //
     // This panicked in the past because the jumplist entry on line 2 of window 2
     // was not updated and after the `kd` step, pointed outside of the document.
+    //
+    // Note: C-w chords are no longer used here — the global window mode (C-w)
+    // intercepts them; splits/focus/close go through :vsplit / <space>w submenu.
     test((
         "#[|]#",
-        "<C-w>v[<space><C-s><C-w>wkd<C-w>qd",
+        ":vsplit<ret>[<space><C-s><space>wwkd<space>wqd",
         "#[|]#",
         LineFeedHandling::AsIs,
     ))
@@ -161,7 +164,7 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
     // correct order as we switch between windows.
     test((
         "#[|]#",
-        "[<space>[<space>[<space><C-w>vuuu<C-w>wUUU<C-w>quuu",
+        "[<space>[<space>[<space>:vsplit<ret>uuu<space>wwUUU<space>wquuu",
         "#[|]#",
         LineFeedHandling::AsIs,
     ))
@@ -175,19 +178,19 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
     // panics.
     // The key sequence:
     // * 3[<space>    Create three empty lines so we are at the end of the document.
-    // * <C-w>v<C-s>  Create a split and save that point at the end of the document
-    //                in the jumplist.
-    // * <C-w>w       Switch back to the first window.
+    // * :vsplit<ret><C-s>  Create a split and save that point at the end of the
+    //                document in the jumplist.
+    // * <space>ww    Switch back to the first window.
     // * uu           Undo twice (not three times which would bring us back to the
     //                root of the tree).
     // * 3[<space>    Create three empty lines. Now the end of the document is past
     //                where it was on step 1.
-    // * <C-w>q       Close window 1, focusing window 2 and causing a sync. This step
+    // * <space>wq    Close window 1, focusing window 2 and causing a sync. This step
     //                panics if we don't apply in the right order.
     // * %d           Clean up the buffer.
     test((
         "#[|]#",
-        "3[<space><C-w>v<C-s><C-w>wuu3[<space><C-w>q%d",
+        "3[<space>:vsplit<ret><C-s><space>wwuu3[<space><space>wq%d",
         "#[|]#",
         LineFeedHandling::AsIs,
     ))
@@ -220,7 +223,7 @@ async fn test_reload_all_with_split_jumplist() -> anyhow::Result<()> {
     // See reproduction from <https://github.com/helix-editor/helix/issues/9830>
     //
     // The key sequence:
-    // * <C-w>s   Horizontal split: two views on the same document.
+    // * :hsplit<ret> Horizontal split: two views on the same document.
     // * ]<space> Add an empty line below, growing the document.
     // * %        Select the whole document.
     // * 2G       Go to line 2. `goto_line` calls `push_jump`, recording a jump
@@ -248,10 +251,10 @@ async fn test_reload_all_with_split_jumplist() -> anyhow::Result<()> {
 
     test_key_sequence(
         &mut app,
-        // The trailing `<C-w>q` closes the split so a single window remains for
+        // The trailing `<space>wq` closes the split so a single window remains for
         // the harness's automatic `:q!` teardown. It also exercises the sync
         // that runs when a window is closed.
-        Some("<C-w>s]<space>%2Gms/:rla<ret>%J<C-w>q"),
+        Some(":hsplit<ret>]<space>%2Gms/:rla<ret>%J<space>wq"),
         Some(&|app| {
             helpers::assert_status_not_error(&app.editor);
         }),

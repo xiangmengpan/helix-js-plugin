@@ -452,6 +452,40 @@ impl LayoutTree {
         self.minimized
     }
 
+    /// 最小化叶子 id(窗口模式/测试别名)
+    pub fn minimized(&self) -> Option<u64> {
+        self.minimized
+    }
+
+    /// 缩放中的叶子 id(窗口模式/测试别名)
+    pub fn zoomed(&self) -> Option<u64> {
+        self.zoomed
+    }
+
+    /// 叶子类型名列表(树序;窗口模式测试断言用)
+    pub fn leaf_types(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        fn walk(
+            node: &LayoutNode,
+            comps: &std::collections::HashMap<u64, Box<dyn Component>>,
+            out: &mut Vec<&'static str>,
+        ) {
+            match node {
+                LayoutNode::Leaf { id } => {
+                    if let Some(c) = comps.get(id) {
+                        out.push(c.type_name());
+                    }
+                }
+                LayoutNode::Split { first, second, .. } => {
+                    walk(first, comps, out);
+                    walk(second, comps, out);
+                }
+            }
+        }
+        walk(&self.root, &self.components, &mut out);
+        out
+    }
+
     /// 是否有某类型组件（叶子内）
     pub fn has_component(&self, type_name: &str) -> bool {
         self.components
