@@ -215,6 +215,40 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// buffer_open:JS 打开文件为新 BufferLeaf 叶子(split:h → 原编辑器右侧新叶)
+#[tokio::test(flavor = "multi_thread")]
+async fn buffer_open_creates_leaf_with_content() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "AAA\n")?;
+    std::fs::write(&b, "BBB\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    // JS 侧调 buffer_open(b.txt, {split:"h"}) → 新叶子显示 b.txt
+    let src = r#"
+        helix.register_command("bo", () => {
+            helix.buffer_open(ARG_PATH, { split: "h" });
+        });
+    "#
+    .replace("ARG_PATH", &format!("{:?}", b.display()));
+    let plugin_path = dir.path().join("bo.js");
+    std::fs::write(&plugin_path, src)?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":bo<ret>").await?;
+    // 布局:2 叶(原编辑器 0 + 新 buffer 叶)
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 2, "buffer_open 新增叶子: {types:?}");
+    assert!(
+        types.contains(&"BufferLeaf"),
+        "新叶子类型为 BufferLeaf: {types:?}"
+    );
+    // 渲染断言:新叶子区域含 BBB
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let joined = rows.join("\n");
+    assert!(joined.contains("BBB"), "新叶子渲染 b.txt 内容: {joined:?}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;

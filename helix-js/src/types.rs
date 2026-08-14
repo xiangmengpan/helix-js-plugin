@@ -90,6 +90,8 @@ pub enum UiRequest {
     SetTheme { name: String },
     /// 按 view_id 关闭指定终端（term_close；解决 remove_type 关全部的问题）
     TermClose { view_id: u64 },
+    /// 打开文件为新的 BufferLeaf 叶子（split: "h" 水平在右 / 其余垂直在下）
+    OpenBufferLeaf { path: String, split: Option<String> },
 }
 
 /// 带唤醒的发送端：worker 发事件时触发宿主注册的唤醒回调（即时重绘），

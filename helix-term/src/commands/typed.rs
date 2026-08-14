@@ -4660,6 +4660,32 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::OpenBufferLeaf { path, split } => {
+                job::dispatch_blocking(move |editor, compositor| {
+                    use helix_view::editor::Action;
+                    // Load 只加载文档不动当前 view（open 的 switch 分支）
+                    let doc_id = match editor.open(&PathBuf::from(&path), Action::Load) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            editor.set_error(format!("buffer_open: open failed: {path}: {e}"));
+                            return;
+                        }
+                    };
+                    // 新 view 绑定新文档：slotmap 键不可外部构造，临时插入取 id 后移除
+                    let mut view = helix_view::view::View::new(doc_id, editor.config().gutters.clone());
+                    let id = editor.tree.insert(view);
+                    view = editor.tree.get_mut(id).clone();
+                    editor.tree.remove(id);
+                    if let Some(doc) = editor.document_mut(doc_id) {
+                        doc.ensure_view_init(id);
+                    }
+                    let dir = match split.as_deref() {
+                        Some("h") => crate::ui::layout::SplitDir::H,
+                        _ => crate::ui::layout::SplitDir::V,
+                    };
+                    let _ = compositor.split_leaf(dir, false, Box::new(crate::ui::BufferLeaf { view }));
+                });
+            }
             helix_js::UiRequest::TermClear { view_id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(term) = compositor

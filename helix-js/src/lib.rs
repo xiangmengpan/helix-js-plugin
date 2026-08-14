@@ -88,6 +88,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(popup::js_term_save), JsString::from("term_save"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_resize_term), JsString::from("resize_term"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_split), JsString::from("split"), 2)
+                .function(NativeFunction::from_fn_ptr(layout::js_buffer_open), JsString::from("buffer_open"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_close_leaf), JsString::from("close_leaf"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_zoom_leaf), JsString::from("zoom"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_unzoom), JsString::from("unzoom"), 0)

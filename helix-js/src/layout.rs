@@ -1,7 +1,7 @@
 
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
-use crate::popup::obj_opt_u16;
+use crate::popup::{obj_opt_str, obj_opt_u16};
 use crate::state::LAST_LAYOUT;
 
 use crate::state::{
@@ -51,6 +51,31 @@ pub(crate) fn js_split(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
     };
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::SplitLeaf { id, dir, kind, cmd, size });
     Ok(JsValue::from(id))
+}
+
+pub(crate) fn js_buffer_open(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    if path.trim().is_empty() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.buffer_open: path must be a non-empty string",
+        ))));
+    }
+    let split = if let Some(opts) = args.get(1).unwrap_or(&JsValue::undefined()).as_object() {
+        let s = obj_opt_str(&opts, "split", ctx, "helix.buffer_open")?;
+        match s.as_deref() {
+            Some("h") | Some("v") => s,
+            Some(other) => {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "helix.buffer_open: split must be 'h' or 'v', got '{other}'"
+                )))));
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenBufferLeaf { path, split });
+    Ok(JsValue::undefined())
 }
 
 pub(crate) fn js_close_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {

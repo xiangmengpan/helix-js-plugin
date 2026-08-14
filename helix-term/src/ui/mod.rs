@@ -1,3 +1,4 @@
+mod buffer_leaf;
 mod completion;
 pub mod comp_layout;
 mod document;
@@ -23,6 +24,7 @@ mod text_decorations;
 use crate::compositor::Compositor;
 use crate::filter_picker_entry;
 use crate::job::{self, Callback};
+pub use buffer_leaf::BufferLeaf;
 pub use completion::Completion;
 pub use editor::EditorView;
 use helix_stdx::rope;

@@ -74,13 +74,13 @@ impl EditorView {
     }
 
     pub fn render_view(
-        &self,
         editor: &Editor,
         doc: &Document,
         view: &View,
         viewport: Rect,
         surface: &mut Surface,
         is_focused: bool,
+        terminal_focused: bool,
     ) {
         let inner = view.inner_area(doc);
         let area = view.area;
@@ -159,7 +159,7 @@ impl EditorView {
                 view,
                 theme,
                 &config.cursor_shape,
-                self.terminal_focused,
+                terminal_focused,
             ));
             if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
                 overlays.push(overlay);
@@ -174,7 +174,7 @@ impl EditorView {
                 view,
                 view.area,
                 theme,
-                is_focused & self.terminal_focused,
+                is_focused & terminal_focused,
                 &mut decorations,
             );
         }
@@ -1642,7 +1642,7 @@ impl Component for EditorView {
 
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, area, surface, is_focused);
+            EditorView::render_view(cx.editor, doc, view, area, surface, is_focused, self.terminal_focused);
         }
 
         if config.auto_info {
