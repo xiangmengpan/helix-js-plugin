@@ -67,6 +67,8 @@ thread_local! {
     static STATUSLINE_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
+    // 当前 eval 脚本声明的依赖（helix.plugin deps；load eval 后 take 递归加载）
+    static LAST_PLUGIN_DEPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static EVENT_HANDLERS: RefCell<Option<&'static mut HashMap<String, Vec<JsValue>>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -121,6 +123,11 @@ pub(crate) fn with_last_export<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> 
         let mut slot = l.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })
+}
+
+/// 当前 eval 脚本声明的依赖（helix.plugin deps 累积处；load eval 后 take 递归加载）
+pub(crate) fn with_last_plugin_deps<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    LAST_PLUGIN_DEPS.with(|c| f(&mut c.borrow_mut()))
 }
 
 /// 访问 EVENT_HANDLERS：同上（内容泄漏）
@@ -273,6 +280,15 @@ pub(crate) fn set_last_panel_id(v: Option<u64>) {
     LAST_PANEL_ID.with(|c| c.set(v));
 }
 
+/// 当前打开的面板 id 列表（reload 时全部关闭——只关 last 会残留僵尸面板）。
+/// 全局而非 thread_local：打开与 reload 命令可能在 tokio 不同线程执行，
+/// thread_local 会因线程不同读不到列表 → 面板漏关。
+pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
+    static OPEN_PANELS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
+    let mut v = OPEN_PANELS.get_or_init(Default::default).lock().expect("open panels lock");
+    f(&mut v)
+}
+
 pub(crate) static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
 /// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
@@ -280,33 +296,33 @@ pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 
-/// 终端实例注册表（view_id → cmd；term_list 查询、reload 后仍准确）
-static OPEN_TERMS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+/// 终端实例注册表（pty_id → (view_id, cmd)；term_kill(pty_id) 清理、term_list 查询）
+static OPEN_TERMS: OnceLock<Mutex<HashMap<u64, (u64, String)>>> = OnceLock::new();
 
-pub(crate) fn register_term(view_id: u64, cmd: String) {
+pub(crate) fn register_term(pty_id: u64, view_id: u64, cmd: String) {
     OPEN_TERMS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .expect("open terms lock")
-        .insert(view_id, cmd);
+        .insert(pty_id, (view_id, cmd));
 }
 
-pub(crate) fn unregister_term(view_id: u64) {
+pub(crate) fn unregister_term(pty_id: u64) {
     OPEN_TERMS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .expect("open terms lock")
-        .remove(&view_id);
+        .remove(&pty_id);
 }
 
-/// 当前打开的终端列表（view_id, cmd）
+/// 当前打开的终端列表（view_id, cmd）。键是 pty_id：term_kill(pty_id) 能删对。
 pub(crate) fn list_terms() -> Vec<(u64, String)> {
     OPEN_TERMS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .expect("open terms lock")
         .iter()
-        .map(|(id, cmd)| (*id, cmd.clone()))
+        .map(|(_, (view_id, cmd))| (*view_id, cmd.clone()))
         .collect()
 }
 // 事件通道按线程存放：回调注册表（TERM_CALLBACKS）是线程本地的，通道也必须同线程配对——

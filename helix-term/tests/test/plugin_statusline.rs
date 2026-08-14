@@ -130,6 +130,52 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 真实内容 + zones [2,3,1]：右区（位置信息）必须贴屏幕最右
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("rf.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slf.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: " N ", style: "ui.statusline.normal" },
+            { text: "main.rs", style: null },
+            { text: "1:1", style: null, zone: "right" },
+            { text: "1%", style: "ui.virtual", zone: "right" },
+            { text: "126", style: "ui.virtual", zone: "right" },
+        ], { replace: true, zones: [2, 3, 1] });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    let area = helix_view::graphics::Rect::new(0, 0, 126, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners);
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+    let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+    // 右区右对齐贴行尾：最后 4 字符应为 " 126"（右区内容 "1:1 1% 126" 右对齐）
+    let tail = &row[118..]; // 最后 8 字符
+    let trimmed_end = row.trim_end();
+    assert!(trimmed_end.ends_with("126"), "右区内容应贴行尾: {row:?}");
+    // 右区内容后不应有空白（右对齐到 126 列）
+    assert!(row.ends_with("126"), "行尾应为 126，无尾随空白: {row:?}");
+    Ok(())
+}
+
 /// zones 2:3:1：左区 1/3、中区居中、右区右对齐（宽 90 → 左 30/中 30/右 30）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {

@@ -127,6 +127,7 @@ pub(crate) fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context
 
     let id = crate::state::next_popup_id();
     crate::state::set_last_panel_id(Some(id));
+    crate::state::with_open_panels(|p| p.push(id));
     with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
         UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPanel { id, side, size });
     Ok(JsValue::from(id))
@@ -138,6 +139,7 @@ pub(crate) fn js_close_panel(_this: &JsValue, args: &[JsValue], _ctx: &mut Conte
         JsError::from_opaque(JsValue::from(JsString::from("close_panel: id must be a number")))
     })?;
     if crate::state::last_panel_id() == Some(id) { crate::state::set_last_panel_id(None); };
+    crate::state::with_open_panels(|p| p.retain(|x| *x != id));
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id });
     Ok(JsValue::undefined())
 }
@@ -184,7 +186,6 @@ pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 
     let view_id = crate::state::next_terminal_view_id();
-    crate::state::register_term(view_id, cmd.clone());
     #[cfg(unix)]
     {
         // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
@@ -208,6 +209,8 @@ pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
             })?;
         // spawn pty（与 js_spawn 的 pty 路径同款）：注册回调/worker/master → 起 worker
         let pty_id = crate::state::next_term_id();
+        // 注册表键用 pty_id（term_kill 按 pty_id 清理）；view_id 是 UI 层/JS 侧句柄
+        crate::state::register_term(pty_id, view_id, cmd.clone());
         with_terms(|m| {
             m.insert(pty_id, TermCallbacks { on_chunk: bridge, on_exit, is_run_async: false })
         });
@@ -264,6 +267,15 @@ pub(crate) fn js_set_terminal_mode(_this: &JsValue, args: &[JsValue], context: &
 pub(crate) fn js_term_clear(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermClear { view_id });
+    Ok(JsValue::undefined())
+}
+
+/// helix.term_save(view_id, path?)：把终端全部内容（scrollback + 屏幕）导出到文件。
+/// path 省略/空 → 默认 ~/.cache/helix/term-<view_id>.log（Rust 侧补全）。
+pub(crate) fn js_term_save(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let path: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).unwrap_or_default();
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermSave { view_id, path });
     Ok(JsValue::undefined())
 }
 
@@ -826,6 +838,12 @@ pub fn panel_has_onkey(id: u64) -> bool {
     with_popups(|p| p.get(&id).map(|cb| cb.on_key.is_some()).unwrap_or(false))
 }
 
+/// 面板/弹窗是否在 JS 注册表（存在但无 onKey 与完全丢失区分：僵尸面板检测用）
+pub fn popup_exists(id: u64) -> bool {
+    crate::init();
+    with_popups(|p| p.contains_key(&id))
+}
+
 /// 关闭弹窗：触发 onClose 并移除注册表项。幂等（已关闭返回 Ok）。
 pub fn close_popup(id: u64) -> Result<()> {
     crate::init();
@@ -841,6 +859,15 @@ pub fn close_popup(id: u64) -> Result<()> {
         }
         Ok(())
     })
+}
+
+/// 面板状态清理（僵尸自愈等 Rust 侧路径）：清 JS 注册表 + OPEN_PANELS 列表
+pub fn close_panel_state(id: u64) {
+    let _ = close_popup(id);
+    crate::state::with_open_panels(|p| p.retain(|x| *x != id));
+    if crate::state::last_panel_id() == Some(id) {
+        crate::state::set_last_panel_id(None);
+    }
 }
 
 /// 入队关闭最近一次 open_panel 的面板（:panel-close 用）；无面板时 Err

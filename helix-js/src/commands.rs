@@ -68,9 +68,22 @@ pub(crate) fn js_load(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
             "helix.load: name must not be empty",
         ))));
     }
-    let key = if name.ends_with(".js") { name } else { format!("{name}.js") };
+    load_script_checked(ctx, &name, &mut Vec::new())
+}
+
+/// 加载脚本（含依赖递归）。依赖在脚本内 helix.plugin(name, { deps }) 声明：
+/// deps 是文件 key（load 参数，如 "lib/icons.js"），加载目标前先递归加载依赖；
+/// 已加载的跳过（with_script_exports 缓存），循环依赖报错。
+fn load_script_checked(ctx: &mut Context, name: &str, stack: &mut Vec<String>) -> boa_engine::JsResult<JsValue> {
+    let key = if name.ends_with(".js") { name.to_string() } else { format!("{name}.js") };
     if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
         return Ok(cached);
+    }
+    if stack.contains(&key) {
+        let chain = stack.iter().chain([&key]).cloned().collect::<Vec<_>>().join(" -> ");
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.load: circular dependency: {chain}"
+        )))));
     }
     let path = if Path::new(&key).is_absolute() {
         PathBuf::from(&key)
@@ -82,10 +95,21 @@ pub(crate) fn js_load(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
     let src = std::fs::read_to_string(&path).map_err(|e| {
         JsError::from_opaque(JsValue::from(JsString::from(format!("helix.load('{key}'): {e}"))))
     })?;
+    // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
+    crate::state::with_last_plugin_deps(|d| d.clear());
     eval_wrapped(ctx, &src).map_err(|e| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!("helix.load('{key}') failed: {e}"))))
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.load('{key}') failed: {e}"
+        ))))
     })?;
+    let deps = crate::state::with_last_plugin_deps(std::mem::take);
+    // 先取外层 export（递归依赖 eval 会覆盖 LAST_EXPORT，外层 export 必须提前保存）
     let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
+    stack.push(key.clone());
+    for dep in &deps {
+        load_script_checked(ctx, dep, stack)?;
+    }
+    stack.pop();
     crate::state::with_loaded_scripts(|s| {
         if !s.iter().any(|(n, _)| n == &key) {
             s.push((key.clone(), src));
@@ -93,6 +117,28 @@ pub(crate) fn js_load(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
     });
     with_script_exports(|m| m.insert(key, export.clone()));
     Ok(export)
+}
+
+/// helix.plugin(name, { deps, version })：声明当前脚本的依赖清单（方案 2）。
+/// deps 是文件 key 数组（load 参数，如 ["lib/icons.js"]），helix.load 自动拓扑加载。
+pub(crate) fn js_plugin(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    // name 仅校验类型（API 形状：helix.plugin(name, { deps, version })）；
+    // 依赖清单只取 deps（文件 key），version 为元数据保留位暂不消费。
+    let _name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from("helix.plugin: name must be a string")))
+        })?;
+    let mut deps: Vec<String> = Vec::new();
+    if let Some(meta) = args.get(1).unwrap_or(&JsValue::undefined()).as_object() {
+        if let Ok(v) = meta.get(JsString::from("deps"), ctx).and_then(|v| v.try_js_into::<Vec<String>>(ctx)) {
+            deps = v;
+        }
+    }
+    crate::state::with_last_plugin_deps(|d| d.extend(deps));
+    Ok(JsValue::undefined())
 }
 
 /// helix.export(obj)：声明当前脚本的导出（被 helix.load 的返回值拿到）。undefined/null 清空。
@@ -658,11 +704,14 @@ fn reset_plugin_state() {
 /// 因此 Err 分支仅作防御（如脚本依赖被清空的全局状态），单测只覆盖成功路径。
 pub fn reload_all() -> Result<()> {
     crate::init();
-    // 面板层还挂在 compositor 上——入队 ClosePanel 让 plugin_reload 的 apply_ui_requests 移除它，
-    // 否则 reset_plugin_state 清掉 LAST_PANEL_ID 后该层变成无法关闭的僵尸层
-    if let Some(panel_id) = crate::state::last_panel_id() {
+    // 面板层还挂在 compositor 上——入队 ClosePanel 让 plugin_reload 的 apply_ui_requests 移除它们，
+    // 否则 reset_plugin_state 清掉 JS 注册表后这些层变成无法关闭的僵尸层（渲染报错 + 按键穿透）。
+    // 只关 last_panel_id 会漏掉多面板场景，遍历全部。
+    let open_panels = crate::state::with_open_panels(std::mem::take);
+    for panel_id in open_panels {
         UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id: panel_id });
     }
+    crate::state::set_last_panel_id(None);
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());
     reset_plugin_state();
     for (name, src) in &scripts {

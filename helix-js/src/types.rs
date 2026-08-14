@@ -47,6 +47,11 @@ pub enum UiRequest {
     TermClear {
         view_id: u64,
     },
+    /// 导出终端全部内容（scrollback + 屏幕）到文件（持久化保存）
+    TermSave {
+        view_id: u64,
+        path: String,
+    },
     /// 运行中调整终端面板尺寸（列宽或行高）
     TermResize {
         view_id: u64,
@@ -64,6 +69,18 @@ pub enum UiRequest {
     ZoomLeaf { id: u64 },
     Unzoom,
     ResizeLeaf { id: u64, ratio: f32 },
+    /// 按方向调整叶子份额（dir: h/v；delta>0 增大该叶子）
+    ResizeLeafDir { id: u64, dir: String, delta: f32 },
+    /// 聚焦方向邻居（dir: left/right/up/down）
+    FocusLeafDir { id: u64, dir: String },
+    /// 与方向邻居交换内容（dir: left/right/up/down）
+    SwapLeafDir { id: u64, dir: String },
+    /// 叶子所在 Split 恢复 50/50
+    EqualizeLeaf { id: u64 },
+    /// 交换两个叶子的内容（组件引用互换）
+    SwapLeaves { id1: u64, id2: u64 },
+    /// 最小化/恢复叶子（渲染为底部标题横条，不占布局）
+    MinimizeLeaf { id: u64, minimized: bool },
     FocusLeaf { id: u64 },
     /// 把布局树序列化结果缓存到 helix-js（get_layout 读取）
     CacheLayout(String),

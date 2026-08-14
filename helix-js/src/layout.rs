@@ -83,14 +83,99 @@ pub(crate) fn js_focus_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     Ok(JsValue::undefined())
 }
 
+/// helix.layout_resize(id, "h"|"v", delta)：方向感知调整叶子份额。
+/// delta>0 增大该叶子（clamp 0.05~0.95）；方向与直接父 Split 不匹配则不生效。
+pub(crate) fn js_resize_leaf_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let dir: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    if dir != "h" && dir != "v" {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "layout_resize: dir must be 'h' or 'v'",
+        ))));
+    }
+    let delta: f64 = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ResizeLeafDir { id, dir, delta: delta as f32 });
+    Ok(JsValue::undefined())
+}
+
+/// helix.layout_swap(id1, id2)：交换两个叶子的内容（组件引用互换）
+pub(crate) fn js_swap_leaves(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id1: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let id2: u64 = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::SwapLeaves { id1, id2 });
+    Ok(JsValue::undefined())
+}
+
+/// helix.layout_minimize(id, minimized)：最小化/恢复叶子（不占布局，渲染为底部标题横条）
+pub(crate) fn js_minimize_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let minimized: bool = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::MinimizeLeaf { id, minimized });
+    Ok(JsValue::undefined())
+}
+
+/// 方向统一解析：left/right/up/down → (dir, first_side)。
+fn parse_dir(dir: &str) -> Option<(String, bool)> {
+    match dir {
+        "left" => Some(("h".into(), true)),
+        "right" => Some(("h".into(), false)),
+        "up" => Some(("v".into(), true)),
+        "down" => Some(("v".into(), false)),
+        _ => None,
+    }
+}
+
+/// helix.layout_focus(id, "left"|"right"|"up"|"down")：聚焦方向邻居
+pub(crate) fn js_focus_leaf_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let dir: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    if parse_dir(&dir).is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "layout_focus: dir must be left/right/up/down",
+        ))));
+    }
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::FocusLeafDir { id, dir });
+    Ok(JsValue::undefined())
+}
+
+/// helix.layout_swap_dir(id, "left"|...)：与方向邻居交换内容
+pub(crate) fn js_swap_leaf_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let dir: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    let Some(_) = parse_dir(&dir) else {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "layout_swap_dir: dir must be left/right/up/down",
+        ))));
+    };
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::SwapLeafDir { id, dir });
+    Ok(JsValue::undefined())
+}
+
+/// helix.layout_equalize(id)：叶子所在 Split 恢复 50/50
+pub(crate) fn js_equalize_leaf(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::EqualizeLeaf { id });
+    Ok(JsValue::undefined())
+}
+
 /// 读取最近一次布局树序列化（helix-term 树变更时缓存；可能滞后一个操作）
 pub(crate) fn js_get_layout(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let json = LAST_LAYOUT.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();
     if json.is_empty() {
         return Ok(JsValue::null());
     }
-    // 用 JSON.parse 解析缓存字符串
-    ctx.eval(Source::from_bytes(format!("JSON.parse({json:?})").as_str()))
+    // 直接调 JSON.parse 原生函数（不经 eval 字符串转义——Debug 格式的 \" 双重转义
+    // 会让 JSON.parse 在 column 2 报 expected value）
+    let json_global = ctx.global_object().get(JsString::from("JSON"), ctx)?;
+    let parse = json_global
+        .as_object()
+        .ok_or_else(|| JsError::from_opaque(JsValue::from(JsString::from("get_layout: JSON missing"))))?
+        .get(JsString::from("parse"), ctx)?;
+    let parse = parse.as_callable().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("get_layout: JSON.parse missing")))
+    })?;
+    parse
+        .call(&json_global, &[JsValue::from(JsString::from(json))], ctx)
         .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("get_layout: {e}")))))
 }
 

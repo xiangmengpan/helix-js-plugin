@@ -394,6 +394,67 @@ impl TerminalGrid {
             }
         }
     }
+
+    /// 可视区纯文本（含滚动偏移带入的滚回行；跳过宽字符占位格、去行尾空白）。
+    /// 终端 normal 模式 y 复制、term-save 用。
+    pub fn visible_text(&self) -> String {
+        let sb = &self.scrollback;
+        let scroll_rows = self.scroll_offset.min(sb.len());
+        let sb_start = sb.len() - scroll_rows;
+        let mut out = String::new();
+        for display_row in 0..self.rows as usize {
+            let line: &[TerminalCell] = if display_row < scroll_rows {
+                &sb[sb_start + display_row]
+            } else {
+                let grid_row = display_row - scroll_rows;
+                if grid_row >= self.rows as usize {
+                    break;
+                }
+                &self.cells[grid_row * self.cols as usize..][..self.cols as usize]
+            };
+            let mut text = String::new();
+            for cell in line {
+                if cell.width == 0 {
+                    continue; // 宽字符占位格
+                }
+                text.push(cell.ch);
+            }
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    /// 全部内容纯文本（scrollback + 屏幕；跳过宽字符占位格、去行尾空白）。
+    /// term-save 持久化用。
+    pub fn full_text(&self) -> String {
+        let mut out = String::new();
+        for line in &self.scrollback {
+            let mut text = String::new();
+            for cell in line {
+                if cell.width == 0 {
+                    continue;
+                }
+                text.push(cell.ch);
+            }
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        for row in 0..self.rows as usize {
+            let base = row * self.cols as usize;
+            let line = &self.cells[base..base + self.cols as usize];
+            let mut text = String::new();
+            for cell in line {
+                if cell.width == 0 {
+                    continue;
+                }
+                text.push(cell.ch);
+            }
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        out
+    }
 }
 
 /// 网格内容按新尺寸重排：旧区域（min(rows,old_rows)×min(cols,old_cols) 交集）保留，
@@ -760,6 +821,11 @@ impl PluginTerminal {
     pub fn feed(&mut self, chunk: &str) {
         self.grid.feed(chunk.as_bytes());
     }
+
+    /// 全部内容纯文本（scrollback + 屏幕；term-save 导出用）
+    pub(crate) fn full_text(&self) -> String {
+        self.grid.full_text()
+    }
 }
 
 impl Drop for PluginTerminal {
@@ -771,14 +837,28 @@ impl Drop for PluginTerminal {
 
 impl Component for PluginTerminal {
     fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
-        let Event::Key(key) = event else {
-            return EventResult::Ignored(None);
-        };
-        use helix_view::input::{KeyCode, KeyModifiers};
+        use helix_view::input::{KeyCode, KeyModifiers, MouseEventKind};
         // minimized：不消费按键，编辑器照常工作
         if self.mode == TermMode::Minimized {
             return EventResult::Ignored(None);
         }
+        // 鼠标滚轮：滚动查看 scrollback（insert/normal 模式均可；其他鼠标事件交给编辑器）
+        if let Event::Mouse(mouse) = event {
+            return match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.grid.scroll_up_view(3);
+                    EventResult::Consumed(None)
+                }
+                MouseEventKind::ScrollDown => {
+                    self.grid.scroll_down_view(3);
+                    EventResult::Consumed(None)
+                }
+                _ => EventResult::Ignored(None),
+            };
+        }
+        let Event::Key(key) = event else {
+            return EventResult::Ignored(None);
+        };
         // C-\：Insert → Normal（终端内滚动查看）；Normal → 回 Insert 并聚焦编辑器
         let is_ctrl_backslash =
             key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('\\'));
@@ -794,7 +874,8 @@ impl Component for PluginTerminal {
                     EventResult::Consumed(Some(Box::new(
                         |compositor: &mut Compositor, _cx: &mut Context| {
                             compositor.unfloat();
-                            compositor.layout_tree().focus(0);
+                            // focus_leaf 会同步布局缓存（get_layout 实时性）；layout_tree().focus 绕过
+                            compositor.focus_leaf(0);
                         },
                     )))
                 }
@@ -829,6 +910,18 @@ impl Component for PluginTerminal {
                 KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Esc => {
                     self.input_mode = TermInputMode::Insert;
                     EventResult::Consumed(None)
+                }
+                KeyCode::Char('y') => {
+                    // 复制可视区文本（含滚回行）到 " 与 + 寄存器：编辑器里 p/+p 可粘贴
+                    let text = self.grid.visible_text();
+                    EventResult::Consumed(Some(Box::new(
+                        move |_compositor: &mut Compositor, cx: &mut Context| {
+                            let values = vec![text];
+                            let _ = cx.editor.registers.write('"', values.clone());
+                            let _ = cx.editor.registers.write('+', values);
+                            cx.editor.set_status("终端可视区已复制（p 粘贴）");
+                        },
+                    )))
                 }
                 KeyCode::Char('q') => EventResult::Consumed(Some(Box::new(
                     |compositor: &mut Compositor, _cx: &mut Context| {
@@ -924,6 +1017,23 @@ mod tests {
         g2.feed("abc".as_bytes()); // 光标到末列 (0,3)
         g2.feed("中".as_bytes());   // wrap 到下一行再写（末列宽字符先 wrap）
         assert_eq!(g2.cursor(), (1, 2), "末列宽字符 wrap 后占 2 格");
+    }
+
+    #[test]
+    fn text_extraction_visible_and_full() {
+        // 可视区/全量文本提取：scrollback + 屏幕、宽字符占位格跳过、行尾空白去除
+        let mut g = grid(3, 6);
+        g.feed(b"ab\r\ncd\r\nef\r\ngh"); // 3 行网格，4 次换行 → 1 行进滚回
+        assert_eq!(g.scrollback_len(), 1);
+        assert_eq!(g.visible_text(), "cd\nef\ngh\n", "可视区 = 活动区（滚回不显示）");
+        assert_eq!(g.full_text(), "ab\ncd\nef\ngh\n", "全量 = scrollback + 屏幕");
+        // 上滚 1 行：可视区显示滚回行 + 活动区前 2 行
+        g.scroll_up_view(1);
+        assert_eq!(g.visible_text(), "ab\ncd\nef\n", "滚动后可视区含滚回行");
+        // 宽字符占位格跳过：不产生多余空格
+        let mut g2 = grid(1, 6);
+        g2.feed("中x".as_bytes());
+        assert_eq!(g2.visible_text(), "中x\n", "宽字符占位格不产生空格");
     }
 
     #[test]

@@ -57,13 +57,9 @@ pub(crate) fn open_pty() -> Result<(Master, File)> {
         // 默认尺寸：内核新建 pty 的 winsize 是 0×0，stty size 会读成 "0 0"；
         // 简报期望缺省 "24 80"。在子进程启动前设好（master ioctl 作用于同一 tty）。
         set_winsize(master.fd(), 24, 80)?; // 失败时 master/slave 由 Drop 兜底关闭
-        // raw mode：关 canonical 缓冲/回显/信号生成——输入即达子进程（bash/readline
-        // 自己处理回显与 Ctrl-C），消除"输入缓冲、字母成批"的观感。
-        let mut termios: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(master.fd(), &mut termios) == 0 {
-            libc::cfmakeraw(&mut termios);
-            libc::tcsetattr(master.fd(), libc::TCSANOW, &termios);
-        }
+        // termios 保持内核默认（ICANON|ECHO|ISIG|OPOST|ONLCR），与真实终端模拟器一致：
+        // 不设 raw——raw 关掉内核 ECHO 后，cat 等依赖内核回显的程序输入无显示；
+        // bash/readline 会自己切 raw 并回显，主控端无需代劳。
         Ok((master, slave))
     }
 }
@@ -84,4 +80,42 @@ pub(crate) fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pty_output_nl_maps_to_crlf() {
+        // termios 保持内核默认（含 OPOST|ONLCR）：子进程输出里的 \n 翻译成 \r\n，
+        // 否则终端网格的 linefeed 只下移不归列 → ls 等输出逐行递增缩进错位。
+        let (master, _slave) = open_pty().unwrap();
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::tcgetattr(master.fd(), &mut termios) }, 0);
+        assert_eq!(
+            termios.c_oflag & (libc::OPOST | libc::ONLCR),
+            libc::OPOST | libc::ONLCR,
+            "PTY 输出必须保持 OPOST|ONLCR（\\n → \\r\\n）"
+        );
+    }
+
+    #[test]
+    fn pty_default_termios_has_echo_and_canonical() {
+        // 保持内核默认 termios：cat 等依赖内核 ECHO 回显的程序输入可见；
+        // 若设 raw（关 ECHO/ICANON），终端里输入字符无显示。
+        let (master, _slave) = open_pty().unwrap();
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::tcgetattr(master.fd(), &mut termios) }, 0);
+        assert_ne!(
+            termios.c_lflag & libc::ECHO,
+            0,
+            "内核回显必须开启（cat 等程序输入可见）"
+        );
+        assert_ne!(
+            termios.c_lflag & libc::ICANON,
+            0,
+            "canonical 行缓冲应开启（程序按需自行关闭）"
+        );
+    }
 }

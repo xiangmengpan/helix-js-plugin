@@ -147,7 +147,8 @@ impl Compositor {
             .retain(|component| component.type_name() != type_name);
         // 布局树里的同类组件（如终端叶子）也移除
         self.main_tree.remove_component_type::<T>();
-}
+        self.sync_layout_cache();
+    }
 
     /// 按面板实例 id（PluginPanel::id，open_panel 分配的 u64）移除对应层；
     /// 多面板并存时各层以 u64 实例 id 区分（静态 id 只适用于单面板）。
@@ -244,12 +245,25 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // 主区域布局树：编辑器/终端/面板叶子各自在矩形里渲染
-        self.main_tree.render(area, surface, cx);
+        // 主区域布局树：编辑器/终端/面板叶子各自在矩形里渲染（底部 1 行留给全局状态栏）
+        self.main_tree.render(area.clip_bottom(1), surface, cx);
         // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上
         for layer in &mut self.layers {
             layer.render(area, surface, cx);
         }
+        // 全局状态栏：永远屏幕底部 1 行（任何叶子焦点下都在；提示层在 layers 中，可覆盖它）
+        let statusline_area = area.clip_top(area.height.saturating_sub(1)).clip_bottom(1);
+        let (view, doc) = current_ref!(cx.editor);
+        let is_focused = self.main_tree.active() == 0;
+        let spinners = crate::ui::ProgressSpinners::default();
+        let mut context = crate::ui::statusline::RenderContext::new(
+            cx.editor,
+            doc,
+            view,
+            is_focused,
+            &spinners,
+        );
+        crate::ui::statusline::render(&mut context, statusline_area, surface);
     }
 
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
@@ -317,7 +331,9 @@ impl Compositor {
         component: Box<dyn Component>,
     ) -> Option<u64> {
         let active = self.main_tree.active();
-        self.main_tree.split_side(active, dir, new_first, component)
+        let ret = self.main_tree.split_side(active, dir, new_first, component);
+        self.sync_layout_cache();
+        ret
     }
 
     /// 同上，但新叶子占新叶子 side 的 ratio 份额（按区域尺寸换算成 first 的 ratio）
@@ -338,7 +354,9 @@ impl Compositor {
         let ratio = share.clamp(0.1, 0.9);
         let new_id = self.main_tree.next_id_for_split();
         // 直接构造带 ratio 的 split
-        self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, new_id)
+        let ret = self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, new_id);
+        self.sync_layout_cache();
+        ret
     }
 
     /// 用预分配 id 切分（JS 已注册回调；id 由 JS 侧分配）
@@ -359,6 +377,7 @@ impl Compositor {
         };
         let ratio = share.clamp(0.1, 0.9);
         let _ = self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, id);
+        self.sync_layout_cache();
     }
 
     pub fn area(&self) -> Rect {
@@ -367,28 +386,83 @@ impl Compositor {
 
     pub fn remove_leaf(&mut self, id: u64) {
         self.main_tree.remove(id);
+        self.sync_layout_cache();
     }
 
     pub fn zoom_leaf(&mut self, id: u64) {
         self.main_tree.zoom(id);
+        self.sync_layout_cache();
     }
 
     pub fn unzoom(&mut self) {
         self.main_tree.unzoom();
+        self.sync_layout_cache();
     }
 
     pub fn resize_leaf(&mut self, id: u64, ratio: f32) {
         self.main_tree.resize(id, ratio);
+        self.sync_layout_cache();
+    }
+
+    /// 按方向调整叶子份额（H=左右 / V=上下；delta>0 增大该叶子）。返回是否调整。
+    pub fn resize_leaf_dir(&mut self, id: u64, dir: crate::ui::layout::SplitDir, delta: f32) -> bool {
+        let ret = self.main_tree.resize_leaf_dir(id, dir, delta);
+        self.sync_layout_cache();
+        ret
+    }
+
+    /// 交换两个叶子的内容（组件引用互换，树结构/焦点不变）。
+    pub fn swap_leaves(&mut self, id1: u64, id2: u64) -> bool {
+        let ret = self.main_tree.swap(id1, id2);
+        self.sync_layout_cache();
+        ret
+    }
+
+    /// 最小化/恢复叶子（不占布局，渲染为底部标题横条）
+    pub fn minimize_leaf(&mut self, id: u64, minimized: bool) {
+        self.main_tree.set_minimized(id, minimized);
+        self.sync_layout_cache();
+    }
+
+    /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None
+    pub fn focus_leaf_dir(&mut self, id: u64, dir: crate::ui::layout::SplitDir, first: bool) -> Option<u64> {
+        let ret = self.main_tree.focus_dir(id, dir, first);
+        self.sync_layout_cache();
+        ret
+    }
+
+    /// 与方向邻居交换内容（布局模式 H/J/K/L）；无邻居返回 false
+    pub fn swap_leaf_dir(&mut self, id: u64, dir: crate::ui::layout::SplitDir, first: bool) -> bool {
+        let ret = self.main_tree.swap_dir(id, dir, first);
+        self.sync_layout_cache();
+        ret
+    }
+
+    /// 叶子所在 Split 恢复 50/50
+    pub fn equalize_leaf(&mut self, id: u64) {
+        self.main_tree.equalize(id);
+        self.sync_layout_cache();
+    }
+
+    /// 最小化叶子 id
+    pub fn minimized_leaf(&self) -> Option<u64> {
+        self.main_tree.minimized_leaf()
+    }
+
+    /// 布局树变更后同步 dump 缓存（get_layout 实时性；否则返回 null/旧值）
+    fn sync_layout_cache(&mut self) {
+        let json = serde_json::to_string(&self.main_tree.dump()).unwrap_or_default();
+        helix_js::cache_layout(&json);
     }
 
     pub fn focus_leaf(&mut self, id: u64) {
         self.main_tree.focus(id);
+        self.sync_layout_cache();
     }
 
     pub fn layout_tree(&mut self) -> &mut crate::ui::layout::LayoutTree {
         &mut self.main_tree
     }
-
     /// 浮动叶子（终端 Floating 模式）：返回当前浮动叶子 id
     pub fn floating(&self) -> Option<u64> {
         self.main_tree.floating()
@@ -397,11 +471,13 @@ impl Compositor {
     /// 设置浮动叶子（渲染在最上层浮窗）；组件不存在时 no-op
     pub fn set_float(&mut self, id: u64) {
         self.main_tree.set_float(id);
+        self.sync_layout_cache();
     }
 
     /// 取消浮动（终端回其 split 位置）
     pub fn unfloat(&mut self) {
         self.main_tree.unfloat();
+        self.sync_layout_cache();
     }
 
     pub fn reset_plugin_diffs(&mut self) {

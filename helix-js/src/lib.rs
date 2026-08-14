@@ -68,6 +68,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(commands::js_set_selection), JsString::from("set_selection"), 4)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_statusline), JsString::from("set_statusline"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_load), JsString::from("load"), 1)
+                .function(NativeFunction::from_fn_ptr(commands::js_plugin), JsString::from("plugin"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_export), JsString::from("export"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_lazy), JsString::from("lazy"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_run_command), JsString::from("run_command"), 1)
@@ -84,12 +85,19 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(popup::js_term_feed), JsString::from("term_feed"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_terminal_mode), JsString::from("set_terminal_mode"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_term_clear), JsString::from("term_clear"), 1)
+                .function(NativeFunction::from_fn_ptr(popup::js_term_save), JsString::from("term_save"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_resize_term), JsString::from("resize_term"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_split), JsString::from("split"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_close_leaf), JsString::from("close_leaf"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_zoom_leaf), JsString::from("zoom"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_unzoom), JsString::from("unzoom"), 0)
                 .function(NativeFunction::from_fn_ptr(layout::js_resize_leaf), JsString::from("resize_leaf"), 2)
+                .function(NativeFunction::from_fn_ptr(layout::js_resize_leaf_dir), JsString::from("layout_resize"), 3)
+                .function(NativeFunction::from_fn_ptr(layout::js_swap_leaves), JsString::from("layout_swap"), 2)
+                .function(NativeFunction::from_fn_ptr(layout::js_minimize_leaf), JsString::from("layout_minimize"), 2)
+                .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir), JsString::from("layout_focus"), 2)
+                .function(NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir), JsString::from("layout_swap_dir"), 2)
+                .function(NativeFunction::from_fn_ptr(layout::js_equalize_leaf), JsString::from("layout_equalize"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf), JsString::from("focus"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_get_layout), JsString::from("get_layout"), 0)
                 .function(NativeFunction::from_fn_ptr(layout::js_restore_layout), JsString::from("restore_layout"), 1)
@@ -174,6 +182,101 @@ mod tests {
         // 校验
         assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "top", size: 10 });"#).is_err());
         assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "right" });"#).is_err()); // 缺 size
+    }
+
+    /// 交互 bash 启动不应报 "cannot set terminal process group"（缺 setsid/控制终端）。
+    /// 修复前：bash job control 初始化失败向 stderr 打印该错误。
+    #[test]
+    fn pty_bash_interactive_no_error() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("bi", () => {
+            const pid = helix.open_terminal({ cmd: "bash -i", side: "bottom", size: 10 });
+            helix.echo("pid:" + pid);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("bi", &ctx).unwrap());
+        let _ = take_messages();
+        let pty_id = match &take_ui_requests()[0] {
+            UiRequest::OpenTerminal { pty_id, .. } => *pty_id,
+            other => panic!("expected OpenTerminal, got {other:?}"),
+        };
+        // 收集 bash 启动输出直到报错或超时（提示符正常出现即好）。
+        // 注意：必须 resolve 事件才能触发 bridge 回调（term_feed → UI 请求），
+        // 只 drain 不 resolve 会让断言假绿（输出为空）。
+        let mut output = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while std::time::Instant::now() < deadline {
+            for ev in drain_term_events() {
+                let eid = match &ev {
+                    TermEvent::Chunk(id, _) => *id,
+                    TermEvent::Exit(id, _, _) => *id,
+                };
+                let _ = resolve_term_event(eid, ev);
+            }
+            for req in take_ui_requests() {
+                if let UiRequest::TermFeed { chunk, .. } = req {
+                    output.push_str(&chunk);
+                }
+            }
+            if output.contains("cannot set terminal process group") {
+                break;
+            }
+            if output.contains('$') {
+                break; // 提示符出现
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = term_kill(pty_id);
+        // 消费 Exit 事件，清理回调注册
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !with_terms(|m| m.is_empty()) && std::time::Instant::now() < deadline {
+            let _ = drain_term_events();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !output.contains("cannot set terminal process group"),
+            "交互 bash 不应报 job control 错误，实际输出: {output:?}"
+        );
+    }
+
+    #[test]
+    fn open_terminal_after_kill_repro() {
+        // 关闭（term_kill，模拟 Esc/q 关闭终端）后再 open_terminal：应能正常打开。
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("t3", () => {
+            const pid = helix.open_terminal({ cmd: "cat", side: "bottom", size: 10 });
+            helix.echo("pid:" + pid);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("t3", &ctx).unwrap(), "第一次 open_terminal");
+        let _ = take_messages();
+        let pty_id = match &take_ui_requests()[0] {
+            UiRequest::OpenTerminal { pty_id, .. } => *pty_id,
+            other => panic!("expected OpenTerminal, got {other:?}"),
+        };
+        // 模拟关闭：Esc/q → remove_type → PluginTerminal::drop → term_kill(pty_id)
+        term_kill(pty_id).unwrap();
+        // 消费 Exit 事件（worker 退出回调），与事件循环 drain 一致
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !with_terms(|m| m.is_empty()) && std::time::Instant::now() < deadline {
+            let _ = drain_term_events();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(run_command("t3", &ctx).unwrap(), "kill 后再 open_terminal 应成功");
+        let _ = take_messages();
+        let _ = take_ui_requests(); // 清空第二次 open 的请求，避免污染后续测试
     }
 
     #[test]
@@ -352,6 +455,7 @@ mod tests {
         assert!(load_script(r#"helix.open_panel({ side: "top", size: 10, render: () => [] });"#).is_err());
         assert!(load_script(r#"helix.open_panel({ side: "right", size: 10 });"#).is_err()); // 缺 render
         assert!(load_script(r#"helix.open_panel({ side: "right", size: "big", render: () => [] });"#).is_err());
+        crate::state::with_open_panels(|p| p.clear()); // 清 OPEN_PANELS，防污染后续测试
     }
 
     #[test]
@@ -386,6 +490,8 @@ mod tests {
         load_script(r#"helix.open_panel({ side: "left", size: 10, render: () => ["x"] });"#).unwrap();
         let UiRequest::OpenPanel { id: id2, .. } = take_ui_requests()[0] else { unreachable!("expected OpenPanel") };
         assert!(!panel_has_onkey(id2));
+        crate::state::with_open_panels(|p| p.clear()); // 清 OPEN_PANELS（两个面板未 close），防污染
+        let _ = take_ui_requests();
     }
 
     #[test]
@@ -823,6 +929,7 @@ mod tests {
         assert!(has_handlers("save"), "handlers re-registered after reload");
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
+        let _ = take_ui_requests(); // 清 reload_all 入队的 ClosePanel
     }
 
     #[test]
@@ -1436,6 +1543,79 @@ mod tests {
         let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("ccmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["ok"]);
+    }
+
+    /// 方案 2 依赖清单：helix.plugin deps 自动拓扑加载（先依赖后自身）、
+    /// 已加载去重、循环依赖报错。不碰 set_plugins_dir（OnceLock 全局，污染后续测试），
+    /// 全用绝对路径。
+    #[test]
+    fn plugin_deps_auto_load() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        // ponytail: 泄漏 tempdir（同文件其他测试同款）——线程池复用线程，
+        // 目录被删会误伤后续 load；泄漏几个 /tmp 小文件换确定性。
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        std::fs::create_dir_all(d.join("features")).unwrap();
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::write(
+            d.join("lib/icons.js"),
+            r#"helix.plugin("icons", { deps: [] }); helix.export({ src: "icons" });"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("features/feat.js"),
+            format!(
+                r#"helix.plugin("feat", {{ deps: [{icons:?}] }}); helix.export({{ src: "feat" }});"#,
+                icons = d.join("lib/icons.js").to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let icons_abs = d.join("lib/icons.js").to_string_lossy().into_owned();
+        let feat_abs = d.join("features/feat.js").to_string_lossy().into_owned();
+        let script = format!(
+            r#"
+        helix.register_command("deps-run", () => {{
+            const feat = helix.load({feat:?});
+            const icons = helix.load({icons:?});
+            helix.echo("feat:" + feat.src + " icons:" + icons.src + " same:" + (feat === helix.load({feat:?})));
+        }});
+        "#,
+            feat = feat_abs,
+            icons = icons_abs,
+        );
+        load_script_named("driver.js", &script).unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("deps-run", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["feat:feat icons:icons same:true"]);
+
+        // 循环依赖：a deps b，b deps a → 报错
+        let a_abs = d.join("a.js").to_string_lossy().into_owned();
+        let b_abs = d.join("b.js").to_string_lossy().into_owned();
+        let a_script = format!(r#"helix.plugin("a", {{ deps: [{b:?}] }});"#, b = b_abs);
+        let b_script = format!(r#"helix.plugin("b", {{ deps: [{a:?}] }});"#, a = a_abs);
+        std::fs::write(d.join("a.js"), a_script).unwrap();
+        std::fs::write(d.join("b.js"), b_script).unwrap();
+        let cyc_script = format!(
+            r#"
+        helix.register_command("cyc-run", () => {{
+            try {{
+                helix.load({a:?});
+                helix.echo("no-cycle");
+            }} catch (e) {{
+                helix.echo("cycle:" + String(e));
+            }}
+        }});
+        "#,
+            a = a_abs,
+        );
+        load_script_named("cyc.js", &cyc_script).unwrap();
+        assert!(run_command("cyc-run", &ctx).unwrap());
+        assert!(
+            take_messages()[0].contains("circular dependency"),
+            "循环依赖应报错"
+        );
     }
 
     /// 统一入口：load/export 往返 + 缓存、lazy 桩、run_command 带 ctx、未知文件报错。

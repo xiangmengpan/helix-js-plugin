@@ -53,6 +53,26 @@ impl PluginPanel {
         self.side = side;
     }
 
+    /// 面板在 JS 注册表丢失（reload/状态丢失的僵尸）：自动移除自愈，
+    /// 否则渲染报错 + 按键穿透 → 面板无法关闭。
+    fn zombie_selfheal(&self) -> EventResult {
+        let id = self.id;
+        EventResult::Consumed(Some(Box::new(
+            move |compositor: &mut Compositor, cx: &mut Context| {
+                helix_js::close_panel_state(id);
+                // popup id ≠ leaf id：按 popup id 找面板 leaf 再移除（remove_panel 只清 layers）
+                if let Some(leaf) =
+                    compositor.layout_tree().find_leaf_id::<PluginPanel>(|p| p.id() == id)
+                {
+                    compositor.remove_leaf(leaf);
+                }
+                compositor.remove_panel(id);
+                cx.editor.set_error(format!(
+                    "面板 {id} 状态丢失，已自动关闭（:plugin-reload 后需重新打开）"
+                ));
+            },
+        )))
+    }
 }
 
 impl Component for PluginPanel {
@@ -60,8 +80,12 @@ impl Component for PluginPanel {
         let Event::Key(key_event) = event else {
             return EventResult::Ignored(None);
         };
-        // 无 onKey 的面板：缺省全 Ignore，不调 popup_key（其缺省 Esc→Close 语义只适用于弹窗）
+        // 无 onKey 的面板：缺省全 Ignore，不调 popup_key（其缺省 Esc→Close 语义只适用于弹窗）。
+        // 面板在 JS 注册表已丢失（reload/状态丢失的僵尸）：自动移除自愈
         if !helix_js::panel_has_onkey(self.id) {
+            if !helix_js::popup_exists(self.id) {
+                return self.zombie_selfheal();
+            }
             return EventResult::Ignored(None);
         }
         let Some(key) = key_to_plugin_key(key_event) else {
@@ -129,8 +153,10 @@ impl Component for PluginPanel {
                 )))
             }
             Ok(PopupKeyResult::Handled) => EventResult::Consumed(None),
-            // 穿透给编辑器；Err 仅发生在 JS 侧异常时，同样放行
-            Ok(PopupKeyResult::Ignored) | Err(_) => EventResult::Ignored(None),
+            // 穿透给编辑器；Err 仅发生在 JS 侧异常时（popup 已不在 JS 注册表——热重载/状态
+            // 丢失后的僵尸面板）：自动移除面板自愈，否则渲染报错 + 按键穿透无法关闭
+            Ok(PopupKeyResult::Ignored) => EventResult::Ignored(None),
+            Err(_) => self.zombie_selfheal(),
         }
     }
 

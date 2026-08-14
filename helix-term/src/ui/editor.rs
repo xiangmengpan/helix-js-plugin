@@ -7,7 +7,6 @@ use crate::{
     keymap::{KeymapResult, Keymaps},
     ui::{
         document::{render_document, LinePos, TextRenderer},
-        statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
         Completion, ProgressSpinners,
     },
@@ -235,15 +234,8 @@ impl EditorView {
             Self::render_diagnostics(doc, view, inner, surface, theme);
         }
 
-        let statusline_area = view
-            .area
-            .clip_top(view.area.height.saturating_sub(1))
-            .clip_bottom(1); // -1 from bottom to remove commandline
-
-        let mut context =
-            statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
-
-        statusline::render(&mut context, statusline_area, surface);
+        // 状态栏已上移到 compositor 层全局渲染（永远屏幕底部 1 行，与焦点叶子无关）；
+        // 此处保留底部 1 行留白（clip_bottom(1) 已在上方处理）
     }
 
     pub fn render_rulers(

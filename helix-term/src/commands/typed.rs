@@ -4558,7 +4558,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             }
             helix_js::UiRequest::ClosePanel { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
-                    compositor.remove_leaf(id);
+                    // popup id ≠ 布局树 leaf id（split 分配）：按 popup id 找面板 leaf 再移除
+                    use crate::ui::plugin_panel::PluginPanel;
+                    let found = compositor.layout_tree().find_leaf_id::<PluginPanel>(|p| {
+                        p.id() == id
+                    });
+                    if let Some(leaf) = found {
+                        compositor.remove_leaf(leaf);
+                    }
                     // 先清 render 注册表（幂等），再按实例 id 移除对应层（多面板并存）
                     let _ = helix_js::close_popup(id);
                     compositor.remove_panel(id);
@@ -4664,6 +4671,33 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::TermSave { view_id, path } => {
+                job::dispatch_blocking(move |editor, compositor| {
+                    let Some(term) = compositor
+                        .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+                            t.view_id() == view_id
+                        })
+                    else {
+                        editor.set_error(format!("term_save: no terminal with view_id {view_id}"));
+                        return;
+                    };
+                    let path = if path.is_empty() {
+                        format!(
+                            "{}/.cache/helix/term-{view_id}.log",
+                            std::env::var("HOME").unwrap_or_default()
+                        )
+                    } else {
+                        path
+                    };
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::write(&path, term.full_text()) {
+                        Ok(()) => editor.set_status(format!("终端已保存到 {path}")),
+                        Err(e) => editor.set_error(format!("term_save: {e}")),
+                    }
+                });
+            }
             helix_js::UiRequest::TermResize { view_id, size } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(term) = compositor
@@ -4715,6 +4749,66 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             helix_js::UiRequest::ResizeLeaf { id, ratio } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.resize_leaf(id, ratio);
+                });
+            }
+            helix_js::UiRequest::ResizeLeafDir { id, dir, delta } => {
+                use crate::ui::layout::SplitDir;
+                let dir = match dir.as_str() {
+                    "h" => SplitDir::H,
+                    "v" => SplitDir::V,
+                    other => bail!("layout_resize: unknown dir '{other}'"),
+                };
+                job::dispatch_blocking(move |editor, compositor| {
+                    if !compositor.resize_leaf_dir(id, dir, delta) {
+                        editor.set_error("layout_resize: 该叶子此方向不可调（父分割方向不匹配）");
+                    }
+                });
+            }
+            helix_js::UiRequest::SwapLeaves { id1, id2 } => {
+                job::dispatch_blocking(move |editor, compositor| {
+                    if !compositor.swap_leaves(id1, id2) {
+                        editor.set_error("layout_swap: 叶子不存在");
+                    }
+                });
+            }
+            helix_js::UiRequest::MinimizeLeaf { id, minimized } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.minimize_leaf(id, minimized);
+                });
+            }
+            helix_js::UiRequest::FocusLeafDir { id, dir } => {
+                use crate::ui::layout::SplitDir;
+                let (dir, first) = match dir.as_str() {
+                    "left" => (SplitDir::H, true),
+                    "right" => (SplitDir::H, false),
+                    "up" => (SplitDir::V, true),
+                    "down" => (SplitDir::V, false),
+                    other => bail!("layout_focus: unknown dir '{other}'"),
+                };
+                job::dispatch_blocking(move |editor, compositor| {
+                    if compositor.focus_leaf_dir(id, dir, first).is_none() {
+                        editor.set_error("layout_focus: 该方向无邻居（边界）");
+                    }
+                });
+            }
+            helix_js::UiRequest::SwapLeafDir { id, dir } => {
+                use crate::ui::layout::SplitDir;
+                let (dir, first) = match dir.as_str() {
+                    "left" => (SplitDir::H, true),
+                    "right" => (SplitDir::H, false),
+                    "up" => (SplitDir::V, true),
+                    "down" => (SplitDir::V, false),
+                    other => bail!("layout_swap_dir: unknown dir '{other}'"),
+                };
+                job::dispatch_blocking(move |editor, compositor| {
+                    if !compositor.swap_leaf_dir(id, dir, first) {
+                        editor.set_error("layout_swap_dir: 该方向无邻居");
+                    }
+                });
+            }
+            helix_js::UiRequest::EqualizeLeaf { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.equalize_leaf(id);
                 });
             }
             helix_js::UiRequest::FocusLeaf { id } => {
@@ -4844,6 +4938,8 @@ fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
         }
         Err(err) => {
             cx.editor.set_error(format!("plugin-reload: {err}"));
+            // reload_all 入队的 ClosePanel（面板清理）即使重跑失败也要处理，否则僵尸面板残留
+            apply_ui_requests(helix_js::take_ui_requests())?;
             Ok(())
         }
     }

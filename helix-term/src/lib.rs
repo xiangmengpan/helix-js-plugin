@@ -13,6 +13,9 @@ pub mod keymap;
 pub mod logging;
 pub mod ui;
 
+// 供集成测试访问（set_plugins_dir / load_script_named 等）
+pub use helix_js;
+
 #[cfg(not(windows))]
 use std::env::var_os;
 

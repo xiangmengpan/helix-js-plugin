@@ -349,6 +349,11 @@ pub fn new_readonly_tempfile_in_dir(
     file.as_file_mut().set_permissions(perms)?;
     Ok(file)
 }
+
+/// 面板/弹窗类测试共享锁：OPEN_PANELS 是全局（reload_all 遍历关闭），并行测试
+/// 会互相关闭对方的面板；面板相关集成测试持此锁串行执行。
+pub static PANEL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct AppBuilder {
     args: Args,
     config: Config,

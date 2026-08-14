@@ -58,7 +58,7 @@ fn panel_text(app: &mut Application) -> String {
         .join("\n")
 }
 
-/// 建临时目录结构 + 加载真实插件（读取 ~/.config/helix/plugins/filetree.js）
+/// 建临时目录结构 + 加载真实插件（读取 ~/.config/helix/plugins/features/filetree/index.js）
 async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
     let dir = tempfile::tempdir()?;
     std::fs::create_dir(dir.path().join("src"))?;
@@ -66,7 +66,7 @@ async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
     std::fs::write(dir.path().join("readme.md"), "hi\n")?;
     std::fs::write(dir.path().join(".secret.txt"), "s\n")?;
     let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME unset"))?;
-    let src = std::fs::read_to_string(format!("{home}/.config/helix/plugins/filetree.js"))?;
+    let src = std::fs::read_to_string(format!("{home}/.config/helix/plugins/features/filetree/index.js"))?;
     let plugin = dir.path().join("filetree.js");
     std::fs::write(&plugin, src)?;
     let mut app = AppBuilder::new().build()?;
@@ -77,6 +77,7 @@ async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
 /// 核心路径：reveal 定位 → 展开目录 → 打开文件（buffer 切换）
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_reveal_expand_open() -> anyhow::Result<()> {
+    let _pl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (dir, mut app) = setup().await?;
     let main_js = dir.path().join("src/main.js");
     let readme = dir.path().join("readme.md");
@@ -107,6 +108,7 @@ async fn filetree_reveal_expand_open() -> anyhow::Result<()> {
 /// 隐藏文件切换：默认隐藏 . 文件，H 后显示
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_hidden_toggle() -> anyhow::Result<()> {
+    let _pl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (dir, mut app) = setup().await?;
     let readme = dir.path().join("readme.md");
     pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
@@ -127,6 +129,7 @@ async fn filetree_hidden_toggle() -> anyhow::Result<()> {
 /// 新建文件：a → 输入弹窗 → Tab 聚焦 → 输入名字 → Enter → 异步 touch 生效
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_new_file_prompt() -> anyhow::Result<()> {
+    let _pl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (dir, mut app) = setup().await?;
     let readme = dir.path().join("readme.md");
     pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
@@ -155,6 +158,7 @@ async fn filetree_new_file_prompt() -> anyhow::Result<()> {
 /// 关闭面板：q 键
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_close_panel() -> anyhow::Result<()> {
+    let _pl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (_, mut app) = setup().await?;
     pump(&mut app, ":filetree<ret>").await?;
     let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();

@@ -203,20 +203,36 @@ pub(crate) fn spawn_pty_worker(
                 return;
             }
         };
-        let mut child = match Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .env("TERM", "xterm-256color")
-            .stdin(Stdio::from(stdin_slave))
-            .stdout(Stdio::from(stdout_slave))
-            .stderr(Stdio::from(slave))
-            .process_group(0) // 子进程自成进程组：kill 杀整组（sh 未 exec 时的孙进程也杀）
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => {
-                let _ = tx.send(TermEvent::Exit(id, 127, None));
-                return;
+        let mut child = {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(&cmd)
+                .env("TERM", "xterm-256color")
+                .stdin(Stdio::from(stdin_slave))
+                .stdout(Stdio::from(stdout_slave))
+                .stderr(Stdio::from(slave));
+            // setsid（新会话，子进程为会话头+组长）+ slave 设为控制终端：交互 bash 的
+            // job control 需要，否则报 "cannot set terminal process group: Inappropriate ioctl for device"。
+            // 不能用 process_group(0)——它先让子进程成组长，setsid 会 EPERM 失败。
+            // setsid 后 PGID==PID，下方 kill(-pgid) 杀整组语义不变。
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            match command.spawn() {
+                Ok(c) => c,
+                Err(_) => {
+                    let _ = tx.send(TermEvent::Exit(id, 127, None));
+                    return;
+                }
             }
         };
         // 子进程进程组设为 pty 前台组（交互 bash 的 job control 正常；tcsetpgrp 失败静默）
