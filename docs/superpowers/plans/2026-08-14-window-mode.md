@@ -856,9 +856,65 @@ git commit -m "feat(window): BufferLeaf single-view editor leaf + helix.buffer_o
 
 `layout.js`:更新 C-w 相关注释,命令保留不动。
 
-- [ ] **步骤 2:验证不回归**
+- [ ] **步骤 2:验证不回归 + 重写 whichkey 测试**
 
-运行:`cargo test -p helix-term --test integration --features integration -- filetree`(filetree 测试经 which-key 键位?确认无 C-w 依赖;若有 `C-w f` 类绑定被测试使用,改为 `:filetree<ret>`)。
+`plugin_whichkey_cw_group`(plugin_terminal_modes.rs:664)验证的是旧行为(终端 C-w 被吞、C-\ ×2 回编辑器)。窗口模式接管后重写为验证新全局语义:
+
+```rust
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
+    // 窗口模式全局性:终端焦点下 C-w 直接进模式并导航邻居(无需 C-\ 回编辑器)
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("wk.txt");
+    std::fs::write(&file, "x\n")?;
+    let opener = dir.path().join("wk_open.js");
+    std::fs::write(
+        &opener,
+        r#"
+        helix.register_command("wk-open", () => {
+            helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>:wk-open<ret>", opener.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    let term_type = std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>();
+    for _ in 0..20 {
+        if app.compositor.has_component(term_type) { break; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(app.compositor.has_component(term_type), "终端应就位");
+    // 活动叶子=终端(1);终端焦点直接 C-w l/h——不吞键,进模式并导航
+    let cw = |c: char| {
+        Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
+            code: helix_view::input::KeyCode::Char(c),
+            modifiers: helix_view::input::KeyModifiers::CONTROL,
+        }))
+    };
+    tx.send(Ok(cw('w')))?;
+    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
+        code: helix_view::input::KeyCode::Char('h'),
+        modifiers: helix_view::input::KeyModifiers::NONE,
+    }))))?;
+    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
+        code: helix_view::input::KeyCode::Esc,
+        modifiers: helix_view::input::KeyModifiers::NONE,
+    }))))?;
+    app.event_loop_until_idle(&mut rx_stream).await;
+    assert_eq!(app.compositor.layout_tree().active(), 0, "终端焦点 C-w h 直接聚焦左邻居(编辑器)");
+    assert!(!app.compositor.window_mode_active(), "Esc 退出窗口模式");
+    Ok(())
+}
+```
+
+运行:`cargo test -p helix-term --test integration --features integration -- plugin_terminal_modes::plugin_whichkey_cw_group`。
+
+注:该测试不再加载 which-key.js/layout.js(它们不再提供 C-w 组;layout-* 命令由窗口模式内置),去掉对 ~/.config 插件的依赖,避免 HOME 缺失时静默跳过。
 
 - [ ] **步骤 3:Commit**
 
