@@ -849,6 +849,7 @@ mod tests {
             total_lines: 100,
             diagnostics_error: 2,
             diagnostics_warning: 1,
+            window_mode: false,
         };
         assert_eq!(statusline_parts(&ctx), None);
 
