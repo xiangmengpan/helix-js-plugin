@@ -299,6 +299,13 @@ if self.window_mode_active() {
 }
 ```
 
+**进入条件裁定(编排层):** C-w 仅在 normal/select 模式触发窗口模式;insert 模式 C-w 保留原义(delete_word_backward 删词,vim 惯例)。实现:拦截条件改为 `self.window_mode_active() || (editor.mode() != Mode::Insert && C-w)`。需在 compositor.handle_event 用 `cx.editor.mode()`(handle_event 有 cx 参数)。
+
+**测试迁移(任务 2 一并做):**
+- `tests/test/splits.rs` 的两个 C-w 测试(`test_changes_in_splits_apply_to_all_views`、`test_reload_all_with_split_jumplist`)改为 `:split<ret>` 或 `:vsplit<ret>` 命令序列(不再用 C-w 前缀);
+- `tests/test/commands.rs` 的 `test_delete_word_backward` 保持原样(insert 模式 C-w 保留后应恢复通过);
+- 新增测试:insert 模式下 C-w 不进窗口模式(仍执行删词);normal 模式 C-w 进窗口模式。
+
 LayoutTree 访问器(`layout.rs`,若缺失):
 
 ```rust
