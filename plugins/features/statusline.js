@@ -32,6 +32,11 @@ function render(ctx) {
   const mode = ctx.mode || "normal";
   const parts = [];
 
+  // ── 窗口模式指示：置最左（与默认状态栏一致）──
+  if (ctx.window_mode) {
+    parts.push({ text: "[WINDOW] ", style: "ui.statusline.insert" });
+  }
+
   // ── 左区：mode 色块 + 文件名（类型图标）+ git 分支 ──
   parts.push({ text: " " + (ICONS ? ICONS.getModeIcon(mode) : mode.charAt(0).toUpperCase()) + " ", style: "ui.statusline." + mode });
   const name = ctx.path ? ctx.path.split("/").pop() : "[scratch]";

@@ -225,6 +225,7 @@ pub struct StatuslineCtx {
     pub total_lines: usize,
     pub diagnostics_error: usize,
     pub diagnostics_warning: usize,
+    pub window_mode: bool,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。

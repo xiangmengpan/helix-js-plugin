@@ -222,3 +222,38 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// window_mode 透传给 JS 状态栏钩子（replace 钩子可据此渲染 [WINDOW]）
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("sl.js");
+    std::fs::write(
+        &plugin_path,
+        r#"helix.set_statusline((ctx) => ctx.window_mode ? "MODE_ON" : "MODE_OFF");"#,
+    )?;
+    test_key_sequences(
+        &mut AppBuilder::new().build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some("C-w"),
+                Some(&|app| {
+                    let (view, doc) = current_ref!(app.editor);
+                    let area = helix_view::graphics::Rect::new(0, 0, 120, 1);
+                    let mut buf = tui::buffer::Buffer::empty(area);
+                    let spinners = helix_term::ui::ProgressSpinners::default();
+                    let mut rc = helix_term::ui::statusline::RenderContext::new(
+                        &app.editor, doc, view, true, &spinners, true, // window_mode=true
+                    );
+                    helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+                    let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+                    assert!(rendered.contains("MODE_ON"), "window_mode 透传给 JS: {rendered:?}");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+

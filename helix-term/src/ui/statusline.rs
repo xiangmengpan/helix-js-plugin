@@ -94,6 +94,7 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             .iter()
             .filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Warning))
             .count(),
+        window_mode: context.window_mode,
     };
     let js_parts = helix_js::statusline_parts(&js_ctx);
     let js_replace = helix_js::statusline_replaces();
