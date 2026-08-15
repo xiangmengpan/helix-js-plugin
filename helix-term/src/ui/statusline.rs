@@ -151,11 +151,10 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     // Left side of the status line.
 
     if context.window_mode {
-        append(
-            &mut context.parts.left,
-            Span::from("[WINDOW] "),
-            base_style,
-        );
+        let mut indicator = Span::from("[WINDOW] ");
+        // 与 replace 模式 statusline.js 一致:ui.statusline.insert,保证指示可见
+        indicator.style = context.editor.theme.get("ui.statusline.insert");
+        append(&mut context.parts.left, indicator, base_style);
     }
 
     for element_id in &config.statusline.left {
