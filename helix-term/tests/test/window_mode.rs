@@ -265,3 +265,17 @@ async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn zoom_unzoom_restores_tree_render() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    app.compositor.split_leaf_with_ratio(SplitDir::H, false, 40, Box::new(PluginPanel::new(1, PanelSide::Right)));
+    pump(&mut app, "<C-w>f<esc>").await?;
+    assert_eq!(app.compositor.layout_tree().zoomed(), Some(1));
+    pump(&mut app, "<C-w>f<esc>").await?;
+    assert!(app.compositor.layout_tree().zoomed().is_none());
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let r0 = &rows[0];
+    assert!(r0.contains('┐'), "unzoom 后面板边框恢复: {r0:?}");
+    Ok(())
+}
