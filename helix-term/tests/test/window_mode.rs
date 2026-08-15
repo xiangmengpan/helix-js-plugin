@@ -289,3 +289,22 @@ async fn zoom_unzoom_restores_tree_render() -> anyhow::Result<()> {
     assert!(r0.contains('┐'), "unzoom 后面板边框恢复: {r0:?}");
     Ok(())
 }
+
+/// commandline(prompt)活跃时状态栏上移一行、提示符占最底行;关闭后状态栏回最底行(可隐藏)
+#[tokio::test(flavor = "multi_thread")]
+async fn commandline_yields_bottom_row_to_statusline_when_hidden() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    // 无 prompt:状态栏在最底行(行 29)
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    assert!(!rows[29].trim().is_empty(), "无 prompt 时状态栏在最底行: {:?}", &rows[29]);
+    // 打开命令 prompt(':' 键)
+    pump(&mut app, ":").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    assert!(rows[29].contains(":"), "prompt 输入行占最底行: {:?}", &rows[29]);
+    assert!(!rows[28].trim().is_empty(), "状态栏上移到倒数第 2 行: {:?}", &rows[28]);
+    // 关闭(Esc)→ 状态栏回最底行
+    pump(&mut app, "<esc>").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    assert!(!rows[29].trim().is_empty(), "关闭后状态栏回最底行: {:?}", &rows[29]);
+    Ok(())
+}
