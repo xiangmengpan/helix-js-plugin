@@ -152,3 +152,7 @@ helix.get_layout() 输出加 fixed 字段
 - 全局拦截吃掉默认 C-w 组:文档声明,可接受
 - BufferLeaf 渲染复用 render_view 需要把 `EditorView::render_view` 抽成可调用形式(小重构)
 - 状态栏 replace 与默认两路都要改:遗漏任一则指示不显示
+
+## 10. 实现状态(2026-08-14)
+
+一期全部完成:状态机/拦截/键位(任务 1-2)、弹窗自动退(3)、replace 透传(4)、fixed+layout_fix(5)、BufferLeaf+buffer_open(6)、which-key 下线(7)、回归+文档(8)。实现细节见 plans/2026-08-14-window-mode.md 与 git log。
