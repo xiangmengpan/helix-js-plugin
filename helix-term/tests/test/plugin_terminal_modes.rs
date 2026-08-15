@@ -659,9 +659,10 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 窗口模式全局性：终端焦点下 C-w 直接进模式并导航邻居（无需 C-\ 回编辑器）。
+/// 终端 Insert 直通模式 C-w 放行给 pty(不拦截,终端内 vim/emacs 的 C-w);
+/// C-\ 切到 Normal(滚动)后 C-w 进模式并导航邻居。
 #[tokio::test(flavor = "multi_thread")]
-async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
+async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("wk.txt");
     std::fs::write(&file, "x\n")?;
@@ -689,24 +690,40 @@ async fn plugin_whichkey_cw_group() -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(app.compositor.has_component(term_type), "终端应就位");
-    // 活动叶子=终端(1)；终端焦点直接 C-w l/h——不吞键，进模式并导航
-    let cw = |c: char| {
+    let ctrl = |c: char| {
         Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
             code: helix_view::input::KeyCode::Char(c),
             modifiers: helix_view::input::KeyModifiers::CONTROL,
         }))
     };
-    tx.send(Ok(cw('w')))?;
-    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
-        code: helix_view::input::KeyCode::Char('h'),
-        modifiers: helix_view::input::KeyModifiers::NONE,
-    }))))?;
-    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
+    let plain = |c: char| {
+        Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
+            code: helix_view::input::KeyCode::Char(c),
+            modifiers: helix_view::input::KeyModifiers::NONE,
+        }))
+    };
+    let esc = Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
         code: helix_view::input::KeyCode::Esc,
         modifiers: helix_view::input::KeyModifiers::NONE,
-    }))))?;
+    }));
+    // 终端 Insert 直通:C-w 放行给 pty(不拦截),窗口模式不进入、焦点仍在终端
+    tx.send(Ok(ctrl('w')))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.compositor.layout_tree().active(), 0, "终端焦点 C-w h 直接聚焦左邻居(编辑器)");
+    assert!(
+        !app.compositor.window_mode_active(),
+        "终端 Insert 直通模式 C-w 放行给 pty,不进窗口模式"
+    );
+    assert_eq!(app.compositor.layout_tree().active(), 1, "焦点仍在终端");
+    // C-\ → 终端 Normal(滚动);此焦点下 C-w 照常进窗口模式
+    tx.send(Ok(ctrl('\\')))?;
+    tx.send(Ok(ctrl('w')))?;
+    app.event_loop_until_idle(&mut rx_stream).await;
+    assert!(app.compositor.window_mode_active(), "终端 Normal(滚动)焦点 C-w 进窗口模式");
+    // h → 聚焦左邻居(编辑器);Esc 退出
+    tx.send(Ok(plain('h')))?;
+    tx.send(Ok(esc))?;
+    app.event_loop_until_idle(&mut rx_stream).await;
+    assert_eq!(app.compositor.layout_tree().active(), 0, "C-w h 聚焦左邻居(编辑器)");
     assert!(!app.compositor.window_mode_active(), "Esc 退出窗口模式");
     Ok(())
 }

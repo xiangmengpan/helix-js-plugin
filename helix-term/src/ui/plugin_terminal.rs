@@ -817,6 +817,11 @@ impl PluginTerminal {
         self.view_id
     }
 
+    /// 终端输入模式(Insert = 键直通 pty;Normal = 滚动)——窗口模式 C-w 豁免判断用
+    pub fn input_mode(&self) -> TermInputMode {
+        self.input_mode
+    }
+
     /// 把一块 PTY 输出喂进网格（TermFeed 请求路由到此处）
     pub fn feed(&mut self, chunk: &str) {
         self.grid.feed(chunk.as_bytes());

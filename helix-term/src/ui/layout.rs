@@ -461,8 +461,11 @@ impl LayoutTree {
     /// 最小化叶子：不占布局空间，渲染为底部一条标题横条（单例：再调用切换到新叶子）。
     /// minimized=false 恢复。最小化时若该叶子正被聚焦/缩放，焦点回编辑器。
     pub fn set_minimized(&mut self, id: u64, minimized: bool) {
-        if !self.components.contains_key(&id) || self.fixed.contains(&id) {
-            return; // fixed 叶子不可最小化
+        if !self.components.contains_key(&id) {
+            return;
+        }
+        if minimized && self.fixed.contains(&id) {
+            return; // fixed 叶子不可被最小化;还原不受限(否则 z 后设 fixed 的叶子无恢复路径)
         }
         if minimized {
             self.minimized = Some(id);

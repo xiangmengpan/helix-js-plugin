@@ -4671,7 +4671,10 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             return;
                         }
                     };
-                    // 新 view 绑定新文档：slotmap 键不可外部构造，临时插入取 id 后移除
+                    // 为何必须瞬态插入:slotmap 键只能由 tree.insert 分配,外部无法构造 ViewId;
+                    // 先 insert 拿 id,再 clone 出 view 并 remove——id 保持有效,BufferLeaf 持有该 view。
+                    // 为何安全:insert/remove 之间无渲染、无焦点切换,活视图树仅此瞬态改动,
+                    // 依赖 Tree 内部不变式(remove 不销毁已取出的 view,id 仍可被 ensure_view_init 使用)。
                     let mut view = helix_view::view::View::new(doc_id, editor.config().gutters.clone());
                     let id = editor.tree.insert(view);
                     view = editor.tree.get_mut(id).clone();

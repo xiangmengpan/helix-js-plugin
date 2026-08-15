@@ -212,6 +212,16 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
     let dump = app.compositor.layout_tree().dump();
     let f = dump.leafs.iter().find(|l| l.id == fixed_id).unwrap();
     assert!(f.fixed, "dump 含 fixed 字段");
+    // 陷阱回归:先最小化后 fixed 的叶子可还原(还原不受 fixed 拦截;否则无恢复路径)
+    app.compositor.set_leaf_fixed(fixed_id, false);
+    pump(&mut app, "<C-w>z<esc>").await?;
+    assert!(app.compositor.layout_tree().minimized().is_some(), "z 最小化(未 fixed)");
+    app.compositor.set_leaf_fixed(fixed_id, true);
+    pump(&mut app, "<C-w>z<esc>").await?;
+    assert!(
+        app.compositor.layout_tree().minimized().is_none(),
+        "fixed×minimized 叶子可还原(z 往返)"
+    );
     Ok(())
 }
 

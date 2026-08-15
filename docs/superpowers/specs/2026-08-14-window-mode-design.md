@@ -35,7 +35,7 @@ enum WindowMode {
 ```
 
 进出规则:
-- 任何焦点按 C-w(且 Inactive)→ Active,消费事件
+- 任何焦点按 C-w(且 Inactive)→ Active,消费事件;例外:活动叶子为终端且处于 Insert 直通模式时 C-w 放行给 pty(不拦截)
 - Active 内:Esc 或 C-w → Inactive,消费
 - Active 内:命中键位表 → 直调 `main_tree` 原生方法,消费
 - Active 内:其他键 → Ignored(保持模式,不穿透)
@@ -48,7 +48,7 @@ enum WindowMode {
 ```
 1. macro recording 检查(macro recording 状态下不进入/不处理模式键,避免录进宏)
 2. WindowMode::Active → 处理模式键(见 3.3),命中则 return
-3. Event::Key(C-w) 且 Inactive → 进模式,return Consumed
+3. Event::Key(C-w) 且 Inactive → 进模式,return Consumed(终端 Insert 直通模式豁免:放行到 pty)
 4. 原流程(layers → main_tree)
 ```
 
@@ -118,7 +118,8 @@ helix.get_layout() 输出加 fixed 字段
 
 | 场景 | 行为 |
 |---|---|
-| 终端焦点按 C-w | 进模式(全局拦截,终端无感知);字面 C-w 用现有 C-\ 穿透 |
+| 终端焦点按 C-w(Insert 直通) | 放行给 pty(终端内 vim/emacs 的 C-w 窗口命令/剪切;恢复基线) |
+| 终端焦点按 C-w(Normal 滚动) | 进模式 |
 | 面板焦点按 C-w | 进模式 |
 | 模式内打开弹窗 | push 时自动退模式 |
 | minimized 叶子为 active | z 还原;模式操作对 minimized 叶子跳过(同 fixed 语义) |
@@ -152,6 +153,7 @@ helix.get_layout() 输出加 fixed 字段
 - 全局拦截吃掉默认 C-w 组:文档声明,可接受
 - BufferLeaf 渲染复用 render_view 需要把 `EditorView::render_view` 抽成可调用形式(小重构)
 - 状态栏 replace 与默认两路都要改:遗漏任一则指示不显示
+- 终端 Insert 直通模式 C-w 需豁免拦截,否则终端内 vim/emacs 的 C-w 不可达(基线回归)——已修复并纳入边界表
 
 ## 10. 实现状态(2026-08-14)
 

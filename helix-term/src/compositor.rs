@@ -291,6 +291,7 @@ impl Compositor {
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('w'))
                 && cx.editor.mode() != Mode::Insert
+                && !self.terminal_passthrough()
             {
                 self.window_mode = WindowMode::Active;
                 return true;
@@ -563,6 +564,20 @@ impl Compositor {
     }
 
     /// 窗口模式:方向聚焦(h/j/k/l)。委托 focus_leaf_dir(内部 neighbor_leaf+focus,含缓存同步)
+    /// 终端 Insert 直通模式:C-w 放行给 pty(终端内 vim/emacs 需要;基线版本直通,
+    /// 本分支恢复);Normal(滚动)模式的终端/编辑器/面板焦点照常进窗口模式。
+    fn terminal_passthrough(&mut self) -> bool {
+        let active = self.main_tree.active();
+        self.find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
+            t.view_id() == active
+                && matches!(
+                    t.input_mode(),
+                    crate::ui::plugin_terminal::TermInputMode::Insert
+                )
+        })
+        .is_some()
+    }
+
     fn window_mode_focus(&mut self, c: char) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
