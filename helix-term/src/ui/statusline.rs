@@ -22,6 +22,10 @@ pub struct RenderContext<'a> {
     pub focused: bool,
     pub spinners: &'a ProgressSpinners,
     pub window_mode: bool,
+    /// 活动窗口类型(状态栏窗口图标用):editor/buffer/terminal/panel
+    pub active_leaf_type: &'static str,
+    /// 活动窗口路径(编辑器/buffer 叶子时为当前文件路径)
+    pub active_leaf_path: Option<String>,
     pub parts: RenderBuffer<'a>,
 }
 
@@ -33,6 +37,8 @@ impl<'a> RenderContext<'a> {
         focused: bool,
         spinners: &'a ProgressSpinners,
         window_mode: bool,
+        active_leaf_type: &'static str,
+        active_leaf_path: Option<String>,
     ) -> Self {
         RenderContext {
             editor,
@@ -41,6 +47,8 @@ impl<'a> RenderContext<'a> {
             focused,
             spinners,
             window_mode,
+            active_leaf_type,
+            active_leaf_path,
             parts: RenderBuffer::default(),
         }
     }
@@ -95,6 +103,8 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             .filter(|d| d.severity == Some(helix_core::diagnostic::Severity::Warning))
             .count(),
         window_mode: context.window_mode,
+        active_leaf_type: context.active_leaf_type.to_string(),
+        active_leaf_path: context.active_leaf_path.clone(),
     };
     let js_parts = helix_js::statusline_parts(&js_ctx);
     let js_replace = helix_js::statusline_replaces();

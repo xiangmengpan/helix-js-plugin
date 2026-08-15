@@ -954,6 +954,19 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
             .property(JsString::from("diagnostics_error"), JsValue::from(ctx.diagnostics_error as f64), Attribute::all())
             .property(JsString::from("diagnostics_warning"), JsValue::from(ctx.diagnostics_warning as f64), Attribute::all())
             .property(JsString::from("window_mode"), JsValue::from(ctx.window_mode), Attribute::all())
+            .property(
+                JsString::from("active_leaf_type"),
+                JsValue::from(JsString::from(ctx.active_leaf_type.clone())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("active_leaf_path"),
+                match &ctx.active_leaf_path {
+                    Some(p) => JsValue::from(JsString::from(p.clone())),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
             .build();
         let undefined = JsValue::undefined();
         let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine).ok()?;

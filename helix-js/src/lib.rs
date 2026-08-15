@@ -852,6 +852,8 @@ mod tests {
             diagnostics_error: 2,
             diagnostics_warning: 1,
             window_mode: false,
+            active_leaf_type: "editor".into(),
+            active_leaf_path: None,
         };
         assert_eq!(statusline_parts(&ctx), None);
 

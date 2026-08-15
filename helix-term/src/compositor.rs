@@ -375,9 +375,10 @@ impl Compositor {
         } else {
             area.clip_top(area.height.saturating_sub(1)).clip_bottom(1)
         };
-        let (view, doc) = current_ref!(cx.editor);
-        let is_focused = self.main_tree.active() == 0;
         let spinners = crate::ui::ProgressSpinners::default();
+        let is_focused = self.main_tree.active() == 0;
+        let (active_leaf_type, active_leaf_path) = self.active_leaf_info(cx);
+        let (view, doc) = current_ref!(cx.editor);
         let mut context = crate::ui::statusline::RenderContext::new(
             cx.editor,
             doc,
@@ -385,8 +386,47 @@ impl Compositor {
             is_focused,
             &spinners,
             self.window_mode_active(),
+            active_leaf_type,
+            active_leaf_path,
         );
         crate::ui::statusline::render(&mut context, statusline_area, surface);
+    }
+
+    /// 活动窗口类型与路径(状态栏窗口图标用):editor/buffer 带文件路径,terminal/panel 无
+    fn active_leaf_info(&mut self, cx: &mut Context) -> (&'static str, Option<String>) {
+        let active = self.main_tree.active();
+        if active == 0 {
+            let (_, doc) = current_ref!(cx.editor);
+            return (
+                "editor",
+                doc.path().map(|p| p.to_string_lossy().into_owned()),
+            );
+        }
+        if let Some(id) = self
+            .main_tree
+            .find_leaf_id::<crate::ui::BufferLeaf>(|_| true)
+        {
+            if id == active {
+                let path = self
+                    .main_tree
+                    .find_component::<crate::ui::BufferLeaf>()
+                    .and_then(|bl| {
+                        cx.editor.document(bl.view.doc).and_then(|d| {
+                            d.path().map(|p| p.to_string_lossy().into_owned())
+                        })
+                    });
+                return ("buffer", path);
+            }
+        }
+        if let Some(id) = self
+            .main_tree
+            .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|_| true)
+        {
+            if id == active {
+                return ("terminal", None);
+            }
+        }
+        ("panel", None)
     }
 
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {

@@ -230,6 +230,10 @@ pub struct StatuslineCtx {
     pub diagnostics_error: usize,
     pub diagnostics_warning: usize,
     pub window_mode: bool,
+    /// 活动窗口类型(editor/buffer/terminal/panel)——窗口模式图标用
+    pub active_leaf_type: String,
+    /// 活动窗口路径(editor/buffer 叶子时)
+    pub active_leaf_path: Option<String>,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。

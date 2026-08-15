@@ -45,6 +45,8 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
                         true,
                         &spinners,
                         false,
+                        "editor",
+                        None,
                     );
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -108,6 +110,8 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
             true,
             &spinners,
             false,
+            "editor",
+            None,
         );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
@@ -165,7 +169,7 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
         let (view, doc) = current_ref!(app.editor);
-        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false, "editor", None);
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -209,7 +213,7 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
         let (view, doc) = current_ref!(app.editor);
-        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false, "editor", None);
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -243,7 +247,7 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                     let mut buf = tui::buffer::Buffer::empty(area);
                     let spinners = helix_term::ui::ProgressSpinners::default();
                     let mut rc = helix_term::ui::statusline::RenderContext::new(
-                        &app.editor, doc, view, true, &spinners, true, // window_mode=true
+                        &app.editor, doc, view, true, &spinners, true, "editor", None, // window_mode=true
                     );
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -257,3 +261,44 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
     Ok(())
 }
 
+
+/// 窗口图标链路:active_leaf_type/active_leaf_path 透传给 replace 模式 JS 钩子
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("sl.js");
+    std::fs::write(
+        &plugin_path,
+        r#"helix.set_statusline((ctx) => ctx.active_leaf_type + "|" + (ctx.active_leaf_path || "null"));"#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    // 泵入插件加载(仿 filetree 测试的 pump;plugin_statusline 模块无 pump helper,内联)
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    // 手动渲染:window_mode + active_leaf=editor(/tmp/a.rs)
+    let (view, doc) = current_ref!(app.editor);
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    let mut rc = helix_term::ui::statusline::RenderContext::new(
+        &app.editor,
+        doc,
+        view,
+        true,
+        &spinners,
+        true, // window_mode
+        "editor",
+        Some("/tmp/a.rs".to_string()),
+    );
+    helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+    assert!(
+        rendered.contains("editor|/tmp/a.rs"),
+        "active_leaf 透传: {rendered:?}"
+    );
+    Ok(())
+}
