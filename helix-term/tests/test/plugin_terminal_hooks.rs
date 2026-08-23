@@ -189,3 +189,24 @@ async fn term_hooks_notify_events() -> anyhow::Result<()> {
     // term-exit 由 resolve_term_event 单测覆盖(集成链路依赖异步泵,不稳定)
     Ok(())
 }
+
+/// 缺口修复:窗口模式 x 也能关闭覆盖层(layers)中的终端组件(不只布局树叶子)
+#[tokio::test(flavor = "multi_thread")]
+async fn window_mode_x_closes_layer_terminal() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut app = AppBuilder::new().build()?;
+    // 终端组件直接作为覆盖层(不进布局树;id=99 不会误匹配 active=0)
+    app.compositor
+        .push(Box::new(helix_term::ui::plugin_terminal::PluginTerminal::new(99, 99, 40)));
+    let term_type = std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>();
+    assert!(app.compositor.has_component(term_type), "层中终端存在");
+    // C-w 进窗口模式(active=0 编辑器,非 insert)→ x 关闭层中终端
+    pump(&mut app, "<C-w>x").await?;
+    assert!(
+        !app.compositor.has_component(term_type),
+        "窗口模式 x 关闭 layers 中的终端"
+    );
+    // 布局树不受影响(编辑器仍在)
+    assert_eq!(app.compositor.layout_tree().active(), 0);
+    Ok(())
+}

@@ -676,8 +676,27 @@ impl Compositor {
         let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta);
     }
 
-    /// 窗口模式:关闭活动叶子(编辑器叶子 id=0 不可关)
+    /// 窗口模式:关闭活动窗口。优先关闭覆盖层(layers)中的终端/面板浮层;
+    /// 否则关闭布局树活动叶子(编辑器叶子 id=0 不可关)。
     fn window_mode_close(&mut self) {
+        let layer_has_term = self
+            .layers
+            .iter()
+            .any(|l| l.type_name().contains("::plugin_terminal::PluginTerminal"));
+        let layer_has_panel = self
+            .layers
+            .iter()
+            .any(|l| l.type_name().contains("::plugin_panel::PluginPanel"));
+        if layer_has_term || layer_has_panel {
+            // 只清 layers 中的组件(Drop → 杀 pty);布局树不受影响
+            self.layers.retain(|l| {
+                let t = l.type_name();
+                !t.contains("::plugin_terminal::PluginTerminal")
+                    && !t.contains("::plugin_panel::PluginPanel")
+            });
+            self.sync_layout_cache();
+            return;
+        }
         let a = self.main_tree.active();
         if a != 0 {
             self.remove_leaf(a);
