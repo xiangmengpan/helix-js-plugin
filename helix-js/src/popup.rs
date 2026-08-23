@@ -547,6 +547,12 @@ fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_
 
 /// 调 JS render 回调，返回内容：数组 → Content::Lines（旧行 API）；单节点对象（含 type）→ Content::Tree。
 /// ctx 对象 { width, height }。
+/// 通用组件渲染入口:与 render_popup 同一实现(panel/popup/任意组件共用注册表),
+/// 命名语义化——JS 视图层渲染任意已注册组件。
+pub fn render_component(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
+    render_popup(id, width, height, focus)
+}
+
 pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
     crate::init();
     crate::state::with_engine(|engine| {
