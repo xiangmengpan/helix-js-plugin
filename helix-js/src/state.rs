@@ -65,6 +65,8 @@ thread_local! {
     static BUFFER_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static STATUSLINE_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
+    // keymap 前缀提示回调(set_keymap_hint):无注册 → 内置 Info
+    static KEYMAP_HINT_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
     // 当前 eval 脚本声明的依赖（helix.plugin deps；load eval 后 take 递归加载）
@@ -173,6 +175,14 @@ pub(crate) fn with_popups<T>(f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -
 /// 访问 BUFFER_ICON_HOOK：同上（内容泄漏）
 pub(crate) fn with_buffer_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     BUFFER_ICON_HOOK.with(|h| {
+        let mut slot = h.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 KEYMAP_HINT_HOOK：同上（内容泄漏）
+pub(crate) fn with_keymap_hint_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+    KEYMAP_HINT_HOOK.with(|h| {
         let mut slot = h.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })

@@ -69,6 +69,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(commands::js_set_cursor), JsString::from("set_cursor"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_set_selection), JsString::from("set_selection"), 4)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_statusline), JsString::from("set_statusline"), 1)
+                .function(NativeFunction::from_fn_ptr(popup::js_set_keymap_hint), JsString::from("set_keymap_hint"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_load), JsString::from("load"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_plugin), JsString::from("plugin"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_export), JsString::from("export"), 1)
@@ -1845,6 +1846,33 @@ mod tests {
         assert_eq!(joined, "hi-view", "set_component_render 回调内容可读");
         // 未注册 → Err
         assert!(render_component(999, 10, 1, None).is_err());
+    }
+
+    /// keymap 前缀提示:set_keymap_hint 回调 → keymap_hint 调用;null/无注册 → None
+    #[test]
+    fn keymap_hint_hook() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 未注册 → None
+        assert_eq!(keymap_hint("g", &[]), None);
+        // 注册:返回多行文本
+        load_script(
+            r#"
+            helix.set_keymap_hint((ctx) => {
+                if (ctx.title === "g") return "h 左移\ng 分组";
+                return null;
+            });
+            "#,
+        )
+        .unwrap();
+        let entries = vec![("h".to_string(), "move_char_left".to_string())];
+        let out = keymap_hint("g", &entries).unwrap();
+        assert!(out.contains("h 左移"), "回调返回文本: {out:?}");
+        // 其他前缀 → null → None
+        assert_eq!(keymap_hint("x", &entries), None);
+        // 清除
+        load_script(r#"helix.set_keymap_hint(null);"#).unwrap();
+        assert_eq!(keymap_hint("g", &entries), None);
     }
 
     /// 组件状态通道:register_component_state(JSON) → get_component_state(对象);未注册 → null

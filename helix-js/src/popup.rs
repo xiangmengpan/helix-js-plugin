@@ -9,7 +9,7 @@ use crate::pty;
 use crate::shell::spawn_pty_worker;
 
 use crate::state::{
-    with_buffer_icon_hook,
+    with_buffer_icon_hook, with_keymap_hint_hook,
     with_popups, with_statusline_hook, with_terms, UI_REQUESTS,
 };
 
@@ -968,6 +968,44 @@ pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], context: &mut
 
 /// 调状态栏钩子；返回分段（每段可带 theme scope）。
 /// 回调返回 null/undefined → None；字符串 → 单段；数组 [{text, style?} | "str", ...] → 多段。
+/// keymap 前缀提示注册:helix.set_keymap_hint(fn) / 清除:set_keymap_hint(null)。
+/// 回调 fn(ctx) → 多行文本(显示提示)| null(不显示);ctx = {title, entries:[{keys, doc}]}。
+/// 未注册回调 → Rust 内置 Info 兜底。
+pub(crate) fn js_set_keymap_hint(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let arg = args.first().cloned().unwrap_or(JsValue::null());
+    with_keymap_hint_hook(|h| *h = if arg.is_null() { None } else { Some(arg) });
+    Ok(JsValue::undefined())
+}
+
+/// keymap 前缀提示:调用注册回调,返回多行文本;无回调/回调返回 null/抛错 → None(用内置 Info)。
+pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<String> {
+    crate::init();
+    let hook = with_keymap_hint_hook(|h| h.clone())?;
+    let func = hook.as_callable().and_then(JsFunction::from_object)?;
+    crate::state::with_engine(|engine| {
+        let undefined = JsValue::undefined();
+        let entries_arr = JsArray::new(engine);
+        for (keys, doc) in entries {
+            let item = ObjectInitializer::new(engine)
+                .property(JsString::from("keys"), JsValue::from(JsString::from(keys.as_str())), Attribute::all())
+                .property(JsString::from("doc"), JsValue::from(JsString::from(doc.as_str())), Attribute::all())
+                .build();
+            let _ = entries_arr.push(item, engine);
+        }
+        let ctx_obj = ObjectInitializer::new(engine)
+            .property(JsString::from("title"), JsValue::from(JsString::from(title)), Attribute::all())
+            .property(JsString::from("entries"), JsValue::from(entries_arr), Attribute::all())
+            .build();
+        let Ok(ret) = func.call(&undefined, &[JsValue::from(ctx_obj)], engine) else {
+            return None;
+        };
+        if ret.is_null_or_undefined() {
+            return None;
+        }
+        ret.as_string().map(|s| s.to_std_string_escaped())
+    })
+}
+
 pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
     crate::init();
     let hook = with_statusline_hook(|h| h.clone())?;
