@@ -1825,10 +1825,16 @@ mod tests {
         // 注册后 render_component 可读
         load_script(r#"helix.set_component_render(3, () => [{ type: "text", text: "hi-view" }]);"#).unwrap();
         let content = render_component(3, 10, 1, None).unwrap();
-        match content {
-            Content::Tree(_) => {}
-            other => panic!("expected tree content, got {other:?}"),
-        }
+        // 数组返回 → Lines;组件树对象 → Tree;两种都支持(与 popup render 同语义)
+        let joined = match &content {
+            Content::Lines(lines) => lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            Content::Tree(_) => String::new(),
+        };
+        assert_eq!(joined, "hi-view", "set_component_render 回调内容可读");
         // 未注册 → Err
         assert!(render_component(999, 10, 1, None).is_err());
     }
