@@ -23,6 +23,13 @@
 - A3 终端状态接入(fbccb0e49)
 - 全量集成 245/246(1 失败 = 已知 reload 并行 flake,单跑通过);helix-js 47、helix-term lib 55、clippy 0
 
-## 后续(阶段 B,另立计划)
+## 阶段 B 完成(0bf76212a)
 
-终端视图 JS 化(标题/最小化条由 JS 画,网格留 Rust)
+- B1 `set_component_render`(f8ba937ca + 断言修正 8acb0dec5)
+- B2 终端标题条 JS 化(0bf76212a):顶部 1 行由 JS 画,网格下移;minimized 条 JS 化;无回调 Rust 默认兜底;Drop 注销
+- 集成测试 terminal_title_bar_from_js_view:标题条渲染断言
+- 全量集成 247/247、helix-js 48、helix-term lib 55、clippy 0
+
+## 后续(阶段 C,另立计划)
+
+filetree 迁移指令模型 + 布局标签条示范组件;交互(点击标题/最小化条)依赖鼠标命中(P4),单独规划
