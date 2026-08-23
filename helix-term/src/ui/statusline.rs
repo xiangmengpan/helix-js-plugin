@@ -161,8 +161,8 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     // Left side of the status line.
 
     if context.window_mode {
-        let mut indicator = Span::from("[WINDOW] ");
-        // 与 replace 模式 statusline.js 一致:ui.statusline.insert,保证指示可见
+        // 窗口模式指示：窗口图标（与 replace 模式 statusline.js 的 ICONS.mode.window 同款字符）
+        let mut indicator = Span::from("\u{f108} ");
         indicator.style = context.editor.theme.get("ui.statusline.insert");
         append(&mut context.parts.left, indicator, base_style);
     }

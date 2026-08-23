@@ -346,17 +346,21 @@ impl Compositor {
         consumed
     }
 
-    /// 底部 UI 层活跃（命令/搜索 prompt、picker）：commandline 占最底行，状态栏上移一行
+    /// 底部 UI 层（命令/搜索 prompt、picker）：commandline 画在状态栏上一行
+    fn is_bottom_layer(layer: &dyn Component) -> bool {
+        let t = layer.type_name();
+        t.contains("::prompt::Prompt") || t.contains("picker::Picker") || t.contains("Picker")
+    }
+
     fn bottom_ui_active(&self) -> bool {
-        self.layers.iter().any(|layer| {
-            let t = layer.type_name();
-            t.contains("::prompt::Prompt") || t.contains("picker::Picker") || t.contains("Picker")
-        })
+        self.layers
+            .iter()
+            .any(|l| Self::is_bottom_layer(l.as_ref()))
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // commandline（prompt/picker）活跃时最底行归它：树与状态栏各上移一行；
-        // 否则状态栏独占最底行（commandline 关闭后自动恢复，可隐藏）
+        // commandline（prompt/picker）活跃时占状态栏上一行：树多让 1 行；
+        // 状态栏永远在最底 1 行（commandline 关闭后自动恢复）
         let bottom_ui = self.bottom_ui_active();
         let tree_area = if bottom_ui {
             area.clip_bottom(2)
@@ -365,16 +369,18 @@ impl Compositor {
         };
         // 主区域布局树：编辑器/终端/面板叶子各自在矩形里渲染
         self.main_tree.render(tree_area, surface, cx);
-        // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上（全高：prompt/picker 自绘最底行）
+        // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上；
+        // 底部 UI 层用缩一行的区域（commandline 画在状态栏上一行，不重叠）
         for layer in &mut self.layers {
-            layer.render(area, surface, cx);
+            let layer_area = if bottom_ui && Self::is_bottom_layer(layer.as_ref()) {
+                area.clip_bottom(1)
+            } else {
+                area
+            };
+            layer.render(layer_area, surface, cx);
         }
-        // 全局状态栏：无底部 UI 时屏幕最底 1 行；有则上移到倒数第 2 行（最底行给 commandline）
-        let statusline_area = if bottom_ui {
-            area.clip_top(area.height.saturating_sub(2)).clip_bottom(1)
-        } else {
-            area.clip_top(area.height.saturating_sub(1)).clip_bottom(1)
-        };
+        // 全局状态栏：永远屏幕最底 1 行
+        let statusline_area = area.clip_top(area.height.saturating_sub(1)).clip_bottom(1);
         let spinners = crate::ui::ProgressSpinners::default();
         let is_focused = self.main_tree.active() == 0;
         let (active_leaf_type, active_leaf_path) = self.active_leaf_info(cx);
@@ -430,8 +436,15 @@ impl Compositor {
     }
 
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        let bottom_ui = self.bottom_ui_active();
         for layer in self.layers.iter().rev() {
-            if let (Some(pos), kind) = layer.cursor(area, editor) {
+            // 底部 UI 层（commandline）光标与渲染同用缩一行的区域
+            let layer_area = if bottom_ui && Self::is_bottom_layer(layer.as_ref()) {
+                area.clip_bottom(1)
+            } else {
+                area
+            };
+            if let (Some(pos), kind) = layer.cursor(layer_area, editor) {
                 return (Some(pos), kind);
             }
         }

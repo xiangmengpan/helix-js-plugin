@@ -32,13 +32,11 @@ function render(ctx) {
   const mode = ctx.mode || "normal";
   const parts = [];
 
-  // ── 窗口模式指示：置最左（与默认状态栏一致）；附当前窗口图标（与 mode 色块并列）──
+  // ── 窗口模式指示：当前窗口图标（全部从 ICONS 引入，不新增 ICONS 条目）──
   if (ctx.window_mode) {
-    parts.push({ text: "[WINDOW] ", style: "ui.statusline.insert" });
-    let winIcon = "\uf107"; // 默认窗口图标
-    if (ctx.active_leaf_type === "terminal") winIcon = "\uf489"; // 终端
-    else if (ctx.active_leaf_type === "panel") winIcon = ICONS ? ICONS.getDirIcon(false) : "\uf115";
-    else winIcon = ICONS ? ICONS.getFileIcon(ctx.active_leaf_path || "") : "\uf15b"; // editor/buffer
+    let winIcon = ICONS ? ICONS.getFileIcon(ctx.active_leaf_path || "") : "";
+    if (ctx.active_leaf_type === "terminal") winIcon = ICONS ? ICONS.getFileIcon("term.sh") : "";
+    else if (ctx.active_leaf_type === "panel") winIcon = ICONS ? ICONS.getDirIcon(false) : "";
     parts.push({ text: " " + winIcon + " ", style: "ui.statusline.insert" });
   }
 

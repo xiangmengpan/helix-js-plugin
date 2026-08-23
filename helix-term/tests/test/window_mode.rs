@@ -265,12 +265,20 @@ async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
     pump(&mut app, "<C-w>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     let status = &rows[29];
-    assert!(status.contains("[WINDOW]"), "状态栏含指示: {status:?}");
+    assert!(
+        !status.contains("[WINDOW]"),
+        "不显示 [WINDOW] 文本: {status:?}"
+    );
+    // 窗口模式指示 = 窗口图标(Rust 默认状态栏;replace 模式 statusline.js 从 ICONS 引入同款)
+    assert!(
+        status.contains('\u{f108}'),
+        "显示窗口图标: {status:?}"
+    );
     pump(&mut app, "<esc>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     assert!(
-        !rows[29].contains("[WINDOW]"),
-        "退出后指示消失: {:?}",
+        !rows[29].contains('\u{f108}'),
+        "退出后窗口图标消失: {:?}",
         &rows[29]
     );
     Ok(())
@@ -300,11 +308,19 @@ async fn commandline_yields_bottom_row_to_statusline_when_hidden() -> anyhow::Re
     // 打开命令 prompt(':' 键)
     pump(&mut app, ":").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
-    assert!(rows[29].contains(":"), "prompt 输入行占最底行: {:?}", &rows[29]);
-    assert!(!rows[28].trim().is_empty(), "状态栏上移到倒数第 2 行: {:?}", &rows[28]);
-    // 关闭(Esc)→ 状态栏回最底行
+    assert!(
+        rows[28].trim_start().starts_with(":"),
+        "prompt 输入行在状态栏上一行(倒数第 2 行): {:?}",
+        &rows[28]
+    );
+    assert!(
+        !rows[29].trim().is_empty(),
+        "状态栏永远在最底行: {:?}",
+        &rows[29]
+    );
+    // 关闭(Esc)→ prompt 行消失,状态栏仍在最底行
     pump(&mut app, "<esc>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
-    assert!(!rows[29].trim().is_empty(), "关闭后状态栏回最底行: {:?}", &rows[29]);
+    assert!(!rows[29].trim().is_empty(), "关闭后状态栏仍最底行: {:?}", &rows[29]);
     Ok(())
 }
