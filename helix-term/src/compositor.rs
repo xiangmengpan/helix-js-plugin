@@ -776,6 +776,9 @@ impl Compositor {
             if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::plugin_popup::PluginPopup>() {
                 p.reset_render_state();
             }
+            if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::plugin_terminal::PluginTerminal>() {
+                p.reset_render_state();
+            }
         }
         // 布局树里的面板叶子（split 出的面板 diff 同样需重置，否则测试向新 surface 渲染不重画）
         self.main_tree.reset_plugin_diffs();

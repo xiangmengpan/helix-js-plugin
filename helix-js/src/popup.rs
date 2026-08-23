@@ -84,6 +84,14 @@ pub(crate) fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     Ok(JsValue::from(id))
 }
 
+/// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。
+pub fn unregister_component_render(id: u64) {
+    crate::init();
+    crate::state::with_popups(|p| {
+        p.remove(&id);
+    });
+}
+
 /// 组件视图回调注册:helix.set_component_render(id, fn)。
 /// 不创建弹窗/面板——只把 render 回调挂到共享注册表;
 /// Rust 组件(如终端)渲染时经 render_component 调用,JS 视图层画其外观。

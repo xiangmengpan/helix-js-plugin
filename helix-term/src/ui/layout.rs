@@ -544,6 +544,12 @@ impl LayoutTree {
             {
                 p.reset_render_state();
             }
+            if let Some(p) = comp
+                .as_any_mut()
+                .downcast_mut::<crate::ui::plugin_terminal::PluginTerminal>()
+            {
+                p.reset_render_state();
+            }
         }
     }
 

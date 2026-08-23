@@ -256,3 +256,30 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// 终端视图 JS 化:set_component_render(tid) 画标题条(顶部 1 行),网格在下方
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_title_bar_from_js_view() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("tview.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("tv-open", () => {
+            const tid = helix.open_terminal({ cmd: "cat", side: "right", size: 30 });
+            helix.set_component_render(tid, () => [{ type: "text", text: "TITLE-BAR" }]);
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":tv-open<ret>").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let joined = rows.join("\n");
+    assert!(
+        joined.contains("TITLE-BAR"),
+        "JS 视图标题条渲染在终端顶部: {joined:?}"
+    );
+    Ok(())
+}

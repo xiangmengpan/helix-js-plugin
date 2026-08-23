@@ -831,6 +831,8 @@ pub struct PluginTerminal {
     input_mode: TermInputMode,
     /// 上次渲染尺寸（None = 尚未渲染；首次渲染触发 resize + TIOCSWINSZ）
     last_size: Option<(u16, u16)>,
+    /// 标题条脏格 diff 渲染器(JS 视图层内容只重绘变化格)
+    diff: crate::ui::comp_layout::DiffRenderer,
 }
 
 impl PluginTerminal {
@@ -846,6 +848,7 @@ impl PluginTerminal {
             mode: TermMode::Dock,
             input_mode: TermInputMode::Insert,
             last_size: None,
+            diff: Default::default(),
         }
     }
 
@@ -870,6 +873,11 @@ impl PluginTerminal {
         self.input_mode
     }
 
+    /// 清空脏格 diff 状态(测试向不同 surface 渲染时需要重置)
+    pub(crate) fn reset_render_state(&mut self) {
+        self.diff = Default::default();
+    }
+
     /// 把一块 PTY 输出喂进网格（TermFeed 请求路由到此处）
     pub fn feed(&mut self, chunk: &str) {
         self.grid.feed(chunk.as_bytes());
@@ -889,6 +897,7 @@ impl Drop for PluginTerminal {
         // 关闭面板（Esc/层移除）→ 杀 pty；未知 id（已退出）静默
         let _ = helix_js::term_kill(self.pty_id);
         helix_js::unregister_component_state(self.view_id);
+        helix_js::unregister_component_render(self.view_id);
     }
 }
 
@@ -1043,7 +1052,7 @@ impl Component for PluginTerminal {
         }
     }
 
-    fn render(&mut self, area: Rect, surface: &mut Surface, _cx: &mut Context) {
+    fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         // 组件状态快照 → get_component_state(view_id)(JS 视图层读)
         let snap = serde_json::json!({
             "mode": match self.input_mode {
@@ -1056,14 +1065,32 @@ impl Component for PluginTerminal {
         })
         .to_string();
         helix_js::register_component_state(self.view_id, move |_| snap.clone());
-        // minimized：只画一条标题（不渲染网格）
+        // 标题条：JS 视图回调优先(顶部 1 行,网格下移);无回调 → 无标题条(现状)
+        let has_view = helix_js::render_component(self.view_id, area.width, 1, None).is_ok();
+        if has_view {
+            if let Ok(content) = helix_js::render_component(self.view_id, area.width, 1, None) {
+                let lines = crate::ui::comp_layout::render(content, (area.width, 1));
+                self.diff
+                    .render(&lines, area.with_height(1), surface, &cx.editor.theme);
+            }
+        }
+        // minimized：标题条已由 JS 视图画(若有);无视图时画默认条
         if self.mode == TermMode::Minimized {
-            let style = _cx.editor.theme.get("ui.popup");
-            surface.set_stringn(area.x, area.y, "▁ terminal (minimized) — :term-dock to restore", area.width as usize, style);
+            if !has_view {
+                let style = cx.editor.theme.get("ui.popup");
+                surface.set_stringn(
+                    area.x,
+                    area.y,
+                    "▁ terminal (minimized) — :term-dock to restore",
+                    area.width as usize,
+                    style,
+                );
+            }
             return;
         }
-        let rows = area.height.max(1);
-        let cols = area.width.max(1);
+        let grid_area = if has_view { area.clip_top(1) } else { area };
+        let rows = grid_area.height.max(1);
+        let cols = grid_area.width.max(1);
         // 尺寸变化 → TIOCSWINSZ + 网格 resize（首次渲染 last_size=None 也会触发）
         if self.last_size != Some((rows, cols)) {
             #[cfg(unix)]
@@ -1072,7 +1099,7 @@ impl Component for PluginTerminal {
             self.grid.resize(rows, cols);
             self.last_size = Some((rows, cols));
         }
-        self.grid.render(area, surface);
+        self.grid.render(grid_area, surface);
     }
 
     fn id(&self) -> Option<&'static str> {
