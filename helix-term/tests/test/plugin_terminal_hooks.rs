@@ -131,6 +131,13 @@ async fn esc_switches_to_normal_q_noop() -> anyhow::Result<()> {
             .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
         "Esc 切 normal 模式,终端不关闭"
     );
+    // normal 模式 Esc 无操作(与全局一致:不切回 insert,回 insert 用 i)
+    pump(&mut app, "<esc>").await?;
+    assert!(
+        app.compositor
+            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        "Esc(normal)无操作,终端仍在"
+    );
     // q 无操作(不关闭,关闭归 window 模式 x)
     pump(&mut app, "q").await?;
     assert!(

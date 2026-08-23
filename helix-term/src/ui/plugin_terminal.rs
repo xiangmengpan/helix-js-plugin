@@ -1008,8 +1008,12 @@ impl Component for PluginTerminal {
                     self.grid.set_scroll_offset(0);
                     EventResult::Consumed(None)
                 }
-                KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Esc => {
+                KeyCode::Char('i') | KeyCode::Char('a') => {
                     self.input_mode = TermInputMode::Insert;
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Esc => {
+                    // normal 模式 Esc 无操作(与全局一致:只在 insert→normal 单向;回 insert 用 i/a)
                     EventResult::Consumed(None)
                 }
                 KeyCode::Char('y') => {
