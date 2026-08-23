@@ -331,6 +331,8 @@ pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 /// 打开文档序列化缓存（helix-term 每帧写入；buffers/current_buffer 读取）
 pub(crate) static BUFFERS: OnceLock<Mutex<String>> = OnceLock::new();
+/// 当前文档诊断序列化缓存（helix-term 每帧写入；diagnostics 读取）
+pub(crate) static DIAGNOSTICS: OnceLock<Mutex<String>> = OnceLock::new();
 
 /// 组件状态提供者表(组件 id → JSON 生成器)
 type ComponentStateMap = HashMap<u64, Box<dyn Fn(u64) -> String>>;
@@ -455,6 +457,14 @@ pub fn cache_layout(json: &str) {
 pub fn cache_buffers(json: &str) {
     let _ = BUFFERS.get_or_init(Default::default);
     if let Some(m) = BUFFERS.get() {
+        *m.lock().unwrap() = json.to_string();
+    }
+}
+
+/// 写入当前文档诊断序列化缓存(helix-term 每帧更新;diagnostics 读取)
+pub fn cache_diagnostics(json: &str) {
+    let _ = DIAGNOSTICS.get_or_init(Default::default);
+    if let Some(m) = DIAGNOSTICS.get() {
         *m.lock().unwrap() = json.to_string();
     }
 }

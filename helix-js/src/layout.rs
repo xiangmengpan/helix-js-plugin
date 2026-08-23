@@ -202,7 +202,7 @@ pub(crate) fn js_layout_fix(_this: &JsValue, args: &[JsValue], ctx: &mut Context
 }
 
 /// JSON.parse 公共路径（不经 eval 字符串转义——Debug 格式的 \" 双重转义会让 JSON.parse 报错）
-fn js_json_parse(json: String, ctx: &mut Context, api: &str) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_json_parse(json: String, ctx: &mut Context, api: &str) -> boa_engine::JsResult<JsValue> {
     let json_global = ctx.global_object().get(JsString::from("JSON"), ctx)?;
     let parse = json_global
         .as_object()
@@ -236,7 +236,7 @@ pub(crate) fn js_buffers(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) 
     }
     let parsed = js_json_parse(json, ctx, "buffers")?;
     let Some(obj) = parsed.as_object() else { return Ok(JsValue::null()) };
-    Ok(obj.get(JsString::from("buffers"), ctx)?)
+    obj.get(JsString::from("buffers"), ctx)
 }
 
 /// 当前文档 id:helix.current_buffer()

@@ -4668,6 +4668,9 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            ref request @ (helix_js::UiRequest::Watch { .. } | helix_js::UiRequest::Unwatch { .. }) => {
+                crate::plugins_watch::apply_watch(request)?;
+            }
             helix_js::UiRequest::FocusBuffer { id } => {
                 job::dispatch_blocking(move |editor, _compositor| {
                     if let Some((doc_id, _)) =
@@ -5143,6 +5146,30 @@ pub fn serialize_buffers(editor: &helix_view::Editor) -> String {
         })
         .collect();
     serde_json::json!({ "current": current.as_u64(), "buffers": buffers }).to_string()
+}
+
+/// 当前文档诊断序列化:[{line, message, severity, code, source}]。
+/// severity 映射 "error"/"warning"/"info"/"hint"(无显式 severity 时按 Warning)。
+/// 每帧由 application.render 写入 helix-js 缓存(diagnostics 读取)。
+pub fn serialize_diagnostics(editor: &helix_view::Editor) -> String {
+    let doc_id = editor.tree.get(editor.tree.focus).doc;
+    let Some(doc) = editor.documents.get(&doc_id) else {
+        return "[]".to_string();
+    };
+    let diags: Vec<_> = doc
+        .diagnostics()
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "line": d.line,
+                "message": d.message,
+                "severity": serde_json::to_value(d.severity()).unwrap_or(serde_json::Value::Null),
+                "code": serde_json::to_value(&d.code).unwrap_or(serde_json::Value::Null),
+                "source": d.source,
+            })
+        })
+        .collect();
+    serde_json::to_string(&diags).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// :term-native 打开原生终端面板（PoC 演示命令）：注册两个隐藏命令——

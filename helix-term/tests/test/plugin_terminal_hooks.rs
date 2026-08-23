@@ -616,3 +616,80 @@ async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// cursor-move 事件:移动光标 → JS 回调触发(帧级节流)
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_move_event_fires() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("c.txt");
+    std::fs::write(&file, "line1\nline2\nline3\n")?;
+    let plugin_path = dir.path().join("cm.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        let last = null;
+        helix.on("cursor-move", (docId, ev) => { last = ev.row + ":" + ev.col; });
+        helix.register_command("cm-dump", () => helix.echo("cm:" + last));
+        "#,
+    )?;
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    // 移动光标(j)→ 事件触发
+    pump(&mut app, "j").await?;
+    pump(&mut app, ":cm-dump<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("cm:1:") || status.contains("cm:0:"),
+        "cursor-move 事件触发: {status:?}"
+    );
+    Ok(())
+}
+
+/// fs-watcher:watch 目录 → 文件变更 → JS 回调触发
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_watch_event_fires_on_change() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let watch_dir = dir.path().join("wd");
+    std::fs::create_dir_all(&watch_dir)?;
+    let plugin_path = dir.path().join("fw.js");
+    let wd_str = watch_dir.to_string_lossy().into_owned();
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"
+            let events = [];
+            helix.register_command("fw-watch", () => {{
+                helix.watch("{wd_str}", (evs) => {{ events = evs; }});
+            }});
+            helix.register_command("fw-dump", () => helix.echo("fw:" + events.map((e) => e.kind + ":" + e.path.split("/").pop()).join(",")));
+            "#
+        ),
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":fw-watch<ret>").await?;
+    // 创建文件 → notify → idle 泵 resolve
+    std::fs::write(watch_dir.join("newfile.txt"), "x\n")?;
+    let mut fired = false;
+    for _ in 0..60 {
+        pump(&mut app, "j").await?;
+        pump(&mut app, ":fw-dump<ret>").await?;
+        let status = app
+            .editor
+            .get_status()
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_default();
+        if status.contains("fw:create:newfile.txt") || status.contains("fw:modify:newfile.txt") {
+            fired = true;
+            break;
+        }
+    }
+    assert!(fired, "fs-watcher 回调触发(create/modify newfile.txt)");
+    Ok(())
+}

@@ -79,6 +79,11 @@ pub struct Application {
     lsp_progress: LspProgressMap,
 
     theme_mode: Option<theme::Mode>,
+
+    /// 光标检测上次位置(cursor-move 帧级节流)
+    last_cursor: Option<(usize, usize)>,
+    /// 选区数上次值(selection-change 变化检测)
+    last_selection_count: usize,
 }
 
 #[cfg(feature = "integration")]
@@ -299,6 +304,8 @@ impl Application {
             jobs,
             lsp_progress: LspProgressMap::new(),
             theme_mode,
+            last_cursor: None,
+            last_selection_count: 0,
         };
 
         Ok(app)
@@ -324,9 +331,14 @@ impl Application {
         let term_events = helix_js::drain_term_events();
         let async_events = helix_js::drain_async_events();
         if term_events.is_empty() && async_events.is_empty() {
+            // 仅 fs-watcher 事件:resolve 内部 drain(空则 no-op);回调可能编辑/echo
+            let _ = helix_js::watch::resolve_watch_events();
             return theme_changed;
         }
         let mut error = None;
+        if let Err(e) = helix_js::watch::resolve_watch_events() {
+            error = Some(e);
+        }
         for event in term_events {
             // 事件 id 在变体内部，resolve 前解出
             let id = match &event {
@@ -388,6 +400,26 @@ impl Application {
 
         // 打开文档缓存(每帧;buffers/current_buffer 读取)
         helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
+        // 诊断缓存(每帧;diagnostics 读取)
+        helix_js::cache_diagnostics(&crate::commands::typed::serialize_diagnostics(&self.editor));
+        // 光标/选区变化检测(帧级节流:变化才 emit)
+        if let Some((row, col)) =
+            crate::plugins_cursor::cursor_change(&self.editor, &mut self.last_cursor)
+        {
+            let (_, doc) = current_ref!(self.editor);
+            let mode = match self.editor.mode() {
+                helix_view::document::Mode::Insert => "insert",
+                helix_view::document::Mode::Normal => "normal",
+                helix_view::document::Mode::Select => "select",
+            };
+            let count = crate::plugins_cursor::selection_count(&self.editor);
+            let changed_sel = count != self.last_selection_count;
+            self.last_selection_count = count;
+            helix_js::cursor::emit_cursor_move(doc.id().as_u64(), row, col, mode);
+            if changed_sel {
+                helix_js::cursor::emit_selection_change(doc.id().as_u64(), count, row, col);
+            }
+        }
 
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,

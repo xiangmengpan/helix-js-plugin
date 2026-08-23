@@ -95,6 +95,25 @@ pub enum UiRequest {
     TermClose { view_id: u64 },
     /// 打开文件为新的 BufferLeaf 叶子（split: "h" 水平在右 / 其余垂直在下）
     OpenBufferLeaf { path: String, split: Option<String> },
+    /// 文件系统 watcher：id 由 JS 侧分配（helix.watch 返回值）；helix-term 据此建 notify watcher
+    Watch { id: u64, path: String },
+    /// 停止 watcher：按 id 移除 notify watcher（JS 侧回调注册表同步移除）
+    Unwatch { id: u64 },
+}
+
+/// 文件系统 watcher 变更条目（JS 回调收到 [{kind, path}] 数组）
+#[derive(Debug, Clone)]
+pub struct WatchChange {
+    /// "create" | "modify" | "delete" | "rename"
+    pub kind: String,
+    /// 绝对路径（rename 取目标路径）
+    pub path: String,
+}
+
+/// watcher 事件通道消息：watcher id + 一批变更（notify 防抖合并后投递）
+#[derive(Debug)]
+pub enum WatchEvent {
+    Changed(u64, Vec<WatchChange>),
 }
 
 /// 带唤醒的发送端：worker 发事件时触发宿主注册的唤醒回调（即时重绘），

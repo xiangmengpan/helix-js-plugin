@@ -11,6 +11,8 @@ pub mod health;
 pub mod job;
 pub mod keymap;
 pub mod logging;
+pub mod plugins_cursor;
+pub mod plugins_watch;
 pub mod ui;
 
 // 供集成测试访问（set_plugins_dir / load_script_named 等）

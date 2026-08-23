@@ -51,6 +51,8 @@ helix-vcs = { path = "../helix-vcs" }
 helix-loader = { path = "../helix-loader" }
 helix-js = { path = "../helix-js" }
 
+notify = "7"
+
 vte.workspace = true
 
 anyhow = "1"
