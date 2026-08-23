@@ -30,6 +30,12 @@
 - 集成测试 terminal_title_bar_from_js_view:标题条渲染断言
 - 全量集成 247/247、helix-js 48、helix-term lib 55、clippy 0
 
-## 后续(阶段 C,另立计划)
+## 阶段 C 完成(ce233189c)
 
-filetree 迁移指令模型 + 布局标签条示范组件;交互(点击标题/最小化条)依赖鼠标命中(P4),单独规划
+- filetree 迁移:确认已完整组件树化(el text/scroll/col + 图标/样式),零工作
+- C2 布局标签条(ce233189c):TABBAR_ID 顶部槽位 + 示例插件 features/tabbar.js(读 get_layout/get_component_state 画叶子标签,活动高亮);集成测试 tabbar_renders_top_row_from_js_view
+- 全量集成 248/248、helix-js 48、helix-term lib 55、clippy 0
+
+## 后续(交互与鼠标)
+
+点击标题/最小化条/标签切换依赖鼠标命中(P4),单独规划
