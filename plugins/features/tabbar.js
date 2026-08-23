@@ -1,26 +1,24 @@
 // features/tabbar.js — 布局标签条示范组件（JS 视图层）
 // 依赖:helix.TABBAR_ID(compositor 顶部槽位)、helix.get_layout()、helix.get_component_state()
 // 效果:屏幕顶部 1 行显示各叶子标签,活动高亮;点击标签聚焦。
-helix.plugin("tabbar", { deps: ["icons.js"] });
+helix.plugin("tabbar", { deps: ["lib/icons.js"] });
 
 (function () {
-  const ICONS = helix.load("icons.js") || null;
+  const ICONS = helix.load("lib/icons.js") || null;
 
   // 最近一次渲染的标签边界 [{id, x0, x1}](点击命中用)
   let boundaries = [];
 
-  // 叶子图标:编辑器=当前文件图标;终端=终端图标;其他=面板
+  // 叶子图标:编辑器=文件图标(无路径回退);终端=终端图标;其他=面板
   function leaf_icon(leaf, layout) {
-    if (leaf.id === 0) return ICONS ? ICONS.getFileIcon(layout.path || "") : "\uf15b";
+    if (leaf.id === 0) return ICONS ? ICONS.getFileIcon("") : "\uf15b";
     const st = helix.get_component_state(leaf.id);
     if (st && st.mode) return ICONS ? ICONS.getFileIcon("term.sh") : "\uf489"; // 终端
     return ICONS ? ICONS.getDirIcon(false) : "\uf115"; // 面板
   }
 
-  function leaf_label(leaf, layout) {
-    if (leaf.id === 0) {
-      return layout.path ? layout.path.split("/").pop() : "editor";
-    }
+  function leaf_label(leaf) {
+    if (leaf.id === 0) return "editor";
     const st = helix.get_component_state(leaf.id);
     return (st && st.title) || "leaf-" + leaf.id;
   }
@@ -35,15 +33,16 @@ helix.plugin("tabbar", { deps: ["icons.js"] });
   helix.set_component_render(TABBAR_ID, (ctx) => {
     const layout = helix.get_layout();
     if (!layout || !layout.leafs || layout.leafs.length === 0) {
-      boundaries = [];
-      return [{ type: "text", text: "" }];
+      // 无布局数据时兜底:显示编辑器标签(active=0)
+      boundaries = [{ id: 0, x0: 0, x1: 10 }];
+      return [{ type: "text", text: "\u25b8  editor", style: "ui.selection" }];
     }
     const gap = 2;
     let x = 0;
     const parts = layout.leafs.map((leaf) => {
       const active = leaf.id === layout.active;
       const icon = leaf_icon(leaf, layout);
-      const label = leaf_label(leaf, layout);
+      const label = leaf_label(leaf);
       const text = (active ? "\u25b8 " : "  ") + icon + " " + label;
       const w = text_width(text);
       boundaries.push({ id: leaf.id, x0: x, x1: x + w });

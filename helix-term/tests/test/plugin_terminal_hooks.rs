@@ -90,7 +90,6 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
     let has_term = app.compositor
         .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>());
     let has_hook = helix_js::has_handlers("term-key");
-    eprintln!("[dbg] terminal={has_term} term-key handlers={has_hook}");
     // Esc → term-key 返回 minimize → 叶子最小化(而非关闭)
     pump(&mut app, "<esc>").await?;
     assert!(
@@ -376,4 +375,6 @@ async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+
 
