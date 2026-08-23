@@ -977,8 +977,9 @@ pub(crate) fn js_set_keymap_hint(_this: &JsValue, args: &[JsValue], _context: &m
     Ok(JsValue::undefined())
 }
 
-/// keymap 前缀提示:调用注册回调,返回多行文本;无回调/回调返回 null/抛错 → None(用内置 Info)。
-pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<String> {
+/// keymap 前缀提示:调用注册回调,返回 (多行文本, 位置字符串)。
+/// 回调返回字符串 → 默认位置;对象 {text, position} → 指定位置;null/无回调/抛错 → None(用内置 Info)。
+pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String, String)> {
     crate::init();
     let hook = with_keymap_hint_hook(|h| h.clone())?;
     let func = hook.as_callable().and_then(JsFunction::from_object)?;
@@ -1002,7 +1003,23 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<String> 
         if ret.is_null_or_undefined() {
             return None;
         }
-        ret.as_string().map(|s| s.to_std_string_escaped())
+        // 字符串 → 默认位置
+        if let Ok(s) = ret.clone().try_js_into::<String>(engine) {
+            return Some((s, "bottom-right".to_string()));
+        }
+        // 对象 {text, position}
+        let Some(obj) = ret.as_object() else { return None };
+        let text: String = obj
+            .get(JsString::from("text"), engine)
+            .ok()?
+            .try_js_into(engine)
+            .ok()?;
+        let position: String = obj
+            .get(JsString::from("position"), engine)
+            .ok()
+            .and_then(|v| v.try_js_into::<String>(engine).ok())
+            .unwrap_or_else(|| "bottom-right".to_string());
+        Some((text, position))
     })
 }
 

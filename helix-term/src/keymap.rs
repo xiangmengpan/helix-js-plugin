@@ -55,21 +55,24 @@ impl KeyTrieNode {
         Info::new(self.name.clone(), &self.entries())
     }
 
-    /// 前缀提示:优先 JS set_keymap_hint 回调(多行文本),无回调/返回 null → 内置 Info
+    /// 前缀提示:优先 JS set_keymap_hint 回调(文本 + 位置),无回调/返回 null → 内置 Info
     pub fn hint_info(&self) -> Info {
-        if let Some(text) = helix_js::keymap_hint(&self.name, &self.entries()) {
+        if let Some((text, position)) = helix_js::keymap_hint(&self.name, &self.entries()) {
             let width = text
                 .lines()
                 .map(|l| l.chars().count())
                 .max()
                 .unwrap_or(0) as u16;
             let height = text.lines().count() as u16;
-            return Info {
+            let mut info = Info {
                 title: Cow::Owned(self.name.clone()),
                 text,
                 width: width.saturating_add(2),
                 height,
+                position: Default::default(),
             };
+            info.position = hint_position(&position);
+            return info;
         }
         self.infobox()
     }
@@ -102,6 +105,17 @@ impl KeyTrieNode {
                 (events.join(", "), desc.to_string())
             })
             .collect()
+    }
+}
+
+/// JS 位置字符串 → InfoPosition(未知值回退右下角)
+pub fn hint_position(pos: &str) -> helix_view::info::InfoPosition {
+    match pos {
+        "bottom-left" => helix_view::info::InfoPosition::BottomLeft,
+        "top-right" => helix_view::info::InfoPosition::TopRight,
+        "top-left" => helix_view::info::InfoPosition::TopLeft,
+        "center" => helix_view::info::InfoPosition::Center,
+        _ => helix_view::info::InfoPosition::BottomRight,
     }
 }
 

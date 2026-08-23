@@ -1645,12 +1645,7 @@ impl Component for EditorView {
             EditorView::render_view(cx.editor, doc, view, area, surface, is_focused, self.terminal_focused);
         }
 
-        if config.auto_info {
-            if let Some(mut info) = cx.editor.autoinfo.take() {
-                info.render(area, surface, cx);
-                cx.editor.autoinfo = Some(info)
-            }
-        }
+        // auto_info 渲染已移至 compositor 层(全屏坐标,不随叶子区域漂移)
 
         let key_width = 15u16; // for showing pending keys
         let mut status_msg_width = 0;

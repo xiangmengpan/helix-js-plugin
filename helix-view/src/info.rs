@@ -2,6 +2,22 @@ use crate::register::Registers;
 use helix_core::unicode::width::UnicodeWidthStr;
 use std::{borrow::Cow, fmt::Write};
 
+/// Info 框位置(JS set_keymap_hint 可指定;默认右下角)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfoPosition {
+    BottomRight,
+    BottomLeft,
+    TopRight,
+    TopLeft,
+    Center,
+}
+
+impl Default for InfoPosition {
+    fn default() -> Self {
+        InfoPosition::BottomRight
+    }
+}
+
 #[derive(Debug)]
 /// Info box used in editor. Rendering logic will be in other crate.
 pub struct Info {
@@ -13,6 +29,8 @@ pub struct Info {
     pub width: u16,
     /// Body height.
     pub height: u16,
+    /// 渲染位置(全屏坐标基准;默认右下角)
+    pub position: InfoPosition,
 }
 
 impl Info {
@@ -29,6 +47,7 @@ impl Info {
                 width: title.len() as u16,
                 text: "".to_string(),
                 title,
+                position: InfoPosition::default(),
             };
         }
 
@@ -54,6 +73,7 @@ impl Info {
             width: text.lines().map(|l| l.width()).max().unwrap() as u16,
             height: body.len() as u16,
             text,
+            position: InfoPosition::default(),
         }
     }
 

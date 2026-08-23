@@ -1855,21 +1855,27 @@ mod tests {
         init();
         // 未注册 → None
         assert_eq!(keymap_hint("g", &[]), None);
-        // 注册:返回多行文本
+        // 注册:字符串 → (文本, 默认位置);对象 → 指定位置
         load_script(
             r#"
             helix.set_keymap_hint((ctx) => {
                 if (ctx.title === "g") return "h 左移\ng 分组";
+                if (ctx.title === "x") return { text: "x 提示", position: "bottom-left" };
                 return null;
             });
             "#,
         )
         .unwrap();
         let entries = vec![("h".to_string(), "move_char_left".to_string())];
-        let out = keymap_hint("g", &entries).unwrap();
-        assert!(out.contains("h 左移"), "回调返回文本: {out:?}");
+        let (text, pos) = keymap_hint("g", &entries).unwrap();
+        assert!(text.contains("h 左移"), "回调返回文本: {text:?}");
+        assert_eq!(pos, "bottom-right", "字符串返回默认位置");
+        // 对象返回 → 指定位置
+        let (text, pos) = keymap_hint("x", &entries).unwrap();
+        assert_eq!(text, "x 提示");
+        assert_eq!(pos, "bottom-left", "对象指定位置");
         // 其他前缀 → null → None
-        assert_eq!(keymap_hint("x", &entries), None);
+        assert_eq!(keymap_hint("z", &entries), None);
         // 清除
         load_script(r#"helix.set_keymap_hint(null);"#).unwrap();
         assert_eq!(keymap_hint("g", &entries), None);

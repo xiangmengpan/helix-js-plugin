@@ -441,6 +441,13 @@ impl Compositor {
             active_leaf_path,
         );
         crate::ui::statusline::render(&mut context, statusline_area, surface);
+        // keymap 前缀提示(Info):全屏坐标渲染,不随叶子区域漂移;位置由 Info.position 决定
+        if cx.editor.config().auto_info {
+            if let Some(mut info) = cx.editor.autoinfo.take() {
+                info.render(area, surface, cx);
+                cx.editor.autoinfo = Some(info)
+            }
+        }
     }
 
     /// 活动窗口类型与路径(状态栏窗口图标用):editor/buffer 带文件路径,terminal/panel 无
@@ -763,12 +770,15 @@ impl Compositor {
         .iter()
         .map(|(k, d)| (k.to_string(), d.to_string()))
         .collect();
-        let text = helix_js::keymap_hint("C-w", &entries).unwrap_or_else(|| {
-            entries
-                .iter()
-                .map(|(k, d)| format!("{k:<20} {d}"))
-                .collect::<Vec<_>>()
-                .join("\n")
+        let (text, position) = helix_js::keymap_hint("C-w", &entries).unwrap_or_else(|| {
+            (
+                entries
+                    .iter()
+                    .map(|(k, d)| format!("{k:<20} {d}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "bottom-left".to_string(),
+            )
         });
         let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         let height = text.lines().count() as u16;
@@ -777,6 +787,7 @@ impl Compositor {
             text,
             width: width.saturating_add(2),
             height,
+            position: crate::keymap::hint_position(&position),
         });
     }
 

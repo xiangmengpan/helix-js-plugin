@@ -526,3 +526,34 @@ async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
 }
 
 
+
+/// 提示位置:JS 返回 {position:"bottom-left"} → Info 渲染在左下角(全屏坐标,开面板不漂移)
+#[tokio::test(flavor = "multi_thread")]
+async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("khp.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_keymap_hint((ctx) => ({ text: "P-HINT", position: "bottom-left" }));
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, "g").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    // 左下角:提示框出现在屏幕左下部(状态栏上方)
+    let joined = rows.join("\n");
+    assert!(joined.contains("P-HINT"), "提示渲染: {joined:?}");
+    // 位置:包含 P-HINT 的行应在左半区且靠下(状态栏前一列附近)
+    let hint_row_idx = rows.iter().position(|r| r.contains("P-HINT")).unwrap_or(0);
+    assert!(
+        hint_row_idx > 20,
+        "提示在屏幕下部(左下角): row={hint_row_idx}"
+    );
+    let hint_row = &rows[hint_row_idx];
+    let pos = hint_row.find("P-HINT").unwrap_or(999);
+    assert!(pos < 40, "提示在左侧: col={pos} row={hint_row_idx}");
+    Ok(())
+}

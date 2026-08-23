@@ -116,8 +116,10 @@ helix.plugin("which-key", { deps: ["lib/layout.js"] });
   };
 
   function render(ctx) {
-    // 窗口模式:compositor 传入 title="C-w"
-    if (ctx.title === "C-w") return C_W_HINT;
+    // 窗口模式:compositor 传入 title="C-w" → 左下角
+    if (ctx.title === "C-w") {
+      return { text: C_W_HINT, position: "bottom-left" };
+    }
     if (!ctx.entries || ctx.entries.length === 0) return null;
     const prefix = PREFIX_KEY[ctx.title] ? PREFIX_KEY[ctx.title] + " " : "";
     const lines = ctx.entries.map((e) => {
@@ -126,7 +128,8 @@ helix.plugin("which-key", { deps: ["lib/layout.js"] });
       const zh = CN[prefix + e.keys] || CN[prefix + first] || CN[e.keys] || CN[first];
       return e.keys + (zh ? "  " + zh : "  " + e.doc);
     });
-    return lines.join("\n");
+    // 左下角(不挡编辑区,与状态栏相邻)
+    return { text: lines.join("\n"), position: "bottom-left" };
   }
 
   helix.set_keymap_hint(render);
