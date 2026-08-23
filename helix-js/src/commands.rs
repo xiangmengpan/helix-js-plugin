@@ -11,7 +11,7 @@ use boa_engine::{Context, JsError, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-const EVENT_WHITELIST: [&str; 14] = [
+const EVENT_WHITELIST: [&str; 17] = [
     "save",
     "mode-change",
     "buffer-open",
