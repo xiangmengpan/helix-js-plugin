@@ -84,6 +84,30 @@ pub(crate) fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     Ok(JsValue::from(id))
 }
 
+/// 组件视图回调注册:helix.set_component_render(id, fn)。
+/// 不创建弹窗/面板——只把 render 回调挂到共享注册表;
+/// Rust 组件(如终端)渲染时经 render_component 调用,JS 视图层画其外观。
+pub(crate) fn js_set_component_render(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
+            "set_component_render: id must be a number",
+        ))))?;
+    let render = match args.get(1) {
+        Some(v) => v,
+        None => &JsValue::undefined(),
+    };
+    if render.as_callable().is_none() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "set_component_render: render must be a function",
+        ))));
+    }
+    with_popups(|p| p.insert(id, PopupCallbacks { render: render.clone(), on_key: None, on_close: None }));
+    Ok(JsValue::undefined())
+}
+
 /// open_panel 允许的 side 白名单
 const PANEL_SIDES: [&str; 3] = ["right", "left", "bottom"];
 

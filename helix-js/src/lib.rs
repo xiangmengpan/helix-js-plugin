@@ -56,6 +56,7 @@ pub fn init() {
                     2,
                 )
                 .function(NativeFunction::from_fn_ptr(popup::js_open_popup), JsString::from("open_popup"), 1)
+                .function(NativeFunction::from_fn_ptr(popup::js_set_component_render), JsString::from("set_component_render"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_open_panel), JsString::from("open_panel"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_close_panel), JsString::from("close_panel"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_read_dir), JsString::from("read_dir"), 1)
@@ -1813,6 +1814,25 @@ mod tests {
         }
         drop(dir);
     }
+    /// 组件视图回调:set_component_render(id, fn) → render_component 读取
+    #[test]
+    fn component_render_registration() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 非法参数
+        assert!(load_script(r#"helix.set_component_render("x", () => []);"#).is_err());
+        assert!(load_script(r#"helix.set_component_render(3, 42);"#).is_err());
+        // 注册后 render_component 可读
+        load_script(r#"helix.set_component_render(3, () => [{ type: "text", text: "hi-view" }]);"#).unwrap();
+        let content = render_component(3, 10, 1, None).unwrap();
+        match content {
+            Content::Tree(_) => {}
+            other => panic!("expected tree content, got {other:?}"),
+        }
+        // 未注册 → Err
+        assert!(render_component(999, 10, 1, None).is_err());
+    }
+
     /// 组件状态通道:register_component_state(JSON) → get_component_state(对象);未注册 → null
     #[test]
     fn component_state_roundtrip() {
