@@ -36,6 +36,14 @@
 - C2 布局标签条(ce233189c):TABBAR_ID 顶部槽位 + 示例插件 features/tabbar.js(读 get_layout/get_component_state 画叶子标签,活动高亮);集成测试 tabbar_renders_top_row_from_js_view
 - 全量集成 248/248、helix-js 48、helix-term lib 55、clippy 0
 
-## 后续(交互与鼠标)
+## 交互完成(d9aedc93d)
 
-点击标题/最小化条/标签切换依赖鼠标命中(P4),单独规划
+- 鼠标命中:布局树存储叶子区域(leaf_rects,渲染时更新)+ leaf_id_at 查询
+- component-event 钩子(白名单扩展):点击标签条/有视图回调的叶子 → JS {kind,x,y};返回 true 消费
+- tabbar.js 点击标签聚焦
+- 集成测试 mouse_click_hits_js_view_component
+- 全量集成 249/249、helix-js 48、helix-term lib 55、clippy 0
+
+## 剩余
+
+- 终端标题条点击(点标题聚焦/最小化条点击最小化):可在 terminal.js 用 component-event 实现(状态已就绪),用户侧配置即可
