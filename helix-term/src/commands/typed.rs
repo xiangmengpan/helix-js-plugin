@@ -4279,20 +4279,27 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature::DEFAULT,
     },
-    TypableCommand {
-        name: "term-native",
-        aliases: &[],
-        doc: "Open a native terminal panel (PoC demo: vte grid + pty).",
-        fun: term_native,
-        completer: CommandCompleter::none(),
-        signature: Signature::DEFAULT,
-    }
 ];
+
+/// PoC 演示命令(测试用):仅 debug 构建编译;release 不包含
+#[cfg(debug_assertions)]
+pub const TERM_NATIVE_COMMAND: &[TypableCommand] = &[TypableCommand {
+    name: "term-native",
+    aliases: &[],
+    doc: "Open a native terminal panel (PoC demo: vte grid + pty).",
+    fun: term_native,
+    completer: CommandCompleter::none(),
+    signature: Signature::DEFAULT,
+}];
+
+#[cfg(not(debug_assertions))]
+pub const TERM_NATIVE_COMMAND: &[TypableCommand] = &[];
 
 pub static TYPABLE_COMMAND_MAP: Lazy<HashMap<&'static str, &'static TypableCommand>> =
     Lazy::new(|| {
         TYPABLE_COMMAND_LIST
             .iter()
+            .chain(TERM_NATIVE_COMMAND.iter())
             .flat_map(|cmd| {
                 std::iter::once((cmd.name, cmd))
                     .chain(cmd.aliases.iter().map(move |&alias| (alias, cmd)))
@@ -5232,6 +5239,7 @@ fn complete_command_line(editor: &Editor, input: &str) -> Vec<ui::prompt::Comple
             TYPABLE_COMMAND_LIST
                 .iter()
                 .map(|command| command.name)
+                .chain(TERM_NATIVE_COMMAND.iter().map(|c| c.name))
                 .chain(plugin_names.iter().map(String::as_str)),
             false,
         )
