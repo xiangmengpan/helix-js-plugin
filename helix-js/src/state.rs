@@ -84,6 +84,9 @@ thread_local! {
     // 主题覆盖：scope → 颜色字符串（set_theme 整体替换；reset_theme 清空）。
     // 只存字符串，无 JsValue，普通 RefCell 即可（随线程 drop）。
     static THEME_OVERRIDES: RefCell<HashMap<String, crate::theme::StyleOverride>> = RefCell::new(HashMap::new());
+    // 组件状态提供者：组件 id → JSON 字符串生成器（helix-term 不依赖 boa,状态经 JSON 传递）。
+    // 组件创建时注册、Drop 时注销;get_component_state 读取。
+    static COMPONENT_STATES: RefCell<HashMap<u64, Box<dyn Fn(u64) -> String>>> = RefCell::new(HashMap::new());
     // 覆盖集是否变化（set/reset 置位；helix-term drain 时读取并清位）
     static THEME_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
@@ -135,6 +138,27 @@ pub(crate) fn with_event_handlers<T>(f: impl FnOnce(&mut HashMap<String, Vec<JsV
     EVENT_HANDLERS.with(|h| {
         let mut slot = h.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 注册组件状态提供者：组件 id → 序列化为 JSON 的闭包（helix-term 侧调用）。
+pub fn register_component_state(id: u64, f: impl Fn(u64) -> String + 'static) {
+    COMPONENT_STATES.with(|s| {
+        s.borrow_mut().insert(id, Box::new(f));
+    })
+}
+
+/// 注销组件状态提供者（组件 Drop 时调用）。
+pub fn unregister_component_state(id: u64) {
+    COMPONENT_STATES.with(|s| {
+        s.borrow_mut().remove(&id);
+    })
+}
+
+/// 读取组件状态（JSON 字符串；未注册 → None）。
+pub fn get_component_state_json(id: u64) -> Option<String> {
+    COMPONENT_STATES.with(|s| {
+        s.borrow().get(&id).map(|f| f(id))
     })
 }
 

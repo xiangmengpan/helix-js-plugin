@@ -103,6 +103,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(layout::js_layout_fix), JsString::from("layout_fix"), 2)
                 .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf), JsString::from("focus"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_get_layout), JsString::from("get_layout"), 0)
+                .function(NativeFunction::from_fn_ptr(layout::js_get_component_state), JsString::from("get_component_state"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_restore_layout), JsString::from("restore_layout"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_reset_theme), JsString::from("reset_theme"), 0)
@@ -1812,6 +1813,31 @@ mod tests {
         }
         drop(dir);
     }
+    /// 组件状态通道:register_component_state(JSON) → get_component_state(对象);未注册 → null
+    #[test]
+    fn component_state_roundtrip() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 未注册 → null
+        load_script(r#"globalThis.__cs = helix.get_component_state(7);"#).unwrap();
+        crate::state::with_engine(|engine| {
+            let v = engine.global_object().get(JsString::from("__cs"), engine).unwrap();
+            assert!(v.is_null(), "未注册 → null");
+        });
+        // 注册 JSON 提供者 → 对象
+        crate::state::register_component_state(7, |_| r#"{"mode":"insert","title":"bash"}"#.to_string());
+        load_script(r#"globalThis.__cs2 = helix.get_component_state(7);"#).unwrap();
+        crate::state::with_engine(|engine| {
+            let v = engine.global_object().get(JsString::from("__cs2"), engine).unwrap();
+            let obj = v.as_object().unwrap();
+            let mode = obj.get(JsString::from("mode"), engine).unwrap();
+            assert_eq!(mode.as_string().unwrap().to_std_string_escaped(), "insert");
+            let title = obj.get(JsString::from("title"), engine).unwrap();
+            assert_eq!(title.as_string().unwrap().to_std_string_escaped(), "bash");
+        });
+        crate::state::unregister_component_state(7);
+    }
+
     /// term-exit 钩子:resolve_term_event(Exit) → emit_term_exit(消息)
     #[test]
     fn term_exit_hook_via_resolve() {

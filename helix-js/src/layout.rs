@@ -201,25 +201,44 @@ pub(crate) fn js_layout_fix(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     Ok(JsValue::undefined())
 }
 
+/// JSON.parse 公共路径（不经 eval 字符串转义——Debug 格式的 \" 双重转义会让 JSON.parse 报错）
+fn js_json_parse(json: String, ctx: &mut Context, api: &str) -> boa_engine::JsResult<JsValue> {
+    let json_global = ctx.global_object().get(JsString::from("JSON"), ctx)?;
+    let parse = json_global
+        .as_object()
+        .ok_or_else(|| JsError::from_opaque(JsValue::from(JsString::from(format!("{api}: JSON missing")))))?
+        .get(JsString::from("parse"), ctx)?;
+    let parse = parse.as_callable().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!("{api}: JSON.parse missing"))))
+    })?;
+    parse
+        .call(&json_global, &[JsValue::from(JsString::from(json))], ctx)
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("{api}: {e}")))))
+}
+
 /// 读取最近一次布局树序列化（helix-term 树变更时缓存；可能滞后一个操作）
 pub(crate) fn js_get_layout(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let json = LAST_LAYOUT.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();
     if json.is_empty() {
         return Ok(JsValue::null());
     }
-    // 直接调 JSON.parse 原生函数（不经 eval 字符串转义——Debug 格式的 \" 双重转义
-    // 会让 JSON.parse 在 column 2 报 expected value）
-    let json_global = ctx.global_object().get(JsString::from("JSON"), ctx)?;
-    let parse = json_global
-        .as_object()
-        .ok_or_else(|| JsError::from_opaque(JsValue::from(JsString::from("get_layout: JSON missing"))))?
-        .get(JsString::from("parse"), ctx)?;
-    let parse = parse.as_callable().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("get_layout: JSON.parse missing")))
-    })?;
-    parse
-        .call(&json_global, &[JsValue::from(JsString::from(json))], ctx)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("get_layout: {e}")))))
+    js_json_parse(json, ctx, "get_layout")
+}
+
+/// 组件状态只读:helix.get_component_state(id) → 对象(未注册 → null)。
+/// 状态由 Rust 组件经 JSON 字符串提供(register_component_state),JS 视图层据此画外观。
+pub(crate) fn js_get_component_state(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
+            "get_component_state: id must be a number",
+        ))))?;
+    let Some(json) = crate::state::get_component_state_json(id) else {
+        return Ok(JsValue::null());
+    };
+    js_json_parse(json, ctx, "get_component_state")
 }
 
 /// 恢复布局树：序列化传入的布局对象为 JSON，宿主据此重建
