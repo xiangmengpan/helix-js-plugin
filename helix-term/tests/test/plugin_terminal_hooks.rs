@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use helix_term::application::Application;
 use helix_term::job::Jobs;
+use helix_view::current_ref;
 use helix_view::input::parse_macro;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -471,3 +472,57 @@ async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
     assert_eq!(app.compositor.layout_tree().active(), 0);
     Ok(())
 }
+
+/// filetree Enter 打开文件 → 聚焦编辑器叶子(active=0)+ 编辑器 buffer 切换
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
+    let _guard = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("z.txt");
+    let file_str = file.to_string_lossy().into_owned();
+    std::fs::write(&file, "hello\n")?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
+    let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    if !std::path::Path::new(&filetree_plugin).exists() {
+        return Ok(());
+    }
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    // 加载 filetree;filetree-reveal 打开面板并定位当前文件(z.txt)
+    for key_event in parse_macro(&format!(
+        ":plugin-load {}<ret>:filetree-reveal<ret>",
+        filetree_plugin
+    ))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
+    for _ in 0..20 {
+        if app.compositor.has_component(panel_type) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(app.compositor.has_component(panel_type), "filetree 面板应就位");
+    // 面板焦点:Enter 打开当前项(z.txt)
+    for key_event in parse_macro("<ret>")? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "filetree Enter 后聚焦编辑器叶子"
+    );
+    let (_, doc) = current_ref!(app.editor);
+    let path = doc.path().map(|p| p.to_string_lossy().into_owned());
+    assert_eq!(
+        path.as_deref(),
+        Some(file_str.as_str()),
+        "编辑器切换到打开的文件"
+    );
+    Ok(())
+}
+
+
