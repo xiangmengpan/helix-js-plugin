@@ -8,11 +8,27 @@ use boa_engine::NativeFunction;
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
 
-/// 事件名白名单：helix.on 只接受这些事件
-const EVENT_WHITELIST: [&str; 6] = ["save", "mode-change", "buffer-open", "buffer-close", "doc-change", "theme-change"];
+/// 事件名白名单：helix.on 只接受这些事件。
+/// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
+/// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
+const EVENT_WHITELIST: [&str; 13] = [
+    "save",
+    "mode-change",
+    "buffer-open",
+    "buffer-close",
+    "doc-change",
+    "theme-change",
+    "term-open",
+    "term-mode-change",
+    "term-exit",
+    "term-close",
+    "term-resize",
+    "term-title",
+    "term-key",
+];
 
 use crate::state::{
-    with_buffer_icon_hook, with_event_handlers, with_last_export,
+    with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export,
     with_popups, with_registry, with_script_exports, with_statusline_hook, MESSAGES, PLUGINS_DIR, UI_REQUESTS,
 };
 
@@ -493,6 +509,185 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
         }
         Ok(())
     })
+}
+
+/// 钩子调用：按注册顺序调用 name 的 handler，返回第一个非 undefined 返回值。
+/// 通知型钩子（term-open/mode-change/exit/resize/title）忽略返回值；
+/// term-close 返回 false 表示阻止关闭。参数由调用方构造（原生 JsValue 无需 engine）。
+pub fn emit_hook(name: &str, args: &[JsValue]) -> Option<JsValue> {
+    crate::init();
+    let handlers = with_event_handlers(|h| h.get(name).cloned())?;
+    if handlers.is_empty() {
+        return None;
+    }
+    with_engine(|engine| {
+        let undefined = JsValue::undefined();
+        for handler in &handlers {
+            let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
+                continue;
+            };
+            if let Ok(ret) = func.call(&undefined, args, engine) {
+                if !ret.is_undefined() {
+                    return Some(ret);
+                }
+            }
+        }
+        None
+    })
+}
+
+/// term-key 钩子的决策结果（插件返回值映射）
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TermKeyDecision {
+    /// 直通 pty
+    Pass,
+    /// 消费按键（不直通）
+    Consume,
+    /// 最小化终端叶子
+    Minimize,
+    /// 关闭终端（杀 pty）
+    Close,
+}
+
+/// term-key 钩子：构造 { code, shift, ctrl, alt } 对象传给 handler；
+/// 返回 "pass" | "consume" | "minimize" | "close"（字符串）→ 对应决策；其他/无 handler → None（走默认）。
+pub fn emit_term_key(pty_id: u64, code: &str, shift: bool, ctrl: bool, alt: bool) -> Option<TermKeyDecision> {
+    crate::init();
+    let handlers = with_event_handlers(|h| h.get("term-key").cloned())?;
+    if handlers.is_empty() {
+        return None;
+    }
+    with_engine(|engine| {
+        let key = ObjectInitializer::new(engine)
+            .property(JsString::from("code"), JsValue::from(JsString::from(code)), Attribute::all())
+            .property(JsString::from("shift"), JsValue::from(shift), Attribute::all())
+            .property(JsString::from("ctrl"), JsValue::from(ctrl), Attribute::all())
+            .property(JsString::from("alt"), JsValue::from(alt), Attribute::all())
+            .build();
+        let args = [JsValue::from(pty_id), JsValue::from(key)];
+        let undefined = JsValue::undefined();
+        for handler in &handlers {
+            let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
+                continue;
+            };
+            let Ok(ret) = func.call(&undefined, &args, engine) else { continue };
+            let s = ret.as_string().map(|s| s.to_std_string_escaped());
+            let decision = match s.as_deref() {
+                Some("pass") => Some(TermKeyDecision::Pass),
+                Some("consume") => Some(TermKeyDecision::Consume),
+                Some("minimize") => Some(TermKeyDecision::Minimize),
+                Some("close") => Some(TermKeyDecision::Close),
+                _ => None,
+            };
+            if let Some(d) = decision {
+                return Some(d);
+            }
+        }
+        None
+    })
+}
+
+/// 通知型终端钩子封装（helix-term 侧不依赖 boa，统一走这里）：
+/// term-open / term-mode-change / term-exit / term-resize / term-title 通知；
+/// term-close 返回 true=放行关闭 / false=阻止。
+pub fn emit_term_open(pty_id: u64, cmd: &str) {
+    emit_hook("term-open", &[JsValue::from(pty_id), JsValue::from(JsString::from(cmd))]);
+}
+pub fn emit_term_mode(pty_id: u64, mode: &str) {
+    emit_hook("term-mode-change", &[JsValue::from(pty_id), JsValue::from(JsString::from(mode))]);
+}
+pub fn emit_term_exit(pty_id: u64, code: i32) {
+    emit_hook("term-exit", &[JsValue::from(pty_id), JsValue::from(code)]);
+}
+pub fn emit_term_resize(pty_id: u64, rows: u16, cols: u16) {
+    emit_hook("term-resize", &[JsValue::from(pty_id), JsValue::from(rows), JsValue::from(cols)]);
+}
+pub fn emit_term_title(pty_id: u64, title: &str) {
+    emit_hook("term-title", &[JsValue::from(pty_id), JsValue::from(JsString::from(title))]);
+}
+/// term-close 钩子：插件返回 false → 阻止关闭（返回 true=阻止）
+pub fn emit_term_close(pty_id: u64, reason: &str) -> bool {
+    emit_hook("term-close", &[JsValue::from(pty_id), JsValue::from(JsString::from(reason))])
+        .is_some_and(|v| v.as_boolean() == Some(false))
+}
+
+/// term_state(ptyId, key[, value])：终端任意状态持久化（跨会话存盘）。
+/// 读：值不存在返回 undefined；写：value 必须是字符串（覆盖）。
+/// 存储：~/.local/state/helix/term-state.json（{"<ptyId>": {"<key>": "<value>"}}）。
+pub(crate) fn js_term_state(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let pty_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("term_state: ptyId must be a number"))))?;
+    let key: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("term_state: key must be a string"))))?;
+    let value = match args.get(2) {
+        Some(v) => v,
+        None => &JsValue::undefined(),
+    };
+    if value.is_undefined() {
+        // 读
+        return Ok(read_term_state(pty_id, &key)
+            .map(|v| JsValue::from(JsString::from(v)))
+            .unwrap_or(JsValue::undefined()));
+    }
+    let v: String = value.try_js_into(context).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "term_state: value must be a string",
+        )))
+    })?;
+    write_term_state(pty_id, &key, &v);
+    Ok(JsValue::undefined())
+}
+
+fn term_state_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".local/state/helix")
+        .join("term-state.json")
+}
+
+fn load_term_state() -> serde_json::Map<String, serde_json::Value> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    let path = term_state_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn save_term_state(map: &serde_json::Map<String, serde_json::Value>) {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    let path = term_state_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(map).unwrap_or_default());
+}
+
+fn read_term_state(pty_id: u64, key: &str) -> Option<String> {
+    load_term_state()
+        .get(&pty_id.to_string())
+        .and_then(|m| m.get(key))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+}
+
+fn write_term_state(pty_id: u64, key: &str, value: &str) {
+    let mut map = load_term_state();
+    let entry = map
+        .entry(pty_id.to_string())
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if let Some(obj) = entry.as_object_mut() {
+        obj.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+    }
+    save_term_state(&map);
 }
 
 pub(crate) fn js_set_cursor(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {

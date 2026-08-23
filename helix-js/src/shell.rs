@@ -5,6 +5,7 @@ use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue};
 
+use crate::commands::emit_term_exit;
 use crate::pty;
 
 use crate::state::{
@@ -590,6 +591,10 @@ pub fn drain_term_events() -> Vec<TermEvent> {
 /// 进程结束（Exit）后清理回调与 worker 注册，防止重复回调。
 pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
     crate::init();
+    // term-exit 钩子在 engine 上下文之外触发（emit_hook 自带 with_engine，避免 RefCell 嵌套）
+    if let TermEvent::Exit(_, code, _) = &event {
+        emit_term_exit(id, *code);
+    }
     crate::state::with_engine(|engine| {
         let callbacks = with_terms(|m| {
             m.get(&id).map(|c| TermCallbacks {

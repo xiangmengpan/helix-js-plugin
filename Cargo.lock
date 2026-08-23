@@ -1904,6 +1904,7 @@ dependencies = [
  "boa_engine",
  "globset",
  "libc",
+ "serde_json",
  "tempfile",
 ]
 

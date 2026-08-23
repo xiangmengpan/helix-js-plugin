@@ -49,6 +49,7 @@ pub fn init() {
             let mut builder = ObjectInitializer::new(engine);
             builder
                 .function(NativeFunction::from_fn_ptr(commands::js_echo), JsString::from("echo"), 1)
+                .function(NativeFunction::from_fn_ptr(commands::js_term_state), JsString::from("term_state"), 3)
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_register_command),
                     JsString::from("register_command"),
@@ -125,6 +126,7 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boa_engine::JsValue;
     use std::sync::Mutex;
 
     // 多个测试共享全局运行时，用锁串行化避免消息队列竞争
@@ -1746,4 +1748,94 @@ mod tests {
         assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
     }
+
+    /// 终端钩子:emit_hook 返回第一个非 undefined;无 handler → None
+    #[test]
+    fn term_hook_emit_and_term_key() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 无 handler:None
+        assert_eq!(emit_hook("term-key", &[JsValue::from(1_i32)]), None);
+        assert_eq!(emit_term_key(1, "esc", false, false, false), None);
+        assert!(!emit_term_close(1, "esc"), "无 handler 不阻止");
+
+        load_script(
+            r#"
+            helix.on("term-close", () => false);
+            helix.on("term-key", (id, key) => {
+                if (key.code === "esc") return "minimize";
+                if (key.code === "x" && key.ctrl) return "close";
+                return "pass";
+            });
+            "#,
+        )
+        .unwrap();
+        use crate::commands::TermKeyDecision;
+        // term-key 映射
+        assert!(matches!(emit_term_key(1, "esc", false, false, false), Some(TermKeyDecision::Minimize)));
+        assert!(matches!(emit_term_key(1, "x", false, true, false), Some(TermKeyDecision::Close)));
+        assert!(matches!(emit_term_key(1, "a", false, false, false), Some(TermKeyDecision::Pass)));
+        // term-close:false → 阻止
+        assert!(emit_term_close(7, "esc"), "handler 返回 false → 阻止关闭");
+        // 通知型钩子(参数不经 boa 也可构造)
+        emit_hook("term-resize", &[JsValue::from(1_i32), JsValue::from(24_i32), JsValue::from(80_i32)]);
+    }
+
+    /// term_state 持久化读写(临时 HOME 隔离)
+    #[test]
+    fn term_state_persist_roundtrip() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let old_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", dir.path());
+        load_script(
+            r#"
+            globalThis.__st = helix.term_state(42, "cwd");   // 不存在 → undefined
+            helix.term_state(42, "cwd", "/tmp/proj");
+            globalThis.__st2 = helix.term_state(42, "cwd");  // 写后读回
+            "#,
+        )
+        .unwrap();
+        crate::state::with_engine(|engine| {
+            let v1 = engine.global_object().get(JsString::from("__st"), engine).unwrap();
+            assert!(v1.is_undefined(), "不存在 → undefined");
+            let v2 = engine.global_object().get(JsString::from("__st2"), engine).unwrap();
+            assert_eq!(
+                v2.as_string().unwrap().to_std_string_escaped(),
+                "/tmp/proj",
+                "写后读回"
+            );
+        });
+        if let Some(old) = old_home {
+            std::env::set_var("HOME", old);
+        }
+        drop(dir);
+    }
+    /// term-exit 钩子:resolve_term_event(Exit) → emit_term_exit(消息)
+    #[test]
+    fn term_exit_hook_via_resolve() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(r#"helix.on("term-exit", (id, code) => helix.echo("exit:" + code));"#).unwrap();
+        let id = crate::state::next_term_id();
+        // 注册回调(否则 resolve 直接 return)
+        crate::state::with_terms(|m| {
+            m.insert(
+                id,
+                crate::types::TermCallbacks {
+                    on_chunk: JsValue::undefined(),
+                    on_exit: None,
+                    is_run_async: false,
+                },
+            )
+        });
+        crate::shell::resolve_term_event(id, crate::types::TermEvent::Exit(id, 3, None)).unwrap();
+        let msgs = take_messages();
+        assert!(
+            msgs.iter().any(|m| m == "exit:3"),
+            "term-exit 钩子触发: {msgs:?}"
+        );
+    }
+
 }

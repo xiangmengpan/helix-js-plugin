@@ -58,6 +58,8 @@ pub struct TerminalGrid {
     fg: Option<Color>,
     bg: Option<Color>,
     bold: bool,
+    /// OSC 0/2 标题（term-title 钩子消费；feed 后 take 清空）
+    last_title: Option<String>,
 }
 
 impl TerminalGrid {
@@ -79,6 +81,7 @@ impl TerminalGrid {
             fg: None,
             bg: None,
             bold: false,
+            last_title: None,
         }
     }
 
@@ -138,6 +141,11 @@ impl TerminalGrid {
     /// 把一块字节喂进 vte 解析器（复用同一 parser：块边界切开的 CSI/OSC 序列
     /// 跨 feed 调用保持状态）。chunk 内部字节无需完整——read_stream 只保证
     /// UTF-8 字符不跨块，逃逸序列跨块由本持久 parser 承接。
+    /// 取走最近一次 OSC 标题（无则 None）
+    pub fn take_title(&mut self) -> Option<String> {
+        self.last_title.take()
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) {
         // parser 与 Perform 实现都借 &mut self：临时取出解析器、喂完放回（vte::Parser: Default）
         let mut parser = std::mem::take(&mut self.parser);
@@ -640,8 +648,14 @@ impl Perform for TerminalGrid {
         }
     }
 
-    // OSC（标题等）PoC 忽略
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    // OSC（标题等）：0/2 ; <title> 记录到 last_title（渲染不消费，只供 term-title 钩子）
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if params.len() > 1 && matches!(params[0], b"0" | b"2") {
+            if let Ok(title) = String::from_utf8(params[1].to_vec()) {
+                self.last_title = Some(title);
+            }
+        }
+    }
 }
 
 impl TerminalGrid {
@@ -739,6 +753,36 @@ fn key_to_term_bytes(key: &helix_view::input::KeyEvent) -> Option<String> {
     }
 }
 
+/// 按键描述（term-key 钩子的 key.code 字符串 + 修饰键标志）
+fn terminal_key_desc(key: &helix_view::input::KeyEvent) -> (String, bool, bool, bool) {
+    use helix_view::input::{KeyCode, KeyModifiers};
+    let code = match key.code {
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Esc => "esc".to_string(),
+        KeyCode::Enter => "enter".to_string(),
+        KeyCode::Backspace => "backspace".to_string(),
+        KeyCode::Tab => "tab".to_string(),
+        KeyCode::Up => "up".to_string(),
+        KeyCode::Down => "down".to_string(),
+        KeyCode::Left => "left".to_string(),
+        KeyCode::Right => "right".to_string(),
+        KeyCode::Home => "home".to_string(),
+        KeyCode::End => "end".to_string(),
+        KeyCode::PageUp => "pageup".to_string(),
+        KeyCode::PageDown => "pagedown".to_string(),
+        KeyCode::Delete => "delete".to_string(),
+        KeyCode::Insert => "insert".to_string(),
+        KeyCode::F(n) => format!("f{n}"),
+        _ => format!("{:?}", key.code),
+    };
+    (
+        code,
+        key.modifiers.contains(KeyModifiers::SHIFT),
+        key.modifiers.contains(KeyModifiers::CONTROL),
+        key.modifiers.contains(KeyModifiers::ALT),
+    )
+}
+
 /// 原生终端面板层：vte 网格渲染 + 按键直通 pty + 尺寸联动 TIOCSWINSZ。
 /// Esc 关闭：移除层 → Drop → term_kill（杀 pty）。
 /// 注意：compositor 的面板推挤只识别 PluginPanel，本层目前整面渲染
@@ -825,6 +869,9 @@ impl PluginTerminal {
     /// 把一块 PTY 输出喂进网格（TermFeed 请求路由到此处）
     pub fn feed(&mut self, chunk: &str) {
         self.grid.feed(chunk.as_bytes());
+        if let Some(title) = self.grid.take_title() {
+            helix_js::emit_term_title(self.pty_id, &title);
+        }
     }
 
     /// 全部内容纯文本（scrollback + 屏幕；term-save 导出用）
@@ -864,6 +911,39 @@ impl Component for PluginTerminal {
         let Event::Key(key) = event else {
             return EventResult::Ignored(None);
         };
+        // term-key 钩子（插件决策优先）：pass/consume/minimize/close；无钩子 → 默认流程
+        let key_desc = terminal_key_desc(key);
+        match helix_js::emit_term_key(
+            self.pty_id,
+            &key_desc.0,
+            key_desc.1,
+            key_desc.2,
+            key_desc.3,
+        ) {
+            Some(helix_js::TermKeyDecision::Pass) => {
+                if let Some(bytes) = key_to_term_bytes(key) {
+                    let _ = helix_js::term_write(self.pty_id, &bytes);
+                }
+                return EventResult::Consumed(None);
+            }
+            Some(helix_js::TermKeyDecision::Consume) => return EventResult::Consumed(None),
+            Some(helix_js::TermKeyDecision::Minimize) => {
+                return EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, _cx: &mut Context| {
+                    if let Some(id) = compositor
+                        .layout_tree()
+                        .find_leaf_id::<PluginTerminal>(|_| true)
+                    {
+                        compositor.minimize_leaf(id, true);
+                    }
+                })))
+            }
+            Some(helix_js::TermKeyDecision::Close) => {
+                return EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, _cx: &mut Context| {
+                    compositor.remove_type::<PluginTerminal>();
+                })))
+            }
+            None => {}
+        }
         // C-\：Insert → Normal（终端内滚动查看）；Normal → 回 Insert 并聚焦编辑器
         let is_ctrl_backslash =
             key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('\\'));
@@ -871,10 +951,12 @@ impl Component for PluginTerminal {
             match self.input_mode {
                 TermInputMode::Insert => {
                     self.input_mode = TermInputMode::Normal;
+                    helix_js::emit_term_mode(self.pty_id, "normal");
                     EventResult::Consumed(None)
                 }
                 TermInputMode::Normal => {
                     self.input_mode = TermInputMode::Insert;
+                    helix_js::emit_term_mode(self.pty_id, "insert");
                     // 回 helix：收起浮窗（若浮动）+ 焦点切回编辑器叶子（终端保留）
                     EventResult::Consumed(Some(Box::new(
                         |compositor: &mut Compositor, _cx: &mut Context| {
@@ -928,11 +1010,17 @@ impl Component for PluginTerminal {
                         },
                     )))
                 }
-                KeyCode::Char('q') => EventResult::Consumed(Some(Box::new(
-                    |compositor: &mut Compositor, _cx: &mut Context| {
-                        compositor.remove_type::<PluginTerminal>();
-                    },
-                ))),
+                KeyCode::Char('q') => {
+                    // term-close 钩子（reason="quit"）返回 false → 阻止关闭
+                    if helix_js::emit_term_close(self.pty_id, "quit") {
+                        return EventResult::Consumed(None);
+                    }
+                    EventResult::Consumed(Some(Box::new(
+                        |compositor: &mut Compositor, _cx: &mut Context| {
+                            compositor.remove_type::<PluginTerminal>();
+                        },
+                    )))
+                }
                 // 其余键直通 pty（C-c 中断等）
                 _ => {
                     if let Some(bytes) = key_to_term_bytes(key) {
@@ -943,8 +1031,11 @@ impl Component for PluginTerminal {
             }
         } else {
             // Insert 模式
-            // Esc → 关闭面板（kill pty 由 Drop 兜底）
+            // Esc → 关闭面板（kill pty 由 Drop 兜底）；term-close 钩子（reason="esc"）返回 false → 阻止
             if key.code == KeyCode::Esc {
+                if helix_js::emit_term_close(self.pty_id, "esc") {
+                    return EventResult::Consumed(None);
+                }
                 return EventResult::Consumed(Some(Box::new(
                     |compositor: &mut Compositor, _cx: &mut Context| {
                         compositor.remove_type::<PluginTerminal>();
@@ -972,6 +1063,7 @@ impl Component for PluginTerminal {
         if self.last_size != Some((rows, cols)) {
             #[cfg(unix)]
             let _ = helix_js::term_resize(self.pty_id, rows, cols);
+            helix_js::emit_term_resize(self.pty_id, rows, cols);
             self.grid.resize(rows, cols);
             self.last_size = Some((rows, cols));
         }

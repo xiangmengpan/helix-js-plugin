@@ -34,6 +34,7 @@ mod test {
     mod plugin_fsasync;
     mod filetree;
     mod plugin_layout2;
+    mod plugin_terminal_hooks;
     mod plugin_terminal_modes;
     mod plugin_theme;
     mod plugin_layout;

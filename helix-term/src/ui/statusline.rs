@@ -30,6 +30,7 @@ pub struct RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         editor: &'a Editor,
         doc: &'a Document,

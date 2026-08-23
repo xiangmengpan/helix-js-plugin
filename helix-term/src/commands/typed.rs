@@ -4611,6 +4611,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     _ => crate::ui::plugin_panel::PanelSide::Bottom,
                 };
                 let terminal = PluginTerminal::new(view_id, pty_id, size);
+                helix_js::emit_term_open(pty_id, &cmd);
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 布局树：终端成为叶子
                     use crate::ui::layout::SplitDir;
