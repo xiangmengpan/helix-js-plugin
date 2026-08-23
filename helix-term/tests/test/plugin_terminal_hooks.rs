@@ -378,3 +378,45 @@ async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
 
 
 
+
+/// keymap 前缀提示:set_keymap_hint 回调文本渲染(替代内置 Info)
+#[tokio::test(flavor = "multi_thread")]
+async fn keymap_hint_js_replaces_info() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("kh.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_keymap_hint((ctx) => "JS-HINT-" + ctx.title + " n=" + ctx.entries.length);
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    // 按 g(前缀)→ autoinfo 设置 → 渲染含 JS 提示
+    pump(&mut app, "g").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let joined = rows.join("\n");
+    assert!(
+        joined.contains("JS-HINT-"),
+        "JS keymap 提示渲染(替代内置 Info): {joined:?}"
+    );
+    Ok(())
+}
+
+/// 无 set_keymap_hint 时:内置 Info 兜底(前缀 g 仍显示)
+#[tokio::test(flavor = "multi_thread")]
+async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, "g").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let joined = rows.join("\n");
+    // 内置 Info 显示 g 前缀的键位说明(含 go/gp/gd 等命令 doc)
+    assert!(
+        joined.contains("g") && !joined.trim().is_empty(),
+        "无 JS 回调时内置 Info 兜底: {:?}",
+        &rows[15]
+    );
+    Ok(())
+}

@@ -52,6 +52,30 @@ impl KeyTrieNode {
     }
 
     pub fn infobox(&self) -> Info {
+        Info::new(self.name.clone(), &self.entries())
+    }
+
+    /// 前缀提示:优先 JS set_keymap_hint 回调(多行文本),无回调/返回 null → 内置 Info
+    pub fn hint_info(&self) -> Info {
+        if let Some(text) = helix_js::keymap_hint(&self.name, &self.entries()) {
+            let width = text
+                .lines()
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(0) as u16;
+            let height = text.lines().count() as u16;
+            return Info {
+                title: Cow::Owned(self.name.clone()),
+                text,
+                width: width.saturating_add(2),
+                height,
+            };
+        }
+        self.infobox()
+    }
+
+    /// 键位条目：(键组合, 说明)——JS keymap 提示(set_keymap_hint)与内置 Info 共用数据
+    pub fn entries(&self) -> Vec<(String, String)> {
         let mut body: Vec<(BTreeSet<KeyEvent>, &str)> = Vec::with_capacity(self.len());
         for (&key, trie) in self.iter() {
             let desc = match trie {
@@ -72,14 +96,12 @@ impl KeyTrieNode {
             }
         }
 
-        let body: Vec<_> = body
-            .into_iter()
+        body.into_iter()
             .map(|(events, desc)| {
                 let events = events.iter().map(ToString::to_string).collect::<Vec<_>>();
-                (events.join(", "), desc)
+                (events.join(", "), desc.to_string())
             })
-            .collect();
-        Info::new(self.name.clone(), &body)
+            .collect()
     }
 }
 
