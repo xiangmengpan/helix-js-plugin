@@ -10,6 +10,10 @@ mod state;
 mod theme;
 mod types;
 
+pub mod watch;
+pub mod diagnostics;
+pub mod cursor;
+
 pub use commands::*;
 pub use icons::*;
 pub use popup::*;

@@ -26,6 +26,9 @@ const EVENT_WHITELIST: [&str; 14] = [
     "term-title",
     "term-key",
     "component-event",
+    "lsp-diagnostics",
+    "cursor-move",
+    "selection-change",
 ];
 
 use crate::state::{
