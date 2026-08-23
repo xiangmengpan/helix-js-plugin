@@ -46,7 +46,7 @@ function render(ctx) {
     if (layout) {
       const st = helix.get_component_state(layout.active);
       if (st && st.mode) {
-        parts.push({ text: " T" + (st.mode === "insert" ? "I" : "N") + " ", style: "ui.statusline." + (st.mode === "insert" ? "insert" : "normal") });
+        parts.push({ text: " T" + (st.mode === "insert" ? "I" : "N") + " ", style: null });
       }
     }
   } catch (e) {}
