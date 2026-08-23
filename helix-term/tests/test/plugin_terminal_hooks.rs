@@ -210,3 +210,49 @@ async fn window_mode_x_closes_layer_terminal() -> anyhow::Result<()> {
     assert_eq!(app.compositor.layout_tree().active(), 0);
     Ok(())
 }
+
+/// 终端状态通道:get_component_state(view_id) → {mode, title, minimized, scroll_offset}
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("tstate.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("st-open", () => { globalThis.__tid = helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
+        helix.register_command("st-dump", () => {
+            const st = helix.get_component_state(globalThis.__tid);
+            helix.echo("tid:" + globalThis.__tid + " st:" + JSON.stringify(st));
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":st-open<ret>").await?;
+    // echo 消息经 application 泵 set_status;直接读 editor 状态
+    pump(&mut app, "<esc><C-w>h<esc>:st-dump<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default();
+    // 回编辑器序列的 esc 已切 normal;此处验状态结构完整(通道工作)
+    assert!(
+        status.contains("minimized") && status.contains("scroll_offset") && status.contains("title"),
+        "get_component_state 状态结构完整: {status:?}"
+    );
+    // Esc → normal 模式(切模式;仍在终端焦点,先回编辑器再 dump)
+    pump(&mut app, "<esc><C-w>h<esc>").await?;
+    pump(&mut app, ":st-dump<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("\"mode\"") && status.contains("\"normal\""),
+        "Esc 后 get_component_state 应读到 normal 模式: {status:?}"
+    );
+    Ok(())
+}

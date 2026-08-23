@@ -60,6 +60,8 @@ pub struct TerminalGrid {
     bold: bool,
     /// OSC 0/2 标题（term-title 钩子消费；feed 后 take 清空）
     last_title: Option<String>,
+    /// 最近一次 OSC 标题(持久;get_component_state 的 title 字段)
+    title: String,
 }
 
 impl TerminalGrid {
@@ -82,6 +84,7 @@ impl TerminalGrid {
             bg: None,
             bold: false,
             last_title: None,
+            title: String::new(),
         }
     }
 
@@ -652,6 +655,7 @@ impl Perform for TerminalGrid {
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         if params.len() > 1 && matches!(params[0], b"0" | b"2") {
             if let Ok(title) = String::from_utf8(params[1].to_vec()) {
+                self.title = title.clone();
                 self.last_title = Some(title);
             }
         }
@@ -884,6 +888,7 @@ impl Drop for PluginTerminal {
     fn drop(&mut self) {
         // 关闭面板（Esc/层移除）→ 杀 pty；未知 id（已退出）静默
         let _ = helix_js::term_kill(self.pty_id);
+        helix_js::unregister_component_state(self.view_id);
     }
 }
 
@@ -1039,6 +1044,18 @@ impl Component for PluginTerminal {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, _cx: &mut Context) {
+        // 组件状态快照 → get_component_state(view_id)(JS 视图层读)
+        let snap = serde_json::json!({
+            "mode": match self.input_mode {
+                TermInputMode::Insert => "insert",
+                TermInputMode::Normal => "normal",
+            },
+            "title": self.grid.title,
+            "minimized": self.mode == TermMode::Minimized,
+            "scroll_offset": self.grid.scroll_offset,
+        })
+        .to_string();
+        helix_js::register_component_state(self.view_id, move |_| snap.clone());
         // minimized：只画一条标题（不渲染网格）
         if self.mode == TermMode::Minimized {
             let style = _cx.editor.theme.get("ui.popup");
