@@ -26,6 +26,29 @@ async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+
+async fn pump_mouse(app: &mut Application, col: u16, row: u16) -> anyhow::Result<()> {
+    // termina 事件流;application 经 .into() 转 helix_view 事件
+    #[cfg(not(windows))]
+    let mouse = termina::event::MouseEvent {
+        kind: termina::event::MouseEventKind::Down(termina::event::MouseButton::Left),
+        column: col,
+        row,
+        modifiers: termina::event::Modifiers::NONE,
+    };
+    #[cfg(windows)]
+    let mouse = crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: col,
+        row,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(Ok(Event::Mouse(mouse)))?;
+    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx)).await;
+    Ok(())
+}
+
 fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
     let mut buf = tui::buffer::Buffer::empty(area);
     app.compositor.reset_plugin_diffs();
@@ -311,3 +334,46 @@ async fn tabbar_renders_top_row_from_js_view() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// 鼠标命中:点击有视图回调的叶子 → component-event;JS 返回 true → 消费
+#[tokio::test(flavor = "multi_thread")]
+async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("mhit.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        let clicks = 0;
+        helix.on("component-event", (id, ev) => {
+            if (ev.kind === "click" && id === globalThis.__lid) { clicks += 1; return true; }
+            return false;
+        });
+        helix.register_command("mh-open", () => {
+            const id = helix.split("right", { panel: { render: () => ["P"], size: 40 } });
+            globalThis.__lid = id;
+            helix.set_component_render(id, () => [{ type: "text", text: "HIT-ZONE" }]);
+        });
+        helix.register_command("mh-count", () => helix.echo("clicks:" + clicks));
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":mh-open<ret>").await?;
+    // 渲染一次(记录叶子区域)
+    let _rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    // 点击右半区(面板叶子区域)
+    pump_mouse(&mut app, 80, 15).await?;
+    pump(&mut app, "<esc>:mh-count<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("clicks:1"),
+        "点击命中视图回调叶子 → component-event: {status:?}"
+    );
+    Ok(())
+}
+

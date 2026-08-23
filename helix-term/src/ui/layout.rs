@@ -38,6 +38,8 @@ pub struct LayoutTree {
     float: Option<u64>,
     /// 最小化叶子 id（不占布局，渲染为底部一条标题横条；单例）
     minimized: Option<u64>,
+    /// 最近一次渲染的叶子区域（鼠标命中查询；每帧渲染更新）
+    leaf_rects: std::collections::HashMap<u64, Rect>,
     /// 固定叶子 id 集合（fixed：不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
     fixed: std::collections::HashSet<u64>,
 }
@@ -124,6 +126,7 @@ impl Default for LayoutTree {
             float: None,
             minimized: None,
             fixed: Default::default(),
+            leaf_rects: Default::default(),
         }
     }
 }
@@ -536,6 +539,14 @@ impl LayoutTree {
 
     /// 序列化布局（不包含组件内容，只含叶子 id 与类型标记）
     /// 重置树内面板/终端的脏格 diff（测试向不同 surface 渲染时用）
+    /// 鼠标命中:屏幕坐标 → 叶子 id(基于最近一次渲染的区域;无命中 → None)
+    pub fn leaf_id_at(&self, x: u16, y: u16) -> Option<u64> {
+        self.leaf_rects
+            .iter()
+            .find(|(_, r)| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+            .map(|(id, _)| *id)
+    }
+
     pub fn reset_plugin_diffs(&mut self) {
         for comp in self.components.values_mut() {
             if let Some(p) = comp
@@ -613,6 +624,10 @@ impl LayoutTree {
         } else {
             Some(self.active)
         };
+        self.leaf_rects.clear();
+        for (id, rect) in &rects {
+            self.leaf_rects.insert(*id, *rect);
+        }
         for (id, rect) in rects {
             if let Some(comp) = self.components.get_mut(&id) {
                 if focus == Some(id) && rect.width >= 4 && rect.height >= 4 {

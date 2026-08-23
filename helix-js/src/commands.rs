@@ -11,7 +11,7 @@ use boa_engine::{Context, JsError, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-const EVENT_WHITELIST: [&str; 13] = [
+const EVENT_WHITELIST: [&str; 14] = [
     "save",
     "mode-change",
     "buffer-open",
@@ -25,6 +25,7 @@ const EVENT_WHITELIST: [&str; 13] = [
     "term-resize",
     "term-title",
     "term-key",
+    "component-event",
 ];
 
 use crate::state::{
@@ -605,6 +606,36 @@ pub fn emit_term_resize(pty_id: u64, rows: u16, cols: u16) {
 pub fn emit_term_title(pty_id: u64, title: &str) {
     emit_hook("term-title", &[JsValue::from(pty_id), JsValue::from(JsString::from(title))]);
 }
+/// 组件事件(鼠标点击/滚动等):构造 {kind, x, y} 对象;插件返回 true → 消费该事件。
+pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
+    crate::init();
+    let handlers = with_event_handlers(|h| h.get("component-event").cloned());
+    let Some(handlers) = handlers else { return false };
+    if handlers.is_empty() {
+        return false;
+    }
+    with_engine(|engine| {
+        let ev = ObjectInitializer::new(engine)
+            .property(JsString::from("kind"), JsValue::from(JsString::from(kind)), Attribute::all())
+            .property(JsString::from("x"), JsValue::from(x), Attribute::all())
+            .property(JsString::from("y"), JsValue::from(y), Attribute::all())
+            .build();
+        let args = [JsValue::from(id), JsValue::from(ev)];
+        let undefined = JsValue::undefined();
+        for handler in &handlers {
+            let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
+                continue;
+            };
+            if let Ok(ret) = func.call(&undefined, &args, engine) {
+                if ret.as_boolean() == Some(true) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+}
+
 /// term-close 钩子：插件返回 false → 阻止关闭（返回 true=阻止）
 pub fn emit_term_close(pty_id: u64, reason: &str) -> bool {
     emit_hook("term-close", &[JsValue::from(pty_id), JsValue::from(JsString::from(reason))])
