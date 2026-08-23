@@ -84,6 +84,10 @@ pub trait Component: Any + AnyComponent {
     }
 }
 
+/// 布局标签条组件 id：JS 侧经 set_component_render(TABBAR_ID, fn) 注册视图回调，
+/// compositor 渲染时在屏幕顶部画 1 行（未注册 → 树占满）。
+pub const TABBAR_ID: u64 = 0x7ABB_0001;
+
 pub struct Compositor {
     /// 瞬态覆盖层（弹窗/菜单/提示）——不参与布局，渲染在主区域之上
     layers: Vec<Box<dyn Component>>,
@@ -94,6 +98,8 @@ pub struct Compositor {
     pub(crate) last_picker: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
     pub(crate) window_mode: WindowMode,
+    /// 标签条脏格 diff 渲染器
+    tabbar_diff: crate::ui::comp_layout::DiffRenderer,
 }
 
 impl Compositor {
@@ -105,6 +111,7 @@ impl Compositor {
             last_picker: None,
             full_redraw: false,
             window_mode: WindowMode::Inactive,
+            tabbar_diff: Default::default(),
         }
     }
 
@@ -362,11 +369,18 @@ impl Compositor {
         // commandline（prompt/picker）活跃时占状态栏上一行：树多让 1 行；
         // 状态栏永远在最底 1 行（commandline 关闭后自动恢复）
         let bottom_ui = self.bottom_ui_active();
-        let tree_area = if bottom_ui {
-            area.clip_bottom(2)
-        } else {
-            area.clip_bottom(1)
-        };
+        // 标签条（JS 视图,顶部 1 行；未注册回调 → 树占满）
+        let tabbar = helix_js::render_component(TABBAR_ID, area.width, 1, None).is_ok();
+        let tree_area = area
+            .clip_top(if tabbar { 1 } else { 0 })
+            .clip_bottom(if bottom_ui { 2 } else { 1 });
+        if tabbar {
+            if let Ok(content) = helix_js::render_component(TABBAR_ID, area.width, 1, None) {
+                let lines = crate::ui::comp_layout::render(content, (area.width, 1));
+                self.tabbar_diff
+                    .render(&lines, area.with_height(1), surface, &cx.editor.theme);
+            }
+        }
         // 主区域布局树：编辑器/终端/面板叶子各自在矩形里渲染
         self.main_tree.render(tree_area, surface, cx);
         // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上；
@@ -769,6 +783,7 @@ impl Compositor {
     }
 
     pub fn reset_plugin_diffs(&mut self) {
+        self.tabbar_diff = Default::default();
         for layer in &mut self.layers {
             if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::PluginPanel>() {
                 p.reset_render_state();

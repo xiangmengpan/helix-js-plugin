@@ -20,7 +20,7 @@ pub use types::*;
 
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsString, NativeFunction};
+use boa_engine::{Context, JsString, JsValue, NativeFunction};
 
 /// 初始化线程局部运行时（幂等）：消息/UI 队列、事件通道、boa 引擎与全局 `helix` 对象。
 pub fn init() {
@@ -120,6 +120,14 @@ pub fn init() {
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
                 .expect("register helix object");
+            // 布局标签条组件 id(与 helix-term::compositor::TABBAR_ID 一致)
+            engine
+                .register_global_property(
+                    JsString::from("TABBAR_ID"),
+                    JsValue::from(0x7ABB_0001_u64),
+                    Attribute::READONLY | Attribute::NON_ENUMERABLE,
+                )
+                .expect("register TABBAR_ID");
             *slot = Some(engine);
         }
     });

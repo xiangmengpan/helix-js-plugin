@@ -283,3 +283,31 @@ async fn terminal_title_bar_from_js_view() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// 标签条示范:set_component_render(TABBAR_ID) 画顶部 1 行;树区下移
+#[tokio::test(flavor = "multi_thread")]
+async fn tabbar_renders_top_row_from_js_view() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("tabbar.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_component_render(TABBAR_ID, () => {
+            const layout = helix.get_layout();
+            const n = layout && layout.leafs ? layout.leafs.length : 0;
+            return [{ type: "text", text: "TAB-" + n }];
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    // 无叶子时 TAB-0(编辑器算一个?看 get_layout 的 leafs 语义——编辑器 id=0 是否在 leafs)
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    assert!(
+        rows[0].contains("TAB-"),
+        "标签条渲染在顶部: {:?}",
+        &rows[0]
+    );
+    Ok(())
+}
