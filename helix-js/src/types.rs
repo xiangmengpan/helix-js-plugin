@@ -19,6 +19,9 @@ pub enum UiRequest {
     OpenFile {
         path: String,
     },
+    FocusBuffer {
+        id: u64,
+    },
     MovePanel {
         id: u64,
         side: String,

@@ -329,6 +329,8 @@ pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new()
 pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
+/// 打开文档序列化缓存（helix-term 每帧写入；buffers/current_buffer 读取）
+pub(crate) static BUFFERS: OnceLock<Mutex<String>> = OnceLock::new();
 
 /// 组件状态提供者表(组件 id → JSON 生成器)
 type ComponentStateMap = HashMap<u64, Box<dyn Fn(u64) -> String>>;
@@ -445,6 +447,14 @@ pub fn take_messages() -> Vec<String> {
 pub fn cache_layout(json: &str) {
     let _ = LAST_LAYOUT.get_or_init(Default::default);
     if let Some(m) = LAST_LAYOUT.get() {
+        *m.lock().unwrap() = json.to_string();
+    }
+}
+
+/// 写入打开文档序列化缓存(helix-term 每帧更新;buffers/current_buffer 读取)
+pub fn cache_buffers(json: &str) {
+    let _ = BUFFERS.get_or_init(Default::default);
+    if let Some(m) = BUFFERS.get() {
         *m.lock().unwrap() = json.to_string();
     }
 }

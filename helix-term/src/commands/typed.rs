@@ -4668,6 +4668,17 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::FocusBuffer { id } => {
+                job::dispatch_blocking(move |editor, _compositor| {
+                    if let Some((doc_id, _)) =
+                        editor.documents.iter().find(|(did, _)| did.as_u64() == id)
+                    {
+                        editor.switch(*doc_id, helix_view::editor::Action::Replace);
+                    } else {
+                        editor.set_error(format!("focus_buffer: no buffer with id {id}"));
+                    }
+                });
+            }
             helix_js::UiRequest::OpenBufferLeaf { path, split } => {
                 job::dispatch_blocking(move |editor, compositor| {
                     use helix_view::editor::Action;
@@ -5105,6 +5116,33 @@ fn panel_close(_cx: &mut compositor::Context, _args: Args, event: PromptEvent) -
     helix_js::close_last_panel().map_err(|e| anyhow!("panel-close: {e}"))?;
     apply_ui_requests(helix_js::take_ui_requests())?;
     Ok(())
+}
+
+/// 打开文档序列化:{current, buffers:[{id, path, name, dirty, language}]}。
+/// 每帧由 application.render 写入 helix-js 缓存(buffers/current_buffer 读取)。
+pub fn serialize_buffers(editor: &helix_view::Editor) -> String {
+    let current = editor.tree.get(editor.tree.focus).doc;
+    let buffers: Vec<_> = editor
+        .documents
+        .iter()
+        .map(|(id, doc)| {
+            serde_json::json!({
+                "id": id.as_u64(),
+                "path": doc.path().map(|p| p.to_string_lossy().into_owned()),
+                "name": doc
+                    .path()
+                    .map(|p| {
+                        p.file_name()
+                            .map(|f| f.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| p.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_else(|| "[scratch]".to_string()),
+                "dirty": doc.is_modified(),
+                "language": doc.language_name(),
+            })
+        })
+        .collect();
+    serde_json::json!({ "current": current.as_u64(), "buffers": buffers }).to_string()
 }
 
 /// :term-native 打开原生终端面板（PoC 演示命令）：注册两个隐藏命令——

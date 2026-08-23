@@ -2,7 +2,7 @@
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
 use crate::popup::{obj_opt_str, obj_opt_u16};
-use crate::state::LAST_LAYOUT;
+use crate::state::{BUFFERS, LAST_LAYOUT};
 
 use crate::state::{
     with_popups, UI_REQUESTS,
@@ -227,6 +227,42 @@ pub(crate) fn js_get_layout(_this: &JsValue, _args: &[JsValue], ctx: &mut Contex
 
 /// 组件状态只读:helix.get_component_state(id) → 对象(未注册 → null)。
 /// 状态由 Rust 组件经 JSON 字符串提供(register_component_state),JS 视图层据此画外观。
+/// 打开文档列表:helix.buffers() → [{id, path, name, dirty, language}](只读快照)。
+/// BUFFERS JSON 形如 {"current": id, "buffers": [...]}
+pub(crate) fn js_buffers(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let json = BUFFERS.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();
+    if json.is_empty() {
+        return Ok(JsValue::null());
+    }
+    let parsed = js_json_parse(json, ctx, "buffers")?;
+    let Some(obj) = parsed.as_object() else { return Ok(JsValue::null()) };
+    Ok(obj.get(JsString::from("buffers"), ctx)?)
+}
+
+/// 当前文档 id:helix.current_buffer()
+pub(crate) fn js_current_buffer(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let json = BUFFERS.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();
+    if json.is_empty() {
+        return Ok(JsValue::undefined());
+    }
+    let parsed = js_json_parse(json, ctx, "current_buffer")?;
+    let Some(obj) = parsed.as_object() else { return Ok(JsValue::undefined()) };
+    obj.get(JsString::from("current"), ctx)
+}
+
+/// 聚焦指定文档:helix.focus_buffer(id) — 当前 view 切换到该文档
+pub(crate) fn js_focus_buffer(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
+            "focus_buffer: id must be a number",
+        ))))?;
+    crate::state::UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::FocusBuffer { id });
+    Ok(JsValue::undefined())
+}
+
 pub(crate) fn js_get_component_state(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let id: u64 = args
         .first()

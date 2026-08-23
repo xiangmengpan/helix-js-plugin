@@ -386,6 +386,9 @@ impl Application {
             self.compositor.full_redraw = false;
         }
 
+        // 打开文档缓存(每帧;buffers/current_buffer 读取)
+        helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
+
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,

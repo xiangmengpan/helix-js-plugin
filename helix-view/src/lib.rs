@@ -31,6 +31,13 @@ impl Default for DocumentId {
     }
 }
 
+/// 数值表示(JS 插件 buffers() 的 id;会话内有效,文档关闭后失效)
+impl DocumentId {
+    pub fn as_u64(&self) -> u64 {
+        self.0.get() as u64
+    }
+}
+
 #[cfg(test)]
 impl DocumentId {
     /// Constructs a `DocumentId` with the given non-zero id, for use in tests

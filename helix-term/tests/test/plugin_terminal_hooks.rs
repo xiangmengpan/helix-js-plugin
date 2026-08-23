@@ -566,3 +566,53 @@ async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
 }
 
 
+
+/// buffer 遍历:helix.buffers() 列出文档;focus_buffer 切换当前 view
+#[tokio::test(flavor = "multi_thread")]
+async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let f1 = dir.path().join("a.txt");
+    let f2 = dir.path().join("b.txt");
+    std::fs::write(&f1, "aaa\n")?;
+    std::fs::write(&f2, "bbb\n")?;
+    let plugin_path = dir.path().join("btra.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("bt-dump", (ctx) => {
+            const bs = helix.buffers();
+            const cur = helix.current_buffer();
+            helix.echo("n:" + (bs ? bs.length : 0) + " cur:" + cur + " names:" + (bs ? bs.map((b) => b.name).join(",") : ""));
+        });
+        helix.register_command("bt-focus-b", () => {
+            const bs = helix.buffers();
+            if (bs) {
+                const b = bs.find((x) => x.name === "b.txt");
+                if (b) helix.focus_buffer(b.id);
+            }
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().with_file(f1, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":open {}<ret>", ).await?;
+    pump(&mut app, &format!(":open {}<ret>", f2.display())).await?;
+    // buffers 应含 a.txt + b.txt
+    pump(&mut app, ":bt-dump<ret>").await?;
+    let status = app.editor.get_status().map(|(s, _)| s.to_string()).unwrap_or_default();
+    assert!(
+        status.contains("a.txt") && status.contains("b.txt"),
+        "buffers 列出文档: {status:?}"
+    );
+    // focus_buffer(b.txt) → 当前 view 切到 b.txt
+    pump(&mut app, ":bt-focus-b<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    let path = doc.path().map(|p| p.to_string_lossy().into_owned());
+    assert_eq!(
+        path.as_deref(),
+        Some(f2.to_str().unwrap()),
+        "focus_buffer 切到 b.txt"
+    );
+    Ok(())
+}

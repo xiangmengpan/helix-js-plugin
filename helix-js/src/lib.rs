@@ -106,6 +106,9 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf), JsString::from("focus"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_get_layout), JsString::from("get_layout"), 0)
                 .function(NativeFunction::from_fn_ptr(layout::js_get_component_state), JsString::from("get_component_state"), 1)
+                .function(NativeFunction::from_fn_ptr(layout::js_buffers), JsString::from("buffers"), 0)
+                .function(NativeFunction::from_fn_ptr(layout::js_current_buffer), JsString::from("current_buffer"), 0)
+                .function(NativeFunction::from_fn_ptr(layout::js_focus_buffer), JsString::from("focus_buffer"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_restore_layout), JsString::from("restore_layout"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_reset_theme), JsString::from("reset_theme"), 0)
@@ -1879,6 +1882,44 @@ mod tests {
         // 清除
         load_script(r#"helix.set_keymap_hint(null);"#).unwrap();
         assert_eq!(keymap_hint("g", &entries), None);
+    }
+
+    /// buffer 遍历:cache_buffers → buffers/current_buffer 解析;focus_buffer 入队
+    #[test]
+    fn buffer_traversal_api() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 无缓存 → null/undefined
+        load_script(r#"globalThis.__b = helix.buffers(); globalThis.__c = helix.current_buffer();"#).unwrap();
+        crate::state::with_engine(|engine| {
+            let v = engine.global_object().get(JsString::from("__b"), engine).unwrap();
+            assert!(v.is_null(), "无缓存 buffers → null");
+        });
+        // 缓存写入 → buffers 数组 / current id
+        crate::state::cache_buffers(r#"{"current":3,"buffers":[{"id":3,"path":"/a.rs","name":"a.rs","dirty":false,"language":"rust"},{"id":7,"path":null,"name":"[scratch]","dirty":true,"language":null}]}"#);
+        load_script(
+            r#"
+            globalThis.__bs = helix.buffers();
+            globalThis.__cur = helix.current_buffer();
+            helix.focus_buffer(7);
+            "#,
+        )
+        .unwrap();
+        crate::state::with_engine(|engine| {
+            let arr = engine.global_object().get(JsString::from("__bs"), engine).unwrap();
+            let arr_obj = arr.as_object().unwrap();
+            let arr = boa_engine::object::builtins::JsArray::from_object(arr_obj.clone()).unwrap();
+            let len: usize = arr.length(engine).unwrap() as usize;
+            assert_eq!(len, 2, "buffers 数组长度");
+            let cur = engine.global_object().get(JsString::from("__cur"), engine).unwrap();
+            assert_eq!(cur.as_number().unwrap() as u64, 3, "current_buffer id");
+        });
+        // focus_buffer 入队 FocusBuffer
+        let reqs = take_ui_requests();
+        assert!(matches!(
+            reqs.iter().find(|r| matches!(r, UiRequest::FocusBuffer { id: 7 })),
+            Some(_)
+        ), "focus_buffer 入队 FocusBuffer");
     }
 
     /// 组件状态通道:register_component_state(JSON) → get_component_state(对象);未注册 → null
