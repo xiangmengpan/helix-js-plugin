@@ -454,3 +454,20 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// window 模式 Enter:确认当前窗口 → 退出窗口模式(回 normal)
+#[tokio::test(flavor = "multi_thread")]
+async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, "<C-w>").await?;
+    assert!(app.compositor.window_mode_active(), "C-w 进模式");
+    pump(&mut app, "<ret>").await?;
+    assert!(
+        !app.compositor.window_mode_active(),
+        "Enter 退出窗口模式"
+    );
+    // 焦点仍是当前叶子(编辑器 id=0),编辑器 normal
+    assert_eq!(app.compositor.layout_tree().active(), 0);
+    Ok(())
+}

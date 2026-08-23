@@ -184,6 +184,8 @@ function open_selected() {
     }
   } else {
     helix.open_file(hit.node.path);
+    // 打开后聚焦编辑器叶子(该文件所在),面板保留
+    helix.focus(0);
   }
 }
 

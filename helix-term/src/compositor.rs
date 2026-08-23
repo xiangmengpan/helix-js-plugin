@@ -247,6 +247,12 @@ impl Compositor {
                         cx.editor.autoinfo = None;
                         return true;
                     }
+                    _ if matches!(key.code, KeyCode::Enter) => {
+                        // Enter:确认当前窗口 → 进入其 buffer 并退出窗口模式回 normal
+                        self.window_mode = WindowMode::Inactive;
+                        cx.editor.autoinfo = None;
+                        return true;
+                    }
                     Some('h') => {
                         self.window_mode_focus('h');
                         return true;
