@@ -82,35 +82,45 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// term-close 钩子返回 false:Esc 与 q 都不关闭终端
+/// Esc 切 terminal normal(滚动)模式;q 无操作——关闭统一交给 window 模式 x
 #[tokio::test(flavor = "multi_thread")]
-async fn term_close_hook_blocks_esc_and_q() -> anyhow::Result<()> {
+async fn esc_switches_to_normal_q_noop() -> anyhow::Result<()> {
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("thooks2.js");
     std::fs::write(
         &plugin_path,
         r#"
-        helix.on("term-close", () => false);
         helix.register_command("th-open", () => { helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
+        helix.register_command("th-mode", () => {
+            const t = helix.term_list()[0];
+            if (t) helix.echo("mode:" + (t.inputMode || "?"));
+        });
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
     pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
     pump(&mut app, ":th-open<ret>").await?;
-    // Esc(Insert 模式)被 term-close 阻止
+    // Insert 模式 Esc → 切 terminal normal 模式(终端仍在,不关闭)
     pump(&mut app, "<esc>").await?;
     assert!(
         app.compositor
             .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
-        "term-close=false 阻止 Esc 关闭"
+        "Esc 切 normal 模式,终端不关闭"
     );
-    // C-\ 切 Normal 后 q → 也被阻止
-    pump(&mut app, "C-\\ q").await?;
+    // q 无操作(不关闭,关闭归 window 模式 x)
+    pump(&mut app, "q").await?;
     assert!(
         app.compositor
             .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
-        "term-close=false 阻止 q 关闭"
+        "q 不再关闭终端"
+    );
+    // i 回 insert 模式(继续直通)
+    pump(&mut app, "i").await?;
+    assert!(
+        app.compositor
+            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        "i 回 insert 模式,终端仍在"
     );
     Ok(())
 }

@@ -60,6 +60,8 @@ async fn plugin_terminal_modes() -> anyhow::Result<()> {
                     let _ = doc;
                 }),
             ),
+            // 焦点回编辑器(window 模式导航;esc 不再关闭终端,退出序列 :q! 需要编辑器焦点)
+            (Some("<C-w>h<esc>"), None),
         ],
         false,
     )
@@ -319,6 +321,17 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
     assert!(app.compositor.floating().is_some(), "第一次 :term 应浮动");
     assert_status_not_error(&app.editor);
 
+    // Esc 切 terminal normal → C-w 进 window 模式 → x 关闭叶子(终端关闭唯一途径)
+    for key_event in parse_macro("<esc>")? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    eprintln!("[dbg] after esc: window={} active={}", app.compositor.window_mode_active(), app.compositor.layout_tree().active());
+    for key_event in parse_macro("<C-w>")? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    eprintln!("[dbg] after C-w: window={} active={}", app.compositor.window_mode_active(), app.compositor.layout_tree().active());
     for key_event in parse_macro("x<esc>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
@@ -329,7 +342,7 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(!app.compositor.has_component(term_type), "Esc 应关闭终端");
+    assert!(!app.compositor.has_component(term_type), "window 模式 x 应关闭终端");
 
     for key_event in parse_macro(":term<ret>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;

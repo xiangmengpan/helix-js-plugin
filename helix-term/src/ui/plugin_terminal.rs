@@ -968,7 +968,7 @@ impl Component for PluginTerminal {
                 }
             }
         } else if self.input_mode == TermInputMode::Normal {
-            // 终端 normal 模式：导航滚动缓冲；i/a/Esc 回 insert；q 关闭
+            // 终端 normal 模式：滚动缓冲/复制；i/a/Esc 回 insert；q 无操作（关闭归 window 模式 x）
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.grid.scroll_down_view(1);
@@ -1011,15 +1011,8 @@ impl Component for PluginTerminal {
                     )))
                 }
                 KeyCode::Char('q') => {
-                    // term-close 钩子（reason="quit"）返回 false → 阻止关闭
-                    if helix_js::emit_term_close(self.pty_id, "quit") {
-                        return EventResult::Consumed(None);
-                    }
-                    EventResult::Consumed(Some(Box::new(
-                        |compositor: &mut Compositor, _cx: &mut Context| {
-                            compositor.remove_type::<PluginTerminal>();
-                        },
-                    )))
+                    // 终端关闭统一交给 window 模式(x);此处仅消费,不再关闭
+                    EventResult::Consumed(None)
                 }
                 // 其余键直通 pty（C-c 中断等）
                 _ => {
@@ -1030,17 +1023,12 @@ impl Component for PluginTerminal {
                 }
             }
         } else {
-            // Insert 模式
-            // Esc → 关闭面板（kill pty 由 Drop 兜底）；term-close 钩子（reason="esc"）返回 false → 阻止
+            // Insert 模式：按键全部直通 pty（插入文字）
             if key.code == KeyCode::Esc {
-                if helix_js::emit_term_close(self.pty_id, "esc") {
-                    return EventResult::Consumed(None);
-                }
-                return EventResult::Consumed(Some(Box::new(
-                    |compositor: &mut Compositor, _cx: &mut Context| {
-                        compositor.remove_type::<PluginTerminal>();
-                    },
-                )));
+                // Esc → 切 terminal normal 模式（滚动/复制），不关闭（关闭归 window 模式 x）
+                self.input_mode = TermInputMode::Normal;
+                helix_js::emit_term_mode(self.pty_id, "normal");
+                return EventResult::Consumed(None);
             }
             if let Some(bytes) = key_to_term_bytes(key) {
                 // 按键直通 pty（非阻塞；worker 已退出时静默）

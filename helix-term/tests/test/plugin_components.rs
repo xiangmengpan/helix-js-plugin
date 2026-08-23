@@ -269,14 +269,14 @@ async fn plugin_split_terminal_leaf() -> anyhow::Result<()> {
                     assert!(status.as_ref().starts_with("id:"), "split returns leaf id");
                 }),
             ),
-            // 终端叶子活动时吞掉所有按键（Esc 关闭终端本身）
+            // 终端叶子:Esc 切 normal → C-w 进 window 模式 → x 关闭(关闭唯一途径)
             (
-                Some("<esc>"),
+                Some("<esc><C-w>x<esc>"),
                 Some(&|app| {
                     let has_term = app.compositor.has_component(std::any::type_name::<
                         helix_term::ui::plugin_terminal::PluginTerminal,
                     >());
-                    assert!(!has_term, "Esc should close the terminal leaf");
+                    assert!(!has_term, "window 模式 x should close the terminal leaf");
                 }),
             ),
             // 面板叶子可穿透按键——用 close_leaf 命令关闭
