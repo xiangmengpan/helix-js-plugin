@@ -2,7 +2,7 @@
 // 依赖:helix.set_keymap_hint(ctx => 多行文本|null)
 // ctx = { title: 前缀名, entries: [{keys, doc}] }
 // 窗口模式(C-w)由 compositor 在进入时调 keymap_hint("C-w", ...) → 本文件返回中文键位表。
-helix.plugin("which-key", { deps: ["lib/layout.js"] });
+helix.plugin("which-key", { deps: ["lib/icons.js"] });
 
 (function () {
   // 中文说明:键组合 → 中文(按 keys 字符串匹配;未命中显示原 doc)

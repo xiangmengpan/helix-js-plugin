@@ -3,19 +3,14 @@ use helix_core::unicode::width::UnicodeWidthStr;
 use std::{borrow::Cow, fmt::Write};
 
 /// Info 框位置(JS set_keymap_hint 可指定;默认右下角)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InfoPosition {
+    #[default]
     BottomRight,
     BottomLeft,
     TopRight,
     TopLeft,
     Center,
-}
-
-impl Default for InfoPosition {
-    fn default() -> Self {
-        InfoPosition::BottomRight
-    }
 }
 
 #[derive(Debug)]

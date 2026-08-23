@@ -320,10 +320,11 @@ impl Compositor {
             if let MouseEventKind::Down(_) = mouse.kind {
                 let (x, y) = (mouse.column, mouse.row);
                 // 标签条：顶部 1 行（有视图回调时）
-                if helix_js::render_component(TABBAR_ID, 1, 1, None).is_ok() && y == self.area.y {
-                    if helix_js::emit_component_event(TABBAR_ID, "click", x, y) {
-                        return true;
-                    }
+                if helix_js::render_component(TABBAR_ID, 1, 1, None).is_ok()
+                    && y == self.area.y
+                    && helix_js::emit_component_event(TABBAR_ID, "click", x, y)
+                {
+                    return true;
                 }
                 // 叶子命中：有视图回调的叶子把点击交给 JS 视图层
                 if let Some(id) = self.main_tree.leaf_id_at(x, y) {

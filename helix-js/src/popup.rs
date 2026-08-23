@@ -1008,7 +1008,7 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
             return Some((s, "bottom-right".to_string()));
         }
         // 对象 {text, position}
-        let Some(obj) = ret.as_object() else { return None };
+        let obj = ret.as_object()?;
         let text: String = obj
             .get(JsString::from("text"), engine)
             .ok()?

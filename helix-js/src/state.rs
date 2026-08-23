@@ -88,7 +88,7 @@ thread_local! {
     static THEME_OVERRIDES: RefCell<HashMap<String, crate::theme::StyleOverride>> = RefCell::new(HashMap::new());
     // 组件状态提供者：组件 id → JSON 字符串生成器（helix-term 不依赖 boa,状态经 JSON 传递）。
     // 组件创建时注册、Drop 时注销;get_component_state 读取。
-    static COMPONENT_STATES: RefCell<HashMap<u64, Box<dyn Fn(u64) -> String>>> = RefCell::new(HashMap::new());
+    static COMPONENT_STATES: RefCell<ComponentStateMap> = RefCell::new(HashMap::new());
     // 覆盖集是否变化（set/reset 置位；helix-term drain 时读取并清位）
     static THEME_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
@@ -329,6 +329,9 @@ pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new()
 pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
+
+/// 组件状态提供者表(组件 id → JSON 生成器)
+type ComponentStateMap = HashMap<u64, Box<dyn Fn(u64) -> String>>;
 
 /// 终端实例注册表（pty_id → (view_id, cmd)；term_kill(pty_id) 清理、term_list 查询）
 static OPEN_TERMS: OnceLock<Mutex<HashMap<u64, (u64, String)>>> = OnceLock::new();
