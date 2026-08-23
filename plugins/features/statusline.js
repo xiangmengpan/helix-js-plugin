@@ -40,6 +40,17 @@ function render(ctx) {
     parts.push({ text: " " + winIcon + " ", style: "ui.statusline.insert" });
   }
 
+  // ── 终端模式指示：活动叶子是终端时显示其 Insert/Normal(经 get_component_state) ──
+  try {
+    const layout = helix.get_layout();
+    if (layout) {
+      const st = helix.get_component_state(layout.active);
+      if (st && st.mode) {
+        parts.push({ text: " T" + (st.mode === "insert" ? "I" : "N") + " ", style: "ui.statusline." + (st.mode === "insert" ? "insert" : "normal") });
+      }
+    }
+  } catch (e) {}
+
   // ── 左区：mode 色块 + 文件名（类型图标）+ git 分支 ──
   parts.push({ text: " " + (ICONS ? ICONS.getModeIcon(mode) : mode.charAt(0).toUpperCase()) + " ", style: "ui.statusline." + mode });
   const name = ctx.path ? ctx.path.split("/").pop() : "[scratch]";

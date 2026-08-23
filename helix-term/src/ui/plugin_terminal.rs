@@ -1100,6 +1100,13 @@ impl Component for PluginTerminal {
             self.last_size = Some((rows, cols));
         }
         self.grid.render(grid_area, surface);
+        // 终端光标：insert 模式在网格光标处画反色块(主题 ui.cursor)；normal 模式隐藏(滚动查看)
+        if self.input_mode == TermInputMode::Insert {
+            let (row, col) = self.grid.cursor();
+            if let Some(cell) = surface.get_mut(grid_area.x + col, grid_area.y + row) {
+                cell.set_style(cx.editor.theme.get("ui.cursor"));
+            }
+        }
     }
 
     fn id(&self) -> Option<&'static str> {

@@ -557,3 +557,42 @@ async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
     assert!(pos < 40, "提示在左侧: col={pos} row={hint_row_idx}");
     Ok(())
 }
+
+/// 状态栏显示终端模式:活动终端叶子 Insert → "TI",Esc 切 normal → "TN"
+#[tokio::test(flavor = "multi_thread")]
+async fn statusline_shows_terminal_mode() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
+    let sl = format!("{home}/.config/helix/plugins/features/statusline.js");
+    if !std::path::Path::new(&sl).exists() {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("tstat.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("ts-open", () => { helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    helix_js::set_plugins_dir(format!("{home}/.config/helix/plugins").into());
+    pump(&mut app, &format!(":plugin-load {}<ret>:plugin-load {}<ret>", sl, plugin_path.display())).await?;
+    pump(&mut app, ":ts-open<ret>").await?;
+    // insert 模式 → 状态栏含 TI
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let status = &rows[29];
+    assert!(
+        status.contains("TI"),
+        "状态栏显示终端 insert: {status:?}"
+    );
+    // Esc 切 normal → TN
+    pump(&mut app, "<esc>").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let status = &rows[29];
+    assert!(
+        status.contains("TN"),
+        "状态栏显示终端 normal: {status:?}"
+    );
+    Ok(())
+}
