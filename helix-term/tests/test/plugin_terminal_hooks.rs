@@ -420,3 +420,37 @@ async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// 完整 which-key.js:按 g 前缀 → 中文说明(未命中映射显示原 doc);C-w 窗口模式中文表
+#[tokio::test(flavor = "multi_thread")]
+async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
+    let wk = format!("{home}/.config/helix/plugins/features/which-key.js");
+    if !std::path::Path::new(&wk).exists() {
+        return Ok(());
+    }
+    let mut app = AppBuilder::new().build()?;
+    // which-key.js 的 deps 是 lib/layout.js(相对名);集成测试需 PLUGINS_DIR
+    helix_js::set_plugins_dir(format!("{home}/.config/helix/plugins").into());
+    pump(&mut app, &format!(":plugin-load {wk}<ret>")).await?;
+    // 普通前缀 g → 中文说明
+    pump(&mut app, "g").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let joined = rows.join("\n");
+    // CJK 被 Info 逐字符宽度处理(surface 字符间可能带空格);断言含关键汉字
+    assert!(
+        joined.contains("尾") || joined.contains("移"),
+        "which-key 中文说明渲染: {joined:?}"
+    );
+    // C-w 窗口模式 → 中文键位表
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, "<C-w>").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let joined = rows.join("\n");
+    assert!(
+        joined.contains("焦") && joined.contains("化"),
+        "窗口模式中文键位表: {joined:?}"
+    );
+    Ok(())
+}

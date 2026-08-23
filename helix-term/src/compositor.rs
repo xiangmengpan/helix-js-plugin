@@ -239,10 +239,12 @@ impl Compositor {
                     }
                     Some(c) if c == 'w' && ctrl => {
                         self.window_mode = WindowMode::Inactive;
+                        cx.editor.autoinfo = None;
                         return true;
                     }
                     _ if matches!(key.code, KeyCode::Esc) => {
                         self.window_mode = WindowMode::Inactive;
+                        cx.editor.autoinfo = None;
                         return true;
                     }
                     Some('h') => {
@@ -301,6 +303,7 @@ impl Compositor {
                 && !self.terminal_passthrough()
             {
                 self.window_mode = WindowMode::Active;
+                self.window_mode_hint(cx);
                 return true;
             }
         }
@@ -737,6 +740,38 @@ impl Compositor {
         if a != 0 {
             self.remove_leaf(a);
         }
+    }
+
+    /// 窗口模式提示:进入时经 keymap_hint(JS set_keymap_hint)或内置文本显示键位表
+    fn window_mode_hint(&mut self, cx: &mut Context) {
+        use helix_view::info::Info;
+        let entries: Vec<(String, String)> = [
+            ("h j k l", "聚焦(左/下/上/右)"),
+            ("H J K L", "交换"),
+            ("C-h C-j C-k C-l", "尺寸 ∓5%"),
+            ("x", "关闭窗口"),
+            ("z", "最小化/还原"),
+            ("f", "最大化/还原"),
+            ("Esc / C-w", "退出"),
+        ]
+        .iter()
+        .map(|(k, d)| (k.to_string(), d.to_string()))
+        .collect();
+        let text = helix_js::keymap_hint("C-w", &entries).unwrap_or_else(|| {
+            entries
+                .iter()
+                .map(|(k, d)| format!("{k:<20} {d}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+        let height = text.lines().count() as u16;
+        cx.editor.autoinfo = Some(Info {
+            title: std::borrow::Cow::Borrowed("C-w"),
+            text,
+            width: width.saturating_add(2),
+            height,
+        });
     }
 
     /// 窗口模式:最小化/还原(z)。已最小化 → 还原;否则最小化活动叶子(编辑器除外)。
