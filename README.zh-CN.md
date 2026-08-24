@@ -155,12 +155,39 @@ helix.term_state(ptyId, "cwd", "/path");            // 状态持久化(跨会话
 helix.term_state(ptyId, "cwd");                     // 读取
 ```
 
+### Buffer 遍历、诊断与文件监听
+
+```js
+// 打开文档快照(只读;id 会话内有效)
+helix.buffers();            // → [{id, path, name, dirty, language}]
+helix.current_buffer();     // → id
+helix.focus_buffer(id);     // 当前 view 切换到该文档
+
+// 当前文档的 LSP 诊断(数据来自 Document::diagnostics)
+helix.diagnostics();        // → [{line, message, severity, code, source}]
+helix.on("lsp-diagnostics", (docId, diags) => { ... });
+
+// 文件系统监听(notify 支撑,500ms 防抖)
+const wid = helix.watch("/path/to/dir", (events) => {
+  // events: [{kind: "create"|"modify"|"delete"|"rename", path}]
+  filetree.refresh();
+});
+helix.unwatch(wid);
+
+// 光标/选区事件(帧级节流)
+helix.on("cursor-move", (docId, { row, col, mode }) => { ... });
+helix.on("selection-change", (docId, { count, primary }) => { ... });
+```
+
 ### 完整 API 列表
 
 `echo` `register_command` `run_command` `on` `map` `el` `export` `plugin` `load` `lazy`
 `open_popup` `open_panel` `close_panel` `move_panel` `read_dir` `open_file` `set_buffer_icon` `set_statusline`
 `open_terminal` `term_write` `term_feed` `term_kill` `term_list` `term_close` `term_resize` `term_clear` `term_save` `set_terminal_mode`
 `split` `buffer_open` `close_leaf` `zoom` `unzoom` `resize_leaf` `layout_resize` `layout_swap` `layout_minimize` `layout_focus` `layout_swap_dir` `layout_equalize` `layout_fix` `focus` `get_layout` `restore_layout`
+`buffers` `current_buffer` `focus_buffer`
+`watch` `unwatch`
+`diagnostics`
 `set_cursor` `set_selection` `get_str`
 `set_theme` `reset_theme` `get_style` `theme_info` `set_theme_name` `set_diagnostic_icons`
 `run` `run_async` `spawn` `read_file_async` `write_file_async` `stat_async` `glob_async`
@@ -168,6 +195,7 @@ helix.term_state(ptyId, "cwd");                     // 读取
 
 **事件白名单**:`save` `mode-change` `buffer-open` `buffer-close` `doc-change` `theme-change`
 `term-open` `term-mode-change` `term-exit` `term-close` `term-resize` `term-title` `term-key` `component-event`
+`lsp-diagnostics` `cursor-move` `selection-change`
 
 ## 📦 现有插件
 
@@ -191,6 +219,12 @@ helix.term_state(ptyId, "cwd");                     // 读取
 cargo build --release
 # 需要 nerd font 终端字体以显示图标
 ```
+
+## 🧩 核心依赖
+
+- [boa](https://github.com/boa-dev/boa) — 嵌入式 JavaScript 引擎(插件系统)
+- [vte](https://github.com/alacritty/vte) — 终端模拟器转义序列解析(原生终端面板)
+- [notify](https://github.com/notify-rs/notify) — 文件系统事件监听(helix.watch)
 
 ## 📄 文档
 

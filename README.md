@@ -155,12 +155,39 @@ helix.term_state(ptyId, "cwd", "/path");            // persistent state (cross-s
 helix.term_state(ptyId, "cwd");                     // read
 ```
 
+### Buffer traversal, diagnostics & filesystem watch
+
+```js
+// Open documents snapshot (read-only; id stable within session)
+helix.buffers();            // → [{id, path, name, dirty, language}]
+helix.current_buffer();     // → id
+helix.focus_buffer(id);     // switch current view to that document
+
+// LSP diagnostics of the current document (data from Document::diagnostics)
+helix.diagnostics();        // → [{line, message, severity, code, source}]
+helix.on("lsp-diagnostics", (docId, diags) => { ... });
+
+// Filesystem watcher (notify-backed, 500ms debounce)
+const wid = helix.watch("/path/to/dir", (events) => {
+  // events: [{kind: "create"|"modify"|"delete"|"rename", path}]
+  filetree.refresh();
+});
+helix.unwatch(wid);
+
+// Cursor / selection events (frame-throttled)
+helix.on("cursor-move", (docId, { row, col, mode }) => { ... });
+helix.on("selection-change", (docId, { count, primary }) => { ... });
+```
+
 ### Full API list
 
 `echo` `register_command` `run_command` `on` `map` `el` `export` `plugin` `load` `lazy`
 `open_popup` `open_panel` `close_panel` `move_panel` `read_dir` `open_file` `set_buffer_icon` `set_statusline`
 `open_terminal` `term_write` `term_feed` `term_kill` `term_list` `term_close` `term_resize` `term_clear` `term_save` `set_terminal_mode`
 `split` `buffer_open` `close_leaf` `zoom` `unzoom` `resize_leaf` `layout_resize` `layout_swap` `layout_minimize` `layout_focus` `layout_swap_dir` `layout_equalize` `layout_fix` `focus` `get_layout` `restore_layout`
+`buffers` `current_buffer` `focus_buffer`
+`watch` `unwatch`
+`diagnostics`
 `set_cursor` `set_selection` `get_str`
 `set_theme` `reset_theme` `get_style` `theme_info` `set_theme_name` `set_diagnostic_icons`
 `run` `run_async` `spawn` `read_file_async` `write_file_async` `stat_async` `glob_async`
@@ -168,6 +195,7 @@ helix.term_state(ptyId, "cwd");                     // read
 
 **Event whitelist**: `save` `mode-change` `buffer-open` `buffer-close` `doc-change` `theme-change`
 `term-open` `term-mode-change` `term-exit` `term-close` `term-resize` `term-title` `term-key` `component-event`
+`lsp-diagnostics` `cursor-move` `selection-change`
 
 ## 📦 Bundled plugins
 
@@ -191,6 +219,12 @@ Install: copy into `~/.config/helix/plugins/`, add `helix.load("features/xxx.js"
 cargo build --release
 # a nerd-font terminal is required for icons
 ```
+
+## 🧩 Key dependencies
+
+- [boa](https://github.com/boa-dev/boa) — embedded JavaScript engine (plugin system)
+- [vte](https://github.com/alacritty/vte) — terminal emulator escape-sequence parser (native terminal panels)
+- [notify](https://github.com/notify-rs/notify) — filesystem event watching (helix.watch)
 
 ## 📄 Docs
 
