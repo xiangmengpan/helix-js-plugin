@@ -490,6 +490,10 @@ impl Compositor {
 
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         let bottom_ui = self.bottom_ui_active();
+        let tabbar = helix_js::render_component(TABBAR_ID, 1, 1, None).is_ok();
+        let tree_area = area
+            .clip_top(if tabbar { 1 } else { 0 })
+            .clip_bottom(if bottom_ui { 2 } else { 1 });
         for layer in self.layers.iter().rev() {
             // 底部 UI 层（commandline）光标与渲染同用缩一行的区域
             let layer_area = if bottom_ui && Self::is_bottom_layer(layer.as_ref()) {
@@ -502,7 +506,7 @@ impl Compositor {
             }
         }
         // 布局树活动叶子(编辑器 bar/underline 光标;终端/面板默认 Hidden)
-        self.main_tree.cursor(area, editor)
+        self.main_tree.cursor(tree_area, editor)
     }
 
     pub fn has_component(&self, type_name: &str) -> bool {

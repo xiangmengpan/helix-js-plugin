@@ -542,7 +542,7 @@ impl LayoutTree {
     /// 活动叶子光标:转发给活动组件(编辑器 bar/underline 硬件光标),坐标转全屏
     pub fn cursor(
         &self,
-        _area: Rect,
+        area: Rect,
         editor: &helix_view::Editor,
     ) -> (Option<helix_core::Position>, helix_view::graphics::CursorKind) {
         use helix_view::graphics::CursorKind;
@@ -554,7 +554,13 @@ impl LayoutTree {
             return (None, CursorKind::Hidden);
         };
         let (pos, kind) = comp.cursor(*rect, editor);
-        let pos = pos.map(|p| helix_core::Position::new((p.col as u16 + rect.x) as usize, (p.row as u16 + rect.y) as usize));
+        // 叶子 rect 相对 tree_area(area 参数 = tree_area);全屏 = area 原点 + rect + 组件内位置
+        let pos = pos.map(|p| {
+            helix_core::Position::new(
+                (area.x + rect.x) as usize + p.col,
+                (area.y + rect.y) as usize + p.row,
+            )
+        });
         (pos, kind)
     }
 
