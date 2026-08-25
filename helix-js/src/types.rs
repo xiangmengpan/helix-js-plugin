@@ -157,8 +157,6 @@ pub(crate) struct NodeHandlers {
 pub(crate) struct TermCallbacks {
     pub(crate) on_chunk: JsValue,
     pub(crate) on_exit: Option<JsValue>,
-    /// true = run_async（Exit 回调签名为 (err, out)）；false = spawn（签名为 (code)）
-    pub(crate) is_run_async: bool,
 }
 
 /// 按键事件的只读快照，传给 JS onKey 回调

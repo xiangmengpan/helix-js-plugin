@@ -1,6 +1,7 @@
 //! 全局状态：thread_local 引擎/注册表/队列 + 跨线程事件通道 + 访问器。
 //! 所有状态集中于此，其他模块经 `with_*` 访问器读写（thread_local 无法跨模块直接访问）。
 
+use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -75,6 +76,9 @@ thread_local! {
     static EVENT_HANDLERS: RefCell<Option<&'static mut HashMap<String, Vec<JsValue>>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static TERM_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, TermCallbacks>>> = const { RefCell::new(None) };
+    // run_async 的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
+    static TERM_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
+        const { RefCell::new(None) };
     static NEXT_TERM_ID: Cell<u64> = const { Cell::new(1) };
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
@@ -461,6 +465,14 @@ pub(crate) fn with_async_events_rx<T>(
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
 pub(crate) fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
     TERM_CALLBACKS.with(|t| {
+        let mut slot = t.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 TERM_PROMISES（run_async 的 promise 解析函数注册表）：同上（内容泄漏）
+pub(crate) fn with_term_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
+    TERM_PROMISES.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })

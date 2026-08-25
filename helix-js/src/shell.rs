@@ -1,9 +1,9 @@
 
 use anyhow::{anyhow, Result};
-use boa_engine::object::builtins::{JsArray, JsFunction};
+use boa_engine::object::builtins::{JsArray, JsFunction, JsPromise};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
 
 use crate::commands::emit_term_exit;
 use crate::pty;
@@ -297,17 +297,13 @@ pub(crate) fn spawn_pty_worker(
 }
 
 pub(crate) fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let cb = args.get(1).cloned().unwrap_or(JsValue::undefined());
-    if cb.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.run_async: callback must be a function",
-        ))));
-    }
+    let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("helix.run_async: command must be a string")))
+    })?;
+    // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
+    let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_term_id();
-    with_terms(|m| {
-        m.insert(id, TermCallbacks { on_chunk: cb.clone(), on_exit: Some(cb), is_run_async: true })
-    });
+    crate::state::with_term_promises(|m| { m.insert(id, resolving); });
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx.clone()));
     spawn_worker(
@@ -317,7 +313,7 @@ pub(crate) fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Cont
         crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized")),
         rx,
     );
-    Ok(JsValue::from(id))
+    Ok(promise.into())
 }
 
 pub(crate) fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
@@ -348,7 +344,7 @@ pub(crate) fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
     };
     let id = crate::state::next_term_id();
     with_terms(|m| {
-        m.insert(id, TermCallbacks { on_chunk, on_exit, is_run_async: false })
+        m.insert(id, TermCallbacks { on_chunk, on_exit })
     });
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx));
@@ -572,6 +568,14 @@ pub(crate) fn js_glob_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     Ok(JsValue::from(id))
 }
 
+/// 泵 boa promise job 队列（.then/.catch/await 恢复）。主线程每帧调用；空队列即返回。
+pub fn pump_jobs() -> Result<()> {
+    crate::init();
+    crate::state::with_engine(|engine| {
+        engine.run_jobs().map_err(|e| anyhow!("promise job queue: {e}"))
+    })
+}
+
 /// 取走全部待处理进程事件（主线程轮询用）
 pub fn drain_term_events() -> Vec<TermEvent> {
     crate::init();
@@ -587,8 +591,8 @@ pub fn drain_term_events() -> Vec<TermEvent> {
 }
 
 /// 把一条进程事件投递到对应 id 的 JS 回调。
-/// Chunk → onChunk(chunk)；Exit → run_async 调 onExit(null, stdout)、spawn 调 onExit(code)；
-/// 进程结束（Exit）后清理回调与 worker 注册，防止重复回调。
+/// Chunk → onChunk(chunk)；Exit → spawn 调 onExit(code)；run_async 调 promise resolve/reject；
+/// 进程结束（Exit）后清理回调/worker 注册，防止重复回调。
 pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
     crate::init();
     // term-exit 钩子在 engine 上下文之外触发（emit_hook 自带 with_engine，避免 RefCell 嵌套）
@@ -596,11 +600,34 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
         emit_term_exit(id, *code);
     }
     crate::state::with_engine(|engine| {
+        // run_async 的 promise 分支：resolve/reject 后立即清理并返回（无 TermCallbacks 注册）
+        if let Some(resolving) = crate::state::with_term_promises(|m| m.remove(&id)) {
+            match event {
+                TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
+                TermEvent::Exit(_, code, stdout) => {
+                    let out = stdout.unwrap_or_default();
+                    let f = if code == 0 { &resolving.resolve } else { &resolving.reject };
+                    let args: Vec<JsValue> = if code == 0 {
+                        vec![JsValue::from(JsString::from(out))]
+                    } else {
+                        let err = JsNativeError::error()
+                            .with_message(format!("exit {code}: {}", out.trim()))
+                            .to_opaque(engine);
+                        vec![err.into()]
+                    };
+                    let _: JsValue = f.call(&JsValue::undefined(), &args, engine)
+                        .map_err(|e| anyhow!("term {id} promise settle failed: {e}"))?;
+                }
+            }
+            crate::state::with_term_workers(|m| m.remove(&id));
+            #[cfg(unix)]
+            crate::state::with_term_masters(|m| m.remove(&id));
+            return Ok(());
+        }
         let callbacks = with_terms(|m| {
             m.get(&id).map(|c| TermCallbacks {
                 on_chunk: c.on_chunk.clone(),
                 on_exit: c.on_exit.clone(),
-                is_run_async: c.is_run_async,
             })
         });
         let Some(callbacks) = callbacks else { return Ok(()) };
@@ -612,16 +639,11 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 let _: JsValue = func.call(&undefined, &[JsValue::from(JsString::from(chunk))], engine)
                     .map_err(|e| anyhow!("term {id} onChunk failed: {e}"))?;
             }
-            TermEvent::Exit(_, code, stdout) => {
+            TermEvent::Exit(_, code, _stdout) => {
                 if let Some(on_exit) = callbacks.on_exit {
                     let func = on_exit.as_callable().and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("term {id} onExit not callable"))?;
-                    let args = if callbacks.is_run_async {
-                        vec![JsValue::null(), JsValue::from(JsString::from(stdout.unwrap_or_default()))]
-                    } else {
-                        vec![JsValue::from(code)]
-                    };
-                    let _: JsValue = func.call(&undefined, &args, engine)
+                    let _: JsValue = func.call(&undefined, &[JsValue::from(code)], engine)
                         .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
                 }
                 with_terms(|m| m.remove(&id));

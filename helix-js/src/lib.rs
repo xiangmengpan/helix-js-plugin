@@ -81,7 +81,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(commands::js_lazy), JsString::from("lazy"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_run_command), JsString::from("run_command"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_run), JsString::from("run"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_run_async), JsString::from("run_async"), 2)
+                .function(NativeFunction::from_fn_ptr(shell::js_run_async), JsString::from("run_async"), 1)
                 .function(NativeFunction::from_fn_ptr(shell::js_spawn), JsString::from("spawn"), 1)
                 .function(NativeFunction::from_fn_ptr(shell::js_term_write), JsString::from("term_write"), 2)
                 .function(NativeFunction::from_fn_ptr(shell::js_term_kill), JsString::from("term_kill"), 1)
@@ -1103,11 +1103,11 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
 
-        // run_async：echo → Exit 事件携带 stdout → resolve 触发回调
+        // run_async:Promise 模式 → Exit 事件 → resolve → pump_jobs 执行 .then
         load_script(
             r#"
-        helix.run_async("echo async-hello", (err, out) => {
-            helix.echo("cb:" + (err ?? "ok") + ":" + (out ?? "").trim());
+        helix.run_async("echo async-hello").then((out) => {
+            helix.echo("cb:ok:" + out.trim());
         });
         "#,
         )
@@ -1115,9 +1115,26 @@ mod tests {
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         let TermEvent::Exit(id, code, stdout) = &events[0] else { unreachable!() };
         assert_eq!(*code, 0);
-        let stdout = stdout.clone().unwrap_or_default();
-        resolve_term_event(*id, TermEvent::Exit(*id, *code, Some(stdout))).unwrap();
+        resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
+        pump_jobs().unwrap();
         assert_eq!(take_messages(), vec!["cb:ok:async-hello"]);
+
+        // run_async 错误路径:非零退出 → reject → .catch
+        load_script(
+            r#"
+        helix.run_async("echo boom >&2; exit 3").catch((e) => {
+            helix.echo("raerr:" + e.message);
+        });
+        "#,
+        )
+        .unwrap();
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        let TermEvent::Exit(id2, code2, _) = &events[0] else { unreachable!() };
+        assert_ne!(*code2, 0);
+        resolve_term_event(*id2, TermEvent::Exit(*id2, *code2, None)).unwrap();
+        pump_jobs().unwrap();
+        let msgs = take_messages();
+        assert!(msgs[0].contains("raerr:"), "{msgs:?}");
 
         // spawn 流式：cat 回显
         load_script(
@@ -1155,8 +1172,8 @@ mod tests {
         assert!(take_messages()[0].starts_with("killed:"));
 
         // 类型校验：run_async/spawn 参数错误在 load 时即报错
-        assert!(load_script(r#"helix.run_async(42, () => {});"#).is_err());
-        assert!(load_script(r#"helix.run_async("x", 42);"#).is_err());
+        // 注:原 helix.run_async("x", 42) 断言是回调校验报错,现 JS 多参天然容忍 → 删除
+        assert!(load_script(r#"helix.run_async(42);"#).is_err());
         assert!(load_script(r#"helix.spawn({ cmd: "x" });"#).is_err()); // 缺 onChunk
         // term_write 未知 id 在 load 时不会执行（命令体），须放进命令里跑
         load_script(r#"helix.register_command("badid", () => { helix.term_write(999, "x"); });"#).unwrap();
@@ -1173,8 +1190,8 @@ mod tests {
         // head -c 19999 恰好截在行边界（19999 = 7×2857），整流是合法 UTF-8。
         load_script(
             r#"
-        helix.run_async("yes 中文 | head -c 19999", (err, out) => {
-            helix.echo("agg:" + (err === null) + ":" + out.length);
+        helix.run_async("yes 中文 | head -c 19999").then((out) => {
+            helix.echo("len:" + out.length + " tail:" + out.slice(-11));
         });
         "#,
         )
@@ -1196,10 +1213,12 @@ mod tests {
                 resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
             }
         }
+        pump_jobs().unwrap();
         let msg = take_messages();
-        let m = msg.iter().find(|m| m.starts_with("agg:")).expect("run_async echo");
+        let m = msg.iter().find(|m| m.starts_with("len:")).expect("run_async echo");
         // JS 收到完整输出：19999 字节 = 2857 行 × 3 个 BMP 字符 = 8571 个 UTF-16 单元
-        assert_eq!(m.as_str(), "agg:true:8571");
+        assert!(m.starts_with("len:8571 tail:"), "full output length: {m}");
+        assert!(m.contains("中文"), "tail should be CJK: {m}");
 
         // spawn 流式：同一输出经 onChunk 增量解码拼接，块边界不得产生 U+FFFD
         load_script(
@@ -1972,7 +1991,6 @@ mod tests {
                 crate::types::TermCallbacks {
                     on_chunk: JsValue::undefined(),
                     on_exit: None,
-                    is_run_async: false,
                 },
             )
         });

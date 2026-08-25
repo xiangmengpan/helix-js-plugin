@@ -244,7 +244,7 @@ pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
         // 注册表键用 pty_id（term_kill 按 pty_id 清理）；view_id 是 UI 层/JS 侧句柄
         crate::state::register_term(pty_id, view_id, cmd.clone());
         with_terms(|m| {
-            m.insert(pty_id, TermCallbacks { on_chunk: bridge, on_exit, is_run_async: false })
+            m.insert(pty_id, TermCallbacks { on_chunk: bridge, on_exit })
         });
         let (tx, rx) = std::sync::mpsc::channel();
         crate::state::with_term_workers(|m| m.insert(pty_id, tx));
