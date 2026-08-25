@@ -118,7 +118,8 @@ if let Some(resolving) = with_term_promises(|m| m.remove(&id)) {
         TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
         TermEvent::Exit(_, code, stdout) => {
             let out = stdout.unwrap_or_default();
-            let args = if code == 0 {
+            let f = if code == 0 { &resolving.resolve } else { &resolving.reject };
+            let args: Vec<JsValue> = if code == 0 {
                 vec![JsValue::from(JsString::from(out))]
             } else {
                 let err = JsNativeError::error()
@@ -126,7 +127,7 @@ if let Some(resolving) = with_term_promises(|m| m.remove(&id)) {
                     .to_opaque(engine);
                 vec![err.into()]
             };
-            let _: JsValue = resolving.reject.call(&JsValue::undefined(), &args, engine)
+            let _: JsValue = f.call(&JsValue::undefined(), &args, engine)
                 .map_err(|e| anyhow!("term {id} promise settle failed: {e}"))?;
         }
     }
@@ -137,7 +138,7 @@ if let Some(resolving) = with_term_promises(|m| m.remove(&id)) {
 }
 ```
 
-注意:`resolving.resolve` / `resolving.reject` 都是 JsFunction,resolve 时直接 `resolving.resolve.call(&undefined, &[value], engine)`,reject 时用 `resolving.reject.call(...)`,不能都叫 reject。成功分支用 resolve,失败分支用 reject。
+注意:`resolving.resolve` / `resolving.reject` 都是 `JsFunction`,code==0 调 `resolve`,非零调 `reject`(reject 传 Error 对象使 catch 的 e.message 可用)。
 
 `helix-js/src/lib.rs`:
 - `run_async` 注册 arity 从 2 改为 1(`.function(..., JsString::from("run_async"), 1)`)
