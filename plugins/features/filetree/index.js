@@ -428,15 +428,14 @@ function confirm(title, on_ok) {
 
 // ============================ 文件操作 ============================
 
-function run_fs(cmd, ok_msg) {
-  helix.run_async(cmd, (err, out) => {
-    if (err) {
-      helix.echo("filetree: " + err + (out ? " " + out.trim() : ""));
-    } else {
-      if (ok_msg) helix.echo(ok_msg);
-      reload_tree();
-    }
-  });
+async function run_fs(cmd, ok_msg) {
+  try {
+    await helix.run_async(cmd);
+    if (ok_msg) helix.echo(ok_msg);
+    reload_tree();
+  } catch (err) {
+    helix.echo("filetree: " + err.message);
+  }
 }
 
 function new_file() {

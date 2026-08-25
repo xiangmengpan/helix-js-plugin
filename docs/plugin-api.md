@@ -161,16 +161,14 @@ try {
 
 > ⚠️ 同步阻塞编辑器主线程——只用于短命令。输出截断到 64KB（超出附 `(truncated)` 标记）。
 
-### `helix.run_async(cmd, cb)` — 异步（完成回调）
+### `helix.run_async(cmd)` — 异步（返回 Promise）
 
 ```js
-helix.run_async("git status", (err, out) => {
-  if (err) helix.echo("failed: " + err);
-  else helix.echo(out.trim());
-});
+const out = await helix.run_async("git status");
+helix.echo(out.trim());
 ```
 
-不阻塞编辑器；回调在主线程事件循环执行。
+不阻塞编辑器；成功 resolve stdout（退出码 0），失败 reject `Error`（`e.message` 可取错误）。`.then`/`.catch` 在主线程事件循环执行。
 
 ### `helix.spawn({ cmd, pty?, onChunk, onExit })` — 流式进程
 
@@ -192,7 +190,7 @@ helix.term_resize(id, rows, cols); // 仅 PTY：设置窗口尺寸（TIOCSWINSZ�
 
 ### 回调内可以做什么
 
-所有异步回调（`run_async` cb / `onChunk` / `onExit` / `*_async` cb）在主线程执行，可以：
+所有 promise 的 `.then`/`.catch`（`run_async` / `*_async`）在主线程执行，可以：
 - `helix.echo`、开弹窗/面板/终端、调用命令、链式 `helix.run_async`；
 - 修改模块级状态（供弹窗/面板 `render` 读取）；
 - **没有 `ctx`**（回调无文档快照），编辑文档要走命令或 `doc` 参数路径。
@@ -201,14 +199,14 @@ helix.term_resize(id, rows, cols); // 仅 PTY：设置窗口尺寸（TIOCSWINSZ�
 
 ## 6. 异步文件系统
 
-worker 线程执行，回调在主线程事件循环，不阻塞编辑器。回调签名统一为 `(err, data)`。
+worker 线程执行，不阻塞编辑器。均返回 Promise：成功 resolve 值，失败 reject `Error`（`e.message` 可取消息）。
 
 ```js
 helix.read_dir(path)                              // 同步！返回 [{name, is_dir, path}]（不递归，按名排序）
-helix.read_file_async(path, (err, content) => {}) // 读文件（UTF-8 lossy）
-helix.write_file_async(path, content, (err) => {})
-helix.stat_async(path, (err, { is_dir, size, mtime }) => {})   // mtime 为 Unix 秒
-helix.glob_async(pattern, (err, paths) => {})     // * / ** / ?（相对 CWD；** 跨目录）
+helix.read_file_async(path)                       // Promise → 文件内容（UTF-8 lossy）
+helix.write_file_async(path, content)             // Promise → undefined
+helix.stat_async(path)                            // Promise → {is_dir, size, mtime}（mtime 为 Unix 秒）
+helix.glob_async(pattern)                         // Promise → paths[]（* / ** / ?，相对 CWD；** 跨目录）
 ```
 
 ```js
@@ -622,7 +620,7 @@ helix.register_command("filetree", () => {
 
 | 限制 | 说明 |
 |------|------|
-| **无异步语言特性** | boa 无 `setTimeout`/网络/事件循环；异步只来自 `run_async`/`spawn`/`*_async` 回调 |
+| **无异步语言特性** | boa 无 `setTimeout`/网络/事件循环；异步只来自 `run_async`/`spawn`/`*_async` 的 Promise（await/.then） |
 | **同步阻塞** | `helix.run` 阻塞主线程；`spawn` 无超时（挂死命令一直占着 worker） |
 | **终端视图非完整仿真器** | 宽字符/组合字符、鼠标、选择复制不支持；滚回只存不显示（上限 1000 行） |
 | **Shift-Tab 不可用** | `KeyCode` 无 BackTab，焦点只能 Tab 正向循环 |
@@ -647,7 +645,7 @@ helix.echo(text)
 helix.register_command(name, fn, doc?)
 helix.run_command(name, ctx?)
 helix.run(cmd)                                  // 同步，抛错，64KB 截断
-helix.run_async(cmd, cb)                        // cb(err, out)
+helix.run_async(cmd)                          // Promise：await → stdout；失败 reject Error
 helix.spawn({ cmd, pty?, onChunk, onExit }) -> id
 helix.term_write(id, text)
 helix.term_kill(id)
@@ -676,10 +674,10 @@ helix.focus(id)
 helix.get_layout()                              // {tree, active, zoomed} | null
 helix.restore_layout(layoutObj)                 // 仅写缓存
 helix.read_dir(path)                            // 同步 -> [{name, is_dir, path}]
-helix.read_file_async(path, cb)
-helix.write_file_async(path, content, cb)
-helix.stat_async(path, cb)                      // cb(err, {is_dir, size, mtime})
-helix.glob_async(pattern, cb)
+helix.read_file_async(path)                     // Promise → 内容（UTF-8 lossy）
+helix.write_file_async(path, content)           // Promise
+helix.stat_async(path)                          // Promise → {is_dir, size, mtime}
+helix.glob_async(pattern)                       // Promise → paths[]
 helix.set_statusline(fn)                        // fn({path, mode, cursor}) -> string|null
 helix.set_buffer_icon(fn)                       // fn(path) -> string|null
 helix.set_diagnostic_icons({...})               // 诊断标记列图标（gutter）

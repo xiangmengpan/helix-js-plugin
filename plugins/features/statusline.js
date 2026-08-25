@@ -20,11 +20,14 @@ function current_cfg() {
 let ICONS = null;
 let gitBranch = "";      // 当前 git 分支（异步查询缓存）
 
-function refreshGit(path) {
+async function refreshGit(path) {
   if (!path) { gitBranch = ""; return; }
-  helix.run_async("git -C " + shq(dirname(path)) + " branch --show-current", (err, out) => {
-    gitBranch = err ? "" : (out || "").trim();
-  });
+  try {
+    const out = await helix.run_async("git -C " + shq(dirname(path)) + " branch --show-current");
+    gitBranch = (out || "").trim();
+  } catch (e) {
+    gitBranch = "";
+  }
 }
 
 function dirname(p) {
