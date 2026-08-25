@@ -501,7 +501,8 @@ impl Compositor {
                 return (Some(pos), kind);
             }
         }
-        (None, CursorKind::Hidden)
+        // 布局树活动叶子(编辑器 bar/underline 光标;终端/面板默认 Hidden)
+        self.main_tree.cursor(area, editor)
     }
 
     pub fn has_component(&self, type_name: &str) -> bool {

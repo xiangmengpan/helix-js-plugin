@@ -539,6 +539,25 @@ impl LayoutTree {
 
     /// 序列化布局（不包含组件内容，只含叶子 id 与类型标记）
     /// 重置树内面板/终端的脏格 diff（测试向不同 surface 渲染时用）
+    /// 活动叶子光标:转发给活动组件(编辑器 bar/underline 硬件光标),坐标转全屏
+    pub fn cursor(
+        &self,
+        _area: Rect,
+        editor: &helix_view::Editor,
+    ) -> (Option<helix_core::Position>, helix_view::graphics::CursorKind) {
+        use helix_view::graphics::CursorKind;
+        let active = self.active();
+        let (Some(comp), Some(rect)) = (
+            self.components.get(&active),
+            self.leaf_rects.get(&active),
+        ) else {
+            return (None, CursorKind::Hidden);
+        };
+        let (pos, kind) = comp.cursor(*rect, editor);
+        let pos = pos.map(|p| helix_core::Position::new((p.col as u16 + rect.x) as usize, (p.row as u16 + rect.y) as usize));
+        (pos, kind)
+    }
+
     /// 鼠标命中:屏幕坐标 → 叶子 id(基于最近一次渲染的区域;无命中 → None)
     pub fn leaf_id_at(&self, x: u16, y: u16) -> Option<u64> {
         self.leaf_rects

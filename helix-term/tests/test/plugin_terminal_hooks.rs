@@ -693,3 +693,15 @@ async fn fs_watch_event_fires_on_change() -> anyhow::Result<()> {
     assert!(fired, "fs-watcher 回调触发(create/modify newfile.txt)");
     Ok(())
 }
+
+/// 布局树光标转发:编辑器叶子在 main_tree,compositor.cursor 应转发(不返回 (None, Hidden))
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_tree_cursor_forwarding() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut app = AppBuilder::new().build()?;
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
+    let _ = render_rows(&mut app, area);
+    let (pos, _kind) = app.compositor.cursor(area, &app.editor);
+    assert!(pos.is_some(), "编辑器叶子光标应转发(非 Hidden)");
+    Ok(())
+}
