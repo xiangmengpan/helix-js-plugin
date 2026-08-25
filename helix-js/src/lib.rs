@@ -1795,6 +1795,54 @@ mod tests {
         close_popup(id).unwrap();
     }
 
+    /// 布局增强任务 1 验证：el/parse_node 透传 flex/wrap/offset 新 opts（含缺省与类型错误）
+    #[test]
+    fn el_new_opts_parse() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.open_popup({
+            render: () => helix.el("col", [
+                helix.el("scroll", [helix.el("text", "x")], { height: 4, offset: 2 }),
+                helix.el("text", "y", { flex: 2, wrap: true }),
+                helix.el("text", "z"),
+                helix.el("row", [helix.el("text", "a", { flex: 1 })], { gap: 1, flex: 3 }),
+                helix.el("button", "run", { id: "b1", flex: 1 }),
+                helix.el("input", { id: "i1", value: "v", flex: 2 }),
+            ]),
+        });
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        let id = match &reqs[0] { UiRequest::OpenPopup { id, .. } => *id, _ => unreachable!("expected OpenPopup") };
+        match render_popup(id, 40, 10, None).unwrap() {
+            Content::Tree(CompNode::Col { children, .. }) => {
+                assert_eq!(children.len(), 6);
+                assert!(matches!(&children[0], CompNode::Scroll { height: 4, offset: Some(2), .. }));
+                assert!(matches!(&children[1], CompNode::Text { flex: Some(2), wrap: true, .. }));
+                assert!(matches!(&children[2], CompNode::Text { flex: None, wrap: false, .. }));
+                assert!(matches!(&children[3], CompNode::Row { gap: 1, flex: Some(3), children, .. }
+                    if matches!(&children[0], CompNode::Text { flex: Some(1), .. })));
+                assert!(matches!(&children[4], CompNode::Button { flex: Some(1), .. }));
+                assert!(matches!(&children[5], CompNode::Input { flex: Some(2), .. }));
+            }
+            _ => panic!("expected tree"),
+        }
+        close_popup(id).unwrap();
+        // 类型错误：flex 传字符串 → Err（el 构造时即抛）
+        load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { flex: "big" }) });"#).unwrap();
+        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        assert!(render_popup(id, 40, 10, None).is_err());
+        close_popup(id).unwrap();
+        // 类型错误：wrap 传数字 → Err
+        load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { wrap: 1 }) });"#).unwrap();
+        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        assert!(render_popup(id, 40, 10, None).is_err());
+        close_popup(id).unwrap();
+    }
+
     /// 终端钩子:emit_hook 返回第一个非 undefined;无 handler → None
     #[test]
     fn term_hook_emit_and_term_key() {

@@ -419,6 +419,20 @@ pub(crate) fn obj_opt_u16(obj: &JsObject, key: &str, ctx: &mut Context, api: &st
     Ok(Some(n as u16))
 }
 
+/// 读对象可选布尔字段：null/undefined → None；非布尔 → Err
+pub(crate) fn obj_opt_bool(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<bool>> {
+    let v = obj.get(JsString::from(key), ctx)?;
+    if v.is_null_or_undefined() {
+        return Ok(None);
+    }
+    let b: bool = v.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "{api}: '{key}' expects a boolean"
+        ))))
+    })?;
+    Ok(Some(b))
+}
+
 /// helix.el(type, arg, opts)：构造组件节点数据对象 {type, ...}，实际解析在 render 时递归进行。
 /// type 白名单：text（arg=文本字符串，opts={style,width}）/ row、col（arg=子节点数组，opts={gap}）
 /// / scroll（arg=子节点数组，opts={height}）。只做浅层校验（子节点对象合法性由 parse_node 递归检查）。
@@ -461,6 +475,12 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
                 if let Some(width) = obj_opt_u16(&obj, "width", ctx, api)? {
                     props.push(("width".into(), JsValue::from(width)));
                 }
+                if let Some(flex) = obj_opt_u16(&obj, "flex", ctx, api)? {
+                    props.push(("flex".into(), JsValue::from(flex)));
+                }
+                if let Some(wrap) = obj_opt_bool(&obj, "wrap", ctx, api)? {
+                    props.push(("wrap".into(), JsValue::from(wrap)));
+                }
             }
         }
         "button" => {
@@ -479,7 +499,7 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
                     )))));
                 }
                 props.push(("id".into(), id_val));
-                for key in ["onPress", "onKey", "style", "width"] {
+                for key in ["onPress", "onKey", "style", "width", "flex"] {
                     let v = obj.get(JsString::from(key), ctx)?;
                     if !v.is_null_or_undefined() {
                         props.push((key.into(), v));
@@ -506,7 +526,7 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
             }
             props.push(("id".into(), id_val));
             props.push(("value".into(), obj.get(JsString::from("value"), ctx)?));
-            for key in ["onKey", "onPress", "width"] {
+            for key in ["onKey", "onPress", "width", "flex"] {
                 let v = obj.get(JsString::from(key), ctx)?;
                 if !v.is_null_or_undefined() {
                     props.push((key.into(), v));
@@ -526,9 +546,17 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
                         "{api}: options must be an object"
                     ))))
                 })?;
-                let key = if type_ == "scroll" { "height" } else { "gap" };
-                if let Some(v) = obj_opt_u16(&obj, key, ctx, api)? {
+                let is_scroll = type_ == "scroll";
+                if let Some(v) = obj_opt_u16(&obj, if is_scroll { "height" } else { "gap" }, ctx, api)? {
+                    let key: &str = if is_scroll { "height" } else { "gap" };
                     props.push((key.into(), JsValue::from(v)));
+                }
+                if !is_scroll {
+                    if let Some(flex) = obj_opt_u16(&obj, "flex", ctx, api)? {
+                        props.push(("flex".into(), JsValue::from(flex)));
+                    }
+                } else if let Some(offset) = obj_opt_u16(&obj, "offset", ctx, api)? {
+                    props.push(("offset".into(), JsValue::from(offset)));
                 }
             }
         }
@@ -698,21 +726,25 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             let node_id = obj_opt_str(&obj, "id", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, node_id.as_deref())?;
-            Ok(CompNode::Text { spans, width, id: node_id })
+            let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
+            let wrap = obj_opt_bool(&obj, "wrap", ctx, &api)?.unwrap_or(false);
+            Ok(CompNode::Text { spans, width, id: node_id, flex, wrap })
         }
         "row" | "col" => {
             let children = parse_children(&obj, ctx, id)?;
             let gap = obj_opt_u16(&obj, "gap", ctx, &api)?.unwrap_or(0);
+            let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
             Ok(if type_ == "row" {
-                CompNode::Row { children, gap }
+                CompNode::Row { children, gap, flex }
             } else {
-                CompNode::Col { children, gap }
+                CompNode::Col { children, gap, flex }
             })
         }
         "scroll" => {
             let children = parse_children(&obj, ctx, id)?;
             let height = obj_opt_u16(&obj, "height", ctx, &api)?.unwrap_or(0);
-            Ok(CompNode::Scroll { children, height })
+            let offset = obj_opt_u16(&obj, "offset", ctx, &api)?;
+            Ok(CompNode::Scroll { children, height, offset })
         }
         "button" => {
             let node_id: String = obj
@@ -726,7 +758,8 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             let label = parse_text_spans(&obj, ctx, &api)?;
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
-            Ok(CompNode::Button { label, width, id: node_id })
+            let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
+            Ok(CompNode::Button { label, width, id: node_id, flex })
         }
         "input" => {
             let node_id: String = obj
@@ -743,7 +776,8 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
                 .unwrap_or_default();
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
-            Ok(CompNode::Input { value, width, id: node_id })
+            let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
+            Ok(CompNode::Input { value, width, id: node_id, flex })
         }
         other => Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
             "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"

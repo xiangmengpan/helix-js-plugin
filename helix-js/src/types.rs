@@ -211,18 +211,18 @@ impl StyledLine {
 }
 
 /// 组件树节点：render 返回单节点对象（含 type 字段）时解析出的布局树。
-/// Text 单行（style/width 可选）；Row 水平并排（gap 列间距）；Col 垂直堆叠（gap 行间距）；
-/// Scroll 高度裁剪容器（保留最后 height 行）。
+/// Text 单行（style/width 可选，flex 弹性宽占比、wrap 超宽换行）；Row 水平并排（gap 列间距，flex 弹性宽占比）；
+/// Col 垂直堆叠（gap 行间距，flex 弹性高占比）；Scroll 高度裁剪容器（保留最后 height 行，offset 指定起始行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompNode {
-    Text { spans: Vec<TextSpan>, width: Option<u16>, id: Option<String> },
-    Row { children: Vec<CompNode>, gap: u16 },
-    Col { children: Vec<CompNode>, gap: u16 },
-    Scroll { children: Vec<CompNode>, height: u16 },
+    Text { spans: Vec<TextSpan>, width: Option<u16>, id: Option<String>, flex: Option<u16>, wrap: bool },
+    Row { children: Vec<CompNode>, gap: u16, flex: Option<u16> },
+    Col { children: Vec<CompNode>, gap: u16, flex: Option<u16> },
+    Scroll { children: Vec<CompNode>, height: u16, offset: Option<u16> },
     /// 可聚焦按钮：Enter/Space 触发 onPress（id 必填）
-    Button { label: Vec<TextSpan>, width: Option<u16>, id: String },
+    Button { label: Vec<TextSpan>, width: Option<u16>, id: String, flex: Option<u16> },
     /// 可聚焦输入框：按键路由到 onKey（id 必填，value 由 JS 侧状态渲染）
-    Input { value: String, width: Option<u16>, id: String },
+    Input { value: String, width: Option<u16>, id: String, flex: Option<u16> },
 }
 
 /// render 回调的返回：数组（字符串/样式对象）→ 旧行 API；单节点对象（含 type）→ 组件树

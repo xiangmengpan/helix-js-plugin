@@ -38,7 +38,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             }
             vec![StyledLine { spans: out_spans }]
         }
-        CompNode::Col { children, gap } => {
+        CompNode::Col { children, gap, .. } => {
             let mut out = Vec::new();
             for child in children {
                 if out.len() >= viewport.1 as usize {
@@ -57,7 +57,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             }
             out
         }
-        CompNode::Row { children, gap } => {
+        CompNode::Row { children, gap, .. } => {
             let parts: Vec<Vec<StyledLine>> = children.iter().map(|c| layout(c, viewport)).collect();
             let rows = parts.iter().map(Vec::len).max().unwrap_or(0);
             let mut out = Vec::with_capacity(rows);
@@ -114,13 +114,13 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             let text: String = value.chars().take(limit).collect();
             vec![StyledLine::plain(text)]
         }
-        CompNode::Scroll { children, height } => {
+        CompNode::Scroll { children, height, .. } => {
             let h = (*height).min(viewport.1) as usize;
             if h == 0 {
                 return Vec::new();
             }
             // 内容按无高度限制完整布局（scroll 语义：内容可溢出），再保留最后 h 行
-            let col = layout(&CompNode::Col { children: children.clone(), gap: 0 }, (viewport.0, u16::MAX));
+            let col = layout(&CompNode::Col { children: children.clone(), gap: 0, flex: None }, (viewport.0, u16::MAX));
             let skip = col.len().saturating_sub(h);
             col.into_iter().skip(skip).collect()
         }
@@ -208,11 +208,11 @@ mod tests {
     use helix_js::TextSpan;
 
     fn text(t: &str) -> CompNode {
-        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: None }], width: None, id: None }
+        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: None }], width: None, id: None, flex: None, wrap: false }
     }
 
     fn styled(t: &str, s: &str) -> CompNode {
-        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: Some(s.into()) }], width: None, id: None }
+        CompNode::Text { spans: vec![TextSpan { text: t.into(), style: Some(s.into()) }], width: None, id: None, flex: None, wrap: false }
     }
 
     fn texts(ts: &[&str]) -> Vec<CompNode> {
@@ -231,7 +231,7 @@ mod tests {
     fn scroll_full_window_outputs_all_rows() {
         // 模拟 filetree：viewport (32, 40)，scroll height 39，children 39 行
         let children: Vec<CompNode> = (0..39).map(|i| text(&format!("row{i:02}"))).collect();
-        let node = CompNode::Scroll { children, height: 39 };
+        let node = CompNode::Scroll { children, height: 39, offset: None };
         let out = layout(&node, (32, 40));
         assert_eq!(out.len(), 39, "scroll 应输出全部 39 行，实际 {}", out.len());
         // 行内容应是前 39 行（skip=0）
@@ -243,7 +243,7 @@ mod tests {
     fn scroll_truncates_to_viewport() {
         // children 100 行，viewport 高度 40，height 39 → 保留最后 39 行
         let children: Vec<CompNode> = (0..100).map(|i| text(&format!("r{i:03}"))).collect();
-        let node = CompNode::Scroll { children, height: 39 };
+        let node = CompNode::Scroll { children, height: 39, offset: None };
         let out = layout(&node, (32, 40));
         assert_eq!(out.len(), 39, "scroll 应截断到 39 行");
         assert_eq!(line_text(&out[0]), "r061", "保留最后 39 行的第一行");
@@ -254,10 +254,11 @@ mod tests {
         // 多 span 行模型：row 混合样式不再坍缩——每段独立保留
         let node = CompNode::Row {
             children: vec![
-                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None, id: None },
-                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: Some("error".into()) }], width: None, id: None },
+                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None, id: None, flex: None, wrap: false },
+                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: Some("error".into()) }], width: None, id: None, flex: None, wrap: false },
             ],
             gap: 0,
+            flex: None,
         };
         let out = layout(&node, (40, 10));
         assert_eq!(out.len(), 1);
@@ -271,12 +272,12 @@ mod tests {
         assert_eq!(layout(&text("hello"), (40, 10)), vec![line("hello")]);
         // width 截断
         assert_eq!(
-            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(3), id: None }, (40, 10)),
+            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(3), id: None, flex: None, wrap: false }, (40, 10)),
             vec![line("hel")]
         );
         // viewport 宽度优先于 width
         assert_eq!(
-            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(10), id: None }, (3, 10)),
+            layout(&CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: Some(10), id: None, flex: None, wrap: false }, (3, 10)),
             vec![line("hel")]
         );
     }
@@ -288,7 +289,7 @@ mod tests {
 
     #[test]
     fn col_stacks_and_clamps_to_viewport() {
-        let node = CompNode::Col { children: texts(&["a", "b", "c"]), gap: 0 };
+        let node = CompNode::Col { children: texts(&["a", "b", "c"]), gap: 0, flex: None };
         assert_eq!(layout(&node, (40, 10)), vec![line("a"), line("b"), line("c")]);
         // viewport 高度限制
         assert_eq!(layout(&node, (40, 2)), vec![line("a"), line("b")]);
@@ -296,13 +297,13 @@ mod tests {
 
     #[test]
     fn col_gap_inserts_blank_lines() {
-        let node = CompNode::Col { children: texts(&["a", "b"]), gap: 1 };
+        let node = CompNode::Col { children: texts(&["a", "b"]), gap: 1, flex: None };
         assert_eq!(layout(&node, (40, 10)), vec![line("a"), line(""), line("b")]);
     }
 
     #[test]
     fn row_side_by_side_with_gap() {
-        let node = CompNode::Row { children: texts(&["left", "right"]), gap: 1 };
+        let node = CompNode::Row { children: texts(&["left", "right"]), gap: 1, flex: None };
         let out = layout(&node, (40, 10));
         assert_eq!(line_text(&out[0]), "left right");
         assert_eq!(out[0].spans.len(), 3); // left + gap + right（每段独立 span）
@@ -312,8 +313,9 @@ mod tests {
     fn row_pads_shorter_children() {
         // 子节点高度不一致：短子补空行（第 2 行 = 长子第 2 行，短子为空）
         let node = CompNode::Row {
-            children: vec![CompNode::Col { children: texts(&["a1", "a2"]), gap: 0 }, text("b")],
+            children: vec![CompNode::Col { children: texts(&["a1", "a2"]), gap: 0, flex: None }, text("b")],
             gap: 0,
+            flex: None,
         };
         let out = layout(&node, (40, 10));
         assert_eq!(line_text(&out[0]), "a1b");
@@ -322,7 +324,7 @@ mod tests {
 
     #[test]
     fn row_width_sum_and_viewport_truncation() {
-        let node = CompNode::Row { children: texts(&["aaaa", "bbbb"]), gap: 1 };
+        let node = CompNode::Row { children: texts(&["aaaa", "bbbb"]), gap: 1, flex: None };
         // 宽度求和 + gap
         let out = layout(&node, (40, 10));
         assert_eq!(line_text(&out[0]), "aaaa bbbb");
@@ -333,10 +335,10 @@ mod tests {
 
     #[test]
     fn scroll_keeps_last_height_lines() {
-        let node = CompNode::Scroll { children: texts(&["s1", "s2"]), height: 1 };
+        let node = CompNode::Scroll { children: texts(&["s1", "s2"]), height: 1, offset: None };
         assert_eq!(layout(&node, (40, 10)), vec![line("s2")]);
         // height 超 viewport → clamp 到视口
-        let node = CompNode::Scroll { children: texts(&["s1", "s2"]), height: 10 };
+        let node = CompNode::Scroll { children: texts(&["s1", "s2"]), height: 10, offset: None };
         assert_eq!(layout(&node, (40, 1)), vec![line("s2")]);
     }
 
@@ -345,10 +347,11 @@ mod tests {
         let node = CompNode::Col {
             children: vec![
                 styled("title", "error"),
-                CompNode::Row { children: texts(&["left", "right"]), gap: 1 },
-                CompNode::Scroll { children: texts(&["s1", "s2"]), height: 1 },
+                CompNode::Row { children: texts(&["left", "right"]), gap: 1, flex: None },
+                CompNode::Scroll { children: texts(&["s1", "s2"]), height: 1, offset: None },
             ],
             gap: 0,
+            flex: None,
         };
         let out = layout(&node, (40, 10));
         assert_eq!(line_text(&out[0]), "title");
@@ -363,7 +366,7 @@ mod tests {
         let lines = vec![line("x")];
         assert_eq!(render(Content::Lines(lines.clone()), (40, 10)), lines);
         let out = render(
-            Content::Tree(CompNode::Row { children: texts(&["a", "b"]), gap: 0 }),
+            Content::Tree(CompNode::Row { children: texts(&["a", "b"]), gap: 0, flex: None }),
             (40, 10),
         );
         assert_eq!(line_text(&out[0]), "ab");
