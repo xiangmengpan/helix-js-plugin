@@ -1,7 +1,7 @@
 //! 组件树布局引擎：把 JS render 返回的 CompNode 树渲染成样式化行（StyledLine）。
 //! 样式名不在此解析（helix-js 只透传字符串），由调用方经 theme.get 映射。
 
-use helix_js::{CompNode, Content, StyledLine};
+use helix_js::{CompNode, Content, StyledLine, TextSpan};
 
 /// 统一入口：Content::Lines 原样返回（旧行 API）；Content::Tree 走布局引擎。
 pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
@@ -11,6 +11,30 @@ pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
     }
 }
 
+/// 弹性权重:flex 字段(Scroll 无 flex → None)。
+fn flex_of(node: &CompNode) -> Option<u16> {
+    match node {
+        CompNode::Text { flex, .. } | CompNode::Row { flex, .. } | CompNode::Col { flex, .. }
+        | CompNode::Button { flex, .. } | CompNode::Input { flex, .. } => *flex,
+        CompNode::Scroll { .. } => None,
+    }
+}
+
+/// 相邻相同 style 的 (char, style) 流合并成 TextSpan。
+fn merge_spans(stream: &[(char, Option<String>)]) -> Vec<TextSpan> {
+    let mut out: Vec<TextSpan> = Vec::new();
+    for (ch, style) in stream {
+        if let Some(last) = out.last_mut() {
+            if last.style == *style {
+                last.text.push(*ch);
+                continue;
+            }
+        }
+        out.push(TextSpan { text: ch.to_string(), style: style.clone() });
+    }
+    out
+}
+
 /// 组件树 → 样式化行：
 /// - text → 单行（width 截断，viewport 宽度优先）
 /// - col → 子节点自上而下堆叠（gap 空行；viewport 高度限制）
@@ -18,47 +42,181 @@ pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
 ///   gap 列间距；总宽超 viewport 截断）
 /// - scroll → 按 col（无 gap）布局后保留最后 height 行（viewport 高度内）
 pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
-    use helix_js::TextSpan;
     match node {
-        CompNode::Text { spans, width, .. } => {
-            let limit = width.unwrap_or(u16::MAX).min(viewport.0) as usize;
-            let mut taken = 0usize;
-            let mut out_spans = Vec::new();
-            for span in spans {
-                if taken >= limit {
-                    break;
-                }
-                let t: String = span
-                    .text
-                    .chars()
-                    .take(limit - taken)
+        CompNode::Text { spans, width, wrap, .. } => {
+            let limit = width.unwrap_or(viewport.0).min(viewport.0) as usize;
+            if *wrap && spans.iter().map(|s| s.text.chars().count()).sum::<usize>() > limit && limit > 0 {
+                // (char, style) 流按 limit 切行;每行合并相邻同 style 段
+                let stream: Vec<(char, Option<String>)> = spans.iter()
+                    .flat_map(|s| s.text.chars().map(|c| (c, s.style.clone())))
                     .collect();
-                taken += t.chars().count();
-                out_spans.push(TextSpan { text: t, style: span.style.clone() });
+                let mut lines: Vec<StyledLine> = Vec::with_capacity(stream.len() / limit + 1);
+                let mut cur: Vec<(char, Option<String>)> = Vec::new();
+                for item in stream {
+                    if cur.len() == limit {
+                        lines.push(StyledLine { spans: merge_spans(&cur) });
+                        cur.clear();
+                    }
+                    cur.push(item);
+                }
+                if !cur.is_empty() {
+                    lines.push(StyledLine { spans: merge_spans(&cur) });
+                }
+                lines
+            } else {
+                // 现有截断逻辑保持不动;显式 width 时不足补齐到 limit(固定列宽语义)
+                let mut taken = 0usize;
+                let mut out_spans = Vec::new();
+                for span in spans {
+                    if taken >= limit {
+                        break;
+                    }
+                    let t: String = span
+                        .text
+                        .chars()
+                        .take(limit - taken)
+                        .collect();
+                    taken += t.chars().count();
+                    out_spans.push(TextSpan { text: t, style: span.style.clone() });
+                }
+                if width.is_some() && taken < limit {
+                    out_spans.push(TextSpan { text: " ".repeat(limit - taken), style: None });
+                }
+                vec![StyledLine { spans: out_spans }]
             }
-            vec![StyledLine { spans: out_spans }]
         }
         CompNode::Col { children, gap, .. } => {
-            let mut out = Vec::new();
-            for child in children {
-                if out.len() >= viewport.1 as usize {
-                    break;
-                }
-                // gap：子节点之间插空行（不超 viewport 高度）
-                if !out.is_empty() && *gap > 0 && out.len() < viewport.1 as usize {
-                    out.push(StyledLine::plain(""));
-                }
-                for line in layout(child, viewport) {
+            let total_flex: u16 = children.iter().filter_map(flex_of).sum();
+            if total_flex == 0 {
+                // ==== 现有逻辑(不动) ====
+                let mut out = Vec::new();
+                for child in children {
                     if out.len() >= viewport.1 as usize {
                         break;
                     }
-                    out.push(line);
+                    // gap：子节点之间插空行（不超 viewport 高度）
+                    if !out.is_empty() && *gap > 0 && out.len() < viewport.1 as usize {
+                        out.push(StyledLine::plain(""));
+                    }
+                    for line in layout(child, viewport) {
+                        if out.len() >= viewport.1 as usize {
+                            break;
+                        }
+                        out.push(line);
+                    }
                 }
+                out
+            } else {
+                // ==== 两遍分配(垂直) ====
+                // 第一遍: flex=0 子节点正常布局并记录高度; flex>0 子节点留空
+                let mut parts: Vec<Vec<StyledLine>> = Vec::with_capacity(children.len());
+                let mut fixed_h = 0usize;
+                for child in children {
+                    match flex_of(child) {
+                        None => {
+                            let lines = layout(child, viewport);
+                            fixed_h += lines.len();
+                            parts.push(lines);
+                        }
+                        Some(_) => parts.push(Vec::new()),
+                    }
+                }
+                // 剩余高度 = viewport 高 - 固定高 - gap 总高;按 flex 权重分配(阶梯法,无浮点)
+                let gaps = children.len().saturating_sub(1) * *gap as usize;
+                let remaining = (viewport.1 as usize).saturating_sub(fixed_h).saturating_sub(gaps);
+                let mut alloc: Vec<usize> = Vec::with_capacity(children.len());
+                let mut acc = 0usize;
+                for child in children {
+                    match flex_of(child) {
+                        Some(f) => {
+                            let lo = acc * remaining / total_flex as usize;
+                            acc += f as usize;
+                            let hi = acc * remaining / total_flex as usize;
+                            alloc.push(hi - lo);
+                        }
+                        None => alloc.push(0),
+                    }
+                }
+                // 第二遍: flex>0 子节点用分配高布局,不足补空行
+                for (i, child) in children.iter().enumerate() {
+                    if flex_of(child).is_some() {
+                        let mut lines = layout(child, (viewport.0, alloc[i] as u16));
+                        while lines.len() < alloc[i] {
+                            lines.push(StyledLine::plain(""));
+                        }
+                        parts[i] = lines;
+                    }
+                }
+                // 拼接(带 gap 空行,clamp 到 viewport 高度)
+                let mut out = Vec::new();
+                for (i, part) in parts.into_iter().enumerate() {
+                    if out.len() >= viewport.1 as usize {
+                        break;
+                    }
+                    if !out.is_empty() && i > 0 && *gap > 0 && out.len() < viewport.1 as usize {
+                        out.push(StyledLine::plain(""));
+                    }
+                    for line in part {
+                        if out.len() >= viewport.1 as usize {
+                            break;
+                        }
+                        out.push(line);
+                    }
+                }
+                out
             }
-            out
         }
         CompNode::Row { children, gap, .. } => {
-            let parts: Vec<Vec<StyledLine>> = children.iter().map(|c| layout(c, viewport)).collect();
+            let total_flex: u16 = children.iter().filter_map(flex_of).sum();
+            let parts: Vec<Vec<StyledLine>> = if total_flex == 0 {
+                // ==== 现有逻辑(不动) ====
+                children.iter().map(|c| layout(c, viewport)).collect()
+            } else {
+                // ==== 两遍分配(水平) ====
+                // 第一遍: flex=0 子节点正常布局并记录宽度; flex>0 子节点留空
+                let mut parts: Vec<Vec<StyledLine>> = Vec::with_capacity(children.len());
+                let mut fixed_w = 0usize;
+                for child in children {
+                    match flex_of(child) {
+                        None => {
+                            let lines = layout(child, viewport);
+                            fixed_w += lines.iter().map(|l| l.width()).max().unwrap_or(0);
+                            parts.push(lines);
+                        }
+                        Some(_) => parts.push(Vec::new()),
+                    }
+                }
+                // 剩余空间 = viewport 宽 - 固定宽 - gap 总宽;按 flex 权重分配(阶梯法,无浮点)
+                let gaps = children.len().saturating_sub(1) * *gap as usize;
+                let remaining = (viewport.0 as usize).saturating_sub(fixed_w).saturating_sub(gaps);
+                let mut alloc: Vec<usize> = Vec::with_capacity(children.len());
+                let mut acc = 0usize;
+                for child in children {
+                    match flex_of(child) {
+                        Some(f) => {
+                            let lo = acc * remaining / total_flex as usize;
+                            acc += f as usize;
+                            let hi = acc * remaining / total_flex as usize;
+                            alloc.push(hi - lo);
+                        }
+                        None => alloc.push(0),
+                    }
+                }
+                // 第二遍: flex>0 子节点用分配宽布局(Text 补空格到分配宽)
+                for (i, child) in children.iter().enumerate() {
+                    if flex_of(child).is_some() {
+                        let mut lines = layout(child, (alloc[i] as u16, viewport.1));
+                        for line in &mut lines {
+                            let pad = alloc[i].saturating_sub(line.width());
+                            if pad > 0 {
+                                line.spans.push(TextSpan { text: " ".repeat(pad), style: None });
+                            }
+                        }
+                        parts[i] = lines;
+                    }
+                }
+                parts
+            };
             let rows = parts.iter().map(Vec::len).max().unwrap_or(0);
             let mut out = Vec::with_capacity(rows);
             for i in 0..rows {
@@ -359,6 +517,89 @@ mod tests {
         assert_eq!(line_text(&out[1]), "left right");
         assert_eq!(out[1].spans.len(), 3, "left + gap + right");
         assert_eq!(line_text(&out[2]), "s2");
+    }
+
+    #[test]
+    fn row_flex_allocates_ratio() {
+        // viewport (100, 10); flex:1 + flex:2 → 两列按 1:2 分(减 1 个 gap)
+        let node = CompNode::Row {
+            children: vec![
+                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None, id: None, flex: Some(1), wrap: false },
+                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: None }], width: None, id: None, flex: Some(2), wrap: false },
+            ],
+            gap: 1,
+            flex: None,
+        };
+        let lines = layout(&node, (100, 10));
+        let text = lines[0].spans.iter().map(|s| s.text.as_str()).collect::<String>();
+        // 内容 "a" + 空格 + "b" + 空格填充: 总宽 100, a 列 33, b 列 66(减 gap 1)
+        assert_eq!(text.chars().count(), 100);
+        let a = text.find('a').unwrap();
+        let b = text.find('b').unwrap();
+        assert!(b - a > 30 && b - a < 36, "1:2 比例: b 距 a {}(期望 ~33)", b - a);
+    }
+
+    #[test]
+    fn row_flex_zero_keeps_content_width() {
+        // flex:0(缺省) + 固定 width:8 → 总宽 = 内容 + 8 + gap
+        let node = CompNode::Row {
+            children: vec![
+                CompNode::Text { spans: vec![TextSpan { text: "hello".into(), style: None }], width: None, id: None, flex: None, wrap: false },
+                CompNode::Text { spans: vec![TextSpan { text: "size".into(), style: None }], width: Some(8), id: None, flex: None, wrap: false },
+            ],
+            gap: 1,
+            flex: None,
+        };
+        let lines = layout(&node, (100, 10));
+        let text = lines[0].spans.iter().map(|s| s.text.as_str()).collect::<String>();
+        assert_eq!(text.chars().count(), 5 + 1 + 8);
+    }
+
+    #[test]
+    fn col_flex_allocates_height_ratio() {
+        // flex:1 + flex:2 的 Col → 剩余高度按 1:2 分: a 槽 2 行(内容 1 + 空行 1), b 槽 4 行
+        let node = CompNode::Col {
+            children: vec![
+                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None, id: None, flex: Some(1), wrap: false },
+                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: None }], width: None, id: None, flex: Some(2), wrap: false },
+            ],
+            gap: 0,
+            flex: None,
+        };
+        let out = layout(&node, (10, 6));
+        let texts: Vec<String> = out.iter().map(line_text).collect();
+        assert_eq!(out.len(), 6, "a 槽 2 行 + b 槽 4 行");
+        assert_eq!(texts[0], "a");
+        assert_eq!(texts[1], "");
+        assert_eq!(texts[2], "b");
+        assert!(texts[3..].iter().all(|t| t.is_empty()), "b 槽余下为空行");
+    }
+
+    #[test]
+    fn text_wrap_multiline() {
+        // wrap=true, width=5: "abcdefghij" → 两行 "abcde" / "fghij"
+        let node = CompNode::Text { spans: vec![TextSpan { text: "abcdefghij".into(), style: None }], width: Some(5), id: None, flex: None, wrap: true };
+        let lines = layout(&node, (5, 10));
+        assert_eq!(lines.len(), 2);
+        let joined = lines.iter().map(|l| l.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>();
+        assert_eq!(joined, vec!["abcde", "fghij"]);
+    }
+
+    #[test]
+    fn text_wrap_cjk_keeps_chars() {
+        // 中文 6 字符 width=4 → 两行,不切坏字符
+        let node = CompNode::Text { spans: vec![TextSpan { text: "中文测试文本".into(), style: None }], width: Some(4), id: None, flex: None, wrap: true };
+        let lines = layout(&node, (4, 10));
+        let joined: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.text.as_str())).collect();
+        assert_eq!(joined, "中文测试文本");
+        assert!(lines.iter().all(|l| l.width() <= 4));
+    }
+
+    #[test]
+    fn text_wrap_false_truncates() {
+        // 回归: 无 wrap → 现状截断
+        let node = CompNode::Text { spans: vec![TextSpan { text: "hello world".into(), style: None }], width: Some(5), id: None, flex: None, wrap: false };
+        assert_eq!(layout(&node, (100, 10)).len(), 1);
     }
 
     #[test]
