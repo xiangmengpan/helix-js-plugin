@@ -144,6 +144,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
                         while lines.len() < alloc[i] {
                             lines.push(StyledLine::plain(""));
                         }
+                        lines.truncate(alloc[i]); // 防止 flex 子节点溢出分配槽(嵌套 Col/wrap 多行场景)
                         parts[i] = lines;
                     }
                 }
@@ -573,6 +574,27 @@ mod tests {
         assert_eq!(texts[1], "");
         assert_eq!(texts[2], "b");
         assert!(texts[3..].iter().all(|t| t.is_empty()), "b 槽余下为空行");
+    }
+
+    #[test]
+    fn col_flex_truncates_overflow_to_slot() {
+        // wrap 子节点行数 > 分配高时截断到槽内,不溢入下一兄弟槽
+        let node = CompNode::Col {
+            children: vec![
+                CompNode::Text { spans: vec![TextSpan { text: "abcdefghijklmnop".into(), style: None }], width: None, id: None, flex: Some(1), wrap: true },
+                CompNode::Text { spans: vec![TextSpan { text: "x".into(), style: None }], width: None, id: None, flex: Some(1), wrap: false },
+            ],
+            gap: 0,
+            flex: None,
+        };
+        // 16 字符 limit 4 → wrap 4 行,但两槽各只分 2 行:必须截断,不能把 "x" 挤出视口
+        let out = layout(&node, (4, 4));
+        let texts: Vec<String> = out.iter().map(line_text).collect();
+        assert_eq!(out.len(), 4, "两槽各 2 行,总行数 = 分配和");
+        assert_eq!(texts[0], "abcd");
+        assert_eq!(texts[1], "efgh");
+        assert_eq!(texts[2], "x");
+        assert_eq!(texts[3], "");
     }
 
     #[test]
