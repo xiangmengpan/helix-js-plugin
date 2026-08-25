@@ -76,7 +76,8 @@ if let Some(wrap) = obj_opt_bool(&obj, "wrap", ctx, api)? {
 ```rust
 let is_scroll = type_ == "scroll";
 if let Some(v) = obj_opt_u16(&obj, if is_scroll { "height" } else { "gap" }, ctx, api)? {
-    props.push((if is_scroll { "height" } else { "gap" }.into(), JsValue::from(v)));
+    let key: &str = if is_scroll { "height" } else { "gap" };
+    props.push((key.into(), JsValue::from(v)));
 }
 if !is_scroll {
     if let Some(flex) = obj_opt_u16(&obj, "flex", ctx, api)? {
