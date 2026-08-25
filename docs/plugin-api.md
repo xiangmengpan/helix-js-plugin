@@ -633,6 +633,7 @@ helix.register_command("filetree", () => {
 | **Unix-only** | `helix.run`/`spawn`/PTY 依赖 `sh` 与 libc openpty（Windows 不可用） |
 | **键位不持久** | `helix.map` 绑定重启失效（插件启动时重新注册） |
 | **插件间无共享状态** | 每个插件独立 IIFE 作用域；共享需通过 `helix.*` API 或外部文件 |
+| **嵌套 load 污染风险** | boa 0.21 嵌套 eval 会破坏外层闭包的函数/变量绑定（`typeof` 变 object、函数不可调用）。**依赖必须用 `helix.plugin` 的 `deps` 声明**（保证先加载并缓存），不要在命令/事件/渲染回调里 `helix.load` 未缓存脚本。init.js 全链加载安全；单独 `:plugin-load` 一个依赖插件的插件前，先加载其依赖。升级 boa 后重新评估（上游 bug，0.21.1 为最新版） |
 
 ---
 
