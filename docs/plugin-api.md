@@ -45,7 +45,7 @@
 ```
 
 - **JS 永远只在主线程跑**（boa 的 `Context` 是 `!Send`），所以 JS 侧无并发问题。
-- **耗时操作必须用异步 API**（`run_async` / `spawn` / `*_async`），它们在 worker 线程执行，回调回到主线程事件循环。
+- **耗时操作必须用异步 API**（`run_async` / `spawn` / `*_async`），它们在 worker 线程执行，promise 恢复（`.then`/`.catch`）回到主线程事件循环。
 - **`helix.run`（同步）会阻塞编辑器主线程**——只用于短命令。
 - 弹窗/面板/终端现在是**布局树叶子**（见 §11/§12/§13）：面板和终端会真实收缩编辑器布局，不再只是覆盖层。
 - 渲染模型：JS `render` 回调每次重绘全量返回内容 → 布局引擎拍平成 `StyledLine`（多 span）→ 脏格 diff 只写变化的格。
@@ -188,7 +188,7 @@ helix.term_close(view_id)                // 按 id 关闭终端;               /
 helix.term_resize(id, rows, cols); // 仅 PTY：设置窗口尺寸（TIOCSWINSZ，默认 24×80；Unix-only）
 ```
 
-### 回调内可以做什么
+### 异步恢复点内可以做什么
 
 所有 promise 的 `.then`/`.catch`（`run_async` / `*_async`）在主线程执行，可以：
 - `helix.echo`、开弹窗/面板/终端、调用命令、链式 `helix.run_async`；

@@ -340,6 +340,10 @@ impl Application {
         if term_events.is_empty() && async_events.is_empty() {
             // 仅 fs-watcher 事件:resolve 内部 drain(空则 no-op);回调可能编辑/echo
             let _ = helix_js::watch::resolve_watch_events();
+            // 早退路径也要泵纯 JS 微任务(Promise.resolve().then(...) 不经过 term/async 事件)
+            if let Err(err) = helix_js::pump_jobs() {
+                log::error!("promise job pump: {err}");
+            }
             return theme_changed;
         }
         let mut error = None;

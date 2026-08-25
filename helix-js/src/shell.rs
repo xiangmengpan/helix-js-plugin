@@ -601,8 +601,14 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                     let args: Vec<JsValue> = if code == 0 {
                         vec![JsValue::from(JsString::from(out))]
                     } else {
+                        // 截断到 200 字符(防失败命令巨量输出膨胀 e.message,与 js_run 截断风格一致)
+                        let out = out.trim();
+                        let mut msg: String = out.chars().take(200).collect();
+                        if out.chars().count() > 200 {
+                            msg.push_str("…(truncated)");
+                        }
                         let err = JsNativeError::error()
-                            .with_message(format!("exit {code}: {}", out.trim()))
+                            .with_message(format!("exit {code}: {msg}"))
                             .to_opaque(engine);
                         vec![err.into()]
                     };
