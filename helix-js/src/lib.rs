@@ -1927,10 +1927,10 @@ mod tests {
         });
         // focus_buffer 入队 FocusBuffer
         let reqs = take_ui_requests();
-        assert!(matches!(
-            reqs.iter().find(|r| matches!(r, UiRequest::FocusBuffer { id: 7 })),
-            Some(_)
-        ), "focus_buffer 入队 FocusBuffer");
+        assert!(
+            reqs.iter().any(|r| matches!(r, UiRequest::FocusBuffer { id: 7 })),
+            "focus_buffer 入队 FocusBuffer"
+        );
     }
 
     /// 组件状态通道:register_component_state(JSON) → get_component_state(对象);未注册 → null

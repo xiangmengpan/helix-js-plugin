@@ -361,8 +361,8 @@ pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 pub(crate) static BUFFERS: OnceLock<Mutex<String>> = OnceLock::new();
 /// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: {"<name>": {...}}
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
-/// 插件配置 schema 注册表（define_config 写入；build_plugin_configs 读取）name → schema JSON
 thread_local! {
+    // 插件配置 schema 注册表（define_config 写入；build_plugin_configs 读取）name → schema JSON
     static CONFIG_SCHEMAS: RefCell<Option<&'static mut HashMap<String, String>>> = const { RefCell::new(None) };
 }
 /// 当前文档诊断序列化缓存（helix-term 每帧写入；diagnostics 读取）

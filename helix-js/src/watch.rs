@@ -221,8 +221,7 @@ mod tests {
         let reqs = take_ui_requests();
         assert!(
             reqs.iter()
-                .find(|r| matches!(r, UiRequest::Watch { id: i, path } if *i == id && path == "/tmp/hx-watch"))
-                .is_some(),
+                .any(|r| matches!(r, UiRequest::Watch { id: i, path } if *i == id && path == "/tmp/hx-watch")),
             "入队 UiRequest::Watch"
         );
     }
@@ -276,10 +275,8 @@ mod tests {
         assert!(!with_watch_callbacks(|m| m.contains_key(&id)), "回调已移除");
         let reqs = take_ui_requests();
         assert!(
-            matches!(
-                reqs.iter().find(|r| matches!(r, UiRequest::Unwatch { id: i } if *i == id)),
-                Some(_)
-            ),
+            reqs.iter()
+                .any(|r| matches!(r, UiRequest::Unwatch { id: i } if *i == id)),
             "入队 UiRequest::Unwatch"
         );
     }

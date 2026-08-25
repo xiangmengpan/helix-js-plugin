@@ -3,7 +3,7 @@
 //! Rust 侧 build_plugin_configs 合并用户 config.toml 覆盖并校验,结果经 cache_configs 写入。
 //! 设计:docs/superpowers/specs/2026-08-15-plugin-config-design.md
 
-use crate::state::{with_config_schemas, with_engine, CONFIGS};
+use crate::state::{with_config_schemas, CONFIGS};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue};
@@ -35,7 +35,7 @@ pub(crate) fn js_define_config(
         ))));
     }
     // schema 对象序列化为 JSON 字符串(经 JSON.stringify)
-    let json: String = JsValue::from(schema)
+    let json: String = schema
         .to_json(ctx)
         .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
         .unwrap_or_else(|_| "{}".to_string());
@@ -154,9 +154,8 @@ mod tests {
         with_engine(|engine| {
             let v = engine.global_object().get(JsString::from("__g2"), engine).unwrap();
             let o = v.as_object().unwrap();
-            assert_eq!(
-                o.get(JsString::from("show_hidden"), engine).unwrap().as_boolean().unwrap(),
-                true
+            assert!(
+                o.get(JsString::from("show_hidden"), engine).unwrap().as_boolean().unwrap()
             );
         });
         // docs
