@@ -707,3 +707,26 @@ async fn layout_tree_cursor_forwarding() -> anyhow::Result<()> {
 }
 
 
+
+/// 光标坐标:insert 后 compositor.cursor 返回的 Position{row, col} 不应交换
+/// (回归:Position::new(row, col) 曾把 col 偏移当 row → 光标恒在"第 8 行"、回车 x+1)
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_position_not_swapped() -> anyhow::Result<()> {
+    let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("p.txt");
+    std::fs::write(&file, "one\ntwo\nthree\n")?;
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
+    let _ = render_rows(&mut app, area);
+    pump(&mut app, "i").await?; // insert,光标 (0,0)
+    let (pos, _kind) = app.compositor.cursor(area, &app.editor);
+    let pos = pos.expect("insert 模式光标");
+    assert!(
+        pos.row <= 2,
+        "row 是小值(0/1),不是 gutter 宽度 8(交换错误): row={}",
+        pos.row
+    );
+    assert!(pos.col >= 5, "光标 col 在内容区(行号右侧): col={}", pos.col);
+    Ok(())
+}

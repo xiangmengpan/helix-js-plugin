@@ -555,10 +555,11 @@ impl LayoutTree {
         };
         let (pos, kind) = comp.cursor(*rect, editor);
         // 叶子 rect 相对 tree_area(area 参数 = tree_area);全屏 = area 原点 + rect + 组件内位置
+        // Position::new(row, col):row 用叶子 y + 组件内 row,col 用叶子 x + 组件内 col
         let pos = pos.map(|p| {
             helix_core::Position::new(
-                (area.x + rect.x) as usize + p.col,
                 (area.y + rect.y) as usize + p.row,
+                (area.x + rect.x) as usize + p.col,
             )
         });
         (pos, kind)
