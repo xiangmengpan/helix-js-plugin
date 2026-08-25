@@ -1,59 +1,91 @@
-# 设计:插件配置读取(get_config)
+# 设计:插件配置 plugin-config(方案 C:声明式 + 分段 + 全局段)
 
 日期:2026-08-15
-状态:草案(待审核)
+状态:已确认(方案 C;分段 [plugins.<name>] + 全局 [plugins] 混合;全部插件接入)
 
-## 1. 动机
-
-插件不能读 `config.toml` 或自己的配置,参数写死在插件代码里。受益:
-- 插件参数化:`helix.get_config("filetree.show_hidden")` 而非写死
-- 用户改 config.toml 即生效,不改插件代码
-- 插件自带配置约定(如 `[plugins.xxx]` 段)
-
-## 2. API
+## 1. API
 
 ```js
-// 读 config.toml 中 [plugins] 段的值
-helix.get_config("filetree.hidden_default")
-// → 值(字符串/数字/布尔)或 undefined
+// 插件声明 schema(加载时调用)
+helix.define_config("filetree", {
+  show_hidden: { type: "boolean", default: false, doc: "显示隐藏文件" },
+  refresh_ms:  { type: "number",  default: 500,   doc: "自动刷新间隔(ms)" },
+  icon_style:  { type: "enum",    default: "default", options: ["default", "nerd"], doc: "图标风格" },
+});
 
-// 读取当前 Editor 配置的通用键(如 "auto-info" → 布尔)
-helix.get_config("auto-info")
+// 读取(合并用户覆盖 + 校验后;含默认值)
+helix.get_config("filetree")
+// → { show_hidden: false, refresh_ms: 500, icon_style: "default" }
+// 未声明 schema 的 name → null
+
+// 配置说明(可选,渲染帮助/设置面板)
+helix.get_config_docs("filetree")
+// → [{key, type, default, doc}]
 ```
 
-## 3. 设计要点
+支持类型:`boolean` / `number` / `string` / `enum`(options)。本期不支持嵌套对象/数组。
 
-### 3.1 配置段约定
-
-在 `config.toml` 加 `[plugins]` 段(或 `[plugin.xxx]` 每插件一段):
+## 2. config.toml 结构(分段 + 全局段混合)
 
 ```toml
-[plugins]
-filetree_hidden_default = true
-terminal_shell = "/bin/zsh"
+[plugins]                  # 全局插件设置(无主插件名)
+plugin_dir = "~/my-plugins"
+
+[plugins.filetree]         # 按插件分段(插件名 = 子表名)
+show_hidden = true
+refresh_ms = 200
 ```
 
-命名:扁平 `key = value`(避免 TOML 嵌套解析复杂度);插件侧 `helix.get_config("filetree_hidden_default")`。
+- `[plugins.<name>]` 的键对 `define_config(name)` 的 schema 校验(类型/enum)
+- 未知插件名的段 / 未知 key → 警告(不崩溃),值用默认
+- `[plugins]` 顶层键 → 全局插件设置(`helix.get_config("")` 或独立读取)
 
-### 3.2 通用配置只读
+## 3. 实现
 
-`helix.get_config("auto-info")` 读 EditorConfig 现有字段(白名单,防止插件改配置):
-- 白名单字段:`auto-info`/`auto-save`/`mouse`/`scrolloff` 等(Helix Config 结构字段)
-- 实现:helix-term 序列化白名单字段 → JSON 缓存(仿 buffers 每帧?或惰性——config 变更少,事件时更新即可)
+### 3.1 Config 捕获 plugins 段
+
+- `helix-term/src/config.rs`:`ConfigRaw` 加 `pub plugins: Option<toml::Table>`(deny_unknown_fields 下显式字段合法);`Config` 同样加
+- config.toml 的 `[plugins]`/`[plugins.filetree]` 被捕获为 toml::Table(嵌套)
+
+### 3.2 声明注册(helix-js)
+
+- `js_define_config(name, schema)`:schema(JS 对象)转 JSON 存注册表(thread_local `CONFIG_SCHEMAS: HashMap<String, String>`)
+- `js_get_config(name)`:读合并缓存(CONFIGS OnceLock<Mutex<String>> 或现算)
+- `js_get_config_docs(name)`:从注册表 schema 返回文档数组
+
+### 3.3 合并与校验(helix-term)
+
+- `pub fn build_plugin_configs(config: &Config) -> String`:
+  - 遍历 CONFIG_SCHEMAS(name → schema JSON)
+  - 取 config.plugins 的 `[plugins.<name>]` 表 → 逐键校验(type/enum)→ 错误收集
+  - 合并默认 + 覆盖 → JSON `{"<name>": {...}}`
+- 调用时机:config load / :config-reload 后 → `helix_js::cache_configs(json)`
+- 校验错误 → editor.set_error 显示(如 `"filetree.show_hidden: 期望 boolean,得到 string"`)
+
+### 3.4 get_config 数据流
+
+config load → build_plugin_configs → cache_configs(JSON)→ js_get_config(name) 读缓存 JSON.parse → 返回对象
 
 ## 4. 边界
 
-- **只读**:get_config 只读;配置修改走 `:config-reload`
-- **白名单**:通用字段白名单(不暴露内部/敏感);plugins 段任意读
-- **类型**:返回字符串/数字/布尔(TOML 原生类型);复杂值(数组)暂不支持
+- **只读**:get_config 只读;配置修改走 :config-reload
+- **类型**:boolean/number/string/enum;非法 → 报错 + 用默认值
+- **性能**:config 变更少,load/reload 时构建一次;get_config 读缓存 O(1)
+- **插件名**:必须合法 TOML 表名(字母数字下划线)——现有插件名全部合法
 
-## 5. 待决
+## 5. 插件接入清单(全部)
 
-1. `[plugins]` 段命名与层级(扁平 vs `[plugin.filetree]` 分段)
-2. 通用配置是否需要(config.toml 里 helix.get_config 与原生 config 访问重复?插件主要要 plugins 段)
-3. 配置变更事件(`on("config-change")` 通知插件 reload)是否本期做
+| 插件 | 配置项 |
+|---|---|
+| filetree | show_hidden / refresh_ms / icon_style |
+| terminal.js | default_shell / dock_side |
+| statusline.js | show_git_branch / show_diagnostics / mode_icons |
+| which-key.js | position / show_docs |
+| tabbar.js | show_dirty / max_labels |
+| icons.js | style(nerd/plain) |
 
 ## 6. 规模
 
-- helix-term:config.toml 的 [plugins] 解析 + 白名单字段序列化 + helix-js get_config(约 1-2 任务)
-- 测试(约 0.5 任务)
+- T1 核心:ConfigRaw.plugins + define_config/get_config/get_config_docs + build_plugin_configs 校验合并 + 单测(2 任务)
+- T2 插件接入:6 个插件 define_config + 读取改造(2-3 任务)
+- 集成测试(1 任务)

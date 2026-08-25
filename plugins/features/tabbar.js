@@ -3,6 +3,13 @@
 // 效果:屏幕顶部 1 行显示各叶子标签,活动高亮;点击标签聚焦。
 helix.plugin("tabbar", { deps: ["lib/icons.js"] });
 
+// 插件配置(方案 C):config.toml [plugins.tabbar]
+helix.define_config("tabbar", {
+  show_dirty: { type: "boolean", default: true, doc: "标签显示未保存标记" },
+  max_labels: { type: "number", default: 12, doc: "标签条最多显示数" },
+});
+const CFG = helix.get_config("tabbar") || {};
+
 (function () {
   const ICONS = helix.load("lib/icons.js") || null;
 

@@ -4,6 +4,16 @@
 // 窗口模式(C-w)由 compositor 在进入时调 keymap_hint("C-w", ...) → 本文件返回中文键位表。
 helix.plugin("which-key", { deps: ["lib/icons.js"] });
 
+// 插件配置(方案 C):config.toml [plugins.which-key]
+helix.define_config("which-key", {
+  position: { type: "enum", default: "bottom-right", options: ["bottom-right", "bottom-left", "top-right", "top-left", "center"], doc: "提示框位置" },
+  show_docs: { type: "boolean", default: true, doc: "未命中中文映射时显示英文说明" },
+});
+// cfg 每次 render 读取(config-reload 后即时生效)
+function current_cfg() {
+  return helix.get_config("which-key") || {};
+}
+
 (function () {
   // 中文说明:键组合 → 中文(按 keys 字符串匹配;未命中显示原 doc)
   const CN = {
@@ -116,9 +126,10 @@ helix.plugin("which-key", { deps: ["lib/icons.js"] });
   };
 
   function render(ctx) {
-    // 窗口模式:compositor 传入 title="C-w" → 左下角
+    // 窗口模式:compositor 传入 title="C-w" → 位置取配置
+    const cfg = current_cfg();
     if (ctx.title === "C-w") {
-      return { text: C_W_HINT, position: "bottom-right" };
+      return { text: C_W_HINT, position: cfg.position };
     }
     if (!ctx.entries || ctx.entries.length === 0) return null;
     const prefix = PREFIX_KEY[ctx.title] ? PREFIX_KEY[ctx.title] + " " : "";
@@ -126,10 +137,9 @@ helix.plugin("which-key", { deps: ["lib/icons.js"] });
       // 组合键取首键(如 "g, G" → "g");前缀键 + 节点内键 拼完整序列匹配
       const first = e.keys.split(", ")[0];
       const zh = CN[prefix + e.keys] || CN[prefix + first] || CN[e.keys] || CN[first];
-      return e.keys + (zh ? "  " + zh : "  " + e.doc);
+      return e.keys + (zh ? "  " + zh : (cfg.show_docs ? "  " + e.doc : ""));
     });
-    // 左下角(不挡编辑区,与状态栏相邻)
-    return { text: lines.join("\n"), position: "bottom-right" };
+    return { text: lines.join("\n"), position: cfg.position };
   }
 
   helix.set_keymap_hint(render);

@@ -5123,6 +5123,122 @@ fn panel_close(_cx: &mut compositor::Context, _args: Args, event: PromptEvent) -
 
 /// 打开文档序列化:{current, buffers:[{id, path, name, dirty, language}]}。
 /// 每帧由 application.render 写入 helix-js 缓存(buffers/current_buffer 读取)。
+/// 构建插件配置合并缓存:对每个 define_config 的 schema,取 config.plugins 的
+/// [plugins.<name>] 表覆盖,逐字段校验类型/enum,错误记入返回的 Vec(显示用)。
+/// 输出 JSON: {"<name>": {字段...}} → helix_js::cache_configs。
+pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<String>) {
+    let schemas = helix_js::config_schemas();
+    let plugins = config.plugins.clone().unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (name, schema_json) in schemas {
+        let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_json) else { continue };
+        let Some(schema_obj) = schema.as_object() else { continue };
+        // 用户覆盖 [plugins.<name>]
+        let user = plugins
+            .get(&name)
+            .and_then(|v| v.as_table())
+            .cloned()
+            .unwrap_or_default();
+        let mut merged = serde_json::Map::new();
+        for (key, field) in schema_obj {
+            let Some(fo) = field.as_object() else { continue };
+            let ftype = fo.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+            let default = fo.get("default").cloned().unwrap_or(serde_json::Value::Null);
+            // 校验用户值
+            let user_val = user.get(key).map(toml_to_json);
+            let val = match user_val {
+                Some(v) => match validate_field(ftype, fo, &v) {
+                    Ok(()) => v.clone(),
+                    Err(e) => {
+                        errors.push(format!("{name}.{key}: {e}(用默认值)"));
+                        default.clone()
+                    }
+                },
+                None => default.clone(),
+            };
+            merged.insert(key.clone(), val);
+        }
+        out.insert(name, serde_json::Value::Object(merged));
+    }
+    let json = serde_json::Value::Object(out).to_string();
+    (json, errors)
+}
+
+/// 字段类型校验:boolean/number/string/enum
+fn validate_field(
+    ftype: &str,
+    field: &serde_json::Map<String, serde_json::Value>,
+    v: &serde_json::Value,
+) -> Result<(), String> {
+    match ftype {
+        "boolean" => {
+            if v.is_boolean() {
+                Ok(())
+            } else {
+                Err(format!("期望 boolean,得到 {}", v_type(v)))
+            }
+        }
+        "number" => {
+            if v.is_number() {
+                Ok(())
+            } else {
+                Err(format!("期望 number,得到 {}", v_type(v)))
+            }
+        }
+        "string" => {
+            if v.is_string() {
+                Ok(())
+            } else {
+                Err(format!("期望 string,得到 {}", v_type(v)))
+            }
+        }
+        "enum" => {
+            let options = field
+                .get("options")
+                .and_then(|o| o.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let s = v.as_str().unwrap_or_default();
+            if options.contains(&s) {
+                Ok(())
+            } else {
+                Err(format!("期望 enum {:?},得到 {s:?}", options))
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// toml::Value → serde_json::Value(用户 config.toml 覆盖值转统一 JSON 处理)
+fn toml_to_json(v: &toml::Value) -> serde_json::Value {
+    match v {
+        toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
+        toml::Value::Integer(i) => serde_json::Value::Number((*i).into()),
+        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        toml::Value::String(s) => serde_json::Value::String(s.clone()),
+        toml::Value::Array(a) => {
+            serde_json::Value::Array(a.iter().map(toml_to_json).collect())
+        }
+        toml::Value::Table(t) => serde_json::Value::Object(
+            t.iter().map(|(k, v)| (k.clone(), toml_to_json(v))).collect(),
+        ),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn v_type(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Null => "null",
+        _ => "other",
+    }
+}
+
 pub fn serialize_buffers(editor: &helix_view::Editor) -> String {
     let current = editor.tree.get(editor.tree.focus).doc;
     let buffers: Vec<_> = editor
@@ -5679,3 +5795,49 @@ mod plugin_manager_tests {
     }
 }
 
+
+#[cfg(test)]
+mod plugin_config_tests {
+    use super::build_plugin_configs;
+
+    #[test]
+    fn merges_defaults_and_user_override() {
+        helix_js::seed_config_schema(
+            "ft",
+            r#"{"show_hidden":{"type":"boolean","default":false},"refresh_ms":{"type":"number","default":500}}"#,
+        );
+        let mut plugins = toml::Table::new();
+        let mut ft = toml::Table::new();
+        ft.insert("show_hidden".into(), toml::Value::Boolean(true));
+        plugins.insert("ft".into(), toml::Value::Table(ft));
+        let config = crate::config::Config {
+            plugins: Some(plugins),
+            ..Default::default()
+        };
+        let (json, errors) = build_plugin_configs(&config);
+        assert!(errors.is_empty(), "无错误: {errors:?}");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["ft"]["show_hidden"], true, "用户覆盖生效");
+        assert_eq!(parsed["ft"]["refresh_ms"], 500, "未覆盖用默认");
+    }
+
+    #[test]
+    fn rejects_wrong_type_with_default_fallback() {
+        helix_js::seed_config_schema(
+            "wk",
+            r#"{"position":{"type":"enum","default":"bottom-right","options":["bottom-right","bottom-left"]}}"#,
+        );
+        let mut plugins = toml::Table::new();
+        let mut wk = toml::Table::new();
+        wk.insert("position".into(), toml::Value::String("center".into())); // 非法
+        plugins.insert("wk".into(), toml::Value::Table(wk));
+        let config = crate::config::Config {
+            plugins: Some(plugins),
+            ..Default::default()
+        };
+        let (json, errors) = build_plugin_configs(&config);
+        assert!(!errors.is_empty(), "非法 enum 报错");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["wk"]["position"], "bottom-right", "非法值回退默认");
+    }
+}

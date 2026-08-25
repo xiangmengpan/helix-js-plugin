@@ -13,6 +13,7 @@ mod types;
 pub mod watch;
 pub mod diagnostics;
 pub mod cursor;
+pub mod config;
 
 pub use commands::*;
 pub use icons::*;
@@ -116,6 +117,9 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(watch::js_watch), JsString::from("watch"), 2)
                 .function(NativeFunction::from_fn_ptr(watch::js_unwatch), JsString::from("unwatch"), 1)
                 .function(NativeFunction::from_fn_ptr(diagnostics::js_diagnostics), JsString::from("diagnostics"), 0)
+                .function(NativeFunction::from_fn_ptr(config::js_define_config), JsString::from("define_config"), 2)
+                .function(NativeFunction::from_fn_ptr(config::js_get_config), JsString::from("get_config"), 1)
+                .function(NativeFunction::from_fn_ptr(config::js_get_config_docs), JsString::from("get_config_docs"), 1)
                 .function(NativeFunction::from_fn_ptr(layout::js_restore_layout), JsString::from("restore_layout"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_set_theme), JsString::from("set_theme"), 1)
                 .function(NativeFunction::from_fn_ptr(theme::js_reset_theme), JsString::from("reset_theme"), 0)

@@ -192,6 +192,13 @@ impl Application {
             }
         }
 
+        // 插件已 load(define_config 注册)→ 构建插件配置合并缓存
+        let (json, errors) = crate::commands::typed::build_plugin_configs(&config.load());
+        helix_js::cache_configs(&json);
+        for e in errors {
+            editor.set_error(e);
+        }
+
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
             editor.open(&path, Action::VerticalSplit)?;
@@ -608,6 +615,13 @@ impl Application {
             }
 
             self.terminal.reconfigure((&default_config.editor).into())?;
+            // 插件配置:合并 [plugins] 段覆盖 + 校验 → 缓存;错误显示
+            let (json, errors) =
+                crate::commands::typed::build_plugin_configs(&default_config);
+            helix_js::cache_configs(&json);
+            if let Some(first) = errors.first().cloned() {
+                self.editor.set_error(first);
+            }
             // Store new config
             self.config.store(Arc::new(default_config));
             Ok(())

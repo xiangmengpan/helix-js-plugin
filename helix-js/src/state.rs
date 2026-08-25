@@ -135,6 +135,34 @@ pub(crate) fn with_last_plugin_deps<T>(f: impl FnOnce(&mut Vec<String>) -> T) ->
     LAST_PLUGIN_DEPS.with(|c| f(&mut c.borrow_mut()))
 }
 
+/// 访问 CONFIG_SCHEMAS：同上
+pub(crate) fn with_config_schemas<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
+    CONFIG_SCHEMAS.with(|h| {
+        let mut slot = h.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 写入 schema(helix-term 测试/插件预置用;插件正常走 define_config)
+pub fn seed_config_schema(name: &str, json: &str) {
+    with_config_schemas(|m| {
+        m.insert(name.to_string(), json.to_string());
+    });
+}
+
+/// 读取全部插件配置 schema(helix-term build_plugin_configs 用)name → schema JSON
+pub fn config_schemas() -> Vec<(String, String)> {
+    with_config_schemas(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// 写入插件配置合并缓存（helix-term config load/reload 后调用）
+pub fn cache_configs(json: &str) {
+    let _ = CONFIGS.get_or_init(Default::default);
+    if let Some(m) = CONFIGS.get() {
+        *m.lock().unwrap() = json.to_string();
+    }
+}
+
 /// 访问 EVENT_HANDLERS：同上（内容泄漏）
 pub(crate) fn with_event_handlers<T>(f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T) -> T {
     EVENT_HANDLERS.with(|h| {
@@ -331,6 +359,12 @@ pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 /// 打开文档序列化缓存（helix-term 每帧写入；buffers/current_buffer 读取）
 pub(crate) static BUFFERS: OnceLock<Mutex<String>> = OnceLock::new();
+/// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: {"<name>": {...}}
+pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
+/// 插件配置 schema 注册表（define_config 写入；build_plugin_configs 读取）name → schema JSON
+thread_local! {
+    static CONFIG_SCHEMAS: RefCell<Option<&'static mut HashMap<String, String>>> = const { RefCell::new(None) };
+}
 /// 当前文档诊断序列化缓存（helix-term 每帧写入；diagnostics 读取）
 pub(crate) static DIAGNOSTICS: OnceLock<Mutex<String>> = OnceLock::new();
 

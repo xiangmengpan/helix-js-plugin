@@ -1,6 +1,13 @@
 // filetree.js — 类 lazyvim/neo-tree 的侧边文件树面板
 // 依赖清单：icons（共享图标表，helix.load 自动先加载）
 helix.plugin("filetree", { deps: ["lib/icons.js"] });
+
+// 插件配置(方案 C):config.toml [plugins.filetree]
+helix.define_config("filetree", {
+  show_hidden: { type: "boolean", default: false, doc: "默认显示隐藏文件" },
+  refresh_ms: { type: "number", default: 1000, doc: "自动刷新间隔(ms;0 = 关闭)" },
+});
+const CFG = helix.get_config("filetree") || {};
 // 用法：init.js 里 helix.load("features/filetree/index.js")，:filetree 开关面板。
 // 键位：Enter/o 打开或展开，h/l 折叠/进入，Up/Down 导航，H 隐藏文件，
 //       R 刷新，a/A 新建文件/目录，m 重命名，d 删除，P 上级目录，F 跟随当前文件，q/Esc 关闭。

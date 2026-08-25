@@ -14,6 +14,8 @@ pub struct Config {
     pub theme: Option<theme::Config>,
     pub keys: HashMap<Mode, KeyTrie>,
     pub editor: helix_view::editor::Config,
+    /// config.toml 的 [plugins] / [plugins.<name>] 段(插件配置;原始 TOML 表)
+    pub plugins: Option<toml::Table>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -22,6 +24,7 @@ pub struct ConfigRaw {
     pub theme: Option<theme::Config>,
     pub keys: Option<HashMap<Mode, KeyTrie>>,
     pub editor: Option<toml::Value>,
+    pub plugins: Option<toml::Table>,
 }
 
 impl Default for Config {
@@ -30,6 +33,7 @@ impl Default for Config {
             theme: None,
             keys: keymap::default(),
             editor: helix_view::editor::Config::default(),
+            plugins: None,
         }
     }
 }
@@ -88,6 +92,7 @@ impl Config {
                     theme: local.theme.or(global.theme),
                     keys,
                     editor,
+                    plugins: local.plugins.or(global.plugins),
                 }
             }
             // if any configs are invalid return that first
@@ -107,6 +112,7 @@ impl Config {
                         || Ok(helix_view::editor::Config::default()),
                         |val| val.try_into().map_err(ConfigLoadError::BadConfig),
                     )?,
+                    plugins: config.plugins,
                 }
             }
 
