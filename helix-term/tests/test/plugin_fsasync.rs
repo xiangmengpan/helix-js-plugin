@@ -12,8 +12,8 @@ async fn plugin_fsasync_read() -> anyhow::Result<()> {
         &plugin_path,
         r#"
         helix.register_command("fs-demo", () => {
-            helix.read_file_async("PLACEHOLDER_FILE", (err, content) => {
-                helix.echo("fs:" + (err ?? "") + ":" + (content ?? ""));
+            helix.read_file_async("PLACEHOLDER_FILE").then((content) => {
+                helix.echo("fs::" + content);
             });
         });
         "#.replace("PLACEHOLDER_FILE", &format!("{}", file.display())),
@@ -26,7 +26,7 @@ async fn plugin_fsasync_read() -> anyhow::Result<()> {
             (
                 Some(":fs-demo<ret>"),
                 Some(&|app| {
-                    // read_file_async 完成回调 → echo → 状态栏（render 泵 + idle 循环）
+                    // read_file_async promise 兑现（render 泵）→ echo → 状态栏
                     let (status, _) = app.editor.get_status().unwrap();
                     assert_eq!(status.as_ref(), "fs::hello fs");
                 }),
