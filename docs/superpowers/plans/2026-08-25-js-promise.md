@@ -346,8 +346,10 @@ git commit -m "feat: render 泵 promise job 队列 + 集成测试"
 ### 任务 4:插件迁移 + 真机验证
 
 **文件:**
-- 修改:`~/.config/helix/plugins/features/statusline.js:25`(refreshGit)
-- 修改:`~/.config/helix/plugins/features/filetree/index.js:432`(run_fs)
+- 修改:`plugins/features/statusline.js:25`(refreshGit,仓库镜像)
+- 修改:`plugins/features/filetree/index.js:432`(run_fs,仓库镜像)
+- 修改:`docs/plugin-api.md`(回调签名 → Promise,11 处,任务 2 审查跟进项)
+- 同步:`~/.config/helix/plugins/`(镜像 cp)
 
 - [ ] **步骤 1:迁移 statusline.js**
 
@@ -379,15 +381,26 @@ async function run_fs(cmd, ok_msg) {
 
 `new_file` 保持 prompt 回调(它是 UI 交互回调,不是异步 API),内部 `run_fs(...)` 调用不变。
 
-- [ ] **步骤 3:同步插件 + 编译 release**
+- [ ] **步骤 3:docs/plugin-api.md 同步 Promise 签名**
+
+以下行改为 Promise 式(仅签名与示例,不改段落主旨):
+- `:164` `### helix.run_async(cmd)` — 异步(返回 Promise);`:167` 示例改 `const out = await helix.run_async("git status");`
+- `:195-196` "所有异步回调…链式 run_async" → "所有 promise 的 .then/.catch 在主线程执行,可 echo/开弹窗/链式 run_async"
+- `:208-211` 改 `helix.read_file_async(path)` / `helix.write_file_async(path, content)` / `helix.stat_async(path)` / `helix.glob_async(pattern)`,注明"返回 Promise,await 取值;失败 reject Error(e.message)"
+- `:625` "异步只来自 run_async/spawn/*_async 回调" → "…Promise(await/.then)"
+- `:650` `helix.run_async(cmd)` // await → stdout,reject Error
+- `:679-682` 同 :208-211 改法
+- `:42` 管线图文字("run_async / spawn / pty → TermEvent")不含回调签名,不用改
+
+- [ ] **步骤 4:同步插件 + 编译 release**
 
 ```bash
 HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1 cargo build --release
-cp ~/.config/helix/plugins/features/statusline.js ~/.config/helix/plugins/statusline.js 2>/dev/null || true
-# 按实际目录结构同步(handoff:改插件后 cp 到 ~/.config/helix/plugins/)
+cp plugins/features/statusline.js ~/.config/helix/plugins/features/statusline.js
+cp plugins/features/filetree/index.js ~/.config/helix/plugins/features/filetree/index.js
 ```
 
-- [ ] **步骤 4:真机验证**
+- [ ] **步骤 5:真机验证**
 
 启动 release 版 helix:`git status` 分支显示正常(statusline 不报错);filetree 里新建文件/删除文件 → 操作成功且树刷新。`:config-reload` 后仍正常。
 
