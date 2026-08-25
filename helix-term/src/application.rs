@@ -367,6 +367,12 @@ impl Application {
                 error = Some(err);
             }
         }
+        // 泵 promise job 队列（.then/.catch/await 恢复）；空队列即时返回。
+        // 放 resolve 之后：promise settle 只是入队，须在 take_messages/take_edits 前泵出，
+        // 否则 .then 里 echo/编辑的消息要等下一帧且早退路径不 drain，会滞留。
+        if let Err(err) = helix_js::pump_jobs() {
+            log::error!("promise job pump: {err}");
+        }
         let cursor_reqs = helix_js::take_cursor_requests();
         if !cursor_reqs.is_empty() {
             if let Err(err) =

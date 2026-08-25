@@ -14,8 +14,13 @@ async fn plugin_async_run() -> anyhow::Result<()> {
         &plugin_path,
         r#"
         helix.register_command("async-demo", () => {
-            helix.run_async("echo async-ok", (err, out) => {
+            helix.run_async("echo async-ok").then((out) => {
                 helix.echo("async:" + (out ?? "").trim());
+            });
+        });
+        helix.register_command("async-err", () => {
+            helix.run_async("exit 3").catch((e) => {
+                helix.echo("err:" + e.message);
             });
         });
         helix.register_command("async-spawn", () => {
@@ -31,9 +36,17 @@ async fn plugin_async_run() -> anyhow::Result<()> {
             (
                 Some(":async-demo<ret>"),
                 Some(&|app| {
-                    // run_async 完成回调 → echo → 状态栏（render 泵 + idle 循环）
+                    // promise resolve → pump_jobs 执行 .then → echo → 状态栏
                     let (status, _) = app.editor.get_status().unwrap();
                     assert_eq!(status.as_ref(), "async:async-ok");
+                }),
+            ),
+            (
+                Some(":async-err<ret>"),
+                Some(&|app| {
+                    // 非零退出 → reject → .catch → e.message 形如 "exit 3: <输出>"
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.as_ref().contains("err:exit 3"), "status: {status:?}");
                 }),
             ),
         ],
