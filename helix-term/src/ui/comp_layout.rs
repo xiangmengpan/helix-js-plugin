@@ -273,16 +273,60 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             let text: String = value.chars().take(limit).collect();
             vec![StyledLine::plain(text)]
         }
-        CompNode::Scroll { children, height, .. } => {
+        CompNode::Scroll { children, height, offset } => {
             let h = (*height).min(viewport.1) as usize;
             if h == 0 {
                 return Vec::new();
             }
-            // 内容按无高度限制完整布局（scroll 语义：内容可溢出），再保留最后 h 行
-            let col = layout(&CompNode::Col { children: children.clone(), gap: 0, flex: None }, (viewport.0, u16::MAX));
-            let skip = col.len().saturating_sub(h);
-            col.into_iter().skip(skip).collect()
+            match offset {
+                None => {
+                    // 现状语义(保持): 全量布局取末 h 行
+                    let col = layout(
+                        &CompNode::Col { children: children.clone(), gap: 0, flex: None },
+                        (viewport.0, u16::MAX),
+                    );
+                    let skip = col.len().saturating_sub(h);
+                    col.into_iter().skip(skip).collect()
+                }
+                Some(off) => {
+                    let off = *off as usize;
+                    // 快路径: 全部子节点确定单行 → offset 即子节点索引,按索引切片(产出 O(视口))
+                    if children.iter().all(is_single_line) {
+                        let mut out = Vec::new();
+                        for child in children.iter().skip(off).take(h) {
+                            out.extend(layout(child, viewport));
+                        }
+                        return out;
+                    }
+                    // 慢路径: 布局并跳过 offset 行(混合高度/wrap 场景,最坏 O(内容))
+                    let mut out = Vec::new();
+                    let mut produced = 0usize;
+                    'outer: for child in children {
+                        for line in layout(child, (viewport.0, u16::MAX)) {
+                            if produced < off {
+                                produced += 1;
+                                continue;
+                            }
+                            out.push(line);
+                            if out.len() >= h {
+                                break 'outer;
+                            }
+                        }
+                    }
+                    out
+                }
+            }
         }
+    }
+}
+
+/// 子节点是否确定只渲染 1 行(单行列表的 scroll 快路径用)。
+fn is_single_line(node: &CompNode) -> bool {
+    match node {
+        CompNode::Text { wrap, .. } => !*wrap,
+        CompNode::Button { .. } | CompNode::Input { .. } => true,
+        CompNode::Row { children, .. } => !children.is_empty() && children.iter().all(is_single_line),
+        CompNode::Col { .. } | CompNode::Scroll { .. } => false,
     }
 }
 
@@ -499,6 +543,49 @@ mod tests {
         // height 超 viewport → clamp 到视口
         let node = CompNode::Scroll { children: texts(&["s1", "s2"]), height: 10, offset: None };
         assert_eq!(layout(&node, (40, 1)), vec![line("s2")]);
+    }
+
+    #[test]
+    fn scroll_offset_shows_window() {
+        // 10 个单行子节点, offset=3, height=4 → 恰产出第 3..7 行
+        let children = (0..10).map(|i| text(&format!("row{i}"))).collect::<Vec<_>>();
+        let node = CompNode::Scroll { children, height: 4, offset: Some(3) };
+        let lines = layout(&node, (40, 20));
+        assert_eq!(lines.len(), 4);
+        let joined = lines.iter().map(|l| l.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>();
+        assert_eq!(joined, vec!["row3", "row4", "row5", "row6"]);
+    }
+
+    #[test]
+    fn scroll_no_offset_keeps_tail() {
+        // 回归: 无 offset → 现状"取末 height 行"
+        let children = (0..10).map(|i| text(&format!("row{i}"))).collect::<Vec<_>>();
+        let node = CompNode::Scroll { children, height: 4, offset: None };
+        let lines = layout(&node, (40, 20));
+        let joined = lines.iter().map(|l| l.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>();
+        assert_eq!(joined, vec!["row6", "row7", "row8", "row9"]);
+    }
+
+    #[test]
+    fn scroll_offset_past_end_yields_empty() {
+        let children = (0..3).map(|i| text(&format!("row{i}"))).collect::<Vec<_>>();
+        let node = CompNode::Scroll { children, height: 4, offset: Some(10) };
+        assert!(layout(&node, (40, 20)).is_empty());
+    }
+
+    #[test]
+    fn scroll_offset_mixed_height_slow_path() {
+        // 混合: 单行 + wrap 多行子节点 → 慢路径按行号跳过也正确
+        let children = vec![
+            text("a"),
+            CompNode::Text { spans: vec![TextSpan { text: "0123456789".into(), style: None }], width: Some(5), id: None, flex: None, wrap: true },
+            text("c"),
+        ];
+        // 内容行: a / 01234 / 56789 / c → 4 行; offset=2 → 56789 / c
+        let node = CompNode::Scroll { children, height: 10, offset: Some(2) };
+        let lines = layout(&node, (40, 20));
+        let joined = lines.iter().map(|l| l.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>();
+        assert_eq!(joined, vec!["56789", "c"]);
     }
 
     #[test]
