@@ -423,8 +423,9 @@ thread_local! {
     // 一次性 worker 线程发结果，发起线程 drain 消费。
     static ASYNC_EVENTS: RefCell<Option<WakeSender<AsyncEvent>>> = const { RefCell::new(None) };
     static ASYNC_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<AsyncEvent>>> = const { RefCell::new(None) };
-    // 异步 fs id → JS 回调（持有 JsValue：线程退出时内容泄漏，同上）
-    static ASYNC_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
+    // 异步 fs 的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
+    static ASYNC_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
+        const { RefCell::new(None) };
     static NEXT_ASYNC_ID: Cell<u64> = const { Cell::new(1) };
 }
 
@@ -478,9 +479,9 @@ pub(crate) fn with_term_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFu
     })
 }
 
-/// 访问 ASYNC_CALLBACKS：同上（内容泄漏）
-pub(crate) fn with_async_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
-    ASYNC_CALLBACKS.with(|t| {
+/// 访问 ASYNC_PROMISES（异步 fs 的 promise 解析函数注册表）：同上（内容泄漏）
+pub(crate) fn with_async_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
+    ASYNC_PROMISES.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })

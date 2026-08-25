@@ -85,10 +85,10 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(shell::js_spawn), JsString::from("spawn"), 1)
                 .function(NativeFunction::from_fn_ptr(shell::js_term_write), JsString::from("term_write"), 2)
                 .function(NativeFunction::from_fn_ptr(shell::js_term_kill), JsString::from("term_kill"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_read_file_async), JsString::from("read_file_async"), 2)
-                .function(NativeFunction::from_fn_ptr(shell::js_write_file_async), JsString::from("write_file_async"), 3)
-                .function(NativeFunction::from_fn_ptr(shell::js_stat_async), JsString::from("stat_async"), 2)
-                .function(NativeFunction::from_fn_ptr(shell::js_glob_async), JsString::from("glob_async"), 2)
+                .function(NativeFunction::from_fn_ptr(shell::js_read_file_async), JsString::from("read_file_async"), 1)
+                .function(NativeFunction::from_fn_ptr(shell::js_write_file_async), JsString::from("write_file_async"), 2)
+                .function(NativeFunction::from_fn_ptr(shell::js_stat_async), JsString::from("stat_async"), 1)
+                .function(NativeFunction::from_fn_ptr(shell::js_glob_async), JsString::from("glob_async"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_open_terminal), JsString::from("open_terminal"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_term_feed), JsString::from("term_feed"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_terminal_mode), JsString::from("set_terminal_mode"), 2)
@@ -1261,8 +1261,8 @@ mod tests {
         assert_eq!(joined.matches("中文").count(), 2857, "CJK lines preserved in streamed output");
     }
 
-    /// 任务简报验证测试：四个异步 fs API（read/write/stat/glob）回调 → echo；
-    /// 错误路径 err 非空；参数类型校验。
+    /// 任务简报验证测试：四个异步 fs API（read/write/stat/glob）Promise → echo；
+    /// 错误路径 reject（e.message）；参数类型校验。
     /// 注（相对简报的测试侧调整）：wait_for_async 把事件累积进共享 vec（四个 worker
     /// 并发发送，四次顺序 wait 需共享累积）；简报注释 "resolve 全部" 落实为逐事件 resolve。
     #[test]
@@ -1276,16 +1276,16 @@ mod tests {
 
         load_script(&format!(r#"
         helix.register_command("fsd", () => {{
-            helix.read_file_async("{dir}/a.txt", (err, content) => {{
-                helix.echo("read:" + (err ?? "") + ":" + (content ?? ""));
+            helix.read_file_async("{dir}/a.txt").then((content) => {{
+                helix.echo("read::" + content);
             }});
-            helix.write_file_async("{dir}/out.txt", "written", (err) => {{
-                helix.echo("write:" + (err ?? "ok"));
+            helix.write_file_async("{dir}/out.txt", "written").then(() => {{
+                helix.echo("write:ok");
             }});
-            helix.stat_async("{dir}/a.txt", (err, st) => {{
+            helix.stat_async("{dir}/a.txt").then((st) => {{
                 helix.echo("stat:" + st.size + ":" + st.is_dir);
             }});
-            helix.glob_async("{dir}/*.js", (err, paths) => {{
+            helix.glob_async("{dir}/*.js").then((paths) => {{
                 helix.echo("glob:" + paths.length);
             }});
         }});
@@ -1306,6 +1306,7 @@ mod tests {
             };
             resolve_async_event(id, ev).unwrap();
         }
+        pump_jobs().unwrap();
         let msgs = take_messages();
         assert!(msgs.iter().any(|m| m == "read::hello fs"), "{msgs:?}");
         assert!(msgs.iter().any(|m| m == "write:ok"), "{msgs:?}");
@@ -1319,8 +1320,8 @@ mod tests {
         std::fs::write(dir.join("sub/deep.js"), "d").unwrap();
         load_script(&format!(r#"
         helix.register_command("fsd2", () => {{
-            helix.glob_async("{dir}/**/*.js", (err, paths) => {{
-                helix.echo("glob2:" + (err ?? "") + ":" + paths.length);
+            helix.glob_async("{dir}/**/*.js").then((paths) => {{
+                helix.echo("glob2::" + paths.length);
             }});
         }});
     "#, dir = dir.display())).unwrap();
@@ -1333,14 +1334,15 @@ mod tests {
             };
             resolve_async_event(id, ev).unwrap();
         }
+        pump_jobs().unwrap();
         let msgs2 = take_messages();
         assert!(msgs2.iter().any(|m| m == "glob2::2"), "** 应命中根目录+嵌套: {msgs2:?}");
 
         // 错误路径：读不存在 → err 非空
         load_script(&format!(r#"
         helix.register_command("fsbad", () => {{
-            helix.read_file_async("{dir}/nope.txt", (err, content) => {{
-                helix.echo("bad:" + (err !== null ? "err" : "noerr"));
+            helix.read_file_async("{dir}/nope.txt").catch((e) => {{
+                helix.echo("bad:" + (e !== null ? "err" : "noerr"));
             }});
         }});
     "#, dir = dir.display())).unwrap();
@@ -1354,11 +1356,11 @@ mod tests {
             };
             resolve_async_event(id, ev).unwrap();
         }
+        pump_jobs().unwrap();
         assert!(take_messages().iter().any(|m| m == "bad:err"));
 
-        // 类型校验
-        assert!(load_script(r#"helix.read_file_async(42, () => {});"#).is_err());
-        assert!(load_script(r#"helix.read_file_async("x", 42);"#).is_err());
+        // 类型校验：path 参数错误在 load 时即报错（回调校验已随 async_cb 删除，多参天然容忍）
+        assert!(load_script(r#"helix.read_file_async(42);"#).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

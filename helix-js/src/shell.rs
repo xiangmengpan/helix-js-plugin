@@ -1,5 +1,6 @@
 
 use anyhow::{anyhow, Result};
+use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::object::builtins::{JsArray, JsFunction, JsPromise};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
@@ -9,7 +10,7 @@ use crate::commands::emit_term_exit;
 use crate::pty;
 
 use crate::state::{
-    with_async_callbacks, with_terms,
+    with_async_promises, with_terms,
     WakeSender,
 };
 
@@ -496,53 +497,43 @@ fn spawn_async_op<T: Send + 'static>(
     });
 }
 
-/// 校验回调参数（第二个/第三个参数必须是可调用函数）
-fn async_cb(args: &[JsValue], pos: usize, api: &str) -> boa_engine::JsResult<JsValue> {
-    let cb = args.get(pos).cloned().unwrap_or(JsValue::undefined());
-    if cb.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.{api}: callback must be a function"
-        )))));
-    }
-    Ok(cb)
-}
-
-pub(crate) fn js_read_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+pub(crate) fn js_read_file_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.read_file_async: path must be a string")))
     })?;
-    let cb = async_cb(args, 1, "read_file_async")?;
+    // 返回 promise：worker 结果经 resolve_async_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
+    let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_callbacks(|m| { m.insert(id, cb); });
+    with_async_promises(|m| { m.insert(id, resolving); });
     spawn_async_op(id, move || {
         std::fs::read_to_string(&path).map_err(|e| format!("read_file_async('{path}'): {e}"))
     }, AsyncEvent::FsRead);
-    Ok(JsValue::from(id))
+    Ok(promise.into())
 }
 
-pub(crate) fn js_write_file_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+pub(crate) fn js_write_file_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.write_file_async: path must be a string")))
     })?;
-    let content: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+    let content: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.write_file_async: content must be a string")))
     })?;
-    let cb = async_cb(args, 2, "write_file_async")?;
+    let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_callbacks(|m| { m.insert(id, cb); });
+    with_async_promises(|m| { m.insert(id, resolving); });
     spawn_async_op(id, move || {
         std::fs::write(&path, &content).map_err(|e| format!("write_file_async('{path}'): {e}"))
     }, AsyncEvent::FsWrite);
-    Ok(JsValue::from(id))
+    Ok(promise.into())
 }
 
-pub(crate) fn js_stat_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+pub(crate) fn js_stat_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.stat_async: path must be a string")))
     })?;
-    let cb = async_cb(args, 1, "stat_async")?;
+    let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_callbacks(|m| { m.insert(id, cb); });
+    with_async_promises(|m| { m.insert(id, resolving); });
     spawn_async_op(id, move || {
         std::fs::metadata(&path)
             .map(|m| FsStat {
@@ -554,18 +545,18 @@ pub(crate) fn js_stat_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context
             })
             .map_err(|e| format!("stat_async('{path}'): {e}"))
     }, AsyncEvent::FsStat);
-    Ok(JsValue::from(id))
+    Ok(promise.into())
 }
 
-pub(crate) fn js_glob_async(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let pattern: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+pub(crate) fn js_glob_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let pattern: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("helix.glob_async: pattern must be a string")))
     })?;
-    let cb = async_cb(args, 1, "glob_async")?;
+    let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_callbacks(|m| { m.insert(id, cb); });
+    with_async_promises(|m| { m.insert(id, resolving); });
     spawn_async_op(id, move || glob_matches(&pattern), AsyncEvent::FsGlob);
-    Ok(JsValue::from(id))
+    Ok(promise.into())
 }
 
 /// 泵 boa promise job 队列（.then/.catch/await 恢复）。主线程每帧调用；空队列即返回。
@@ -683,42 +674,36 @@ fn stat_to_js(st: &FsStat, ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
 
 /// 把一条异步 fs 事件投递到对应 id 的 JS 回调。
 /// 回调签名：read → (err, content)；write → (err)；stat → (err, {size,is_dir,mtime})；glob → (err, paths[])。
-/// err 成功为 null、失败为错误字符串。一次性语义：resolve 后从注册表移除（回调失败也移除）。
+/// 把一条异步 fs 事件投递到对应 id 的 promise（resolve/reject）。
+/// 成功 resolve 值：read → content；write → undefined；stat → {size,is_dir,mtime}；glob → paths[]。
+/// 失败 reject Error 对象（e.message 可用）。一次性语义：settle 后从注册表移除。
 pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
     crate::init();
     crate::state::with_engine(|engine| {
-        let cb = with_async_callbacks(|m| m.remove(&id));
-        let Some(cb) = cb else { return Ok(()) }; // 已 resolve / 未知 id → no-op（幂等）
-        let func = cb.as_callable().and_then(JsFunction::from_object)
-            .ok_or_else(|| anyhow!("async fs {id} callback not callable"))?;
-        let (err, arg): (JsValue, Option<JsValue>) = match event {
-            AsyncEvent::FsRead(_, Ok(content)) => (JsValue::null(), Some(JsValue::from(JsString::from(content)))),
-            AsyncEvent::FsRead(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
-            AsyncEvent::FsWrite(_, Ok(())) => (JsValue::null(), None),
-            AsyncEvent::FsWrite(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
-            AsyncEvent::FsStat(_, Ok(st)) => (
-                JsValue::null(),
-                Some(stat_to_js(&st, engine).map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?),
-            ),
-            AsyncEvent::FsStat(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
-            AsyncEvent::FsGlob(_, Ok(paths)) => {
-                let arr = JsArray::new(engine);
-                for p in &paths {
-                    arr.push(JsValue::from(JsString::from(p.clone())), engine)
-                        .map_err(|e| anyhow!("async fs {id} glob result failed: {e}"))?;
-                }
-                (JsValue::null(), Some(JsValue::from(arr)))
-            }
-            AsyncEvent::FsGlob(_, Err(e)) => (JsValue::from(JsString::from(e)), None),
-        };
+        let resolving = with_async_promises(|m| m.remove(&id));
+        let Some(resolving) = resolving else { return Ok(()) }; // 已 resolve / 未知 id → no-op（幂等）
         let undefined = JsValue::undefined();
-        let mut call_args = vec![err];
-        if let Some(arg) = arg {
-            call_args.push(arg);
-        }
-        let _: JsValue = func.call(&undefined, &call_args, engine)
-            .map_err(|e| anyhow!("async fs {id} callback failed: {e}"))?;
-        Ok(())
+        let result: Result<(), JsError> = match event {
+            AsyncEvent::FsRead(_, Ok(content)) => resolving.resolve.call(&undefined, &[JsValue::from(JsString::from(content))], engine).map(|_| ()),
+            AsyncEvent::FsRead(_, Err(e)) => reject_msg(&resolving, &e, engine),
+            AsyncEvent::FsWrite(_, Ok(())) => resolving.resolve.call(&undefined, &[], engine).map(|_| ()),
+            AsyncEvent::FsWrite(_, Err(e)) => reject_msg(&resolving, &e, engine),
+            AsyncEvent::FsStat(_, Ok(st)) => resolving.resolve.call(&undefined, &[stat_to_js(&st, engine).map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?], engine).map(|_| ()),
+            AsyncEvent::FsStat(_, Err(e)) => reject_msg(&resolving, &e, engine),
+            AsyncEvent::FsGlob(_, Ok(paths)) => {
+                let arr = paths.iter().map(|p| JsValue::from(JsString::from(p.clone()))).collect::<Vec<_>>();
+                let js_arr = JsArray::from_iter(arr, engine);
+                resolving.resolve.call(&undefined, &[js_arr.into()], engine).map(|_| ())
+            }
+            AsyncEvent::FsGlob(_, Err(e)) => reject_msg(&resolving, &e, engine),
+        };
+        result.map_err(|e| anyhow!("async fs {id} settle failed: {e}"))
     })
+}
+
+/// reject 一个 Error 对象（错误字符串 → e.message），使 .catch 能读到消息
+fn reject_msg(resolving: &ResolvingFunctions, msg: &str, engine: &mut Context) -> Result<(), JsError> {
+    let err = JsNativeError::error().with_message(msg.to_string()).to_opaque(engine);
+    resolving.reject.call(&JsValue::undefined(), &[err.into()], engine).map(|_| ())
 }
 
