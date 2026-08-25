@@ -407,3 +407,36 @@ git commit -m "refactor: 插件迁移到 Promise API"
 - **规格覆盖:** 设计文档 5 个 API → 任务 1(run_async)+ 任务 2(fs 四件套);spawn 保持回调 → 任务 1 明确不动;插件迁移 → 任务 4;设计文档"删除 is_run_async hack" → 任务 1;`pump_jobs` 是设计文档未覆盖的实现前置(规格"引擎侧无需改动"不成立——boa 的 job 队列必须手动泵),已通过任务 1/3 补齐,规格无需改(属于实现细节)。
 - **占位符:** 无 TODO/待定;所有代码块可直接执行。
 - **类型一致性:** `with_term_promises`/`with_async_promises` 命名统一;`reject_msg` 在任务 2 定义并被同一文件使用;`pump_jobs` 在任务 1 定义、任务 3 消费;`ResolvingFunctions.resolve/reject` 均为 `JsFunction`,用 `.call(&JsValue::undefined(), &[args], engine)`。
+
+### 任务 5:迁移 plugin_fsasync 集成测试(任务 2 遗留)
+
+**背景:** 任务 2 把 read_file_async 改为 Promise 后,`helix-term/tests/test/plugin_fsasync.rs:15` 仍是回调式调用(多传的回调被忽略、promise 无人 .then → 测试必挂)。任务 3 审查发现,补此迁移。
+
+**文件:**
+- 修改:`helix-term/tests/test/plugin_fsasync.rs:15`
+
+- [ ] **步骤 1:改测试为 Promise 式**
+
+```rust
+helix.register_command("fs-demo", () => {
+    helix.read_file_async("PLACEHOLDER_FILE").then((content) => {
+        helix.echo("fs::" + content);
+    });
+});
+```
+
+断言 `assert_eq!(status.as_ref(), "fs::hello fs")`(回调式成功路径 `(err ?? "")` = 空串,两式文案一致)。
+
+- [ ] **步骤 2:运行确认通过**
+
+运行:`HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1 timeout 400 cargo test -p helix-term --test integration --features integration -- plugin_fsasync`
+预期:PASS(泵点已在任务 3 接入,harness idle 循环会跑 render → pump_jobs → .then 恢复 → echo → 状态栏)。
+
+- [ ] **步骤 3:Commit**
+
+```bash
+git add helix-term/tests/test/plugin_fsasync.rs
+git commit -m "test: plugin_fsasync 迁移到 Promise API"
+```
+
+---
