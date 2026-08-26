@@ -86,7 +86,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             }
         }
         CompNode::Col { children, gap, .. } => {
-            let total_flex: u16 = children.iter().filter_map(flex_of).sum();
+            let total_flex: u32 = children.iter().filter_map(flex_of).map(|f| f as u32).sum();
             if total_flex == 0 {
                 // ==== 现有逻辑(不动) ====
                 let mut out = Vec::new();
@@ -168,7 +168,7 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             }
         }
         CompNode::Row { children, gap, .. } => {
-            let total_flex: u16 = children.iter().filter_map(flex_of).sum();
+            let total_flex: u32 = children.iter().filter_map(flex_of).map(|f| f as u32).sum();
             let parts: Vec<Vec<StyledLine>> = if total_flex == 0 {
                 // ==== 现有逻辑(不动) ====
                 children.iter().map(|c| layout(c, viewport)).collect()
@@ -625,6 +625,27 @@ mod tests {
         let a = text.find('a').unwrap();
         let b = text.find('b').unwrap();
         assert!(b - a > 30 && b - a < 36, "1:2 比例: b 距 a {}(期望 ~33)", b - a);
+    }
+
+    #[test]
+    fn row_flex_max_u16_no_overflow() {
+        // 信任边界: 插件可传 flex 到 u16::MAX(el 解析上限),两个 65535 之和 131070 溢出 u16
+        // → u16 累加在 debug panic / release 回绕成错误比值;必须不 panic 且比例合理
+        let node = CompNode::Row {
+            children: vec![
+                CompNode::Text { spans: vec![TextSpan { text: "a".into(), style: None }], width: None, id: None, flex: Some(u16::MAX), wrap: false },
+                CompNode::Text { spans: vec![TextSpan { text: "b".into(), style: None }], width: None, id: None, flex: Some(u16::MAX), wrap: false },
+            ],
+            gap: 1,
+            flex: None,
+        };
+        let lines = layout(&node, (100, 10));
+        let text = lines[0].spans.iter().map(|s| s.text.as_str()).collect::<String>();
+        // 不 panic;总宽 = 两列分配(各约一半)+ gap 1 = 100
+        assert_eq!(text.chars().count(), 100);
+        let a = text.find('a').unwrap();
+        let b = text.find('b').unwrap();
+        assert!(a < 60 && b > 40, "两 flex 相等 → 大致对半分: a@{a} b@{b}");
     }
 
     #[test]
