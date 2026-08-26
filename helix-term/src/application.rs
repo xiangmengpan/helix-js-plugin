@@ -1611,6 +1611,9 @@ enum LspReqKind {
     DocumentSymbols,
 }
 
+/// LSP 请求 future 的类型别名(clippy type_complexity)
+type LspFuture = Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, String>> + Send>>;
+
 /// JS LSP 请求泵发：当前文档的 language server 发请求，结果经 LSP_RESULTS 通道回泵
 /// （tokio 任务，主线程下一帧 drain_lsp_results 兑现 promise）。
 /// 无 server / capabilities 不支持 → 同步 resolve null（promise 不悬空）。
@@ -1651,7 +1654,7 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
     let doc_id = doc.identifier();
 
     // client 方法返回 Option<impl Future>（capabilities 不支持 → None → resolve null）
-    let future: Option<Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, String>> + Send>>> =
+    let future: Option<LspFuture> =
         match kind {
             LspReqKind::Hover => client
                 .text_document_hover(doc_id.clone(), pos, None)
