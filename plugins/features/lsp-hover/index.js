@@ -20,7 +20,7 @@ helix.register_command("lsp-hover", async () => {
   });
 });
 
-// :lsp-goto 跳转到定义（首个结果；path 由 uri/target_uri 注入，无需自行解析）
+// :lsp-goto 跳转到定义（首个结果；path 由 uri/targetUri 注入，无需自行解析）
 helix.register_command("lsp-goto", async () => {
   const locs = await helix.lsp.goto_definition().catch((e) => {
     helix.echo("lsp-goto error: " + e.message);
@@ -29,9 +29,9 @@ helix.register_command("lsp-goto", async () => {
   if (!locs) return helix.echo("no definition");
   // Scalar(Location) | Location[] | LocationLink[]，统一成数组
   const arr = Array.isArray(locs) ? locs : [locs];
-  // 无 path 的项跳过（非 file:// uri 等）；Location 用 range，LocationLink 用 target_range
-  const l = arr.find((x) => x.path && (x.range ?? x.target_range));
+  // 无 path 的项跳过（非 file:// uri 等）；Location 用 range，LocationLink 用 targetRange
+  const l = arr.find((x) => x.path && (x.range ?? x.targetRange));
   if (!l) return helix.echo("no definition");
-  const r = l.range ?? l.target_range;
+  const r = l.range ?? l.targetRange;
   helix.open_file(l.path, { row: r.start.line, col: r.start.character });
 });

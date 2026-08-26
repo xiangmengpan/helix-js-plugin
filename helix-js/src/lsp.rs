@@ -161,10 +161,10 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
 }
 
 /// goto_definition 响应注入 path 便利字段（file:// URI → 文件路径字符串）。
-/// 纯函数可单测；Location（uri）与 LocationLink（target_uri）两形态。
+/// 纯函数可单测；Location（uri）与 LocationLink（targetUri，序列化 camelCase）两形态。
 pub fn inject_location_paths(v: &mut serde_json::Value) {
     fn inject_one(obj: &mut serde_json::Map<String, serde_json::Value>) {
-        let uri = obj.get("uri").or_else(|| obj.get("target_uri"));
+        let uri = obj.get("uri").or_else(|| obj.get("targetUri"));
         if let Some(serde_json::Value::String(u)) = uri {
             if let Some(path) = file_uri_to_path(u) {
                 obj.insert("path".into(), serde_json::Value::String(path));
@@ -349,11 +349,16 @@ mod tests {
         }]);
         inject_location_paths(&mut v);
         assert_eq!(v[0]["path"], "/a/b.rs");
-        // LocationLink 形态（target_uri）
+        // LocationLink 形态（真实序列化键 targetUri，camelCase）
         let mut v2 =
-            serde_json::json!([{"target_uri": "file:///c/d.rs", "origin_selection_range": {}}]);
+            serde_json::json!([{"targetUri": "file:///c/d.rs", "targetRange": {}, "origin_selection_range": {}}]);
         inject_location_paths(&mut v2);
         assert_eq!(v2[0]["path"], "/c/d.rs");
+        // snake_case 旧键不命中（防回归：真实 JSON 是 camelCase）
+        let mut v2b =
+            serde_json::json!([{"target_uri": "file:///c/d.rs"}]);
+        inject_location_paths(&mut v2b);
+        assert!(v2b[0].get("path").is_none());
         // 单对象形态
         let mut v3 = serde_json::json!({"uri": "file:///e/f.rs", "range": {}});
         inject_location_paths(&mut v3);

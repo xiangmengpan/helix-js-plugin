@@ -736,7 +736,7 @@ await helix.lsp.hover({ row: 5, col: 3 });
 | `helix.lsp.goto_definition()` | `textDocument/definition` | `Location \| Location[] \| LocationLink[] \| null` |
 | `helix.lsp.document_symbols()` | `textDocument/documentSymbol` | `DocumentSymbol[] \| null` |
 
-**唯一便利字段**：`goto_definition` 返回的每项（`Location` 或 `LocationLink`）附 `path`（由 `uri`/`target_uri` 解析，剥除 `file://` 前缀并做百分号解码）。跳转/显示直接用 `path`，无需自己解析 URI。
+**唯一便利字段**：`goto_definition` 返回的每项（`Location` 或 `LocationLink`）附 `path`（由 `uri`/`targetUri` 解析，剥除 `file://` 前缀并做百分号解码）。跳转/显示直接用 `path`，无需自己解析 URI。
 
 **标量形态**：LSP 协议允许 server 返回**单条** `Location`（非数组），此时 JS 收到裸对象——遍历前先 `Array.isArray` 归一（demo 见下）。
 
@@ -746,7 +746,7 @@ await helix.lsp.hover({ row: 5, col: 3 });
 |------|----------|
 | `hover` | `contents`（MarkedString \| MarkupContent \| 二者数组，字符串/`{value}`/`{kind, value}` 三种形态）、`range?` |
 | `completion` | `items[]`（`label`/`detail`/`documentation`/`insertText`/`data` 等，零丢失）；List 变体（rust-analyzer 等常见）为 `{isIncomplete, items}` 对象 |
-| `goto_definition` | 标量 `Location`（非数组）或 `Location[]`（`uri`+`range`）或 `LocationLink[]`（`target_uri`+`target_range`），每项附 `path` |
+| `goto_definition` | 标量 `Location`（非数组）或 `Location[]`（`uri`+`range`）或 `LocationLink[]`（`targetUri`+`targetRange`），每项附 `path` |
 | `document_symbols` | `DocumentSymbol[]`（`name`/`kind`/`range`/`selectionRange`/`children`）或 `SymbolInformation[]` |
 
 ### 空 / 错语义
@@ -778,7 +778,7 @@ helix.register_command("lsp-hover", async () => {
   });
 });
 
-// :lsp-goto 跳转到定义（首个结果；path 由 uri/target_uri 注入）
+// :lsp-goto 跳转到定义（首个结果；path 由 uri/targetUri 注入）
 helix.register_command("lsp-goto", async () => {
   const locs = await helix.lsp.goto_definition().catch((e) => {
     helix.echo("lsp-goto error: " + e.message);
@@ -787,10 +787,10 @@ helix.register_command("lsp-goto", async () => {
   if (!locs) return helix.echo("no definition");
   // Scalar(Location) | Location[] | LocationLink[]，统一成数组
   const arr = Array.isArray(locs) ? locs : [locs];
-  // 无 path 的项跳过；Location 用 range，LocationLink 用 target_range
-  const l = arr.find((x) => x.path && (x.range ?? x.target_range));
+  // 无 path 的项跳过；Location 用 range，LocationLink 用 targetRange
+  const l = arr.find((x) => x.path && (x.range ?? x.targetRange));
   if (!l) return helix.echo("no definition");
-  const r = l.range ?? l.target_range;
+  const r = l.range ?? l.targetRange;
   helix.open_file(l.path, { row: r.start.line, col: r.start.character });
 });
 ```
