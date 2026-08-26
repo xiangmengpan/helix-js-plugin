@@ -92,14 +92,47 @@ impl Component for PluginPopup {
                     }
                 };
                 match key.name.as_str() {
+                    // Enter/Space：input 有状态 → onKey("Enter"/"Space")；否则（button）→ onPress
                     "Enter" | "Space" => {
-                        if helix_js::dispatch_node_event(self.id, fid, None).is_ok() {
+                        let event = if helix_js::input_has_state(self.id, fid) {
+                            Some(key.name.as_str())
+                        } else {
+                            None
+                        };
+                        if helix_js::dispatch_node_event(self.id, fid, event).is_ok() {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
                         }
                     }
-                    key_name if key_name.chars().count() == 1 || key_name == "Backspace" || key_name == "Delete" => {
-                        if helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok() {
+                    // 水平方向键/Home/End：input 光标移动（input_edit 对这些键返回 None，不触发 onChange）
+                    "Left" | "Right" | "Home" | "End" => {
+                        if helix_js::input_has_state(self.id, fid)
+                            && helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok()
+                        {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    // Up/Down：候选导航（走 onKey）
+                    "Up" | "Down" => {
+                        if helix_js::input_has_state(self.id, fid)
+                            && helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok()
+                        {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    // 编辑键：input → dispatch_input_key（改值 + onChange）；否则（button）→ onKey
+                    key_name if key_name.chars().count() == 1
+                        || key_name == "Backspace"
+                        || key_name == "Delete" =>
+                    {
+                        if helix_js::input_has_state(self.id, fid) {
+                            if helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok() {
+                                drain_msgs(cx);
+                                return EventResult::Consumed(None);
+                            }
+                        } else if helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok() {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
                         }

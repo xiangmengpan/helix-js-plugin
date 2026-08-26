@@ -268,9 +268,13 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             spans.push(TextSpan { text: " ]".into(), style: None });
             vec![StyledLine { spans }]
         }
-        CompNode::Input { value, width, .. } => {
+        CompNode::Input { value, cursor, width, .. } => {
             let limit = width.unwrap_or(u16::MAX).min(viewport.0) as usize;
-            let text: String = value.chars().take(limit).collect();
+            // 光标处插入 "|"（char 索引；越界 clamp 末尾）
+            let mut chars: Vec<char> = value.chars().collect();
+            let c = (*cursor).min(chars.len());
+            chars.insert(c, '|');
+            let text: String = chars.into_iter().take(limit).collect();
             vec![StyledLine::plain(text)]
         }
         CompNode::Scroll { children, height, offset } => {
