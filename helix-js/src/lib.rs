@@ -19,7 +19,7 @@ pub mod config;
 
 pub use commands::*;
 pub use icons::*;
-pub use input::{input_edit, with_input_states, InputState};
+pub use input::{clear_popup_inputs, dispatch_input_key, input_edit, js_set_input_value, with_input_states, InputState};
 pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
@@ -91,6 +91,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(popup::js_move_panel), JsString::from("move_panel"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_el), JsString::from("el"), 2)
+                .function(NativeFunction::from_fn_ptr(input::js_set_input_value), JsString::from("set_input_value"), 3)
                 .function(NativeFunction::from_fn_ptr(commands::js_on), JsString::from("on"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_map), JsString::from("map"), 3)
                 .function(NativeFunction::from_fn_ptr(commands::js_set_cursor), JsString::from("set_cursor"), 2)

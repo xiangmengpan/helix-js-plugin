@@ -1,4 +1,5 @@
 //! 输入组件编辑状态：InputState + input_edit 纯函数 + InputStates 存储。
+use boa_engine::{Context, JsError, JsString, JsValue};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -71,9 +72,65 @@ pub fn input_edit(state: &mut InputState, key: &str) -> Option<String> {
     }
 }
 
+/// 编辑键处理：查 InputStates → input_edit 转换 → 有变化则调 onChange(新值)。
+/// 供 helix-term 按键路由调用（任务 3）；返回 Err 仅当 onChange 回调抛错。
+pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Result<()> {
+    use anyhow::anyhow;
+    use boa_engine::object::builtins::JsFunction;
+
+    crate::init();
+    let changed = with_input_states(|m| {
+        let entry = m.entry((popup_id, node_id.to_string())).or_insert_with(|| {
+            InputState { value: String::new(), cursor: 0 }
+        });
+        input_edit(entry, key)
+    });
+    let Some(new_value) = changed else { return Ok(()) };
+    // 调 onChange(若有)：注册在 NODE_HANDLERS，与 onKey 同机制
+    crate::state::with_engine(|engine| {
+        let on_change = crate::state::with_node_handlers(|h| {
+            h.get(&(popup_id, node_id.to_string()))
+                .and_then(|hd| hd.on_change.clone())
+        });
+        let Some(f) = on_change else { return Ok(()) };
+        let func = f
+            .as_callable()
+            .and_then(JsFunction::from_object)
+            .ok_or_else(|| anyhow!("node {node_id} onChange not callable"))?;
+        let undefined = JsValue::undefined();
+        let _: JsValue = func
+            .call(&undefined, &[JsValue::from(JsString::from(new_value))], engine)
+            .map_err(|e| anyhow!("node {node_id} onChange failed: {e}"))?;
+        Ok(())
+    })
+}
+
+/// JS 强制改值（候选回填/清空）：`helix.set_input_value(popupId, nodeId, value)`。cursor 置末尾。
+pub fn js_set_input_value(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let popup_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("set_input_value: popup id must be a number")))
+    })?;
+    let node_id: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("set_input_value: node id must be a string")))
+    })?;
+    let value: String = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from("set_input_value: value must be a string")))
+    })?;
+    with_input_states(|m| {
+        m.insert((popup_id, node_id), InputState { cursor: value.chars().count(), value });
+    });
+    Ok(JsValue::undefined())
+}
+
+/// 弹窗关闭清理：删该 popup 的全部 InputStates（生命周期）。
+pub fn clear_popup_inputs(popup_id: u64) {
+    with_input_states(|m| m.retain(|(pid, _), _| *pid != popup_id));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{close_popup, load_script, render_popup, take_messages, take_ui_requests, CompNode, Content, UiRequest};
     use std::sync::Mutex;
 
     // 与 lib.rs 测试同模式：共享全局运行时用锁串行化
@@ -131,6 +188,64 @@ mod tests {
         assert_eq!(input_edit(&mut s, "Up"), None);
         assert_eq!(input_edit(&mut s, "Enter"), None);
         assert_eq!(input_edit(&mut s, "Tab"), None);
+    }
+
+    /// 任务 2 集成验证：渲染初始化 InputStates → dispatch_input_key 改状态 + 触发 onChange
+    /// → set_input_value 强制改值 → close_popup 清理生命周期。
+    #[test]
+    fn input_dispatch_and_set() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        crate::init();
+        load_script(
+            r#"
+        helix.open_popup({
+            render: () => helix.el("col", [
+                { type: "input", id: "q", value: "a", onChange: (v) => { helix.echo("chg:" + v); } },
+            ]),
+        });
+        "#,
+        )
+        .unwrap();
+        let reqs = take_ui_requests();
+        let id = match &reqs[0] {
+            UiRequest::OpenPopup { id, .. } => *id,
+            _ => unreachable!("expected OpenPopup"),
+        };
+        // 首次渲染：JS 传 value 初始化 InputStates
+        match render_popup(id, 40, 10, None).unwrap() {
+            Content::Tree(CompNode::Col { children, .. }) => {
+                assert!(matches!(&children[0], CompNode::Input { value, cursor, .. }
+                    if value == "a" && *cursor == 1));
+            }
+            _ => panic!("expected tree"),
+        }
+        // 编辑键：改状态 + 触发 onChange（onChange 里 echo）
+        dispatch_input_key(id, "q", "b").unwrap();
+        assert_eq!(take_messages(), vec!["chg:ab"]);
+        // 引擎状态覆盖 JS 传值：再渲染仍是引擎里的 "ab"
+        match render_popup(id, 40, 10, None).unwrap() {
+            Content::Tree(CompNode::Col { children, .. }) => {
+                assert!(matches!(&children[0], CompNode::Input { value, cursor, .. }
+                    if value == "ab" && *cursor == 2));
+            }
+            _ => panic!("expected tree"),
+        }
+        // 非编辑键：不动状态、不触发 onChange（Left 只动光标）
+        dispatch_input_key(id, "q", "Left").unwrap();
+        assert!(take_messages().is_empty());
+        with_input_states(|m| assert_eq!(m.get(&(id, "q".to_string())).unwrap().cursor, 1));
+        // set_input_value：JS 强制改值，cursor 置末尾
+        load_script(&format!("helix.set_input_value({id}, \"q\", \"setval\");")).unwrap();
+        match render_popup(id, 40, 10, None).unwrap() {
+            Content::Tree(CompNode::Col { children, .. }) => {
+                assert!(matches!(&children[0], CompNode::Input { value, cursor, .. }
+                    if value == "setval" && *cursor == 6));
+            }
+            _ => panic!("expected tree"),
+        }
+        // 生命周期：close_popup 清空该 popup 的 InputStates
+        close_popup(id).unwrap();
+        with_input_states(|m| assert!(!m.contains_key(&(id, "q".to_string()))));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::state::{
 
 
 use crate::commands::doc_to_js;
+use crate::input::InputState;
 use crate::types::*;
 
 pub(crate) fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<u16>> {
@@ -784,14 +785,28 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
                         "{api}: input node must have a string 'id'"
                     ))))
                 })?;
-            let value: String = obj
+            let js_value: String = obj
                 .get(JsString::from("value"), ctx)?
                 .try_js_into(ctx)
                 .unwrap_or_default();
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
-            Ok(CompNode::Input { value, width, id: node_id, flex })
+            // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值
+            let (value, cursor) = crate::input::with_input_states(|m| {
+                match m.entry((id, node_id.clone())) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        let s = e.get();
+                        (s.value.clone(), s.cursor)
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        let c = js_value.chars().count();
+                        e.insert(InputState { value: js_value.clone(), cursor: c });
+                        (js_value.clone(), c)
+                    }
+                }
+            });
+            Ok(CompNode::Input { value, cursor, width, id: node_id, flex })
         }
         other => Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
             "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
@@ -844,7 +859,11 @@ fn register_node_handlers(
     let Some(node_id) = node_id else { return Ok(()) };
     let on_press = obj.get(JsString::from("onPress"), ctx)?;
     let on_key = obj.get(JsString::from("onKey"), ctx)?;
-    if on_press.as_callable().is_none() && on_key.as_callable().is_none() {
+    let on_change = obj.get(JsString::from("onChange"), ctx)?;
+    if on_press.as_callable().is_none()
+        && on_key.as_callable().is_none()
+        && on_change.as_callable().is_none()
+    {
         return Ok(());
     }
     crate::state::with_node_handlers(|map| {
@@ -853,6 +872,7 @@ fn register_node_handlers(
             NodeHandlers {
                 on_press: on_press.as_callable().map(|_| on_press),
                 on_key: on_key.as_callable().map(|_| on_key),
+                on_change: on_change.as_callable().map(|_| on_change),
             },
         );
     });
@@ -933,6 +953,7 @@ pub fn popup_exists(id: u64) -> bool {
 /// 关闭弹窗：触发 onClose 并移除注册表项。幂等（已关闭返回 Ok）。
 pub fn close_popup(id: u64) -> Result<()> {
     crate::init();
+    crate::input::clear_popup_inputs(id);
     crate::state::with_engine(|engine| {
         let callbacks = with_popups(|p| p.remove(&id));
         let Some(callbacks) = callbacks else { return Ok(()) };

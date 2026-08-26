@@ -828,7 +828,11 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
         let handlers = crate::state::with_node_handlers(|h| {
             h.get(&(view_id, node_id.to_string()))
                 .cloned()
-                .map(|hd| NodeHandlers { on_press: hd.on_press.clone(), on_key: hd.on_key.clone() })
+                .map(|hd| NodeHandlers {
+                    on_press: hd.on_press.clone(),
+                    on_key: hd.on_key.clone(),
+                    on_change: hd.on_change.clone(),
+                })
         });
         let Some(handlers) = handlers else { return Ok(()) };
         let undefined = JsValue::undefined();

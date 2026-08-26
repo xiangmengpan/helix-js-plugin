@@ -155,6 +155,7 @@ pub(crate) enum TermCtrl {
 pub(crate) struct NodeHandlers {
     pub(crate) on_press: Option<JsValue>,
     pub(crate) on_key: Option<JsValue>,
+    pub(crate) on_change: Option<JsValue>,
 }
 pub(crate) struct TermCallbacks {
     pub(crate) on_chunk: JsValue,
@@ -223,8 +224,8 @@ pub enum CompNode {
     Scroll { children: Vec<CompNode>, height: u16, offset: Option<u16> },
     /// 可聚焦按钮：Enter/Space 触发 onPress（id 必填）
     Button { label: Vec<TextSpan>, width: Option<u16>, id: String, flex: Option<u16> },
-    /// 可聚焦输入框：按键路由到 onKey（id 必填，value 由 JS 侧状态渲染）
-    Input { value: String, width: Option<u16>, id: String, flex: Option<u16> },
+    /// 可聚焦输入框：按键路由到 onKey（id 必填，value/cursor 由引擎状态渲染）
+    Input { value: String, cursor: usize, width: Option<u16>, id: String, flex: Option<u16> },
 }
 
 /// render 回调的返回：数组（字符串/样式对象）→ 旧行 API；单节点对象（含 type）→ 组件树
