@@ -48,6 +48,13 @@ pub fn init() {
             state::with_async_events_rx(|r| *r = Some(rx));
         }
     });
+    state::with_lsp_results(|t| {
+        if t.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            *t = Some(state::wake_sender(tx));
+            state::with_lsp_results_rx(|r| *r = Some(rx));
+        }
+    });
     state::with_engine_slot(|slot| {
         if slot.is_none() {
             let engine = Box::leak(Box::new(Context::default()));

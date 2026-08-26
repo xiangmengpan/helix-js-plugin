@@ -430,6 +430,11 @@ thread_local! {
     // helix.lsp.* 请求的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
     static LSP_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
         const { RefCell::new(None) };
+    // LSP 响应通道：与 ASYNC_EVENTS 同模式——发起线程（helix-term 泵）克隆 Sender 给
+    // tokio 任务发结果，主线程 drain 消费。
+    static LSP_RESULTS: RefCell<Option<WakeSender<crate::lsp::LspResult>>> = const { RefCell::new(None) };
+    static LSP_RESULTS_RX: RefCell<Option<std::sync::mpsc::Receiver<crate::lsp::LspResult>>> =
+        const { RefCell::new(None) };
 }
 
 /// 访问 TERM_EVENTS 发送端（init 时创建；worker 克隆持有）
@@ -464,6 +469,19 @@ pub(crate) fn with_async_events_rx<T>(
     f: impl FnOnce(&mut Option<std::sync::mpsc::Receiver<AsyncEvent>>) -> T,
 ) -> T {
     ASYNC_EVENTS_RX.with(|t| f(&mut t.borrow_mut()))
+}
+
+/// 访问 LSP_RESULTS 发送端（init 时创建；helix-term tokio 任务克隆持有）
+pub(crate) fn with_lsp_results<T>(
+    f: impl FnOnce(&mut Option<WakeSender<crate::lsp::LspResult>>) -> T,
+) -> T {
+    LSP_RESULTS.with(|t| f(&mut t.borrow_mut()))
+}
+
+pub(crate) fn with_lsp_results_rx<T>(
+    f: impl FnOnce(&mut Option<std::sync::mpsc::Receiver<crate::lsp::LspResult>>) -> T,
+) -> T {
+    LSP_RESULTS_RX.with(|t| f(&mut t.borrow_mut()))
 }
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
