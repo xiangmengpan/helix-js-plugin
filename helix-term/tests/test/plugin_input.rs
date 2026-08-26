@@ -55,3 +55,36 @@ async fn plugin_input_edit_and_nav() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// 仓库内 demo 插件 plugins/features/input-completion/index.js 冒烟：
+/// 真实文件能 :plugin-load + :ic 打开弹窗，Tab 聚焦 input 后打字走 onChange，
+/// Enter 走 onKey → 无 server 时 items 为空 → echo "no match"（链路端到端）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_input_completion_demo() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x\n")?;
+    // 仓库根 = helix-term 上两级（tests 目录在 helix-term 下）
+    let demo = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugins/features/input-completion/index.js"
+    );
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {demo}<ret>")), None),
+            (Some(":ic<ret>"), None),
+            // Tab 聚焦 input，键入 'a'（onChange → lsp.completion()，无 server → 空），
+            // Enter → onKey("Enter") → echo "no match"
+            (Some("<tab>a<ret>"), Some(&|app| {
+                let (status, _) = app.editor.get_status().unwrap();
+                assert!(status.as_ref().contains("no match"), "status: {status:?}");
+            })),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}

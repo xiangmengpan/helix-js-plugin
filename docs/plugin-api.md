@@ -321,8 +321,12 @@ helix.el("scroll", [child, ...], { height: 10 })
 // button：可聚焦按钮，渲染为 [ label ]，Enter/Space 触发 onPress
 helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), style: "error" })
 
-// input：可聚焦输入框（value 由 JS 状态渲染），按键路由到 onKey
-helix.el("input", { id: "in1", value: "abc", onKey: (k) => helix.echo("key:" + k), width: 20 })
+// input：可聚焦输入框。value 由**引擎权威**维护（JS 传值仅初始化），渲染带光标 "|"；
+// 编辑键（字符/Backspace/Delete）自动改值并触发 onChange(新值)；导航键（↑↓/Enter）走 onKey。
+// 注意：onChange 需用原始对象形式（helix.el 暂不透传 onChange）
+{ type: "input", id: "q", value: "abc", width: 20,
+  onChange: (v) => { /* v = 编辑后的新值（光标移动不触发） */ },
+  onKey: (k) => { /* k = "Up" | "Down" | "Enter" | ...（见下） */ } }
 ```
 
 节点可任意嵌套。
@@ -332,7 +336,18 @@ helix.el("input", { id: "in1", value: "abc", onKey: (k) => helix.echo("key:" + k
 - 组件树中的 `button` / `input`（有 `id`）自动成为**可聚焦节点**；`render` 回调签名变为 `render(focus, ctx)`，`focus` = 当前焦点节点 id（无焦点时为 `null`）——JS 据此渲染焦点样式（如高亮）。
 - **Tab** 在可聚焦节点间循环移动焦点（按树序）。无 Shift-Tab。
 - 焦点在 `button` 上：**Enter/Space** → `onPress`。
-- 焦点在 `input` 上：**单字符 / Backspace / Delete** → `onKey`。
+- 焦点在 `input` 上，按键语义（引擎维护 value + 光标，渲染为 `value` 中插 `|`）：
+
+  | 按键 | 行为 |
+  |------|------|
+  | 单字符 / Backspace / Delete | 编辑（引擎改值 + 光标）→ 触发 `onChange(新值)` |
+  | Left / Right / Home / End | 仅移动光标，**不**触发 onChange |
+  | Up / Down | → 节点 `onKey("Up"/"Down")`（候选导航） |
+  | Enter / Space | → 节点 `onKey("Enter"/"Space")` |
+  | Tab | 焦点移到下一个可聚焦节点 |
+  | Esc | 关闭弹窗（弹窗级缺省；焦点在 input 上同样生效） |
+
+- 强制改值（候选回填/清空）：`helix.set_input_value(popup_id, node_id, value)`——写入引擎状态，光标置末尾，下次渲染生效；弹窗关闭时引擎自动清理该弹窗全部 input 状态。
 - 焦点节点按键不经过弹窗级 `onKey`；弹窗级 `onKey` 只在焦点系统未消费时收到按键。
 - 面板的 render 目前固定收到 `focus = null`（面板无节点焦点，见 §18）。
 
@@ -658,6 +673,7 @@ helix.on(event, fn)                             // save | mode-change | buffer-o
 helix.map(mode, key, commandOrFn)
 helix.set_cursor(row, col)
 helix.set_selection(ar, ac, hr, hc)
+helix.set_input_value(popup_id, node_id, value)   // 强制改 input 值（光标置末尾）
 helix.open_popup({ render, onKey?, onClose?, width?, height?, position? }) -> id
 helix.open_panel({ side, size, render, onKey?, onClose? }) -> id
 helix.close_panel(id)
