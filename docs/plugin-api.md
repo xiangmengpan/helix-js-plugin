@@ -664,8 +664,8 @@ helix.close_panel(id)
 helix.move_panel(id, side)
 helix.open_file(path, { row?, col? })
 helix.lsp.hover([{ row, col }]) -> Promise       // → Hover | null
-helix.lsp.completion([{ row, col }]) -> Promise  // → CompletionItem[] | null
-helix.lsp.goto_definition([{ row, col }]) -> Promise // → Location[] | null（含 path）
+helix.lsp.completion([{ row, col }]) -> Promise  // → CompletionItem[] | {isIncomplete, items} | null
+helix.lsp.goto_definition([{ row, col }]) -> Promise // → Location | Location[] | LocationLink[] | null（含 path）
 helix.lsp.document_symbols() -> Promise          // → DocumentSymbol[] | null
 helix.el(type, arg, opts)                       // text|row|col|scroll|button|input
 helix.open_terminal({ cmd, side, size, onExit? }) -> view_id
@@ -721,8 +721,8 @@ split 方向：right | left | top | bottom
 
 ```js
 const hover = await helix.lsp.hover();            // → Hover | null
-const items = await helix.lsp.completion();       // → CompletionItem[] | null
-const locs  = await helix.lsp.goto_definition();  // → Location[] | null（每项附 path）
+const items = await helix.lsp.completion();       // → CompletionItem[] | {isIncomplete, items} | null
+const locs  = await helix.lsp.goto_definition();  // → Location | Location[] | LocationLink[] | null
 const syms  = await helix.lsp.document_symbols(); // → DocumentSymbol[] | null
 
 // 位置覆盖（可选）：字符坐标 (row, col)，与 set_cursor 一致；缺省 = 当前光标快照
@@ -732,19 +732,21 @@ await helix.lsp.hover({ row: 5, col: 3 });
 | 方法 | LSP 请求 | 返回 |
 |------|----------|------|
 | `helix.lsp.hover()` | `textDocument/hover` | `Hover \| null` |
-| `helix.lsp.completion()` | `textDocument/completion` | `CompletionItem[] \| null` |
-| `helix.lsp.goto_definition()` | `textDocument/definition` | `Location[] \| null` |
+| `helix.lsp.completion()` | `textDocument/completion` | `CompletionItem[] \| {isIncomplete, items} \| null` |
+| `helix.lsp.goto_definition()` | `textDocument/definition` | `Location \| Location[] \| LocationLink[] \| null` |
 | `helix.lsp.document_symbols()` | `textDocument/documentSymbol` | `DocumentSymbol[] \| null` |
 
-**唯一便利字段**：`goto_definition` 返回的每个 `Location` 附 `path`（由 `uri` 解析，剥除 `file://` 前缀并做百分号解码）。跳转/显示直接用 `path`，无需自己解析 URI。
+**唯一便利字段**：`goto_definition` 返回的每项（`Location` 或 `LocationLink`）附 `path`（由 `uri`/`target_uri` 解析，剥除 `file://` 前缀并做百分号解码）。跳转/显示直接用 `path`，无需自己解析 URI。
+
+**标量形态**：LSP 协议允许 server 返回**单条** `Location`（非数组），此时 JS 收到裸对象——遍历前先 `Array.isArray` 归一（demo 见下）。
 
 ### 返回字段（LSP 协议原始字段）
 
 | 方法 | 主要字段 |
 |------|----------|
 | `hover` | `contents`（MarkedString \| MarkupContent \| 二者数组，字符串/`{value}`/`{kind, value}` 三种形态）、`range?` |
-| `completion` | `items[]`（`label`/`detail`/`documentation`/`insertText`/`data` 等，零丢失） |
-| `goto_definition` | `Location[]`（`uri`+`range`）或 `LocationLink[]`（`target_uri`+`targetRange`），每项附 `path` |
+| `completion` | `items[]`（`label`/`detail`/`documentation`/`insertText`/`data` 等，零丢失）；List 变体（rust-analyzer 等常见）为 `{isIncomplete, items}` 对象 |
+| `goto_definition` | 标量 `Location`（非数组）或 `Location[]`（`uri`+`range`）或 `LocationLink[]`（`target_uri`+`target_range`），每项附 `path` |
 | `document_symbols` | `DocumentSymbol[]`（`name`/`kind`/`range`/`selectionRange`/`children`）或 `SymbolInformation[]` |
 
 ### 空 / 错语义
@@ -755,7 +757,7 @@ await helix.lsp.hover({ row: 5, col: 3 });
 | server 不支持该功能 | `resolve(null)` |
 | server 返回 LSP 协议 error | `reject(Error(message))` |
 | 连接断开等异常 | `reject(Error(message))` |
-| 请求挂起不返回 | Promise 悬挂（P0 无超时） |
+| 请求挂起不返回 | 请求可能悬挂：无超时机制，server 不响应时 Promise 不兑现 |
 
 “没结果”是插件常态（文件类型不匹配、功能未启用），只 resolve `null` 不抛错；只有真正出错的调用才 reject，插件只需为“发请求”兜底。
 
@@ -776,12 +778,20 @@ helix.register_command("lsp-hover", async () => {
   });
 });
 
-// :lsp-goto 跳转到定义（首个结果；l.path 由 uri 注入）
+// :lsp-goto 跳转到定义（首个结果；path 由 uri/target_uri 注入）
 helix.register_command("lsp-goto", async () => {
-  const locs = await helix.lsp.goto_definition();
-  if (!locs?.length) return helix.echo("no definition");
-  const l = locs[0];
-  helix.open_file(l.path, { row: l.range.start.line, col: l.range.start.character });
+  const locs = await helix.lsp.goto_definition().catch((e) => {
+    helix.echo("lsp-goto error: " + e.message);
+    return null;
+  });
+  if (!locs) return helix.echo("no definition");
+  // Scalar(Location) | Location[] | LocationLink[]，统一成数组
+  const arr = Array.isArray(locs) ? locs : [locs];
+  // 无 path 的项跳过；Location 用 range，LocationLink 用 target_range
+  const l = arr.find((x) => x.path && (x.range ?? x.target_range));
+  if (!l) return helix.echo("no definition");
+  const r = l.range ?? l.target_range;
+  helix.open_file(l.path, { row: r.start.line, col: r.start.character });
 });
 ```
 
