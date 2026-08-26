@@ -31,8 +31,10 @@ use crate::{
 
 use log::{debug, error, info, warn};
 use std::{
+    future::Future,
     io::{stdin, IsTerminal},
     path::Path,
+    pin::Pin,
     sync::Arc,
 };
 
@@ -337,7 +339,15 @@ impl Application {
         }
         let term_events = helix_js::drain_term_events();
         let async_events = helix_js::drain_async_events();
-        if term_events.is_empty() && async_events.is_empty() {
+        // LSP 结果/请求与 term/async 事件并列泵：单独到达（无其他事件）也须处理，
+        // 否则早退路径会吞掉 → promise 永不兑现
+        let lsp_results = helix_js::drain_lsp_results();
+        let lsp_requests = helix_js::take_lsp_requests();
+        if term_events.is_empty()
+            && async_events.is_empty()
+            && lsp_results.is_empty()
+            && lsp_requests.is_empty()
+        {
             // 仅 fs-watcher 事件:resolve 内部 drain(空则 no-op);回调可能编辑/echo
             let _ = helix_js::watch::resolve_watch_events();
             // 早退路径也要泵纯 JS 微任务(Promise.resolve().then(...) 不经过 term/async 事件)
@@ -370,6 +380,17 @@ impl Application {
             if let Err(err) = helix_js::resolve_async_event(id, event) {
                 error = Some(err);
             }
+        }
+        // 段 A：LSP 响应 → 兑现 Promise（须在 pump_jobs 前，.then 才能同帧跑）
+        for r in lsp_results {
+            let helix_js::LspResult { id, result } = r;
+            if let Err(err) = helix_js::resolve_lsp(id, result) {
+                log::error!("lsp result {id}: {err}");
+            }
+        }
+        // 段 B：LSP 请求 → 发往 language server（无 server / 不支持 → 同步 resolve null）
+        for req in lsp_requests {
+            handle_lsp_request(&self.editor, req);
         }
         // 泵 promise job 队列（.then/.catch/await 恢复）；空队列即时返回。
         // 放 resolve 之后：promise settle 只是入队，须在 take_messages/take_edits 前泵出，
@@ -1579,5 +1600,114 @@ impl ui::menu::Item for lsp::MessageActionItem {
     type Data = ();
     fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
         self.title.as_str().into()
+    }
+}
+
+/// JS LSP 请求种类（映射到 LanguageServerFeature + client 方法）
+enum LspReqKind {
+    Hover,
+    Completion,
+    GotoDefinition,
+    DocumentSymbols,
+}
+
+/// JS LSP 请求泵发：当前文档的 language server 发请求，结果经 LSP_RESULTS 通道回泵
+/// （tokio 任务，主线程下一帧 drain_lsp_results 兑现 promise）。
+/// 无 server / capabilities 不支持 → 同步 resolve null（promise 不悬空）。
+fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
+    use helix_core::syntax::config::LanguageServerFeature;
+
+    let (feature, kind) = match req.method {
+        helix_js::LspMethod::Hover => (LanguageServerFeature::Hover, LspReqKind::Hover),
+        helix_js::LspMethod::Completion => {
+            (LanguageServerFeature::Completion, LspReqKind::Completion)
+        }
+        helix_js::LspMethod::GotoDefinition => {
+            (LanguageServerFeature::GotoDefinition, LspReqKind::GotoDefinition)
+        }
+        helix_js::LspMethod::DocumentSymbols => {
+            (LanguageServerFeature::DocumentSymbols, LspReqKind::DocumentSymbols)
+        }
+    };
+
+    let (view, doc) = current_ref!(editor);
+    let Some(client) = doc.language_servers_with_feature(feature).next() else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    let offset_encoding = client.offset_encoding();
+    let pos = match req.pos {
+        // JS 传入的字符坐标（row, col）→ LSP 位置；越界 clamp 到文档末尾，防 ropey panic
+        Some((row, col)) => {
+            let text = doc.text();
+            let line = (row as usize).min(text.len_lines().saturating_sub(1));
+            let line_start = text.line_to_char(line);
+            let line_end = text.line_to_char(line + 1); // line < len_lines → line+1 ≤ len_lines，合法
+            let char_off = line_start + (col as usize).min(line_end.saturating_sub(line_start));
+            helix_lsp::util::pos_to_lsp_pos(text, char_off, offset_encoding)
+        }
+        None => doc.position(view.id, offset_encoding),
+    };
+    let doc_id = doc.identifier();
+
+    // client 方法返回 Option<impl Future>（capabilities 不支持 → None → resolve null）
+    let future: Option<Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, String>> + Send>>> =
+        match kind {
+            LspReqKind::Hover => client
+                .text_document_hover(doc_id.clone(), pos, None)
+                .map(|f| Box::pin(lsp_json(f)) as _),
+            LspReqKind::Completion => client
+                .completion(
+                    doc_id.clone(),
+                    pos,
+                    None,
+                    lsp::CompletionContext {
+                        trigger_kind: lsp::CompletionTriggerKind::INVOKED,
+                        trigger_character: None,
+                    },
+                )
+                .map(|f| Box::pin(lsp_json(f)) as _),
+            LspReqKind::GotoDefinition => client
+                .goto_definition(doc_id.clone(), pos, None)
+                .map(|f| Box::pin(lsp_json(f)) as _),
+            LspReqKind::DocumentSymbols => {
+                client.document_symbols(doc_id).map(|f| Box::pin(lsp_json(f)) as _)
+            }
+        };
+    let Some(future) = future else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+
+    let is_goto = matches!(kind, LspReqKind::GotoDefinition);
+    let id = req.id;
+    let tx = helix_js::lsp_result_tx();
+    tokio::spawn(async move {
+        let result = match future.await {
+            Ok(Some(mut json)) => {
+                // goto_definition 响应注入 path 便利字段（Location/LocationLink）
+                if is_goto {
+                    helix_js::inject_location_paths(&mut json);
+                }
+                Ok(Some(json.to_string()))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let _ = tx.send(helix_js::LspResult { id, result });
+    });
+}
+
+/// LSP client 响应 → serde_json::Value（透传原始 JSON 给 JS 侧）
+async fn lsp_json<T>(
+    f: impl Future<Output = Result<Option<T>, helix_lsp::Error>>,
+) -> Result<Option<serde_json::Value>, String>
+where
+    T: serde::Serialize,
+{
+    match f.await {
+        Ok(Some(v)) => serde_json::to_value(&v).map(Some).map_err(|e| e.to_string()),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }

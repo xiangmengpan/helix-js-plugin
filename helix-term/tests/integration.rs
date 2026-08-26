@@ -28,6 +28,7 @@ mod test {
     mod plugin_run;
     mod plugin_popup_edit;
     mod plugin_async;
+    mod plugin_lsp;
     mod plugin_components;
     mod plugin_panel;
     mod plugin_terminal_view;

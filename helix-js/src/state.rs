@@ -24,7 +24,7 @@ impl<T> Clone for WakeSender<T> {
 }
 
 impl<T> WakeSender<T> {
-    pub(crate) fn send(&self, t: T) -> Result<(), std::sync::mpsc::SendError<T>> {
+    pub fn send(&self, t: T) -> Result<(), std::sync::mpsc::SendError<T>> {
         let r = self.inner.send(t);
         // 发送时查当前注册的唤醒回调（set_term_wake 随时生效）
         if let Some(wake) = TERM_WAKE.get() {
