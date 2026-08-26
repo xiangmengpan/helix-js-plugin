@@ -43,8 +43,10 @@ fn enqueue_lsp_request(
     let pos = match args.first() {
         Some(obj) if obj.is_object() => {
             let obj = obj.as_object().unwrap();
-            let row = crate::popup::opt_u16(&obj.get(JsString::from("row"), context)?, context, "row")?;
-            let col = crate::popup::opt_u16(&obj.get(JsString::from("col"), context)?, context, "col")?;
+            let row =
+                crate::popup::opt_u16(&obj.get(JsString::from("row"), context)?, context, "row")?;
+            let col =
+                crate::popup::opt_u16(&obj.get(JsString::from("col"), context)?, context, "col")?;
             row.zip(col) // 缺 row/col 之一 → None（走光标）
         }
         _ => None,
@@ -121,23 +123,37 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
     crate::init();
     crate::state::with_engine(|engine| {
         let resolving = crate::state::with_lsp_promises(|m| m.remove(&id));
-        let Some(resolving) = resolving else { return Ok(()) };
+        let Some(resolving) = resolving else {
+            return Ok(());
+        };
         let undefined = JsValue::undefined();
         let outcome = match result {
             Ok(Some(json)) => match crate::layout::js_json_parse(json, engine, "lsp result") {
-                Ok(parsed) => resolving.resolve.call(&undefined, &[parsed], engine).map(|_| ()),
+                Ok(parsed) => resolving
+                    .resolve
+                    .call(&undefined, &[parsed], engine)
+                    .map(|_| ()),
                 Err(e) => {
                     // 服务端响应畸形 → 走 reject，promise 不能悬空
-                    let err = JsNativeError::error().with_message(e.to_string()).to_opaque(engine);
-                    resolving.reject.call(&undefined, &[err.into()], engine).map(|_| ())
+                    let err = JsNativeError::error()
+                        .with_message(e.to_string())
+                        .to_opaque(engine);
+                    resolving
+                        .reject
+                        .call(&undefined, &[err.into()], engine)
+                        .map(|_| ())
                 }
             },
-            Ok(None) => {
-                resolving.resolve.call(&undefined, &[JsValue::null()], engine).map(|_| ())
-            }
+            Ok(None) => resolving
+                .resolve
+                .call(&undefined, &[JsValue::null()], engine)
+                .map(|_| ()),
             Err(e) => {
                 let err = JsNativeError::error().with_message(e).to_opaque(engine);
-                resolving.reject.call(&undefined, &[err.into()], engine).map(|_| ())
+                resolving
+                    .reject
+                    .call(&undefined, &[err.into()], engine)
+                    .map(|_| ())
             }
         };
         outcome.map_err(|e| anyhow!("lsp {id} settle failed: {e}"))
@@ -176,7 +192,10 @@ fn file_uri_to_path(uri: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            out.push((bytes[i + 1] as char).to_digit(16)? as u8 * 16 + (bytes[i + 2] as char).to_digit(16)? as u8);
+            out.push(
+                (bytes[i + 1] as char).to_digit(16)? as u8 * 16
+                    + (bytes[i + 2] as char).to_digit(16)? as u8,
+            );
             i += 3;
         } else {
             out.push(bytes[i]);
@@ -243,7 +262,10 @@ mod tests {
         resolve_lsp(id, Ok(None)).unwrap();
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
-            let seen = engine.global_object().get(JsString::from("__seen"), engine).unwrap();
+            let seen = engine
+                .global_object()
+                .get(JsString::from("__seen"), engine)
+                .unwrap();
             assert!(seen.is_null(), "Ok(None) 应 resolve null, got {seen:?}");
         });
         // Ok(Some(json)) → JSON.parse 后 resolve
@@ -258,13 +280,20 @@ mod tests {
         resolve_lsp(id2, Ok(Some(r#"{"a": 1}"#.to_string()))).unwrap();
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
-            let seen = engine.global_object().get(JsString::from("__seen2"), engine).unwrap();
+            let seen = engine
+                .global_object()
+                .get(JsString::from("__seen2"), engine)
+                .unwrap();
             let a = seen
                 .as_object()
                 .unwrap()
                 .get(JsString::from("a"), engine)
                 .unwrap();
-            assert_eq!(a, JsValue::from(1), "Ok(Some) 应 resolve 解析后的对象, got {seen:?}");
+            assert_eq!(
+                a,
+                JsValue::from(1),
+                "Ok(Some) 应 resolve 解析后的对象, got {seen:?}"
+            );
         });
         // Err(e) → reject Error（.catch 读到 e.message）
         let id3 = crate::state::with_engine(|engine| {
@@ -278,8 +307,36 @@ mod tests {
         resolve_lsp(id3, Err("boom".to_string())).unwrap();
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
-            let seen = engine.global_object().get(JsString::from("__seen3"), engine).unwrap();
-            assert_eq!(seen, JsValue::from(JsString::from("boom")), "Err 应 reject Error");
+            let seen = engine
+                .global_object()
+                .get(JsString::from("__seen3"), engine)
+                .unwrap();
+            assert_eq!(
+                seen,
+                JsValue::from(JsString::from("boom")),
+                "Err 应 reject Error"
+            );
+        });
+        // 畸形 JSON → reject（不 resolve、不悬空），e.message 非空
+        let id4 = crate::state::with_engine(|engine| {
+            let p = js_lsp_hover(&JsValue::undefined(), &[], engine).unwrap();
+            engine
+                .register_global_property(JsString::from("__lsp_p4"), p, Attribute::all())
+                .unwrap();
+            take_lsp_requests()[0].id
+        });
+        crate::load_script("__lsp_p4.catch((e) => { globalThis.__seen4 = e.message; });").unwrap();
+        resolve_lsp(id4, Ok(Some("not json".to_string()))).unwrap();
+        crate::pump_jobs().unwrap();
+        crate::state::with_engine(|engine| {
+            let seen = engine
+                .global_object()
+                .get(JsString::from("__seen4"), engine)
+                .unwrap();
+            assert!(
+                seen.is_string() && !seen.as_string().unwrap().is_empty(),
+                "畸形 JSON 应 reject 且 e.message 非空, got {seen:?}"
+            );
         });
     }
 
@@ -293,7 +350,8 @@ mod tests {
         inject_location_paths(&mut v);
         assert_eq!(v[0]["path"], "/a/b.rs");
         // LocationLink 形态（target_uri）
-        let mut v2 = serde_json::json!([{"target_uri": "file:///c/d.rs", "origin_selection_range": {}}]);
+        let mut v2 =
+            serde_json::json!([{"target_uri": "file:///c/d.rs", "origin_selection_range": {}}]);
         inject_location_paths(&mut v2);
         assert_eq!(v2[0]["path"], "/c/d.rs");
         // 单对象形态
@@ -304,5 +362,13 @@ mod tests {
         let mut v4 = serde_json::json!([{"uri": "untitled:foo", "range": {}}]);
         inject_location_paths(&mut v4);
         assert!(v4[0].get("path").is_none());
+        // %20 → 空格解码
+        let mut v5 = serde_json::json!([{"uri": "file:///a%20b.rs", "range": {}}]);
+        inject_location_paths(&mut v5);
+        assert_eq!(v5[0]["path"], "/a b.rs");
+        // 畸形百分号序列（%zz）→ 整路径 None，不加 path
+        let mut v6 = serde_json::json!([{"uri": "file:///a%zzb.rs", "range": {}}]);
+        inject_location_paths(&mut v6);
+        assert!(v6[0].get("path").is_none());
     }
 }
