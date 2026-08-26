@@ -2,6 +2,7 @@
 
 mod commands;
 mod icons;
+mod input;
 mod layout;
 mod lsp;
 mod popup;
@@ -18,6 +19,7 @@ pub mod config;
 
 pub use commands::*;
 pub use icons::*;
+pub use input::{input_edit, with_input_states, InputState};
 pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
