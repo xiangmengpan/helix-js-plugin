@@ -127,6 +127,12 @@ pub fn clear_popup_inputs(popup_id: u64) {
     with_input_states(|m| m.retain(|(pid, _), _| *pid != popup_id));
 }
 
+/// 该 input 节点是否已渲染（有引擎状态）。未渲染的节点返回 false。
+/// 供 helix-term 按键路由判断：有状态 → 编辑键走 dispatch_input_key，否则按 button 处理。
+pub fn input_has_state(popup_id: u64, node_id: &str) -> bool {
+    with_input_states(|m| m.contains_key(&(popup_id, node_id.to_string())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +217,8 @@ mod tests {
             UiRequest::OpenPopup { id, .. } => *id,
             _ => unreachable!("expected OpenPopup"),
         };
+        // 未渲染的 input：无状态（任务 3 按键路由据此判断）
+        assert!(!input_has_state(id, "q"));
         // 首次渲染：JS 传 value 初始化 InputStates
         match render_popup(id, 40, 10, None).unwrap() {
             Content::Tree(CompNode::Col { children, .. }) => {
@@ -219,6 +227,7 @@ mod tests {
             }
             _ => panic!("expected tree"),
         }
+        assert!(input_has_state(id, "q"));
         // 编辑键：改状态 + 触发 onChange（onChange 里 echo）
         dispatch_input_key(id, "q", "b").unwrap();
         assert_eq!(take_messages(), vec!["chg:ab"]);

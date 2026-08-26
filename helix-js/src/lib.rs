@@ -19,7 +19,7 @@ pub mod config;
 
 pub use commands::*;
 pub use icons::*;
-pub use input::{clear_popup_inputs, dispatch_input_key, input_edit, js_set_input_value, with_input_states, InputState};
+pub use input::{clear_popup_inputs, dispatch_input_key, input_edit, input_has_state, js_set_input_value, with_input_states, InputState};
 pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
