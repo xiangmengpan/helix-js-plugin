@@ -13,7 +13,7 @@ use crate::types::{
     TermEvent, UiRequest,
 };
 
-pub(crate) struct WakeSender<T> {
+pub struct WakeSender<T> {
     inner: std::sync::mpsc::Sender<T>,
 }
 
