@@ -427,6 +427,9 @@ thread_local! {
     static ASYNC_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
         const { RefCell::new(None) };
     static NEXT_ASYNC_ID: Cell<u64> = const { Cell::new(1) };
+    // helix.lsp.* 请求的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
+    static LSP_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
+        const { RefCell::new(None) };
 }
 
 /// 访问 TERM_EVENTS 发送端（init 时创建；worker 克隆持有）
@@ -482,6 +485,14 @@ pub(crate) fn with_term_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFu
 /// 访问 ASYNC_PROMISES（异步 fs 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_async_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
     ASYNC_PROMISES.with(|t| {
+        let mut slot = t.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 LSP_PROMISES（helix.lsp.* 的 promise 解析函数注册表）：同上（内容泄漏）
+pub(crate) fn with_lsp_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
+    LSP_PROMISES.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })

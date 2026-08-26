@@ -17,7 +17,7 @@ use crate::state::{
 use crate::commands::doc_to_js;
 use crate::types::*;
 
-fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<u16>> {
+pub(crate) fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<u16>> {
     if v.is_null_or_undefined() {
         return Ok(None);
     }

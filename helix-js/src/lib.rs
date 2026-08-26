@@ -3,6 +3,7 @@
 mod commands;
 mod icons;
 mod layout;
+mod lsp;
 mod popup;
 mod pty;
 mod shell;
@@ -17,6 +18,7 @@ pub mod config;
 
 pub use commands::*;
 pub use icons::*;
+pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
 pub use state::*;
@@ -49,6 +51,17 @@ pub fn init() {
     state::with_engine_slot(|slot| {
         if slot.is_none() {
             let engine = Box::leak(Box::new(Context::default()));
+            // helix.lsp 命名空间：先独立构建对象（ObjectInitializer 独占 &mut Context），
+            // 再作为属性挂到 helix 对象上
+            let lsp_obj = {
+                let mut lsp_builder = ObjectInitializer::new(engine);
+                lsp_builder
+                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_hover), JsString::from("hover"), 1)
+                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_completion), JsString::from("completion"), 1)
+                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_goto_definition), JsString::from("goto_definition"), 1)
+                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_document_symbols), JsString::from("document_symbols"), 1);
+                lsp_builder.build()
+            };
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
             let mut builder = ObjectInitializer::new(engine);
@@ -131,6 +144,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(popup::js_term_close), JsString::from("term_close"), 1);
             #[cfg(unix)]
             builder.function(NativeFunction::from_fn_ptr(shell::js_term_resize), JsString::from("term_resize"), 3);
+            builder.property(JsString::from("lsp"), lsp_obj, Attribute::READONLY | Attribute::NON_ENUMERABLE);
             let helix = builder.build();
             engine
                 .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
