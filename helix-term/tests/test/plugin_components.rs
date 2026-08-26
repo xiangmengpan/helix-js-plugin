@@ -120,6 +120,70 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 弹窗 render 返回 scroll + offset → 全量列表只显示 offset 窗口：
+/// 100 行 + offset=42 + height=5 → 面板显示 row42..row46（无 row0/row99）
+#[tokio::test(flavor = "multi_thread")]
+async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("so.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("scroll.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("scroll-popup", () => {
+            const rows = [];
+            for (let i = 0; i < 100; i++) rows.push(helix.el("text", "row" + i));
+            helix.open_popup({ render: () => helix.el("scroll", rows, { height: 5, offset: 42 }) });
+        });
+        "#,
+    )?;
+
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(&mut app, ":scroll-popup<ret>").await?;
+
+    // DiffRenderer 有持久状态：app 真实 surface 已渲染过，不能复用其 diff——
+    // 从弹窗层读 lines，用全新 DiffRenderer 渲染到测试 buffer。
+    let popup = app
+        .compositor
+        .find::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>()
+        .expect("popup layer");
+    let lines: Vec<helix_js::StyledLine> = popup.contents().lines().to_vec();
+    assert_eq!(lines.len(), 5, "scroll window must be exactly 5 rows, got {}", lines.len());
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let mut diff = helix_term::ui::comp_layout::DiffRenderer::default();
+    diff.render(&lines, area, &mut buf, &app.editor.theme);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            buf.content
+                .iter()
+                .skip(y as usize * area.width as usize)
+                .take(area.width as usize)
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect();
+    let shown: Vec<String> = rows
+        .iter()
+        .filter(|r| !r.trim().is_empty())
+        .map(|r| r.trim().to_string())
+        .collect();
+    let expect: Vec<String> = (42..47).map(|i| format!("row{i}")).collect();
+    assert_eq!(
+        shown, expect,
+        "offset window must show row42..row46 only, rows: {rows:?}"
+    );
+
+    // 退出并关闭
+    pump(&mut app, "<esc>:q!<ret>").await?;
+    let errs = app.close().await;
+    assert!(errs.is_empty(), "close errors: {errs:?}");
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_node_focus_events() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
