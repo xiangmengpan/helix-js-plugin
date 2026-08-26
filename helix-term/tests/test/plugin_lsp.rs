@@ -1,4 +1,5 @@
 use super::*;
+use helix_view::current_ref;
 
 // 无 LSP 环境（测试配置 lsp.enable=false，txt 无 language server）下：
 // helix.lsp.* 请求 → 泵循环 take_lsp_requests → 无 server → resolve null →
@@ -25,7 +26,10 @@ async fn plugin_lsp_no_server_resolves_null() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":lsp-hover<ret>"),
                 Some(&|app| {
@@ -39,6 +43,52 @@ async fn plugin_lsp_no_server_resolves_null() -> anyhow::Result<()> {
                 Some(&|app| {
                     let (status, _) = app.editor.get_status().unwrap();
                     assert_eq!(status.as_ref(), "syms:null");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// open_file 第二参数 {row, col}：打开后光标定位到指定行列（字符坐标 0-based）
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_open_file_with_position() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let src = dir.path().join("src.txt");
+    let lines: Vec<String> = (0..10).map(|i| format!("line{i}")).collect();
+    std::fs::write(&src, lines.join("\n") + "\n")?;
+    let plugin_path = dir.path().join("open.js");
+    let src_str = src.display().to_string();
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"
+        helix.register_command("jump10", () => {{
+            helix.open_file({src:?}, {{ row: 9, col: 4 }});
+        }});
+        "#,
+            src = src_str,
+        ),
+    )?;
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(src, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (
+                Some(":jump10<ret>"),
+                Some(&|app| {
+                    let (view, doc) = current_ref!(app.editor);
+                    let pos = doc
+                        .selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..));
+                    let line = doc.text().char_to_line(pos);
+                    assert_eq!(line, 9, "光标应跳到第 9 行");
                 }),
             ),
         ],

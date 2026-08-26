@@ -347,12 +347,26 @@ pub(crate) fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) 
     Ok(JsValue::from(arr))
 }
 
-/// 入队 OpenFile（path 字符串校验）
+/// 入队 OpenFile（path 字符串校验；第二参数可选 { row, col } 字符坐标定位）
 pub(crate) fn js_open_file(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from("open_file: path must be a string")))
     })?;
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenFile { path });
+    let (row, col) = match args.get(1) {
+        Some(obj) if obj.is_object() => {
+            let o = obj.as_object().unwrap();
+            let row = opt_u16(&o.get(JsString::from("row"), ctx)?, ctx, "row")?;
+            let col = opt_u16(&o.get(JsString::from("col"), ctx)?, ctx, "col")?;
+            (row, col)
+        }
+        _ => (None, None),
+    };
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::OpenFile { path, row, col });
     Ok(JsValue::undefined())
 }
 

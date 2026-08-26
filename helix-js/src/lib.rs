@@ -364,7 +364,9 @@ mod tests {
         assert!(msgs[0].starts_with("count:3 sorted:true"), "{msgs:?}");
         assert_eq!(msgs[1], "dirs:1:sub");
         let reqs = take_ui_requests();
-        assert!(matches!(&reqs[0], UiRequest::OpenFile { path } if path.ends_with("a.txt")));
+        assert!(
+            matches!(&reqs[0], UiRequest::OpenFile { path, row: None, col: None } if path.ends_with("a.txt"))
+        );
         assert!(matches!(&reqs[1], UiRequest::MovePanel { id: 7, side } if side == "left"));
 
         // 校验：read_dir 不存在路径 → 抛错；move_panel 非法 side → 抛错；open_file 非字符串 → 抛错

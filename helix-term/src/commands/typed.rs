@@ -4578,13 +4578,21 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.remove_panel(id);
                 });
             }
-            helix_js::UiRequest::OpenFile { path } => {
+            helix_js::UiRequest::OpenFile { path, row, col } => {
                 // open 是同步的（editor.open 直接返回），:open 语义（Action::Replace）；
-                // 错误经 set_error 上报（闭包内无 Result 传播路径）
+                // 错误经 set_error 上报（闭包内无 Result 传播路径）；
+                // 带行列 → 打开后定位光标（clamp 复用 pos_to_char，JS 输入不可信）
                 let path = PathBuf::from(path);
                 job::dispatch_blocking(move |editor, _compositor| {
                     if let Err(err) = editor.open(&path, Action::Replace) {
                         editor.set_error(format!("open_file: {err}"));
+                    } else if let (Some(row), Some(col)) = (row, col) {
+                        use helix_core::Selection;
+                        let (view, doc) = current!(editor);
+                        let pos =
+                            Selection::point(pos_to_char(doc.text(), row as usize, col as usize));
+                        doc.set_selection(view.id, pos);
+                        align_view(doc, view, Align::Center);
                     }
                 });
             }

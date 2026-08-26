@@ -18,6 +18,8 @@ pub enum UiRequest {
     },
     OpenFile {
         path: String,
+        row: Option<u16>,
+        col: Option<u16>,
     },
     FocusBuffer {
         id: u64,
