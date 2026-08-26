@@ -92,8 +92,9 @@ impl Component for PluginPopup {
                     }
                 };
                 match key.name.as_str() {
-                    // Enter/Space：input 有状态 → onKey("Enter"/"Space")；否则（button）→ onPress
-                    "Enter" | "Space" => {
+                    // Enter：input 有状态 → onKey("Enter")；否则（button）→ onPress
+                    // （空格键是单字符，走下方编辑臂插入输入框；key_to_plugin_key 无 "Space" 键名）
+                    "Enter" => {
                         let event = if helix_js::input_has_state(self.id, fid) {
                             Some(key.name.as_str())
                         } else {

@@ -343,7 +343,7 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), st
   | 单字符 / Backspace / Delete | 编辑（引擎改值 + 光标）→ 触发 `onChange(新值)` |
   | Left / Right / Home / End | 仅移动光标，**不**触发 onChange |
   | Up / Down | → 节点 `onKey("Up"/"Down")`（候选导航） |
-  | Enter / Space | → 节点 `onKey("Enter"/"Space")` |
+  | Enter | → 节点 `onKey("Enter")`（空格键是单字符编辑键，命中首行插入输入框） |
   | Tab | 焦点移到下一个可聚焦节点 |
   | Esc | 关闭弹窗（弹窗级缺省；焦点在 input 上同样生效） |
 

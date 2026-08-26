@@ -494,6 +494,55 @@ mod tests {
         assert_eq!(layout(&styled("err", "error"), (40, 10)), vec![StyledLine::styled("err", "error")]);
     }
 
+    fn input_node(value: &str, cursor: usize) -> CompNode {
+        CompNode::Input {
+            value: value.into(),
+            cursor,
+            width: None,
+            id: "q".into(),
+            flex: None,
+        }
+    }
+
+    #[test]
+    fn input_renders_cursor_bar_in_place() {
+        // 光标处插入 "|"（char 索引），其余文本原样
+        assert_eq!(layout(&input_node("abc", 1), (40, 10)), vec![line("a|bc")]);
+        // 末尾光标
+        assert_eq!(layout(&input_node("abc", 3), (40, 10)), vec![line("abc|")]);
+        // 空值 → 只有光标
+        assert_eq!(layout(&input_node("", 0), (40, 10)), vec![line("|")]);
+        // 多字节按 char 索引（非字节），中文中间插入
+        assert_eq!(
+            layout(&input_node("中文", 1), (40, 10)),
+            vec![line("中|文")]
+        );
+    }
+
+    #[test]
+    fn input_cursor_clamps_and_truncates() {
+        // cursor 越界 → clamp 末尾
+        assert_eq!(layout(&input_node("abc", 99), (40, 10)), vec![line("abc|")]);
+        // width 截断（先插 "|" 再截断：cursor 0 + width 3 → "|ab"）
+        let node = CompNode::Input {
+            value: "abc".into(),
+            cursor: 0,
+            width: Some(3),
+            id: "q".into(),
+            flex: None,
+        };
+        assert_eq!(layout(&node, (40, 10)), vec![line("|ab")]);
+        // viewport 宽度优先于 width
+        let node = CompNode::Input {
+            value: "abc".into(),
+            cursor: 1,
+            width: Some(10),
+            id: "q".into(),
+            flex: None,
+        };
+        assert_eq!(layout(&node, (2, 10)), vec![line("a|")]);
+    }
+
     #[test]
     fn col_stacks_and_clamps_to_viewport() {
         let node = CompNode::Col { children: texts(&["a", "b", "c"]), gap: 0, flex: None };
