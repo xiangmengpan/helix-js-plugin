@@ -483,56 +483,49 @@ git commit -m "feat: scroll offset 虚拟化(快/慢双路径)"
 
 ---
 
-### 任务 4:filetree 迁移 scroll offset + 验证
+### 任务 4:scroll offset 全链路集成测试(任务 4 修订)
+
+**修订说明(2026-08-25,真机验证暴露):** 原任务 4(filetree 迁移 `offset: start`)计划简报自相矛盾——filetree 传**已 slice 的窗口行**(≤h)配**全局行号 offset**(可到数千),Rust 侧快路径 `skip(offset)` 超出窗口长度 → 滚动后面板空白(已真机复现)。且迁移本身不成立:filetree 渲染瓶颈在 JS 侧 `visible_rows()` 全量算,scroll 虚拟化(解决 Rust 侧布局)无收益,传全量反而让 `row_el` 全量生成更慢。**裁决:filetree 不迁移(保持 `{ height: h }` 现状),scroll offset 是"传全量列表 + offset"场景的能力,用集成测试验证全链路。**
 
 **文件:**
-- 修改:`plugins/features/filetree/index.js:545-556`(render 尾部)
-- 同步:`~/.config/helix/plugins/features/filetree/index.js`
+- 修改:`helix-term/tests/test/plugin_components.rs`(新增测试,仿既有 `popup_component_tree_renders_layout`)
 
-- [ ] **步骤 1:迁移 render**
+- [ ] **步骤 1:写集成测试**
 
-`filetree/index.js` render 尾部,把"手动 slice + 无 offset scroll"改为"slice(避免 JS 全量生成行)+ offset":
+`plugin_components.rs` 新增(仿 `popup_component_tree_renders_layout` 的 harness:pump + render_rows + assert):
 
-```js
-function render(focus, ctx) {
-  try {
-    const rows = visible_rows(S.tree, S.show_hidden, 0, []);
-    const h = Math.max(1, (ctx ? ctx.height : 30) - 1);
-    // 手动窗口化: 以 cursor 为中心截取 h 行(scroll 虚拟化只需 JS 侧不生成窗口外行)
-    const start = Math.max(0, Math.min(S.cursor - Math.floor(h / 2), rows.length - h));
-    const window = rows.slice(start, start + h);
-    const lines = window.map((r, i) => row_el(r, start + i === S.cursor, r.node.path === S.current));
-    if (rows.length > 20000) {
-      lines.push(helix.el("text", "... " + (rows.length - start - h) + " 行未显示(内容过多)", { style: "ui.virtual" }));
-    }
-    return helix.el("scroll", lines, { height: h, offset: start });
-  } catch (e) {
-    return helix.el("col", [helix.el("text", "filetree 渲染错误: " + (e && e.message || e), { style: "ui.popup" })]);
-  }
+```rust
+#[tokio::test(flavor = "multi_thread")]
+async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
+    // 全量 100 行列表 + offset=42 + height=5 → 面板显示 row42..row47
+    let mut app = AppBuilder::new(5).finish();
+    let mut channel = helix_js::register_channel();
+    helix_js::popup::open_popup(&mut app, &mut channel, &mut |_| (), &mut |_| (), |_| {
+        r#"
+        const rows = [];
+        for (let i = 0; i < 100; i++) rows.push(helix.el("text", "row" + i));
+        helix.open_popup({ render: () => helix.el("scroll", rows, { height: 5, offset: 42 }) });
+        "#
+    })?;
+    ...
 }
 ```
 
-变更点:最后一行 `{ height: h }` → `{ height: h, offset: start }`。其余不动(JS 侧仍 slice 窗口,避免 row_el 全量生成)。
+**注意**:先读 `plugin_components.rs` 的 `popup_component_tree_renders_layout` 全文,复用它的 harness 结构(pump 触发、render_rows 读 Buffer、joined 断言);scroll 的 height=5、offset=42 按实际 harness 尺寸调整(保证面板内可见 5 行)。
 
-- [ ] **步骤 2:语法检查 + 编译 + 同步**
+- [ ] **步骤 2:运行确认通过**
 
-```bash
-node --check plugins/features/filetree/index.js
-HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1 cargo build --release
-cp plugins/features/filetree/index.js ~/.config/helix/plugins/features/filetree/index.js
-```
+运行:`HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1 timeout 400 cargo test -p helix-term --test integration --features integration -- plugin_components`
+预期:PASS(row42..row46 出现在面板 Buffer 中,无 row0/row99)。
 
-- [ ] **步骤 3:真机验证**
-
-release 版 helix:打开大目录(>500 项,可临时建)`:filetree` → 上下滚动 → 选中行跟随光标、显示行正确、无错位。`:config-reload` 后正常。环境受限则如实报告跳过原因。
-
-- [ ] **步骤 4:Commit**
+- [ ] **步骤 3:Commit**
 
 ```bash
-git add plugins/features/filetree/index.js
-git commit -m "refactor: filetree 迁移到 scroll offset 虚拟化"
+git add helix-term/tests/test/plugin_components.rs
+git commit -m "test: scroll offset 全链路集成测试"
 ```
 
+---
 ---
 
 ## 自检记录
@@ -540,4 +533,5 @@ git commit -m "refactor: filetree 迁移到 scroll offset 虚拟化"
 - **规格覆盖:** scroll offset(任务 3)、flex(任务 2)、wrap(任务 2)、兼容性零改动(任务 1 全可选字段 + scroll None 保留旧语义)、性能保持(布局器无状态纯函数,scroll 快路径按索引切)、filetree 迁移(任务 4)。非目标(边框/焦点/绝对定位/命中)未引入。
 - **占位符:** 无 TODO;所有代码块可直接执行。任务 2 的 Row 拼接复用现有循环(明确标注"现有 60-95 行拼 span 循环保持不变"),flex 分支是其前置测量/分配。
 - **类型一致性:** `flex: Option<u16>`、`wrap: bool`、`offset: Option<u16>` 在任务 1-3 中命名统一;`flex_of`/`content_width`/`is_single_line` 定义于使用处同一文件;`text()` helper(comp_layout.rs:210)供测试用,scroll 测试里引用它。
-- **依赖顺序:** 任务 1(字段+解析)→ 任务 2(布局用字段)→ 任务 3(Scroll 用 flex 字段构造 Col)→ 任务 4(插件用 offset)。任务 2/3 都动 comp_layout.rs,顺序执行不冲突。
+- **依赖顺序:** 任务 1(字段+解析)→ 任务 2(布局用字段)→ 任务 3(Scroll 用 flex 字段构造 Col)→ 任务 4(集成测试验证 offset 全链路)。任务 2/3 都动 comp_layout.rs,顺序执行不冲突。
+- **任务 4 修订记录:** 原"filetree 迁移 offset:start"经真机验证为计划简报自相矛盾(slice 窗口 + 全局 offset → 空白),且迁移无性能收益(JS 侧是瓶颈),已修订为集成测试验证 scroll offset 全链路。
