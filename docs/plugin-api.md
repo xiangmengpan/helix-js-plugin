@@ -24,6 +24,7 @@
 - [17. 综合示例：文件树面板](#17-综合示例文件树面板)
 - [18. 已知限制](#18-已知限制)
 - [19. API 速查索引](#19-api-速查索引)
+- [20. LSP 请求](#20-lsp-请求)
 
 ---
 
@@ -661,7 +662,11 @@ helix.open_popup({ render, onKey?, onClose?, width?, height?, position? }) -> id
 helix.open_panel({ side, size, render, onKey?, onClose? }) -> id
 helix.close_panel(id)
 helix.move_panel(id, side)
-helix.open_file(path)
+helix.open_file(path, { row?, col? })
+helix.lsp.hover([{ row, col }]) -> Promise       // → Hover | null
+helix.lsp.completion([{ row, col }]) -> Promise  // → CompletionItem[] | null
+helix.lsp.goto_definition([{ row, col }]) -> Promise // → Location[] | null（含 path）
+helix.lsp.document_symbols() -> Promise          // → DocumentSymbol[] | null
 helix.el(type, arg, opts)                       // text|row|col|scroll|button|input
 helix.open_terminal({ cmd, side, size, onExit? }) -> view_id
 helix.set_terminal_mode(view_id, "dock"|"fullscreen"|"floating"|"minimized")
@@ -706,4 +711,89 @@ render 返回值：数组（string|{text,style}）或 el 组件树；签名 rend
 split 方向：right | left | top | bottom
 事件：save | mode-change | buffer-open | buffer-close | doc-change | theme-change
 键位模式：normal | insert | select
+```
+
+---
+
+## 20. LSP 请求
+
+插件可主动向当前 buffer 的语言服务器发请求。四个方法都挂在 `helix.lsp` 命名空间下，全部返回 Promise；响应为 LSP 协议原始 JSON（`serde_json` 序列化后 `JSON.parse` 透传），字段名与 LSP 协议一致。请求在**调用时**快照当前光标位置，之后移动光标不影响已发出的请求。
+
+```js
+const hover = await helix.lsp.hover();            // → Hover | null
+const items = await helix.lsp.completion();       // → CompletionItem[] | null
+const locs  = await helix.lsp.goto_definition();  // → Location[] | null（每项附 path）
+const syms  = await helix.lsp.document_symbols(); // → DocumentSymbol[] | null
+
+// 位置覆盖（可选）：字符坐标 (row, col)，与 set_cursor 一致；缺省 = 当前光标快照
+await helix.lsp.hover({ row: 5, col: 3 });
+```
+
+| 方法 | LSP 请求 | 返回 |
+|------|----------|------|
+| `helix.lsp.hover()` | `textDocument/hover` | `Hover \| null` |
+| `helix.lsp.completion()` | `textDocument/completion` | `CompletionItem[] \| null` |
+| `helix.lsp.goto_definition()` | `textDocument/definition` | `Location[] \| null` |
+| `helix.lsp.document_symbols()` | `textDocument/documentSymbol` | `DocumentSymbol[] \| null` |
+
+**唯一便利字段**：`goto_definition` 返回的每个 `Location` 附 `path`（由 `uri` 解析，剥除 `file://` 前缀并做百分号解码）。跳转/显示直接用 `path`，无需自己解析 URI。
+
+### 返回字段（LSP 协议原始字段）
+
+| 方法 | 主要字段 |
+|------|----------|
+| `hover` | `contents`（MarkedString \| MarkupContent \| 二者数组，字符串/`{value}`/`{kind, value}` 三种形态）、`range?` |
+| `completion` | `items[]`（`label`/`detail`/`documentation`/`insertText`/`data` 等，零丢失） |
+| `goto_definition` | `Location[]`（`uri`+`range`）或 `LocationLink[]`（`target_uri`+`targetRange`），每项附 `path` |
+| `document_symbols` | `DocumentSymbol[]`（`name`/`kind`/`range`/`selectionRange`/`children`）或 `SymbolInformation[]` |
+
+### 空 / 错语义
+
+| 情形 | 行为 |
+|------|------|
+| 无 LSP server（文件类型无配置 / server 未启动） | `resolve(null)` |
+| server 不支持该功能 | `resolve(null)` |
+| server 返回 LSP 协议 error | `reject(Error(message))` |
+| 连接断开等异常 | `reject(Error(message))` |
+| 请求挂起不返回 | Promise 悬挂（P0 无超时） |
+
+“没结果”是插件常态（文件类型不匹配、功能未启用），只 resolve `null` 不抛错；只有真正出错的调用才 reject，插件只需为“发请求”兜底。
+
+### 示例：hover 弹窗 + 跳转定义
+
+完整 demo 见 `plugins/features/lsp-hover/index.js`（`:plugin-load plugins/features/lsp-hover/index.js`）：
+
+```js
+// :lsp-hover 光标处 hover 弹窗
+helix.register_command("lsp-hover", async () => {
+  const hover = await helix.lsp.hover();
+  if (!hover) return helix.echo("no hover");
+  const text = Array.isArray(hover.contents)
+    ? hover.contents.map((c) => c.value ?? c).join("\n")
+    : hover.contents.value ?? hover.contents;
+  helix.open_popup({
+    render: () => helix.el("col", String(text).split("\n").map((l) => helix.el("text", l))),
+  });
+});
+
+// :lsp-goto 跳转到定义（首个结果；l.path 由 uri 注入）
+helix.register_command("lsp-goto", async () => {
+  const locs = await helix.lsp.goto_definition();
+  if (!locs?.length) return helix.echo("no definition");
+  const l = locs[0];
+  helix.open_file(l.path, { row: l.range.start.line, col: l.range.start.character });
+});
+```
+
+> **注意**：`open_file(path, { row, col })` 的定位要求 **row 和 col 都传**。只传其一（如 `{ row: 9 }` 或 `{ col: 3 }`）会静默不定位——文件照常打开，但光标不移动、无报错。
+
+### 手动验证
+
+需要带 LSP 的环境（如 Rust/TS 项目，`languages.toml` 已配置 server）：
+
+```bash
+cargo build
+# 打开一个带 LSP 的项目文件后：
+:plugin-load plugins/features/lsp-hover/index.js
+# :lsp-hover 应在光标处弹窗显示 hover；:lsp-goto 应跳到定义位置
 ```
