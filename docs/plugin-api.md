@@ -726,6 +726,7 @@ const locs  = await helix.lsp.goto_definition();  // → Location | Location[] |
 const syms  = await helix.lsp.document_symbols(); // → DocumentSymbol[] | null
 
 // 位置覆盖（可选）：字符坐标 (row, col)，与 set_cursor 一致；缺省 = 当前光标快照
+// 注意：row/col 须同传，只传其一（如 { row: 5 }）按缺省（当前光标）静默处理
 await helix.lsp.hover({ row: 5, col: 3 });
 ```
 

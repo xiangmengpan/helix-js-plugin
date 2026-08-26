@@ -23,12 +23,12 @@ pub(crate) fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine:
     }
     let n: f64 = v.try_js_into(ctx).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "open_popup: '{name}' must be a number"
+            "'{name}' must be a number"
         ))))
     })?;
     if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "open_popup: '{name}' must be an integer in [0, {}]",
+            "'{name}' must be an integer in [0, {}]",
             u16::MAX
         )))));
     }

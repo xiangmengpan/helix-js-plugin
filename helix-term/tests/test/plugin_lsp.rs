@@ -89,6 +89,13 @@ async fn plugin_open_file_with_position() -> anyhow::Result<()> {
                         .cursor(doc.text().slice(..));
                     let line = doc.text().char_to_line(pos);
                     assert_eq!(line, 9, "光标应跳到第 9 行");
+                    let col = pos - doc.text().line_to_char(line);
+                    assert_eq!(col, 4, "光标应到第 4 列");
+                    assert_eq!(
+                        doc.text().char(pos),
+                        '9',
+                        "光标应落在 'line9' 的第 4 字符 '9'"
+                    );
                 }),
             ),
         ],

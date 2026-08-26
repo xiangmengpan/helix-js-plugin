@@ -210,7 +210,7 @@ mod tests {
     use super::*;
     use boa_engine::object::ObjectInitializer;
     use boa_engine::property::Attribute;
-    use boa_engine::{Context, JsString, JsValue};
+    use boa_engine::{Context, JsString, JsValue, Source};
     use std::sync::Mutex;
 
     // 与 lib.rs 测试同模式：全局状态（LSP_REQUESTS/LSP_PROMISES）用锁串行化
@@ -242,6 +242,37 @@ mod tests {
         assert_eq!(goto_reqs[0].pos, Some((5, 3)));
         // id 自增
         assert_ne!(goto_reqs[0].id, hover_id);
+    }
+
+    /// 注册名经全局 helix.lsp.* 路径可达（防注册字符串拼错：拼错则 eval 抛错）
+    #[test]
+    fn lsp_global_registration_names() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 真实 CONTEXT 引擎上 eval 全局路径，四个注册名逐一验证返回 Promise
+        crate::state::with_engine(|engine| {
+            for expr in [
+                "helix.lsp.hover()",
+                "helix.lsp.completion()",
+                "helix.lsp.goto_definition()",
+                "helix.lsp.document_symbols()",
+            ] {
+                let v = engine
+                    .eval(Source::from_bytes(expr))
+                    .expect("注册名应存在且可调用");
+                assert!(v.is_object(), "{expr} 应返回 Promise");
+            }
+        });
+        let got: Vec<LspMethod> = take_lsp_requests().into_iter().map(|r| r.method).collect();
+        assert_eq!(
+            got,
+            vec![
+                LspMethod::Hover,
+                LspMethod::Completion,
+                LspMethod::GotoDefinition,
+                LspMethod::DocumentSymbols
+            ]
+        );
     }
 
     /// 响应分发：resolve null / resolve JSON / reject，.then/.catch 经 pump_jobs 兑现
