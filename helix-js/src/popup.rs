@@ -1269,8 +1269,6 @@ pub fn completion_kind_icon(kind: u8) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn completion_icon_hook() {
         let _guard = crate::tests::TEST_LOCK.lock().unwrap();
