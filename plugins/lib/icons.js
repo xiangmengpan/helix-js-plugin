@@ -154,6 +154,35 @@ const ICONS = {
     U: "\uf404",             // untracked
     "??": "\uf404",
   },
+
+  // LSP CompletionItemKind(数字)→ 补全候选图标(telescope lsp 图标映射)
+  completion: {
+    1: "\uf031",   // Text
+    2: "\uf6fc",   // Method
+    3: "\uf794",   // Function
+    4: "\uf6f6",   // Constructor
+    5: "\uf6f3",   // Field
+    6: "\uf6f4",   // Variable
+    7: "\uf6f9",   // Class
+    8: "\uf6f8",   // Interface
+    9: "\uf6f7",   // Module
+    10: "\uf6f5",  // Property
+    11: "\uf475",  // Unit
+    12: "\uf6f4",  // Value
+    13: "\uf6fa",  // Enum
+    14: "\uf6fc",  // Keyword
+    15: "\uf6f6",  // Snippet
+    16: "\uf475",  // Color
+    17: "\uf6f7",  // File
+    18: "\uf6f5",  // Reference
+    19: "\uf6f9",  // Folder
+    20: "\uf6fa",  // EnumMember
+    21: "\uf6f4",  // Constant
+    22: "\uf6f8",  // Struct
+    23: "\uf6f9",  // Event
+    24: "\uf6f7",  // Operator
+    25: "\uf6f5",  // TypeParameter
+  },
 };
 
 // ============================ 工具函数 ============================
@@ -187,6 +216,11 @@ function getGitIcon(status) {
   return ICONS.git[status] ?? "";
 }
 
+/// LSP kind 数字 → 补全图标;未知/缺省 → ""(无图标)
+function getCompletionKindIcon(kind) {
+  return ICONS.completion[kind] ?? "";
+}
+
 // ============================ 注册 ============================
 
 if (typeof helix !== "undefined") {
@@ -199,11 +233,12 @@ if (typeof helix !== "undefined") {
     getModeIcon,
     getDiagnosticIcon,
     getGitIcon,
+    getCompletionKindIcon,
   });
 }
 
 // ============================ node 自检导出 ============================
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { ICONS, getFileIcon, getDirIcon, getModeIcon, getDiagnosticIcon, getGitIcon };
+  module.exports = { ICONS, getFileIcon, getDirIcon, getModeIcon, getDiagnosticIcon, getGitIcon, getCompletionKindIcon };
 }
