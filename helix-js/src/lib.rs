@@ -90,6 +90,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(popup::js_open_file), JsString::from("open_file"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_move_panel), JsString::from("move_panel"), 2)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
+                .function(NativeFunction::from_fn_ptr(popup::js_set_completion_icon), JsString::from("set_completion_icon"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_el), JsString::from("el"), 2)
                 .function(NativeFunction::from_fn_ptr(input::js_set_input_value), JsString::from("set_input_value"), 3)
                 .function(NativeFunction::from_fn_ptr(commands::js_on), JsString::from("on"), 2)
@@ -173,13 +174,13 @@ pub fn init() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use boa_engine::JsValue;
     use std::sync::Mutex;
 
     // 多个测试共享全局运行时，用锁串行化避免消息队列竞争
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// v13 任务简报验证测试：read_dir 排序/is_dir、open_file、move_panel 入队 + 校验。
     /// 简报原文断言 count:2，但设置创建 3 个条目（a.txt、b.js、sub/）→ 按实际调整为 count:3；

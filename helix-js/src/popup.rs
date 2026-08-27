@@ -400,6 +400,18 @@ pub(crate) fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut C
     Ok(JsValue::undefined())
 }
 
+pub(crate) fn js_set_completion_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let undefined = JsValue::undefined();
+    let hook = args.first().unwrap_or(&undefined);
+    if !hook.is_callable() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "set_completion_icon: expected a function",
+        ))));
+    }
+    crate::state::with_completion_icon_hook(|h| *h = Some(hook.clone()));
+    Ok(JsValue::undefined())
+}
+
 /// 读对象可选字符串字段：null/undefined → None；非字符串 → Err
 pub(crate) fn obj_opt_str(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<String>> {
     let v = obj.get(JsString::from(key), ctx)?;
@@ -1238,5 +1250,59 @@ pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
         let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
         value.try_js_into::<String>(engine).ok()
     })
+}
+
+/// 调补全 kind 图标钩子；未注册 / 返回空 / 非字符串 / 抛错 → None。
+pub fn completion_kind_icon(kind: u8) -> Option<String> {
+    crate::init();
+    crate::state::with_engine(|engine| {
+        let hook = crate::state::with_completion_icon_hook(|h| h.clone());
+        let hook = hook?;
+        let func = hook.as_callable().and_then(JsFunction::from_object)?;
+        let arg = JsValue::from(kind);
+        let undefined = JsValue::undefined();
+        let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
+        let s: String = value.try_js_into(engine).ok()?;
+        if s.is_empty() { None } else { Some(s) }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_icon_hook() {
+        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 未注册 → None
+        assert!(crate::popup::completion_kind_icon(7).is_none());
+        // 注册后返回图标；kind 参数透传
+        crate::load_script(
+            r#"
+            helix.set_completion_icon((kind) => "i" + kind);
+            "#,
+        )
+        .unwrap();
+        assert_eq!(crate::popup::completion_kind_icon(7).as_deref(), Some("i7"));
+        // 返回空串 → None（回退）
+        crate::load_script(
+            r#"
+            helix.set_completion_icon((kind) => kind === 7 ? "" : "x");
+            "#,
+        )
+        .unwrap();
+        assert!(crate::popup::completion_kind_icon(7).is_none());
+        // 抛错 → None
+        crate::load_script(
+            r#"
+            helix.set_completion_icon((kind) => { throw new Error("boom"); });
+            "#,
+        )
+        .unwrap();
+        assert!(crate::popup::completion_kind_icon(7).is_none());
+        // 缺参/非函数 → JS 报错
+        assert!(crate::load_script(r#"helix.set_completion_icon("x");"#).is_err());
+    }
 }
 
