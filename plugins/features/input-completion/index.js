@@ -28,6 +28,24 @@ const ask = () => {
 
 const label = (it) => it.label ?? String(it);
 
+// 弹窗级 onKey（焦点不在节点上时生效）：↑↓ 选候选、Enter 回填 buffer、Esc 关弹窗。
+// 带 doc 参数(可编辑快照)——节点级 onKey 无 doc,回填只能走这层。
+// 其他键返回 "ignore" 穿透给编辑器(insert mode 打字/移动正常)。
+const onKey = (key, doc) => {
+  if (key.name === "Up" && sel > 0) { sel--; return "handled"; }
+  if (key.name === "Down" && sel < items.length - 1) { sel++; return "handled"; }
+  if (key.name === "Enter") {
+    const it = items[sel];
+    if (it && doc) {
+      // 光标处插入选中候选;doc.apply 的 changeset 自动把光标移到插入文本后
+      doc.insert(doc.cursor.row, doc.cursor.col, label(it));
+    }
+    return "close";
+  }
+  if (key.name === "Esc") return "close";
+  return "ignore";
+};
+
 const render = (focus) => {
   const rows = [
     {
@@ -69,6 +87,7 @@ helix.register_command("ic", () => {
   pid = helix.open_popup({
     width: 44,
     render,
+    onKey,
     onClose: () => { pid = null; },
   });
   ask(); // 打开即基于当前光标补全,直接显示候选(insert 下按 C-x 的场景)
