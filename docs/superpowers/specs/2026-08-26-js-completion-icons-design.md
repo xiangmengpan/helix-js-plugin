@@ -61,7 +61,8 @@ function getCompletionIcon(kind) {
 
 ### 3.2 `plugins/features/input-completion/index.js`
 
-- `helix.plugin("input-completion", { deps: ["lib/icons.js"] })`(新增依赖,与 filetree 同款)。
+- 新增插件声明 `helix.plugin("input-completion", { deps: ["lib/icons.js"] });`(当前 demo 无 plugin 声明,需加在文件顶部,与 filetree 同款)。
+- `:ic` 命令入口加载共享表:`ICONS = helix.load("lib/icons.js") || null;`(与 filetree 同款),null 时回退无图标。
 - 候选行渲染拼图标:
 
 ```js
