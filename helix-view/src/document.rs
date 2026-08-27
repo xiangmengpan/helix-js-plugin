@@ -145,6 +145,10 @@ pub struct Document {
     view_data: HashMap<ViewId, ViewData>,
     pub active_snippet: Option<ActiveSnippet>,
 
+    /// Changes applied since the last doc-change event was triggered (old coords, new coords);
+    /// taken and cleared when the event fires.
+    pub(crate) pending_doc_changes: Vec<((usize, usize), (usize, usize))>,
+
     /// Inlay hints annotations for the document, by view.
     ///
     /// To know if they're up-to-date, check the `id` field in `DocumentInlayHints`.
@@ -733,6 +737,7 @@ impl Document {
         Self {
             id: DocumentId::default(),
             active_snippet: None,
+            pending_doc_changes: Vec::new(),
             path: None,
             relative_path: OnceCell::new(),
             workspace_root: OnceCell::new(),
@@ -1480,6 +1485,17 @@ impl Document {
         self.modified_since_accessed = true;
         self.version += 1;
 
+        if emit_lsp_notification {
+            // record the change range (old text coords -> new text coords) for the doc-change
+            // event; temporary/preview transactions (ghost) are not real changes and are skipped
+            for (start, end, _text) in changes.changes_iter() {
+                let new_start = changes.map_pos(start, Assoc::Before);
+                let new_end = changes.map_pos(end, Assoc::After);
+                self.pending_doc_changes
+                    .push(((start, end), (new_start, new_end)));
+            }
+        }
+
         for selection in self.selections.values_mut() {
             *selection = selection
                 .clone()
@@ -1677,6 +1693,13 @@ impl Document {
     /// that must not influence the server.
     pub fn apply_temporary(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
         self.apply_inner(transaction, view_id, false)
+    }
+
+    /// Take and clear the changes recorded since the last doc-change event.
+    /// ponytail: consumed by helix-term doc-change event trigger (plan task 2), remove allow then
+    #[allow(dead_code)]
+    pub(crate) fn take_pending_changes(&mut self) -> Vec<((usize, usize), (usize, usize))> {
+        std::mem::take(&mut self.pending_doc_changes)
     }
 
     fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
@@ -2534,6 +2557,38 @@ mod test {
     use arc_swap::ArcSwap;
 
     use super::*;
+
+    #[test]
+    fn pending_changes_recorded_on_apply() {
+        let text = Rope::from("hello world");
+        let mut doc = Document::from(
+            text,
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        let view = ViewId::default();
+        doc.set_selection(view, Selection::single(0, 0));
+
+        // apply records the change: old = insert point (5, 5), new = (5, 8) after "abc"
+        let txn = Transaction::change(
+            doc.text(),
+            vec![(5usize, 5usize, Some("abc".into()))].into_iter(),
+        );
+        doc.apply(&txn, view);
+        let changes = doc.take_pending_changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].0, (5, 5));
+        assert_eq!(changes[0].1, (5, 8));
+
+        // apply_temporary (preview) does not record
+        let preview = Transaction::change(
+            doc.text(),
+            vec![(0usize, 0usize, Some("x".into()))].into_iter(),
+        );
+        doc.apply_temporary(&preview, view);
+        assert!(doc.take_pending_changes().is_empty());
+    }
 
     #[test]
     fn changeset_to_changes_ignore_line_endings() {
