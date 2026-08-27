@@ -228,6 +228,9 @@ function getCompletionKindIcon(kind) {
 if (typeof helix !== "undefined") {
   // 方案 1：bufferline 文件类型图标（load 即生效）
   helix.set_buffer_icon(getFileIcon);
+  // 内置补全菜单 kind 图标（load 即生效；无图标/未注册时引擎回退默认文本）。
+  // 注册放在本脚本 IIFE 内（无嵌套 load）——boa 嵌套 eval 污染下闭包安全。
+  helix.set_completion_icon((k) => getCompletionKindIcon(k));
   helix.export({
     ICONS,
     getFileIcon,
