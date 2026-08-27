@@ -1252,8 +1252,11 @@ pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
     })
 }
 
-/// 调补全 kind 图标钩子；未注册 / 返回空 / 非字符串 / 抛错 → None。
+/// 调补全 kind 图标钩子；kind 0(非 LSP/未知)短路返回 None；未注册 / 返回空 / 非字符串 / 抛错 → None。
 pub fn completion_kind_icon(kind: u8) -> Option<String> {
+    if kind == 0 {
+        return None;
+    }
     crate::init();
     crate::state::with_engine(|engine| {
         let hook = crate::state::with_completion_icon_hook(|h| h.clone());
@@ -1301,6 +1304,11 @@ mod tests {
         assert!(crate::popup::completion_kind_icon(7).is_none());
         // 缺参/非函数 → JS 报错
         assert!(crate::load_script(r#"helix.set_completion_icon("x");"#).is_err());
+        // kind 0 短路:不调钩子,即使钩子对 0 有返回也回退
+        crate::load_script(r#"helix.set_completion_icon((kind) => "z");"#).unwrap();
+        assert!(crate::popup::completion_kind_icon(0).is_none());
+        // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
+        crate::load_script(r#"helix.set_completion_icon((kind) => "");"#).unwrap();
     }
 }
 
