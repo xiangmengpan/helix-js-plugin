@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
-use boa_engine::object::builtins::JsFunction;
+use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::NativeFunction;
@@ -487,6 +487,21 @@ pub fn has_handlers(name: &str) -> bool {
 /// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。
 /// extra 用于 mode-change 的 mode 字符串参数。
 pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Result<()> {
+    emit_event_impl(name, ctx, extra, None)
+}
+
+/// doc-change 事件入口：参数附带防抖窗口内合并的变更范围（doc.changes）。
+pub fn emit_doc_change(ctx: &CommandContext, changes: &[DocChange]) -> Result<()> {
+    emit_event_impl("doc-change", ctx, None, Some(changes))
+}
+
+/// 事件触发公共实现；changes 为 Some 时序列化合并范围到 doc.changes。
+fn emit_event_impl(
+    name: &str,
+    ctx: &CommandContext,
+    extra: Option<&str>,
+    changes: Option<&[DocChange]>,
+) -> Result<()> {
     crate::init();
     crate::state::with_edits(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
@@ -499,6 +514,14 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
     }
     crate::state::with_engine(|engine| {
         let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build event doc: {e}"))?;
+        if let Some(changes) = changes {
+            let arr = build_changes_array(changes, ctx, engine)
+                .map_err(|e| anyhow!("failed to build event changes: {e}"))?;
+            doc.as_object()
+                .ok_or_else(|| anyhow!("event doc is not an object"))?
+                .set(JsString::from("changes"), arr, false, engine)
+                .map_err(|e| anyhow!("failed to attach event changes: {e}"))?;
+        }
         let undefined = JsValue::undefined();
         for handler in &handlers {
             let func = handler
@@ -517,6 +540,73 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
         }
         Ok(())
     })
+}
+
+/// 防抖窗口内变更合并为包围范围：old = (min old_start, max old_end)，new = (min new_start, max new_end)。
+/// 窗口无变更 → 空数组。坐标行列按当前文本换算（old 坐标相对变更时刻文本，窗口语义由插件处理）。
+fn build_changes_array(changes: &[DocChange], ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+    if changes.is_empty() {
+        return Ok(JsValue::from(JsArray::new(engine)));
+    }
+    let old_start = changes.iter().map(|c| c.0 .0).min().unwrap();
+    let old_end = changes.iter().map(|c| c.0 .1).max().unwrap();
+    let new_start = changes.iter().map(|c| c.1 .0).min().unwrap();
+    let new_end = changes.iter().map(|c| c.1 .1).max().unwrap();
+    let old_range = range_point(engine, &ctx.text, old_start, old_end)?;
+    let new_range = range_point(engine, &ctx.text, new_start, new_end)?;
+    let entry = JsValue::from(
+        ObjectInitializer::new(engine)
+            .property(JsString::from("oldRange"), old_range, Attribute::all())
+            .property(JsString::from("newRange"), new_range, Attribute::all())
+            .build(),
+    );
+    Ok(JsValue::from(JsArray::from_iter([entry], engine)))
+}
+
+/// char 索引 → 0-based (row, col)；越界 clamp 到文本末尾。
+fn pos_to_row_col(text: &str, pos: usize) -> (usize, usize) {
+    let mut row = 0;
+    let mut col = 0;
+    for (n, ch) in text.chars().enumerate() {
+        if n >= pos {
+            break;
+        }
+        if ch == '\n' {
+            row += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (row, col)
+}
+
+/// { start: {row, col}, end: {row, col} } 范围对象。
+fn range_point(
+    engine: &mut Context,
+    text: &str,
+    start: usize,
+    end: usize,
+) -> boa_engine::JsResult<JsValue> {
+    let start_pt = point_js(engine, text, start)?;
+    let end_pt = point_js(engine, text, end)?;
+    Ok(JsValue::from(
+        ObjectInitializer::new(engine)
+            .property(JsString::from("start"), start_pt, Attribute::all())
+            .property(JsString::from("end"), end_pt, Attribute::all())
+            .build(),
+    ))
+}
+
+/// { row, col } 坐标对象。
+fn point_js(engine: &mut Context, text: &str, pos: usize) -> boa_engine::JsResult<JsValue> {
+    let (row, col) = pos_to_row_col(text, pos);
+    Ok(JsValue::from(
+        ObjectInitializer::new(engine)
+            .property(JsString::from("row"), JsValue::from(row as f64), Attribute::all())
+            .property(JsString::from("col"), JsValue::from(col as f64), Attribute::all())
+            .build(),
+    ))
 }
 
 /// 钩子调用：按注册顺序调用 name 的 handler，返回第一个非 undefined 返回值。

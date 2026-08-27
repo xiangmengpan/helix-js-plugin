@@ -1,4 +1,7 @@
 use boa_engine::JsValue;
+
+/// 一次文档变更的 (旧文本坐标, 新文本坐标)，均为 char 索引；doc-change 事件窗口内合并后序列化。
+pub type DocChange = ((usize, usize), (usize, usize));
 /// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
 #[derive(Debug)]
 pub enum UiRequest {

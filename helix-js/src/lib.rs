@@ -18,6 +18,7 @@ pub mod cursor;
 pub mod config;
 
 pub use commands::*;
+pub use types::DocChange;
 pub use icons::*;
 pub use input::{clear_popup_inputs, dispatch_input_key, input_edit, input_has_state, js_set_input_value, with_input_states, InputState};
 pub use lsp::*;
@@ -850,6 +851,30 @@ pub(crate) mod tests {
         assert_eq!(take_messages(), vec!["changed:2"]);
         // 未注册的事件名仍然报错
         assert!(load_script(r#"helix.on("bogus", () => {});"#).is_err());
+    }
+
+    #[test]
+    fn doc_change_changes_merged_range() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.on("doc-change", (doc) => {
+            if (doc.changes.length === 0) { helix.echo("empty"); return; }
+            const c = doc.changes[0];
+            helix.echo(c.oldRange.start.row + "," + c.oldRange.start.col + "-" + c.oldRange.end.row + "," + c.oldRange.end.col + "|" + c.newRange.start.row + "," + c.newRange.start.col + "-" + c.newRange.end.row + "," + c.newRange.end.col);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: "hello world".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        // 两次插入:a 在 char0、b 在 char1 → 合并 old = (0,0)-(1,1),new = (0,0)-(1,2);行列按当前文本换算
+        let changes = vec![((0, 0), (0, 1)), ((1, 1), (1, 2))];
+        emit_doc_change(&ctx, &changes).unwrap();
+        assert_eq!(take_messages(), vec!["0,0-0,1|0,0-0,2"]);
+        // 无变更 → changes 为空数组
+        emit_doc_change(&ctx, &[]).unwrap();
+        assert_eq!(take_messages(), vec!["empty"]);
     }
 
     #[test]

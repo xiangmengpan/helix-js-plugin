@@ -35,3 +35,73 @@ async fn plugin_doc_change_event() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// echo 事件参数里合并后的 changes 范围(0,0-0,0|0,0-0,1 格式:oldRange start-end | newRange start-end)
+fn range_echo_script() -> String {
+    r#"helix.on("doc-change", (doc) => {
+        if (doc.changes.length === 0) { return; }
+        const c = doc.changes[0];
+        helix.echo(c.oldRange.start.row + "," + c.oldRange.start.col + "-" + c.oldRange.end.row + "," + c.oldRange.end.col + "|" + c.newRange.start.row + "," + c.newRange.start.col + "-" + c.newRange.end.row + "," + c.newRange.end.col);
+    });"#
+    .to_string()
+}
+
+// doc-change 带 changes:单次插入 → oldRange 精确到插入点,newRange 为插入后的文本范围
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_doc_change_single_change_range() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("dc1.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin_path = dir.path().join("docchange1.js");
+    std::fs::write(&plugin_path, range_echo_script())?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            // 光标 (0,0) 插 "x":old = (0,0)-(0,0)(插入点),new = (0,0)-(0,1)
+            (
+                Some("ix<esc>"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert_eq!(*severity, Severity::Info, "status: {status}");
+                    assert_eq!(status.as_ref(), "0,0-0,0|0,0-0,1");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+// doc-change 窗口内两次插入 → 合并为包围范围(光标 (0,0) 插 "a" 再插 "b")
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_doc_change_merged_range() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("dc2.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin_path = dir.path().join("docchange2.js");
+    std::fs::write(&plugin_path, range_echo_script())?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            // 两次插入:a 在 char0,b 在 char1 → 合并 old = (0,0)-(1,1) → (0,0)-(0,1);new = (0,0)-(1,2) → (0,0)-(0,2)
+            (
+                Some("iab<esc>"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert_eq!(*severity, Severity::Info, "status: {status}");
+                    assert_eq!(status.as_ref(), "0,0-0,1|0,0-0,2");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}

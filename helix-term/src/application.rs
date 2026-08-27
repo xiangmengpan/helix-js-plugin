@@ -804,7 +804,11 @@ impl Application {
                 }
             });
             if changed {
-                crate::commands::typed::emit_plugin_event(&mut self.editor, "doc-change", None);
+                let changes = {
+                    let (_, doc) = helix_view::current!(self.editor);
+                    doc.take_pending_changes()
+                };
+                crate::commands::typed::emit_plugin_doc_change(&mut self.editor, &changes);
             }
         }
         let mut cx = crate::compositor::Context {

@@ -4415,6 +4415,20 @@ pub(super) fn execute_command(
 /// 参数用 `&mut Editor` 而非 compositor::Context：commands.rs 的模式命令
 /// 拿到的是 keymap Context（只有 editor 字段），此签名两个调用方都兼容。
 pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&str>) {
+    emit_plugin_event_impl(editor, name, extra, None)
+}
+
+/// doc-change 专用入口：防抖窗口内合并的变更范围随事件序列化（doc.changes）。
+pub(crate) fn emit_plugin_doc_change(editor: &mut Editor, changes: &[helix_js::DocChange]) {
+    emit_plugin_event_impl(editor, "doc-change", None, Some(changes))
+}
+
+fn emit_plugin_event_impl(
+    editor: &mut Editor,
+    name: &str,
+    extra: Option<&str>,
+    changes: Option<&[helix_js::DocChange]>,
+) {
     if !helix_js::has_handlers(name) {
         return;
     }
@@ -4436,7 +4450,10 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
         ),
     };
 
-    if let Err(err) = helix_js::emit_event(name, &ctx, extra) {
+    if let Err(err) = match changes {
+        Some(changes) => helix_js::emit_doc_change(&ctx, changes),
+        None => helix_js::emit_event(name, &ctx, extra),
+    } {
         editor.set_error(format!("plugin event '{name}' failed: {err}"));
         return;
     }

@@ -1696,9 +1696,8 @@ impl Document {
     }
 
     /// Take and clear the changes recorded since the last doc-change event.
-    /// ponytail: consumed by helix-term doc-change event trigger (plan task 2), remove allow then
-    #[allow(dead_code)]
-    pub(crate) fn take_pending_changes(&mut self) -> Vec<((usize, usize), (usize, usize))> {
+    /// Consumed by helix-term doc-change event trigger (plan task 2).
+    pub fn take_pending_changes(&mut self) -> Vec<((usize, usize), (usize, usize))> {
         std::mem::take(&mut self.pending_doc_changes)
     }
 
