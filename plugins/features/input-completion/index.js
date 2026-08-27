@@ -71,4 +71,5 @@ helix.register_command("ic", () => {
     render,
     onClose: () => { pid = null; },
   });
+  ask(); // 打开即基于当前光标补全,直接显示候选(insert 下按 C-x 的场景)
 });
