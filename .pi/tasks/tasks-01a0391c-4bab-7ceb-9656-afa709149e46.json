@@ -1,0 +1,49 @@
+{
+  "nextId": 10,
+  "tasks": [
+    {
+      "id": "6",
+      "subject": "任务1: InputStates + input_edit 纯函数",
+      "description": "创建 helix-js/src/input.rs:InputState{value,cursor} + input_edit 纯函数(插入/Backspace/Delete/Left/Right/Home/End/非编辑键→None)+ InputStates 存储 + lib.rs mod。单测 input_edit_basic + input_edit_utf8_and_clamp。计划 docs/superpowers/plans/2026-08-26-js-input-completion.md 任务 1",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787761026178,
+      "updatedAt": 1787761594924
+    },
+    {
+      "id": "7",
+      "subject": "任务2: 渲染接入 + onChange + set_input_value + 生命周期",
+      "description": "渲染接入(parse_node 状态覆盖/初始化 + CompNode::Input 加 cursor)+ NodeHandlers.on_change + dispatch_input_key + js_set_input_value + close_popup 清理 + lib.rs 注册。单测 input_dispatch_and_set。计划任务 2",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787761026181,
+      "updatedAt": 1787762154118
+    },
+    {
+      "id": "8",
+      "subject": "任务3: 按键路由分类 + 光标渲染",
+      "description": "plugin_popup.rs 按键路由分类(Left/Right/Home/End→dispatch_input_key 光标;Up/Down/Enter→dispatch_node_event onKey;字符/Backspace/Delete→dispatch_input_key)+ comp_layout Input 光标渲染。集成测试 plugin_input.rs(chg:a / key:Up / key:Down)。计划任务 3",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787761026182,
+      "updatedAt": 1787785996515
+    },
+    {
+      "id": "9",
+      "subject": "任务4: demo 插件 + 文档",
+      "description": "plugins/features/input-completion/index.js demo(输入触发 completion 防抖,↑↓ 导航,Enter 插入)+ docs/plugin-api.md input 章节更新(onChange/set_input_value/按键语义表)。计划任务 4",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787761026183,
+      "updatedAt": 1787787996518
+    }
+  ]
+}
