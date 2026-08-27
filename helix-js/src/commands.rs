@@ -535,6 +535,7 @@ fn emit_event_impl(
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 crate::state::with_edits(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
+    crate::state::with_txn_depth(|d| *d = 0); // 与正常入口复位一致:错误路径也恢复事务深度
                 anyhow!("event '{name}' handler failed: {e}")
             })?;
         }

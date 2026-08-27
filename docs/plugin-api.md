@@ -126,12 +126,31 @@ ctx.doc.delete(sr, sc, er, ec)              // 删除区间
 - 越界自动 clamp；一次命令的所有编辑 = 一个事务 = 一次撤销。
 - 编辑后游标被自动重映射（在插入处插入后，游标落在插入文本之后）。
 
-### `helix.set_cursor(row, col)` / `helix.set_selection(ar, ac, hr, hc)`
+### `helix.begin_edit()` / `helix.end_edit()`(批量编辑事务)
+
+```js
+helix.begin_edit();
+await something();          // async 命令跨 await:泵循环每帧取编辑会被拆事务
+ctx.doc.insert(0, 0, "a");
+helix.end_edit();           // 期间所有编辑合并为一个事务 = 一次撤销
+```
+
+- 可嵌套(深度计数)；`end_edit` 深度归零时才放行编辑应用。
+- **未配对 begin**(begin 后无 end):下个命令/事件入口复位深度并丢弃积压编辑(不崩)。
+- 同步命令本身已是一个事务,本 API 主要用于 async 跨 await 场景。
+
+### `helix.set_cursor(row, col)` / `helix.set_selection(ar, ac, hr, hc)` / `helix.set_selection([...])`
 
 ```js
 helix.set_cursor(3, 10);                          // 移动主光标
-helix.set_selection(1, 0, 3, 5);                  // 设置选区
+helix.set_selection(1, 0, 3, 5);                  // 设置单选区
+helix.set_selection([                             // 多选区(数组形态)
+  { anchor: { row: 0, col: 0 }, head: { row: 0, col: 2 } },
+  { anchor: { row: 2, col: 1 }, head: { row: 2, col: 4 } },
+]);
 ```
+
+- 多选区按 range 起点排序,主光标 = 排序后末位(与 helix 原生多光标一致)；空数组/元素缺字段报错。
 
 - 写操作队列化，命令返回后应用；光标请求在编辑事务之前应用。
 
@@ -229,6 +248,18 @@ helix.read_dir("/tmp").forEach(e => {
 | `buffer-open` | `:open` 打开文件后 | `(doc)` |
 | `buffer-close` | 关闭（quit/force_quit 路径）前 | `(doc)` |
 | `doc-change` | 文档文本变化，编辑停顿 250ms 后（idle 防抖） | `(doc)` |
+
+`doc-change` 的 `doc` 额外带 `changes`(防抖窗口内变更的**合并范围**,无变更时 `[]`)：
+
+```js
+helix.on("doc-change", (doc) => {
+  doc.changes  // [{ oldRange: {start:{row,col}, end:{row,col}},
+                //    newRange: {start:{row,col}, end:{row,col}} }]
+});
+```
+
+- 合并语义:窗口内多次变更合并为包围范围(old = 各 old 起点最小..终点最大,new 同理)；单次变更即其本身。
+- 坐标是各变更发生时刻的坐标(非当前文本),窗口语义由插件自行处理。
 
 - `doc` 与命令的 `ctx.doc` 同构（含 cursor 与编辑方法）。
 - 同事件可注册多个处理器，按注册顺序调用；处理器抛错 → 状态栏报错，不阻断主流程。
