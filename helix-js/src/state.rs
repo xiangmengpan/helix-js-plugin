@@ -58,6 +58,8 @@ thread_local! {
     static POPUPS: RefCell<Option<&'static mut HashMap<u64, PopupCallbacks>>> = const { RefCell::new(None) };
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
+    // 批量编辑事务深度(begin_edit/end_edit);>0 时 take_edits 积压
+    static EDIT_TXN_DEPTH: Cell<usize> = const { Cell::new(0) };
     // 最近一次 open_panel 的面板 id（:panel-close 用，无面板时为 None）
     static LAST_PANEL_ID: Cell<Option<u64>> = const { Cell::new(None) };
     // 原生终端视图 id 计数器（open_terminal 返回值；与 pty 进程 id 分开分配）
@@ -268,6 +270,16 @@ pub(crate) fn with_node_handlers<T>(f: impl FnOnce(&mut HashMap<(u64, String), N
     NODE_HANDLERS.with(|h| {
         let mut slot = h.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问批量编辑事务深度(普通 usize,随线程 drop)
+pub(crate) fn with_txn_depth<T>(f: impl FnOnce(&mut usize) -> T) -> T {
+    EDIT_TXN_DEPTH.with(|d| {
+        let mut v = d.get();
+        let out = f(&mut v);
+        d.set(v);
+        out
     })
 }
 

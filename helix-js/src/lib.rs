@@ -76,6 +76,8 @@ pub fn init() {
             let mut builder = ObjectInitializer::new(engine);
             builder
                 .function(NativeFunction::from_fn_ptr(commands::js_echo), JsString::from("echo"), 1)
+                .function(NativeFunction::from_fn_ptr(commands::js_begin_edit), JsString::from("begin_edit"), 0)
+                .function(NativeFunction::from_fn_ptr(commands::js_end_edit), JsString::from("end_edit"), 0)
                 .function(NativeFunction::from_fn_ptr(commands::js_term_state), JsString::from("term_state"), 3)
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_register_command),
@@ -2077,6 +2079,48 @@ pub(crate) mod tests {
             msgs.iter().any(|m| m == "exit:3"),
             "term-exit 钩子触发: {msgs:?}"
         );
+    }
+
+    /// 批量编辑事务:begin_edit 后编辑积压(take_edits 返回空),end_edit 后一次取走。
+    /// Rust 侧直接驱动(简报备选方案):编辑队列用 with_edits 注入,begin/end 走 JS API。
+    #[test]
+    fn batch_edit_transaction() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 触发 builder 注册 begin_edit/end_edit
+        load_script(r#"helix.register_command("noop", () => {});"#).unwrap();
+
+        // 1. 未开启事务:编辑入队后可取走
+        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "a".into() }));
+        assert_eq!(take_edits().len(), 1);
+
+        // 2. begin 后编辑入队,take_edits 返回空(积压)
+        load_script("helix.begin_edit();").unwrap();
+        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "b".into() }));
+        assert!(take_edits().is_empty(), "txn open should hold edits");
+
+        // 3. end 后 take_edits 取到积压
+        load_script("helix.end_edit();").unwrap();
+        let edits = take_edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].insert, "b");
+
+        // 4. 命令内 begin/end 包住编辑:命令返回后一次取走
+        load_script(
+            r#"
+        helix.register_command("be", (ctx) => {
+            helix.begin_edit();
+            ctx.doc.insert(0, 0, "c");
+            helix.end_edit();
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = crate::CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        assert!(run_command("be", &ctx).unwrap());
+        let edits = take_edits();
+        assert_eq!(edits.len(), 1, "begin/end 包住的编辑合并取走");
+        assert_eq!(edits[0].insert, "c");
     }
 
 }

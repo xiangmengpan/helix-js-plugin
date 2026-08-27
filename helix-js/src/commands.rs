@@ -815,10 +815,25 @@ pub(crate) fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Con
     Ok(JsValue::undefined())
 }
 
-/// 取走并清空编辑队列（helix-term 在命令返回后消费）
+/// 取走并清空编辑队列（helix-term 在命令返回后消费）；事务开启时积压不消费
 pub fn take_edits() -> Vec<Edit> {
     crate::init();
+    if crate::state::with_txn_depth(|d| *d > 0) {
+        return Vec::new(); // 事务打开:积压不消费
+    }
     crate::state::with_edits(std::mem::take)
+}
+
+/// 声明批量编辑事务开始:期间编辑积压,end 后合并取走(一次撤销)
+pub(crate) fn js_begin_edit(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    crate::state::with_txn_depth(|d| *d += 1);
+    Ok(JsValue::undefined())
+}
+
+/// 声明批量编辑事务结束:积压编辑可被 take_edits 取走
+pub(crate) fn js_end_edit(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    crate::state::with_txn_depth(|d| *d = d.saturating_sub(1));
+    Ok(JsValue::undefined())
 }
 
 /// 触发节点事件（焦点路由）：onPress → 无参调用；onKey → 传键名
