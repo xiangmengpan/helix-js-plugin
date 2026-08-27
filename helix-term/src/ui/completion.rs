@@ -45,74 +45,81 @@ impl menu::Item for CompletionItem {
             CompletionItem::Other(core::CompletionItem { label, .. }) => label,
         };
 
-        let kind = match self {
+        let (kind_spans, kind_num) = match self {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => match item.kind {
-                Some(lsp::CompletionItemKind::TEXT) => "text".into(),
-                Some(lsp::CompletionItemKind::METHOD) => "method".into(),
-                Some(lsp::CompletionItemKind::FUNCTION) => "function".into(),
-                Some(lsp::CompletionItemKind::CONSTRUCTOR) => "constructor".into(),
-                Some(lsp::CompletionItemKind::FIELD) => "field".into(),
-                Some(lsp::CompletionItemKind::VARIABLE) => "variable".into(),
-                Some(lsp::CompletionItemKind::CLASS) => "class".into(),
-                Some(lsp::CompletionItemKind::INTERFACE) => "interface".into(),
-                Some(lsp::CompletionItemKind::MODULE) => "module".into(),
-                Some(lsp::CompletionItemKind::PROPERTY) => "property".into(),
-                Some(lsp::CompletionItemKind::UNIT) => "unit".into(),
-                Some(lsp::CompletionItemKind::VALUE) => "value".into(),
-                Some(lsp::CompletionItemKind::ENUM) => "enum".into(),
-                Some(lsp::CompletionItemKind::KEYWORD) => "keyword".into(),
-                Some(lsp::CompletionItemKind::SNIPPET) => "snippet".into(),
-                Some(lsp::CompletionItemKind::COLOR) => item
-                    .documentation
-                    .as_ref()
-                    .and_then(|docs| {
-                        let text = match docs {
-                            lsp::Documentation::String(text) => text,
-                            lsp::Documentation::MarkupContent(lsp::MarkupContent {
-                                value, ..
-                            }) => value,
-                        };
-                        // Language servers which send Color completion items tend to include a 6
-                        // digit hex code at the end for the color. The extra 1 digit is for the '#'
-                        text.get(text.len().checked_sub(7)?..)
-                    })
-                    .and_then(|c| Color::from_hex(c).ok())
-                    .map_or("color".into(), |color| {
-                        Spans::from(vec![
-                            Span::raw("color "),
-                            Span::styled("■", Style::default().fg(color)),
-                        ])
-                    }),
-                Some(lsp::CompletionItemKind::FILE) => "file".into(),
-                Some(lsp::CompletionItemKind::REFERENCE) => "reference".into(),
-                Some(lsp::CompletionItemKind::FOLDER) => "folder".into(),
-                Some(lsp::CompletionItemKind::ENUM_MEMBER) => "enum_member".into(),
-                Some(lsp::CompletionItemKind::CONSTANT) => "constant".into(),
-                Some(lsp::CompletionItemKind::STRUCT) => "struct".into(),
-                Some(lsp::CompletionItemKind::EVENT) => "event".into(),
-                Some(lsp::CompletionItemKind::OPERATOR) => "operator".into(),
-                Some(lsp::CompletionItemKind::TYPE_PARAMETER) => "type_param".into(),
+                Some(lsp::CompletionItemKind::TEXT) => ("text".into(), 1),
+                Some(lsp::CompletionItemKind::METHOD) => ("method".into(), 2),
+                Some(lsp::CompletionItemKind::FUNCTION) => ("function".into(), 3),
+                Some(lsp::CompletionItemKind::CONSTRUCTOR) => ("constructor".into(), 4),
+                Some(lsp::CompletionItemKind::FIELD) => ("field".into(), 5),
+                Some(lsp::CompletionItemKind::VARIABLE) => ("variable".into(), 6),
+                Some(lsp::CompletionItemKind::CLASS) => ("class".into(), 7),
+                Some(lsp::CompletionItemKind::INTERFACE) => ("interface".into(), 8),
+                Some(lsp::CompletionItemKind::MODULE) => ("module".into(), 9),
+                Some(lsp::CompletionItemKind::PROPERTY) => ("property".into(), 10),
+                Some(lsp::CompletionItemKind::UNIT) => ("unit".into(), 11),
+                Some(lsp::CompletionItemKind::VALUE) => ("value".into(), 12),
+                Some(lsp::CompletionItemKind::ENUM) => ("enum".into(), 13),
+                Some(lsp::CompletionItemKind::KEYWORD) => ("keyword".into(), 14),
+                Some(lsp::CompletionItemKind::SNIPPET) => ("snippet".into(), 15),
+                Some(lsp::CompletionItemKind::COLOR) => (
+                    item.documentation
+                        .as_ref()
+                        .and_then(|docs| {
+                            let text = match docs {
+                                lsp::Documentation::String(text) => text,
+                                lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                                    value, ..
+                                }) => value,
+                            };
+                            // Language servers which send Color completion items tend to include a 6
+                            // digit hex code at the end for the color. The extra 1 digit is for the '#'
+                            text.get(text.len().checked_sub(7)?..)
+                        })
+                        .and_then(|c| Color::from_hex(c).ok())
+                        .map_or("color".into(), |color| {
+                            Spans::from(vec![
+                                Span::raw("color "),
+                                Span::styled("■", Style::default().fg(color)),
+                            ])
+                        }),
+                    16,
+                ),
+                Some(lsp::CompletionItemKind::FILE) => ("file".into(), 17),
+                Some(lsp::CompletionItemKind::REFERENCE) => ("reference".into(), 18),
+                Some(lsp::CompletionItemKind::FOLDER) => ("folder".into(), 19),
+                Some(lsp::CompletionItemKind::ENUM_MEMBER) => ("enum_member".into(), 20),
+                Some(lsp::CompletionItemKind::CONSTANT) => ("constant".into(), 21),
+                Some(lsp::CompletionItemKind::STRUCT) => ("struct".into(), 22),
+                Some(lsp::CompletionItemKind::EVENT) => ("event".into(), 23),
+                Some(lsp::CompletionItemKind::OPERATOR) => ("operator".into(), 24),
+                Some(lsp::CompletionItemKind::TYPE_PARAMETER) => ("type_param".into(), 25),
                 Some(kind) => {
                     log::error!("Received unknown completion item kind: {:?}", kind);
-                    "".into()
+                    ("".into(), 0)
                 }
-                None => "".into(),
+                None => ("".into(), 0),
             },
-            CompletionItem::Other(core::CompletionItem { kind, .. }) => kind.as_ref().into(),
+            CompletionItem::Other(core::CompletionItem { kind, .. }) => (kind.as_ref().into(), 0),
         };
 
         let label = Span::styled(
             label,
             if deprecated {
                 Style::default().add_modifier(Modifier::CROSSED_OUT)
-            } else if kind.0[0].content == "folder" {
+            } else if kind_spans.0[0].content == "folder" {
                 *dir_style
             } else {
                 Style::default()
             },
         );
 
-        menu::Row::new([menu::Cell::from(label), menu::Cell::from(kind)])
+        let kind_cell = match helix_js::completion_kind_icon(kind_num) {
+            Some(icon) => menu::Cell::from(Span::raw(icon)),
+            None => menu::Cell::from(kind_spans),
+        };
+
+        menu::Row::new([menu::Cell::from(label), kind_cell])
     }
 }
 
@@ -661,4 +668,64 @@ fn completion_changes(transaction: &Transaction, trigger_offset: usize) -> Vec<C
         .changes_iter()
         .filter(|(start, end, _)| (*start..=*end).contains(&trigger_offset))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::menu::Item;
+
+    fn lsp_item(kind: Option<lsp::CompletionItemKind>) -> CompletionItem {
+        CompletionItem::Lsp(LspCompletionItem {
+            item: lsp::CompletionItem {
+                label: "foo".into(),
+                kind,
+                ..Default::default()
+            },
+            provider: core::diagnostic::LanguageServerId::default(),
+            resolved: false,
+            provider_priority: 0,
+        })
+    }
+
+    fn cells(row: &menu::Row<'_>) -> Vec<String> {
+        row.cell_text().collect()
+    }
+
+    #[test]
+    fn format_kind_text_without_hook() {
+        // 未注册钩子 → kind 文本
+        let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
+        let row = CompletionItem::format(&item, &Style::default());
+        assert_eq!(cells(&row), vec!["foo".to_string(), "method".to_string()]);
+    }
+
+    #[test]
+    fn format_kind_icon_with_hook() {
+        // 注册钩子 → kind cell 是图标字符
+        helix_js::init();
+        helix_js::load_script(r#"helix.set_completion_icon((k) => "i" + k);"#).unwrap();
+        let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
+        let row = CompletionItem::format(&item, &Style::default());
+        assert_eq!(cells(&row), vec!["foo".to_string(), "i2".to_string()]);
+    }
+
+    #[test]
+    fn format_other_item_ignores_hook() {
+        // 非 LSP 候选:无数字 kind,kind_num=0;钩子只在 1-25 返回 → 0 回退到 kind 字符串
+        helix_js::init();
+        helix_js::load_script(
+            r#"helix.set_completion_icon((k) => k >= 1 && k <= 25 ? "i" + k : "");"#,
+        )
+        .unwrap();
+        let item = CompletionItem::Other(core::CompletionItem {
+            transaction: Transaction::new(&core::Rope::from("foo")),
+            label: "foo".into(),
+            kind: "word".into(),
+            documentation: None,
+            provider: core::completion::CompletionProvider::Word,
+        });
+        let row = CompletionItem::format(&item, &Style::default());
+        assert_eq!(cells(&row), vec!["foo".to_string(), "word".to_string()]);
+    }
 }
