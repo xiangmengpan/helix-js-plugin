@@ -4492,7 +4492,7 @@ fn pos_to_char(text: &Rope, row: usize, col: usize) -> usize {
 /// 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
 /// 快照坐标的光标正确推进）
 pub(crate) fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::CursorRequest]) -> anyhow::Result<()> {
-    use helix_core::Selection;
+    use helix_core::{Range, Selection, SmallVec};
     let (view, doc) = current!(editor);
     let text = doc.text();
     // 先全部算完再逐个应用：避免 text（对 doc 的不可变借用）与 set_selection 冲突
@@ -4506,6 +4506,16 @@ pub(crate) fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::Curso
                 let a = pos_to_char(text, anchor.0, anchor.1);
                 let h = pos_to_char(text, head.0, head.1);
                 Selection::single(a, h)
+            }
+            helix_js::CursorRequest::SetSelections(sel) => {
+                // 多选区：先排序再取末位作 primary（normalize 只重定位 primary，不保证末位）
+                let mut ranges: SmallVec<[Range; 1]> = sel
+                    .iter()
+                    .map(|(a, h)| Range::new(pos_to_char(text, a.0, a.1), pos_to_char(text, h.0, h.1)))
+                    .collect();
+                ranges.sort_unstable_by_key(Range::from);
+                let primary = ranges.len() - 1;
+                Selection::new(ranges, primary)
             }
         })
         .collect();

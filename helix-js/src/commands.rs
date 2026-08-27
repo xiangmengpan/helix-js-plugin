@@ -826,6 +826,32 @@ pub(crate) fn js_set_cursor(_this: &JsValue, args: &[JsValue], context: &mut Con
 }
 
 pub(crate) fn js_set_selection(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    // 第一参是数组 → 多选区形态；否则走 4 参单选区兼容逻辑
+    if let Some(obj) = args.first().unwrap_or(&JsValue::undefined()).as_object() {
+        if obj.is_array() {
+            let arr = JsArray::from_object(obj.clone()).expect("is_array checked");
+            let len = arr.length(context)?;
+            if len == 0 {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                    "set_selection: empty selection array",
+                ))));
+            }
+            let mut selections = Vec::with_capacity(len as usize);
+            for i in 0..len {
+                let elem = arr.get(i, context)?;
+                let el = elem.as_object().ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(
+                        "set_selection: each array element must be { anchor, head }",
+                    )))
+                })?;
+                let anchor = parse_sel_pos(&el.get(JsString::from("anchor"), context)?, context)?;
+                let head = parse_sel_pos(&el.get(JsString::from("head"), context)?, context)?;
+                selections.push((anchor, head));
+            }
+            crate::state::with_cursor_requests(|c| c.push(CursorRequest::SetSelections(selections)));
+            return Ok(JsValue::undefined());
+        }
+    }
     let ar: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let ac: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let hr: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
@@ -835,6 +861,24 @@ pub(crate) fn js_set_selection(_this: &JsValue, args: &[JsValue], context: &mut 
         head: (hr, hc),
     }));
     Ok(JsValue::undefined())
+}
+
+/// 解析多选区的 { row, col }——字段缺失/非对象 → Err（与 parse_pos 的缺省语义不同，
+/// 多选区坐标必须完整显式）
+fn parse_sel_pos(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<(usize, usize)> {
+    let obj = v.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "set_selection: anchor/head must be { row, col }",
+        )))
+    })?;
+    let row = obj.get(JsString::from("row"), ctx)?;
+    let col = obj.get(JsString::from("col"), ctx)?;
+    if row.is_null_or_undefined() || col.is_null_or_undefined() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "set_selection: anchor/head missing row/col",
+        ))));
+    }
+    Ok((row.try_js_into::<usize>(ctx)?, col.try_js_into::<usize>(ctx)?))
 }
 
 /// shell 执行输出截断上限（防失控输出冻结状态栏）

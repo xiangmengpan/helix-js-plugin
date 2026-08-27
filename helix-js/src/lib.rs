@@ -1082,6 +1082,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn set_selection_array() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 数组形态 → SetSelections 入队
+        load_script(
+            r#"
+        helix.set_selection([{ anchor: {row: 0, col: 0}, head: {row: 0, col: 2} },
+                             { anchor: {row: 2, col: 1}, head: {row: 2, col: 4} }]);
+        "#,
+        )
+        .unwrap();
+        let reqs = take_cursor_requests();
+        assert!(matches!(&reqs[0], CursorRequest::SetSelections(v) if v.len() == 2));
+        // 空数组 → JS 报错
+        assert!(load_script(r#"helix.set_selection([]);"#).is_err());
+        // 缺字段 → JS 报错
+        assert!(load_script(r#"helix.set_selection([{ anchor: {row:0,col:0} }]);"#).is_err());
+        // 4 参兼容
+        load_script(r#"helix.set_selection(0, 0, 1, 1);"#).unwrap();
+        let reqs = take_cursor_requests();
+        assert!(matches!(&reqs[0], CursorRequest::SetSelection { .. }));
+    }
+
+    #[test]
     fn shell_run() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();

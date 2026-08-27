@@ -54,3 +54,48 @@ async fn plugin_selection_upper() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// 多选区：set_selection 数组形态 → 多光标；乱序输入 → 引擎排序，primary = 末位。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_selection_multicursor() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("sel.txt");
+    std::fs::write(&file, "aaaa\nbbbb\ncccc\n")?;
+    let plugin_path = dir.path().join("multi.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("multi", (ctx) => {
+            helix.set_selection([
+                { anchor: {row: 2, col: 1}, head: {row: 2, col: 3} },
+                { anchor: {row: 0, col: 2}, head: {row: 0, col: 4} },
+            ]);
+        });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(":multi<ret>"),
+                Some(&|app| {
+                    let (view, doc) = current_ref!(app.editor);
+                    let sel = doc.selection(view.id);
+                    assert_eq!(sel.len(), 2, "two selections");
+                    let ranges: Vec<(usize, usize)> =
+                        sel.ranges().iter().map(|r| (r.from(), r.to())).collect();
+                    // 乱序输入(row2 在前) → 引擎按位置排序
+                    assert_eq!(ranges[0], (2, 4), "first range after sort");
+                    assert_eq!(ranges[1], (11, 13), "second range after sort");
+                    assert_eq!(sel.primary_index(), 1, "primary = 排序后末位");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}

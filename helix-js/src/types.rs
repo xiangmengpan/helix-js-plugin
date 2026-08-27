@@ -284,6 +284,7 @@ pub struct Edit {
 pub enum CursorRequest {
     SetCursor { row: usize, col: usize },
     SetSelection { anchor: (usize, usize), head: (usize, usize) },
+    SetSelections(Vec<((usize, usize), (usize, usize))>),
 }
 
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
