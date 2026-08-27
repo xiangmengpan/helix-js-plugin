@@ -784,20 +784,25 @@ impl Application {
         if helix_js::has_handlers("doc-change") {
             use std::cell::Cell;
             thread_local! {
-                static LAST_REVISION: Cell<Option<usize>> = const { Cell::new(None) };
+                // 按 (doc 地址, revision) 记录：revision 是每文档计数,全局单值会让不同文档
+                // 同 revision 互相吞事件。DocumentId 每 Editor 从 1 起(测试各 app 会撞),
+                // 用地址作会话内身份。
+                // ponytail: 同地址复用且同 revision 才会误吞,现实不可达
+                static LAST_REVISION: Cell<Option<(*const helix_view::document::Document, usize)>> =
+                    const { Cell::new(None) };
             }
-            let rev = {
+            let (doc, rev) = {
                 let (_, doc) = helix_view::current_ref!(self.editor);
                 // History 非 Copy，Cell::get 不可用；沿用 document.rs 的 take/set 模式读 revision
                 let history = doc.history.take();
                 let rev = history.current_revision();
                 doc.history.set(history);
-                rev
+                (doc as *const helix_view::document::Document, rev)
             };
             let changed = LAST_REVISION.with(|c| {
                 let prev = c.get();
-                if prev != Some(rev) {
-                    c.set(Some(rev));
+                if prev != Some((doc, rev)) {
+                    c.set(Some((doc, rev)));
                     true
                 } else {
                     false

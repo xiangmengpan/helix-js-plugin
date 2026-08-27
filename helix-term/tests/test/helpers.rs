@@ -354,6 +354,10 @@ pub fn new_readonly_tempfile_in_dir(
 /// 会互相关闭对方的面板；面板相关集成测试持此锁串行执行。
 pub static PANEL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// doc-change 类测试共享锁：helix-js 的 echo 消息队列是进程全局（MESSAGES），并行
+/// 测试的 echo/take_messages 对会跨线程互相偷取（join 或丢失状态）；串行执行隔离。
+pub static DOC_CHANGE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct AppBuilder {
     args: Args,
     config: Config,
