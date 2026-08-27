@@ -429,6 +429,8 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     // 命令开始时清空编辑队列，避免跨命令残留
     crate::state::with_edits(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
+    // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
+    crate::state::with_txn_depth(|d| *d = 0);
     let func = with_registry(|r| r.get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
@@ -488,6 +490,8 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
     crate::init();
     crate::state::with_edits(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
+    // 复位事务深度：上一命令/事件未配对的 begin 在此丢弃（积压编辑随队列清空）
+    crate::state::with_txn_depth(|d| *d = 0);
     let handlers = with_event_handlers(|h| h.get(name).cloned());
     let Some(handlers) = handlers else { return Ok(()) };
     if handlers.is_empty() {
@@ -819,7 +823,9 @@ pub(crate) fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Con
 pub fn take_edits() -> Vec<Edit> {
     crate::init();
     if crate::state::with_txn_depth(|d| *d > 0) {
-        return Vec::new(); // 事务打开:积压不消费
+        // 事务打开:积压不消费。未配对的 begin(不 end)在下一命令/事件入口
+        // 随深度一起清队列,积压编辑丢弃(不崩),见规格 §4
+        return Vec::new();
     }
     crate::state::with_edits(std::mem::take)
 }
@@ -934,6 +940,7 @@ fn reset_plugin_state() {
     with_popups(|p| p.clear());
     crate::state::with_edits(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
+    crate::state::with_txn_depth(|d| *d = 0);
     with_buffer_icon_hook(|h| *h = None);
     with_statusline_hook(|h| *h = None);
     crate::state::set_last_panel_id(None);

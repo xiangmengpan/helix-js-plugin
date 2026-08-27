@@ -2121,6 +2121,44 @@ pub(crate) mod tests {
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "begin/end 包住的编辑合并取走");
         assert_eq!(edits[0].insert, "c");
+
+        // 5. 嵌套 begin/end:深度计数,内层 end 不释放外层
+        load_script("helix.begin_edit(); helix.begin_edit();").unwrap();
+        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "d".into() }));
+        assert!(take_edits().is_empty(), "嵌套:深度 2 仍积压");
+        load_script("helix.end_edit();").unwrap(); // 深度 2→1
+        assert!(take_edits().is_empty(), "嵌套:外层事务仍开启");
+        load_script("helix.end_edit();").unwrap(); // 深度 1→0
+        let edits = take_edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].insert, "d");
+
+        // 6. 多余 end:深度 0 饱和,不吞后续编辑
+        load_script("helix.end_edit(); helix.end_edit(); helix.end_edit();").unwrap();
+        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "e".into() }));
+        let edits = take_edits();
+        assert_eq!(edits.len(), 1, "多余 end 后编辑正常取走");
+        assert_eq!(edits[0].insert, "e");
+
+        // 7. begin 不 end(未配对):编辑积压;下一命令入口复位深度+清队列,编辑丢弃不吞后续
+        load_script(
+            r#"
+        helix.register_command("leak", (ctx) => {
+            helix.begin_edit();
+            ctx.doc.insert(0, 0, "f");
+        });
+        "#,
+        )
+        .unwrap();
+        assert!(run_command("leak", &ctx).unwrap());
+        assert!(take_edits().is_empty(), "未配对事务:编辑积压");
+        // 下一命令入口应复位 txn 深度并清队列(丢弃积压编辑)
+        assert!(run_command("noop", &ctx).unwrap());
+        assert_eq!(crate::state::with_txn_depth(|d| *d), 0, "命令入口应复位 txn 深度");
+        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "g".into() }));
+        let edits = take_edits();
+        assert_eq!(edits.len(), 1, "复位后编辑正常取走");
+        assert_eq!(edits[0].insert, "g");
     }
 
 }
