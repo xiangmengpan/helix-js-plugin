@@ -39,21 +39,21 @@ pub enum CursorRequest {
 
 ### 3.2 helix-term(commands/typed.rs apply_cursor_requests)
 
-现有逻辑逐条 `doc.set_selection`(覆盖语义)。多选区需要一次构造 `SelectionSet`:
+helix-core 的 `Selection` 本身就是多选区(`ranges: SmallVec` + `primary_index`),直接构造:
 
-- `SetSelections` → 解析每个 (anchor, head) 为 `Selection`,排序(按 anchor char 位置)后构造 `SelectionSet`
-- `doc.set_selection(view.id, SelectionSet)`(helix-view Document::set_selection 接受 SelectionSet——核对签名)
-- 与 SetCursor/SetSelection 混合:requests 里既有单又有多 → 按序应用(后者覆盖;文档注明混用语义 = 顺序应用)
+- `SetSelections` → 每个 (anchor, head) 转 `Range`,收集成 `SmallVec<[Range; 1]>`,`Selection::new(ranges, primary_index)`(normalize 自动排序) → `doc.set_selection(view.id, selection)`
+- `primary_index` = 最后一个(排序后末位,与 helix 原生多光标语义一致)
+- 与 SetCursor/SetSelection 混合:requests 按序应用(后者覆盖;文档注明混用语义)
 
 ### 3.3 主光标
 
-SelectionSet 的 primary(主光标)= 排序后最后一个(helix 语义,与原生多光标一致)。`set_cursor` 仍设主光标。
+`Selection::new` 的 primary_index 指定主光标(排序后末位)。`set_cursor` 仍设主光标(单选区)。
 
 ## 4. 边界
 
-- 排序/去重:anchor 排序;重叠选区不合并(helix SelectionSet 允许?——若不允许需去重,实现时核对 helix-core SelectionSet 构造约束)
+- 排序:Selection::new 的 normalize 自动排序;重叠选区由 normalize 处理(与原生一致)
 - 混用:单/多选区 request 顺序应用,后者覆盖
-- 数量:无上限(与 helix 原生多光标一致)
+- 数量:无上限(与 helix 原生多光标一致);primary_index 越界防御(空数组已在 JS 层拒绝)
 
 ## 5. 验证
 
