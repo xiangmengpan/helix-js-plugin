@@ -114,6 +114,7 @@ impl menu::Item for CompletionItem {
             },
         );
 
+        // kind_num 0(非 LSP/未知 kind)也会调钩子——插件侧约定 0 返回空回退;规范 kind 为 1-25
         let kind_cell = match helix_js::completion_kind_icon(kind_num) {
             Some(icon) => menu::Cell::from(Span::raw(icon)),
             None => menu::Cell::from(kind_spans),
