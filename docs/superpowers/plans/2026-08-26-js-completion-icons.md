@@ -29,7 +29,7 @@ node -e "const i=require('./plugins/lib/icons.js'); const a=require('assert'); a
 
 - [ ] **步骤 3：加 completion 映射表 + 查表函数**(`plugins/lib/icons.js`)
 
-在 `ICONS` 表 git 段之后加(码位为 telescope/nvim-web-devicons 标准 nerd font 映射;若某字符终端显示异常,在步骤 6 手动验证时调整该键值):
+在 `ICONS` 表 git 段之后加(码位为 telescope/nvim-web-devicons 标准 nerd font 映射;若某字符终端显示异常,在任务 2 步骤 4 手动验证时调整该键值):
 
 ```js
   // LSP CompletionItemKind(数字)→ 补全候选图标(telescope lsp 图标映射)
