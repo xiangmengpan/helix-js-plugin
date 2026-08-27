@@ -6,6 +6,9 @@
 // 无 LSP server 时 completion resolve null → 弹窗内显示提示行。
 // 无防抖：引擎未提供 setTimeout（boa timers 未启用），onChange 直发请求。
 
+helix.plugin("input-completion", { deps: ["lib/icons.js"] });
+let ICONS = null;   // icons.js 的 exports；load 后填充，缺失回退无图标
+
 // 弹窗级状态（render/onChange/onKey 共享闭包读取；引擎每帧调 render 重绘）
 let pid = null;
 let query = "";
@@ -51,7 +54,7 @@ const render = (focus) => {
   items.forEach((it, i) => {
     rows.push({
       type: "text",
-      text: (i === sel ? "> " : "  ") + label(it),
+      text: (i === sel ? "> " : "  ") + (ICONS ? ICONS.getCompletionKindIcon(it.kind) + " " : "") + label(it),
       style: i === sel ? "ui.info" : undefined,
     });
   });
@@ -59,6 +62,7 @@ const render = (focus) => {
 };
 
 helix.register_command("ic", () => {
+  if (!ICONS) ICONS = helix.load("lib/icons.js") || null;
   query = "";
   items = [];
   sel = 0;
