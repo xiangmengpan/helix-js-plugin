@@ -54,7 +54,7 @@ completion: {
 
 ```js
 /// LSP kind 数字 → 图标;未知/缺省 → ""(无图标)
-function getCompletionIcon(kind) {
+function getCompletionKindIcon(kind) {
   return ICONS.completion[kind] ?? "";
 }
 ```
@@ -66,10 +66,10 @@ function getCompletionIcon(kind) {
 - 候选行渲染拼图标:
 
 ```js
-text: (i === sel ? "> " : "  ") + (ICONS ? ICONS.getCompletionIcon(it.kind) : "") + (ICONS ? " " : "") + label(it),
+text: (i === sel ? "> " : "  ") + (ICONS ? ICONS.getCompletionKindIcon(it.kind) : "") + (ICONS ? " " : "") + label(it),
 ```
 
-- `it.kind` 可能缺失(非 LSP 来源)→ `getCompletionIcon` 回退空字符串,无图标。
+- `it.kind` 可能缺失(非 LSP 来源)→ `getCompletionKindIcon` 回退空字符串,无图标。
 - ICONS 获取方式与 filetree 一致:`ICONS = helix.load("lib/icons.js") || null;`,null 时回退无图标。
 
 ## 4. 边界
@@ -80,7 +80,7 @@ text: (i === sel ? "> " : "  ") + (ICONS ? ICONS.getCompletionIcon(it.kind) : ""
 
 ## 5. 验证
 
-- **icons.js node 自检**(module.exports 模式):`getCompletionIcon(7)` 非空;`getCompletionIcon(999)` 返回 `""`;completion 段键为数字 1-25。
+- **icons.js node 自检**(module.exports 模式):`getCompletionKindIcon(7)` 非空;`getCompletionKindIcon(999)` 返回 `""`;completion 段键为数字 1-25。
 - **手动**:ts server 下 `:ic` 补全候选显示图标,对齐正常。
 
 ## 6. 规模
