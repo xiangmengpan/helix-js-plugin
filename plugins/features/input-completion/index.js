@@ -28,6 +28,30 @@ const ask = () => {
 
 const label = (it) => it.label ?? String(it);
 
+// 光标前词干起点(方案 B 兕底:无 textEdit 时替换光标前的标识符片段)。
+// 纯函数,node 可测:从 col 往前扫 [\w_$] 连续段。
+const wordStart = (line, col) => {
+  let s = col;
+  while (s > 0 && /[\w_$]/.test(line[s - 1])) s--;
+  return s;
+};
+
+// 回填选中候选到 buffer(方案 B):textEdit 优先(LSP 原生替换语义),
+// 兕底按光标前词干替换;词干为空(光标前是 ./空格)→ 纯插入。
+const applyEdit = (doc, it) => {
+  const te = it.textEdit;
+  if (te && te.range && typeof te.newText === "string") {
+    const { start, end } = te.range;
+    doc.replace(start.line, start.character, end.line, end.character, te.newText);
+    return;
+  }
+  const { row, col } = doc.cursor;
+  const line = (doc.text.split("\n")[row] ?? "");
+  const s = wordStart(line, col);
+  if (s === col) doc.insert(row, col, label(it));
+  else doc.replace(row, s, row, col, label(it));
+};
+
 // 弹窗级 onKey（焦点不在节点上时生效）：↑↓ 选候选、Enter 回填 buffer、Esc 关弹窗。
 // 带 doc 参数(可编辑快照)——节点级 onKey 无 doc,回填只能走这层。
 // 其他键返回 "ignore" 穿透给编辑器(insert mode 打字/移动正常)。
@@ -36,10 +60,7 @@ const onKey = (key, doc) => {
   if (key.name === "Down" && sel < items.length - 1) { sel++; return "handled"; }
   if (key.name === "Enter") {
     const it = items[sel];
-    if (it && doc) {
-      // 光标处插入选中候选;doc.apply 的 changeset 自动把光标移到插入文本后
-      doc.insert(doc.cursor.row, doc.cursor.col, label(it));
-    }
+    if (it && doc) applyEdit(doc, it);
     return "close";
   }
   if (key.name === "Esc") return "close";
@@ -92,3 +113,9 @@ helix.register_command("ic", () => {
   });
   ask(); // 打开即基于当前光标补全,直接显示候选(insert 下按 C-x 的场景)
 });
+
+// ============================ node 自检导出 ============================
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { wordStart, applyEdit, label };
+}
