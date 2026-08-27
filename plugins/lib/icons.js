@@ -155,33 +155,35 @@ const ICONS = {
     "??": "\uf404",
   },
 
-  // LSP CompletionItemKind(数字)→ 补全候选图标(telescope lsp 图标映射)
+  // LSP CompletionItemKind(数字)→ 补全候选图标。
+  // 码位已验证于 CaskaydiaCove Nerd Font 3.x(用 fontTools 扫 cmap 确认字形存在):
+  // 大部分是 symbol-* 区(\uea8x-\ueb6x);Function 无专用 symbol 图标用 code(\uf121)。
   completion: {
-    1: "\uf031",   // Text
-    2: "\uf6fc",   // Method
-    3: "\uf794",   // Function
-    4: "\uf6f6",   // Constructor
-    5: "\uf6f3",   // Field
-    6: "\uf6f4",   // Variable
-    7: "\uf6f9",   // Class
-    8: "\uf6f8",   // Interface
-    9: "\uf6f7",   // Module
-    10: "\uf6f5",  // Property
-    11: "\uf475",  // Unit
-    12: "\uf6f4",  // Value
-    13: "\uf6fa",  // Enum
-    14: "\uf6fc",  // Keyword
-    15: "\uf6f6",  // Snippet
-    16: "\uf475",  // Color
-    17: "\uf6f7",  // File
-    18: "\uf6f5",  // Reference
-    19: "\uf6f9",  // Folder
-    20: "\uf6fa",  // EnumMember
-    21: "\uf6f4",  // Constant
-    22: "\uf6f8",  // Struct
-    23: "\uf6f9",  // Event
-    24: "\uf6f7",  // Operator
-    25: "\uf6f5",  // TypeParameter
+    1: "\uf031",   // Text          (font)
+    2: "\uea8c",   // Method        (symbol-method)
+    3: "\uf121",   // Function      (code)
+    4: "\ueb5b",   // Constructor   (symbol-class)
+    5: "\ueb5f",   // Field         (symbol-field)
+    6: "\uea88",   // Variable      (symbol-variable)
+    7: "\ueb5b",   // Class         (symbol-class)
+    8: "\ueb61",   // Interface     (symbol-interface)
+    9: "\uea8b",   // Module        (symbol-namespace)
+    10: "\ueb65",  // Property      (symbol-property)
+    11: "\uea90",  // Unit          (symbol-numeric)
+    12: "\uea8f",  // Value         (symbol-boolean)
+    13: "\uea95",  // Enum          (symbol-enum)
+    14: "\ueb62",  // Keyword       (symbol-keyword)
+    15: "\ueb66",  // Snippet       (symbol-snippet)
+    16: "\ueb5c",  // Color         (symbol-color)
+    17: "\ueb60",  // File          (symbol-file)
+    18: "\ueb36",  // Reference     (references)
+    19: "\uf07b",  // Folder        (dir.closed)
+    20: "\ueb5e",  // EnumMember    (symbol-enum-member)
+    21: "\ueb5d",  // Constant      (symbol-constant)
+    22: "\uea91",  // Struct        (symbol-structure)
+    23: "\uea86",  // Event         (symbol-event)
+    24: "\ueb64",  // Operator      (symbol-operator)
+    25: "\uea92",  // TypeParameter (symbol-parameter)
   },
 };
 
