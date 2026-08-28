@@ -154,6 +154,8 @@ const other = helix.by_path("src/main.rs");
 - `cursor` 恒为 {row: 0, col: 0}(后台 buffer 无视图光标)
 - 快照是命令开始时的文本;坐标基于该快照,跨 await 的过期坐标风险与 `ctx.doc` 相同
 - scratch(无路径)buffer 不可查
+- 目标 buffer 在命令期间被关闭 → 编辑应用时报错入状态栏(不崩)
+- 同一命令内同时用 `ctx.doc` 与 `by_path(当前文件路径)` 改同一 buffer → 视为两个目标,撤销两次
 
 ### `helix.set_cursor(row, col)` / `helix.set_selection(ar, ac, hr, hc)` / `helix.set_selection([...])`
 

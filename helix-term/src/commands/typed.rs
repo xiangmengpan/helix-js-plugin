@@ -4444,6 +4444,8 @@ fn emit_plugin_event_impl(
     if !helix_js::has_handlers(name) {
         return;
     }
+    // ponytail: 每事件全量克隆所有 buffer 全文 O(总字节);命令场景可接受,事件(每帧)场景
+    // lint-on-type 类插件 + 大 workspace 会拖慢。升级:懒加载——只存 path 列表,首次 by_path 命中再取文本
     let docs = editor
         .documents
         .values()
@@ -4557,6 +4559,8 @@ pub(crate) fn apply_plugin_edits(
     use helix_core::Change;
 
     // 按目标分组，保持组内顺序
+    // ponytail: ctx.doc 与 by_path(当前 doc 路径)双路由同 doc → 两组 → 两次撤销(罕见,
+    // 与文档"每 buffer 一次撤销"不一致;修法:None 组规范化并入当前 path 组,暂不做)
     let mut groups: Vec<(Option<String>, Vec<&helix_js::Edit>)> = Vec::new();
     for edit in edits {
         if let Some(g) = groups.iter_mut().find(|(p, _)| p == &edit.doc) {
@@ -4586,6 +4590,7 @@ pub(crate) fn apply_plugin_edits(
         Ok(Transaction::change(text, changes.into_iter()))
     };
 
+    // 组间部分应用:前序组事务已提交不回滚(每组一个 Transaction 的设计语义,与规格 2.4 报错不崩一致)
     for (target, group) in &groups {
         match target {
             None => {

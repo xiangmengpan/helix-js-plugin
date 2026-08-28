@@ -254,3 +254,96 @@ async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// 回归:vsplit 双 view 下,当前 view 从未访问过的后台 doc 被 by_path 编辑不 panic。
+// 修复前 apply_plugin_edits 用预取 current_view_id 编辑后台 doc → selections 缺条目 → panic 崩溃。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_edit_other_buffer_vsplit_no_panic() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file1 = dir.path().join("a.txt");
+    std::fs::write(&file1, "one\n")?;
+    let file2 = dir.path().join("b.txt");
+    std::fs::write(&file2, "two\n")?;
+    let plugin_path = dir.path().join("edit.js");
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"helix.register_command("edit-other", () => {{
+                const d = helix.by_path("{}");
+                if (d !== null) d.insert(0, 0, "X");
+            }});"#,
+            file2.display()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file1.clone(), None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            // :vsplit 后焦点在新 view B(两个 view 都在 file1)
+            (Some(":vsplit<ret>"), None),
+            // view B 打开 file2;view A 仍是 file1 且从未访问 file2
+            (Some(&format!(":open {}<ret>", file2.display())), None),
+            // 焦点回 view A(当前 doc = file1);view A 在 file2 无 selection 条目
+            (
+                Some("<space>ww"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "one\n", "焦点应回到 file1(view A)");
+                }),
+            ),
+            // 修复前:此处按 view A 的 id 编辑 file2 → apply_inner 索引 selections 缺条目 → panic
+            (Some(":edit-other<ret>"), None),
+            // 切到 view B(file2):内容已被改,全程不 panic
+            (
+                Some("<space>ww"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.text().to_string(), "Xtwo\n");
+                }),
+            ),
+            // 关掉 view B 回到单 view,否则 harness 收尾的 :q! 只关一个 view 无法退出
+            (Some("<space>wq"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// 相对路径 by_path:cwd-join 端到端(:cd 后 by_path("b.txt") 命中已打开 buffer)
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_by_path_relative_resolves_from_cwd() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file1 = dir.path().join("a.txt");
+    std::fs::write(&file1, "one\n")?;
+    let file2 = dir.path().join("b.txt");
+    std::fs::write(&file2, "two\n")?;
+    let plugin_path = dir.path().join("rel.js");
+    std::fs::write(
+        &plugin_path,
+        r#"helix.register_command("show-rel", () => {
+            const d = helix.by_path("b.txt");
+            helix.echo(d === null ? "null" : d.text.trim());
+        });"#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file1, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (Some(&format!(":cd {}<ret>", dir.path().display())), None),
+            (Some(":open b.txt<ret>"), None),
+            (
+                Some(":show-rel<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "two");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
