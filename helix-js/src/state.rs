@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use crate::types::{
-    AsyncEvent, CursorRequest, DocSnapshot, Edit, NodeHandlers, PopupCallbacks, TermCallbacks,
-    TermCtrl, TermEvent, UiRequest,
+    AsyncEvent, CursorRequest, DecorationRequest, DocSnapshot, Edit, NodeHandlers, PopupCallbacks,
+    TermCallbacks, TermCtrl, TermEvent, UiRequest,
 };
 
 pub struct WakeSender<T> {
@@ -73,6 +73,8 @@ thread_local! {
     // keymap 前缀提示回调(set_keymap_hint):无注册 → 内置 Info
     static KEYMAP_HINT_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
+    // 插件装饰请求队列(与编辑队列同 take 点/同 txn 门控/同复位)
+    static DECORATION_REQUESTS: RefCell<Vec<DecorationRequest>> = const { RefCell::new(Vec::new()) };
     // 其它已打开 buffer 快照(by_path 读取;命令/事件入口写入,渲染入口不写)
     static DOC_SNAPSHOTS: RefCell<Vec<DocSnapshot>> = const { RefCell::new(Vec::new()) };
     static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
@@ -288,6 +290,11 @@ pub(crate) fn with_txn_depth<T>(f: impl FnOnce(&mut usize) -> T) -> T {
 /// 访问 CURRENT_EDITS（普通 Vec，随线程 drop）
 pub(crate) fn with_edits<T>(f: impl FnOnce(&mut Vec<Edit>) -> T) -> T {
     CURRENT_EDITS.with(|e| f(&mut e.borrow_mut()))
+}
+
+/// 访问 DECORATION_REQUESTS（普通 Vec，随线程 drop）
+pub(crate) fn with_decoration_requests<T>(f: impl FnOnce(&mut Vec<DecorationRequest>) -> T) -> T {
+    DECORATION_REQUESTS.with(|c| f(&mut c.borrow_mut()))
 }
 
 /// 写入其它已打开 buffer 快照（命令/事件入口调用，覆盖上次）

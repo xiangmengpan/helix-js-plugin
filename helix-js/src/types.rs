@@ -290,6 +290,22 @@ pub struct Edit {
     pub insert: String,
 }
 
+/// 插件装饰请求:set_virtual_text / set_highlight 入队,应用时按 doc 整体替换
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecorationKind {
+    VirtualText { row: usize, col: usize, text: String, style: Option<String> },
+    Highlight { sr: usize, sc: usize, er: usize, ec: usize, style: Option<String> },
+    /// 清除该 doc 全部插件装饰(set_virtual_text 只传 path 时产生)
+    Clear,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecorationRequest {
+    /// Some(canonical path) = 目标 doc;None = 清空所有 doc(仅脚本重载产生)
+    pub doc: Option<String>,
+    pub kind: DecorationKind,
+}
+
 /// 光标/选区请求（命令返回后由 helix-term 应用）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CursorRequest {

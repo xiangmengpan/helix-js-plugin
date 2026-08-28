@@ -101,6 +101,8 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(commands::js_map), JsString::from("map"), 3)
                 .function(NativeFunction::from_fn_ptr(commands::js_set_cursor), JsString::from("set_cursor"), 2)
                 .function(NativeFunction::from_fn_ptr(commands::js_set_selection), JsString::from("set_selection"), 4)
+                .function(NativeFunction::from_fn_ptr(commands::js_set_virtual_text), JsString::from("set_virtual_text"), 5)
+                .function(NativeFunction::from_fn_ptr(commands::js_set_highlight), JsString::from("set_highlight"), 7)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_statusline), JsString::from("set_statusline"), 1)
                 .function(NativeFunction::from_fn_ptr(popup::js_set_keymap_hint), JsString::from("set_keymap_hint"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_load), JsString::from("load"), 1)
@@ -2271,6 +2273,86 @@ pub(crate) mod tests {
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "复位后编辑正常取走");
         assert_eq!(edits[0].insert, "g");
+    }
+
+    /// 装饰请求队列:set_virtual_text / set_highlight 入队,take_decorations 一次取走;
+    /// set_virtual_text 只传 path(text 省略)→ Clear。路径已 canonicalize(绝对路径断言原样)。
+    #[test]
+    fn decorations_queue_and_take() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("dec1", () => {
+            helix.set_virtual_text("/tmp/a.rs", 0, 0, "hi", "ui.help");
+            helix.set_highlight("/tmp/a.rs", 0, 0, 1, 2, "ui.selection");
+            helix.set_virtual_text("/tmp/nope.rs");
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)), docs: vec![] };
+        run_command("dec1", &ctx).unwrap();
+        let reqs = take_decorations();
+        assert_eq!(reqs.len(), 3);
+        // 路径已 canonicalize(相对→绝对:用绝对路径输入,断言原样)
+        assert_eq!(reqs[0].doc.as_deref(), Some("/tmp/a.rs"));
+        match &reqs[0].kind {
+            crate::types::DecorationKind::VirtualText { row, col, text, style } => {
+                assert_eq!((*row, *col), (0, 0));
+                assert_eq!(text, "hi");
+                assert_eq!(style.as_deref(), Some("ui.help"));
+            }
+            other => panic!("expected VirtualText, got {other:?}"),
+        }
+        match &reqs[1].kind {
+            crate::types::DecorationKind::Highlight { sr, sc, er, ec, style } => {
+                assert_eq!((*sr, *sc, *er, *ec), (0, 0, 1, 2));
+                assert_eq!(style.as_deref(), Some("ui.selection"));
+            }
+            other => panic!("expected Highlight, got {other:?}"),
+        }
+        assert!(matches!(reqs[2].kind, crate::types::DecorationKind::Clear));
+    }
+
+    /// 事务门控与复位:begin/end 包住装饰 → end 后取到;命令入口清残留(不跨命令);
+    /// path 非字符串 → 命令失败(类型校验)。
+    #[test]
+    fn decorations_txn_holds_and_reset() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("dec-txn", () => {
+            helix.begin_edit();
+            helix.set_virtual_text("/tmp/t.rs", 0, 0, "x");
+            helix.end_edit();
+        });
+        helix.register_command("dec-bad", () => { helix.set_virtual_text(42); });
+    "#,
+        )
+        .unwrap();
+        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)), docs: vec![] };
+        // 命令内 begin/end 包住:命令返回后取到(证明 end 后放行)
+        run_command("dec-txn", &ctx).unwrap();
+        assert_eq!(take_decorations().len(), 1);
+        // 类型校验:path 非字符串 → 命令失败
+        assert!(run_command("dec-bad", &ctx).is_err());
+        // 命令开始复位:上一命令残留不跨命令(dec-bad 报错后队列也应被清)
+        assert!(take_decorations().is_empty());
+    }
+
+    /// 脚本(重)加载不继承旧装饰:load_script_named 求值前 push 全局 Clear(doc: None)。
+    #[test]
+    fn decorations_cleared_on_script_load() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        assert!(take_decorations().is_empty());
+        load_script("helix.register_command('x', () => {});").unwrap();
+        let reqs = take_decorations();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].doc, None);
+        assert!(matches!(reqs[0].kind, crate::types::DecorationKind::Clear));
     }
 
 }

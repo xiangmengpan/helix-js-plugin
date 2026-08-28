@@ -458,6 +458,7 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     crate::init();
     // 命令开始时清空编辑队列，避免跨命令残留
     crate::state::with_edits(|c| c.clear());
+    crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
     // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth(|d| *d = 0);
@@ -536,6 +537,7 @@ fn emit_event_impl(
 ) -> Result<()> {
     crate::init();
     crate::state::with_edits(|c| c.clear());
+    crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
     // 复位事务深度：上一命令/事件未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth(|d| *d = 0);
@@ -568,6 +570,7 @@ fn emit_event_impl(
             };
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 crate::state::with_edits(|c| c.clear());
+    crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
     crate::state::with_txn_depth(|d| *d = 0); // 与正常入口复位一致:错误路径也恢复事务深度
                 anyhow!("event '{name}' handler failed: {e}")
@@ -1002,6 +1005,67 @@ pub(crate) fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Con
     Ok(JsValue::undefined())
 }
 
+/// helix.set_virtual_text(path[, row, col, text, style])：行内文本装饰入队。
+/// 只传 path（text 省略/undefined）→ Clear：清除该 doc 全部插件装饰。
+/// 路径 canonicalize（与 js_by_path / Edit.doc 同款）；未打开 doc 应用时静默忽略（term 侧）。
+pub(crate) fn js_set_virtual_text(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.set_virtual_text: path must be a string",
+            )))
+        })?;
+    let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
+    let kind = match args.get(3) {
+        // text 省略/undefined = 清除该 doc 全部插件装饰
+        Some(v) if v.is_null_or_undefined() => DecorationKind::Clear,
+        None => DecorationKind::Clear,
+        _ => {
+            let row: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+            let col: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+            let text: String = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+            let style: Option<String> = match args.get(4) {
+                Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
+                _ => None,
+            };
+            DecorationKind::VirtualText { row, col, text, style }
+        }
+    };
+    crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: Some(canonical), kind }));
+    Ok(JsValue::undefined())
+}
+
+/// helix.set_highlight(path, sr, sc, er, ec[, style])：区域高亮装饰入队。
+/// 路径 canonicalize（与 js_by_path / Edit.doc 同款）；style 省略/undefined → None。
+pub(crate) fn js_set_highlight(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.set_highlight: path must be a string",
+            )))
+        })?;
+    let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
+    let sr: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let sc: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let er: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let ec: usize = args.get(4).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let style: Option<String> = match args.get(5) {
+        Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
+        _ => None,
+    };
+    crate::state::with_decoration_requests(|c| c.push(DecorationRequest {
+        doc: Some(canonical),
+        kind: DecorationKind::Highlight { sr, sc, er, ec, style },
+    }));
+    Ok(JsValue::undefined())
+}
+
 /// 取走并清空编辑队列（helix-term 在命令返回后消费）；事务开启时积压不消费
 pub fn take_edits() -> Vec<Edit> {
     crate::init();
@@ -1011,6 +1075,16 @@ pub fn take_edits() -> Vec<Edit> {
         return Vec::new();
     }
     crate::state::with_edits(std::mem::take)
+}
+
+/// 取走并清空装饰请求队列（helix-term 在命令返回后消费）；事务开启时积压不消费。
+/// 与 take_edits 同构：未配对的 begin 在下一命令/事件入口随队列清空丢弃。
+pub fn take_decorations() -> Vec<DecorationRequest> {
+    crate::init();
+    if crate::state::with_txn_depth(|d| *d > 0) {
+        return Vec::new();
+    }
+    crate::state::with_decoration_requests(std::mem::take)
 }
 
 /// 声明批量编辑事务开始:期间编辑积压,end 后合并取走(一次撤销)
@@ -1100,6 +1174,8 @@ fn eval_wrapped(engine: &mut boa_engine::Context, src: &str) -> boa_engine::JsRe
 /// 求值并记录脚本（名字用于报错定位与热重载）
 pub fn load_script_named(name: &str, src: &str) -> Result<()> {
     crate::init();
+    // 脚本(重)加载不继承旧装饰:全局 Clear(term 侧 doc: None = 清空所有 doc)
+    crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: None, kind: DecorationKind::Clear }));
     crate::state::with_engine(|engine| {
         eval_wrapped(engine, src)
             .map(|_| ())
@@ -1122,6 +1198,7 @@ fn reset_plugin_state() {
     with_event_handlers(|h| h.clear());
     with_popups(|p| p.clear());
     crate::state::with_edits(|c| c.clear());
+    crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
     crate::state::with_txn_depth(|d| *d = 0);
     with_buffer_icon_hook(|h| *h = None);
