@@ -160,6 +160,7 @@ impl Component for PluginPopup {
                     (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
                     (head_line, primary.head - text.line_to_char(head_line)),
                 ),
+                docs: vec![],
             }
         };
         let result = helix_js::popup_key(self.id, &key, &ctx);

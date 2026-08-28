@@ -79,6 +79,7 @@ pub fn init() {
                 .function(NativeFunction::from_fn_ptr(commands::js_echo), JsString::from("echo"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_begin_edit), JsString::from("begin_edit"), 0)
                 .function(NativeFunction::from_fn_ptr(commands::js_end_edit), JsString::from("end_edit"), 0)
+                .function(NativeFunction::from_fn_ptr(commands::js_by_path), JsString::from("by_path"), 1)
                 .function(NativeFunction::from_fn_ptr(commands::js_term_state), JsString::from("term_state"), 3)
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_register_command),
@@ -205,7 +206,7 @@ pub(crate) mod tests {
             "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("wk", &ctx).unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !fired.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < deadline {
@@ -230,7 +231,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("ot", &ctx).unwrap());
         assert!(take_messages()[0].starts_with("pid:"));
         let reqs = take_ui_requests();
@@ -256,7 +257,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("bi", &ctx).unwrap());
         let _ = take_messages();
         let pty_id = match &take_ui_requests()[0] {
@@ -316,7 +317,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("t3", &ctx).unwrap(), "第一次 open_terminal");
         let _ = take_messages();
         let pty_id = match &take_ui_requests()[0] {
@@ -365,7 +366,7 @@ pub(crate) mod tests {
             file = file_str,
         );
         load_script(&script).unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("sc", &ctx).unwrap());
         let msgs = take_messages();
         assert!(msgs[0].starts_with("count:3 sorted:true"), "{msgs:?}");
@@ -483,6 +484,7 @@ pub(crate) mod tests {
             text: "hello\nworld".to_string(),
             cursor: (1, 2),
             selection: ((0, 0), (0, 0)),
+            docs: vec![],
         };
         assert!(run_command("where", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["cursor: 1,2"]);
@@ -539,7 +541,7 @@ pub(crate) mod tests {
         let UiRequest::OpenPanel { id, .. } = reqs[0] else { unreachable!("expected OpenPanel") };
         assert!(take_messages()[0].starts_with("pid:"));
         // popup_key 走同一注册表：Esc → close，其他 → handled
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         let esc = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
         assert_eq!(popup_key(id, &esc, &ctx).unwrap(), PopupKeyResult::Close);
         assert_eq!(take_messages(), vec!["panel-key:Esc"]);
@@ -584,7 +586,7 @@ pub(crate) mod tests {
         );
 
         let key = PluginKey { name: "Down".into(), shift: false, ctrl: false, alt: false };
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Handled);
         let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
@@ -605,7 +607,7 @@ pub(crate) mod tests {
             _ => unreachable!("expected OpenPopup"),
         };
         let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Ignored);
         let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
@@ -720,12 +722,13 @@ pub(crate) mod tests {
             text: "line1\nline2".into(),
             cursor: (1, 2),
             selection: ((0, 0), (0, 0)),
+            docs: vec![],
         };
         let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
         assert_eq!(
             take_edits(),
-            vec![Edit { start: (1, 2), end: (1, 2), insert: "XYZ".into() }]
+            vec![Edit { doc: None, start: (1, 2), end: (1, 2), insert: "XYZ".into() }]
         );
         close_popup(id).unwrap();
     }
@@ -761,15 +764,15 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (1, 2), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (1, 2), selection: ((0, 0), (0, 0)) };
         run_command("edit", &ctx).unwrap();
         let edits = take_edits();
         assert_eq!(
             edits,
             vec![
-                Edit { start: (1, 2), end: (1, 2), insert: "ab".into() },
-                Edit { start: (0, 0), end: (0, 5), insert: "new".into() },
-                Edit { start: (3, 0), end: (4, 0), insert: String::new() },
+                Edit { doc: None, start: (1, 2), end: (1, 2), insert: "ab".into() },
+                Edit { doc: None, start: (0, 0), end: (0, 5), insert: "new".into() },
+                Edit { doc: None, start: (3, 0), end: (4, 0), insert: String::new() },
             ]
         );
         // take_edits 清空
@@ -789,7 +792,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("bad1", &ctx).is_err());
         assert!(take_edits().is_empty());
         assert!(run_command("bad2", &ctx).is_err());
@@ -799,6 +802,64 @@ pub(crate) mod tests {
         load_script(r#"helix.register_command("ok", (ctx) => { ctx.doc.insert(0, 0, "z"); });"#).unwrap();
         run_command("ok", &ctx).unwrap();
         assert_eq!(take_edits().len(), 1);
+    }
+
+    #[test]
+    fn by_path_reads_other_buffer() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("read-other", () => {
+            const d = helix.by_path("/tmp/other.rs");
+            if (d === null) throw new Error("null");
+            if (d.path !== "/tmp/other.rs") throw new Error("path mismatch");
+            if (d.text !== "other text") throw new Error("text mismatch");
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            path: Some("/tmp/current.rs".into()),
+            text: "current".into(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![DocSnapshot { path: "/tmp/other.rs".into(), text: "other text".into() }],
+        };
+        run_command("read-other", &ctx).unwrap();
+    }
+
+    #[test]
+    fn by_path_edits_target_other_buffer() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("edit-other", () => {
+            const d = helix.by_path("/tmp/other.rs");
+            if (d === null) throw new Error("null");
+            d.insert(0, 0, "X");
+        });
+        helix.register_command("edit-current", (ctx) => {
+            ctx.doc.insert(0, 0, "Y");
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            path: Some("/tmp/current.rs".into()),
+            text: "current".into(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![DocSnapshot { path: "/tmp/other.rs".into(), text: "other text".into() }],
+        };
+        run_command("edit-other", &ctx).unwrap();
+        let edits = take_edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].doc.as_deref(), Some("/tmp/other.rs"));
+        run_command("edit-current", &ctx).unwrap();
+        let edits = take_edits();
+        assert_eq!(edits[0].doc, None, "ctx.doc 编辑仍指向当前 buffer");
     }
 
     #[test]
@@ -822,7 +883,7 @@ pub(crate) mod tests {
         assert!(!has_handlers("buffer-open"));
 
         // emit 带编辑队列清空 + 多处理器按注册顺序
-        let ctx = CommandContext { path: Some("/tmp/e.rs".into()), text: "x".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: Some("/tmp/e.rs".into()), text: "x".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         emit_event("save", &ctx, None).unwrap();
         assert!(take_edits().is_empty());
 
@@ -846,7 +907,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(has_handlers("doc-change"));
-        let ctx = CommandContext { path: None, text: "x".into(), cursor: (2, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: "x".into(), cursor: (2, 0), selection: ((0, 0), (0, 0)) };
         emit_event("doc-change", &ctx, None).unwrap();
         assert_eq!(take_messages(), vec!["changed:2"]);
         // 未注册的事件名仍然报错
@@ -867,7 +928,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: "hello world".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: "hello world".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         // 两次插入:a 在 char0、b 在 char1 → 合并 old = (0,0)-(1,1),new = (0,0)-(1,2);行列按当前文本换算
         let changes = vec![((0, 0), (0, 1)), ((1, 1), (1, 2))];
         emit_doc_change(&ctx, &changes).unwrap();
@@ -910,7 +971,7 @@ pub(crate) mod tests {
         };
         assert!(command.starts_with("__mapped_"), "command: {command}");
         // 注册的命令可以运行（与普通插件命令同机制）
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command(&command, &ctx).unwrap());
         assert_eq!(take_messages(), vec!["cb"]);
 
@@ -1006,7 +1067,7 @@ pub(crate) mod tests {
         load_script_named("b.js", r#"helix.on("save", () => {});"#).unwrap();
 
         assert!(has_handlers("save"));
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
 
@@ -1032,6 +1093,7 @@ pub(crate) mod tests {
             text: String::new(),
             cursor: (0, 0),
             selection: ((0, 0), (0, 0)),
+            docs: vec![],
         };
         assert!(run_command("open-panel", &ctx).unwrap());
         assert!(matches!(take_ui_requests()[0], UiRequest::OpenPanel { .. }));
@@ -1063,6 +1125,7 @@ pub(crate) mod tests {
             text: "abc\ndef\nghi".into(),
             cursor: (0, 0),
             selection: ((0, 1), (0, 5)),
+            docs: vec![],
         };
         assert!(run_command("selcmd", &ctx).unwrap());
         let reqs = take_cursor_requests();
@@ -1111,7 +1174,7 @@ pub(crate) mod tests {
         init();
         // 成功路径
         load_script(r#"helix.register_command("r1", () => { helix.echo(helix.run("echo hi")); });"#).unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("r1", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["hi\n"]);
 
@@ -1224,7 +1287,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("sp", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term")));
         let ev = events.iter().find(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term"))).expect("chunk event");
@@ -1312,7 +1375,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("spcjk", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         // 按序 resolve：先 Chunk 后 Exit，JS 的 parts 才能拼全
@@ -1369,7 +1432,7 @@ pub(crate) mod tests {
         }});
     "#, dir = dir.display())).unwrap();
 
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("fsd", &ctx).unwrap());
         // 轮询 drain_async_events 直到四个回调都到（wait_for_async 辅助，仿 wait_for_term_event）
         let mut events = Vec::new();
@@ -1521,7 +1584,7 @@ pub(crate) mod tests {
             "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("tm", &ctx).unwrap());
         let reqs = take_ui_requests();
         assert!(matches!(&reqs[0], UiRequest::OpenTerminal { .. }));
@@ -1558,7 +1621,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
 
         // tty：stdin 是 pty → 输出 /dev/pts/N（CRLF 行尾，用 contains 断言）
         assert!(run_command("pty-tty", &ctx).unwrap());
@@ -1638,7 +1701,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("pty-resize", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         for ev in &events {
@@ -1671,7 +1734,7 @@ pub(crate) mod tests {
         .unwrap();
 
         reload_all().unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("ccmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["ok"]);
     }
@@ -1717,7 +1780,7 @@ pub(crate) mod tests {
             icons = icons_abs,
         );
         load_script_named("driver.js", &script).unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("deps-run", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["feat:feat icons:icons same:true"]);
 
@@ -1781,7 +1844,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("load-exp", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["a:1 b:x"]);
         assert!(run_command("load-cached", &ctx).unwrap());
@@ -1844,7 +1907,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("tree", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["type:text text:hello w:10"]);
 
@@ -2140,12 +2203,12 @@ pub(crate) mod tests {
         load_script(r#"helix.register_command("noop", () => {});"#).unwrap();
 
         // 1. 未开启事务:编辑入队后可取走
-        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "a".into() }));
+        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "a".into() }));
         assert_eq!(take_edits().len(), 1);
 
         // 2. begin 后编辑入队,take_edits 返回空(积压)
         load_script("helix.begin_edit();").unwrap();
-        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "b".into() }));
+        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "b".into() }));
         assert!(take_edits().is_empty(), "txn open should hold edits");
 
         // 3. end 后 take_edits 取到积压
@@ -2165,7 +2228,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = crate::CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = crate::CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
         assert!(run_command("be", &ctx).unwrap());
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "begin/end 包住的编辑合并取走");
@@ -2173,7 +2236,7 @@ pub(crate) mod tests {
 
         // 5. 嵌套 begin/end:深度计数,内层 end 不释放外层
         load_script("helix.begin_edit(); helix.begin_edit();").unwrap();
-        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "d".into() }));
+        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "d".into() }));
         assert!(take_edits().is_empty(), "嵌套:深度 2 仍积压");
         load_script("helix.end_edit();").unwrap(); // 深度 2→1
         assert!(take_edits().is_empty(), "嵌套:外层事务仍开启");
@@ -2184,7 +2247,7 @@ pub(crate) mod tests {
 
         // 6. 多余 end:深度 0 饱和,不吞后续编辑
         load_script("helix.end_edit(); helix.end_edit(); helix.end_edit();").unwrap();
-        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "e".into() }));
+        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "e".into() }));
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "多余 end 后编辑正常取走");
         assert_eq!(edits[0].insert, "e");
@@ -2204,7 +2267,7 @@ pub(crate) mod tests {
         // 下一命令入口应复位 txn 深度并清队列(丢弃积压编辑)
         assert!(run_command("noop", &ctx).unwrap());
         assert_eq!(crate::state::with_txn_depth(|d| *d), 0, "命令入口应复位 txn 深度");
-        crate::state::with_edits(|e| e.push(crate::types::Edit { start: (0, 0), end: (0, 0), insert: "g".into() }));
+        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "g".into() }));
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "复位后编辑正常取走");
         assert_eq!(edits[0].insert, "g");

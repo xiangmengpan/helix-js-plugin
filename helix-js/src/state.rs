@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use crate::types::{
-    AsyncEvent, CursorRequest, Edit, NodeHandlers, PopupCallbacks, TermCallbacks, TermCtrl,
-    TermEvent, UiRequest,
+    AsyncEvent, CursorRequest, DocSnapshot, Edit, NodeHandlers, PopupCallbacks, TermCallbacks,
+    TermCtrl, TermEvent, UiRequest,
 };
 
 pub struct WakeSender<T> {
@@ -73,6 +73,8 @@ thread_local! {
     // keymap 前缀提示回调(set_keymap_hint):无注册 → 内置 Info
     static KEYMAP_HINT_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
+    // 其它已打开 buffer 快照(by_path 读取;命令/事件入口写入,渲染入口不写)
+    static DOC_SNAPSHOTS: RefCell<Vec<DocSnapshot>> = const { RefCell::new(Vec::new()) };
     static CURSOR_REQUESTS: RefCell<Vec<CursorRequest>> = const { RefCell::new(Vec::new()) };
     // 当前 eval 脚本声明的依赖（helix.plugin deps；load eval 后 take 递归加载）
     static LAST_PLUGIN_DEPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -286,6 +288,16 @@ pub(crate) fn with_txn_depth<T>(f: impl FnOnce(&mut usize) -> T) -> T {
 /// 访问 CURRENT_EDITS（普通 Vec，随线程 drop）
 pub(crate) fn with_edits<T>(f: impl FnOnce(&mut Vec<Edit>) -> T) -> T {
     CURRENT_EDITS.with(|e| f(&mut e.borrow_mut()))
+}
+
+/// 写入其它已打开 buffer 快照（命令/事件入口调用，覆盖上次）
+pub(crate) fn set_doc_snapshots(docs: Vec<DocSnapshot>) {
+    DOC_SNAPSHOTS.with(|s| s.replace(docs));
+}
+
+/// 读取其它已打开 buffer 快照（by_path 查找）
+pub(crate) fn with_doc_snapshots<T>(f: impl FnOnce(&Vec<DocSnapshot>) -> T) -> T {
+    DOC_SNAPSHOTS.with(|s| f(&s.borrow()))
 }
 
 /// 访问 CURSOR_REQUESTS（普通 Vec，随线程 drop）

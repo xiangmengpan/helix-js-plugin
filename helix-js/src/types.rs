@@ -245,6 +245,15 @@ pub struct CommandContext {
     pub cursor: (usize, usize),
     /// 主选区（anchor, head）行列对
     pub selection: ((usize, usize), (usize, usize)),
+    /// 其它已打开 buffer 快照；渲染入口（panel/popup）显式传空
+    pub docs: Vec<DocSnapshot>,
+}
+
+/// 命令/事件入口携带的其它已打开 buffer 快照（只读；路径已 canonicalize）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocSnapshot {
+    pub path: String,
+    pub text: String,
 }
 
 /// 状态栏钩子收到的轻量上下文（不含 doc.text，避免每帧克隆全文）
@@ -274,6 +283,8 @@ pub struct StatuslinePart {
 /// 一次文档编辑请求（坐标基于命令开始时的原始快照，0-based 行列）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
+    /// Some(path) = 目标其它 buffer；None = 当前 buffer（现状）
+    pub doc: Option<String>,
     pub start: (usize, usize),
     pub end: (usize, usize),
     pub insert: String,

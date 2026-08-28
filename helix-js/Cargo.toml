@@ -10,6 +10,7 @@ anyhow = "1"
 libc = "0.2.186"
 globset = { workspace = true }
 serde_json = "1.0"
+helix-stdx = { path = "../helix-stdx" }
 
 [dev-dependencies]
 tempfile.workspace = true

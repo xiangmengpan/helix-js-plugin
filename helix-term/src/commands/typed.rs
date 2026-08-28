@@ -4337,6 +4337,17 @@ fn execute_command_line(
 /// 返回 Ok(true) = 已运行，Ok(false) = 未注册，Err = 运行失败。
 /// 序列化当前文档状态后交给 JS 运行时；成功时消费 echo 消息、UI 请求与编辑队列。
 pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> anyhow::Result<bool> {
+    let docs = cx
+        .editor
+        .documents
+        .values()
+        .filter_map(|d| {
+            d.path().map(|p| helix_js::DocSnapshot {
+                path: p.to_string_lossy().into_owned(),
+                text: d.text().to_string(),
+            })
+        })
+        .collect();
     let (view, doc) = current_ref!(cx.editor);
     let text = doc.text();
     let primary = doc.selection(view.id).primary();
@@ -4353,6 +4364,7 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
             (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
             (head_line, primary.head - text.line_to_char(head_line)),
         ),
+        docs,
     };
     // 借用：view/doc（及 text）的最后使用在 ctx 构造处，NLL 在此结束对 editor 的共享借用
 
@@ -4432,6 +4444,16 @@ fn emit_plugin_event_impl(
     if !helix_js::has_handlers(name) {
         return;
     }
+    let docs = editor
+        .documents
+        .values()
+        .filter_map(|d| {
+            d.path().map(|p| helix_js::DocSnapshot {
+                path: p.to_string_lossy().into_owned(),
+                text: d.text().to_string(),
+            })
+        })
+        .collect();
     let (view, doc) = current_ref!(editor);
     let text = doc.text();
     let primary = doc.selection(view.id).primary();
@@ -4448,6 +4470,7 @@ fn emit_plugin_event_impl(
             (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
             (head_line, primary.head - text.line_to_char(head_line)),
         ),
+        docs,
     };
 
     if let Err(err) = match changes {
@@ -5338,7 +5361,7 @@ fn term_native(cx: &mut compositor::Context, _args: Args, event: PromptEvent) ->
         });
     "#;
     helix_js::load_script_named("term-native.js", src).map_err(|e| anyhow!("term-native: {e}"))?;
-    let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+    let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
     helix_js::run_command("__term_native", &ctx).map_err(|e| anyhow!("term-native: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {

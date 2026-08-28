@@ -247,7 +247,7 @@ pub(crate) fn js_get_str(obj: &boa_engine::JsObject, key: &str, ctx: &mut Contex
 }
 
 fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<CommandContext> {
-    let dflt = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+    let dflt = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
     let Some(obj) = v.as_object() else { return Ok(dflt) };
     // 命令实际收到的 ctx 形状是 { doc: { path, text, ... }, cursor, selection }——
     // 兼容两层（doc.path ?? path），保证 lazy 转发不丢 path/text
@@ -279,7 +279,7 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
             (anchor, head)
         }
     };
-    Ok(CommandContext { path, text, cursor, selection })
+    Ok(CommandContext { docs: vec![], path, text, cursor, selection })
 }
 
 /// helix.run_command(name, ctx?)：程序化调用插件命令。ctx 缺省空快照。
@@ -349,42 +349,72 @@ pub(crate) fn js_map(_this: &JsValue, args: &[JsValue], context: &mut Context) -
     Ok(JsValue::undefined())
 }
 
-/// 把 CommandContext 转成 doc 对象 { path, text, cursor } + 编辑方法
-/// cursor 挂在 doc 上：命令 ctx 与事件 doc 共用，事件回调可直接读 doc.cursor
-pub(crate) fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let cursor = ObjectInitializer::new(engine)
-        .property(
-            JsString::from("row"),
-            JsValue::from(ctx.cursor.0 as f64),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("col"),
-            JsValue::from(ctx.cursor.1 as f64),
-            Attribute::all(),
-        )
+/// 把 CommandContext 转成 doc 对象 { path, text, cursor, _target } + 编辑方法。
+/// _target = 编辑目标 path（by_path 的 doc）；ctx.doc 为 null → 编辑推 Edit.doc = None。
+fn build_doc_object(
+    path: Option<&str>,
+    text: &str,
+    cursor: (usize, usize),
+    target: Option<&str>,
+    engine: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let cursor_obj = ObjectInitializer::new(engine)
+        .property(JsString::from("row"), JsValue::from(cursor.0 as f64), Attribute::all())
+        .property(JsString::from("col"), JsValue::from(cursor.1 as f64), Attribute::all())
         .build();
     Ok(JsValue::from(
         ObjectInitializer::new(engine)
-        .property(
-            JsString::from("path"),
-            match &ctx.path {
-                Some(p) => JsValue::from(JsString::from(p.clone())),
-                None => JsValue::null(),
-            },
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("text"),
-            JsValue::from(JsString::from(ctx.text.clone())),
-            Attribute::all(),
-        )
-        .property(JsString::from("cursor"), cursor, Attribute::all())
-        .function(NativeFunction::from_fn_ptr(js_doc_insert), JsString::from("insert"), 3)
-        .function(NativeFunction::from_fn_ptr(js_doc_replace), JsString::from("replace"), 5)
-        .function(NativeFunction::from_fn_ptr(js_doc_delete), JsString::from("delete"), 4)
-        .build(),
+            .property(
+                JsString::from("path"),
+                match path {
+                    Some(p) => JsValue::from(JsString::from(p)),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .property(JsString::from("text"), JsValue::from(JsString::from(text)), Attribute::all())
+            .property(JsString::from("cursor"), cursor_obj, Attribute::all())
+            // 内部目标:by_path 的 doc 用它路由编辑;ctx.doc 为 null。插件可见但无害。
+            .property(
+                JsString::from("_target"),
+                match target {
+                    Some(t) => JsValue::from(JsString::from(t)),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .function(NativeFunction::from_fn_ptr(js_doc_insert), JsString::from("insert"), 3)
+            .function(NativeFunction::from_fn_ptr(js_doc_replace), JsString::from("replace"), 5)
+            .function(NativeFunction::from_fn_ptr(js_doc_delete), JsString::from("delete"), 4)
+            .build(),
     ))
+}
+
+/// 把 CommandContext 转成 doc 对象（当前 buffer 编辑目标）
+pub(crate) fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+    build_doc_object(ctx.path.as_deref(), &ctx.text, ctx.cursor, None, engine)
+}
+
+/// 按路径查已打开 buffer 快照，返回与 ctx.doc 同构的 doc 对象（编辑路由到目标 buffer）。
+/// 未找到 → null（不自动打开文件）。路径经 canonicalize 规范化后精确匹配。
+pub(crate) fn js_by_path(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.by_path: path must be a string",
+            )))
+        })?;
+    let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
+    let hit = crate::state::with_doc_snapshots(|s| s.iter().find(|d| d.path == canonical).cloned());
+    let Some(hit) = hit else { return Ok(JsValue::null()) };
+    build_doc_object(Some(&hit.path), &hit.text, (0, 0), Some(&hit.path), context)
 }
 
 /// 把 CommandContext 转成 JS 对象 { doc: { path, text }, cursor: { row, col }, selection: { anchor: {row,col}, head: {row,col} } }
@@ -431,6 +461,8 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     crate::state::with_cursor_requests(|c| c.clear());
     // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth(|d| *d = 0);
+    // 携带其它已打开 buffer 快照（by_path 读取；本次命令生命周期）
+    crate::state::set_doc_snapshots(ctx.docs.clone());
     let func = with_registry(|r| r.get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
@@ -507,6 +539,8 @@ fn emit_event_impl(
     crate::state::with_cursor_requests(|c| c.clear());
     // 复位事务深度：上一命令/事件未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth(|d| *d = 0);
+    // 携带其它已打开 buffer 快照（by_path 读取；本次事件生命周期）
+    crate::state::set_doc_snapshots(ctx.docs.clone());
     let handlers = with_event_handlers(|h| h.get(name).cloned());
     let Some(handlers) = handlers else { return Ok(()) };
     if handlers.is_empty() {
@@ -927,11 +961,23 @@ pub(crate) fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) 
 /// 读线程主循环（stdout/stderr 共用）。
 /// aggregate=true：原始字节累积进 output，EOF 后统一 lossy 解码（跨块多字节字符不被切开）；
 /// aggregate=false：流式增量解码——拼上跨块的残留尾部（最多 3 字节，UTF-8 最长序列），
+/// 从 doc 对象读编辑目标：this._target 为字符串 → Some(path)；null/非对象 → None（当前 buffer）
+fn edit_target(_this: &JsValue, context: &mut Context) -> boa_engine::JsResult<Option<String>> {
+    let Some(obj) = _this.as_object() else { return Ok(None) };
+    let v = obj.get(JsString::from("_target"), context)?;
+    if v.is_null_or_undefined() {
+        Ok(None)
+    } else {
+        v.try_js_into(context).map(Some)
+    }
+}
+
 pub(crate) fn js_doc_insert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
     let row: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let col: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let insert: String = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    crate::state::with_edits(|c| c.push(Edit { start: (row, col), end: (row, col), insert }));
+    let doc = edit_target(_this, context)?;
+    crate::state::with_edits(|c| c.push(Edit { doc, start: (row, col), end: (row, col), insert }));
     Ok(JsValue::undefined())
 }
 
@@ -941,7 +987,8 @@ pub(crate) fn js_doc_replace(_this: &JsValue, args: &[JsValue], context: &mut Co
     let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let insert: String = args.get(4).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    crate::state::with_edits(|c| c.push(Edit { start: (sr, sc), end: (er, ec), insert }));
+    let doc = edit_target(_this, context)?;
+    crate::state::with_edits(|c| c.push(Edit { doc, start: (sr, sc), end: (er, ec), insert }));
     Ok(JsValue::undefined())
 }
 
@@ -950,7 +997,8 @@ pub(crate) fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Con
     let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
     let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    crate::state::with_edits(|c| c.push(Edit { start: (sr, sc), end: (er, ec), insert: String::new() }));
+    let doc = edit_target(_this, context)?;
+    crate::state::with_edits(|c| c.push(Edit { doc, start: (sr, sc), end: (er, ec), insert: String::new() }));
     Ok(JsValue::undefined())
 }
 

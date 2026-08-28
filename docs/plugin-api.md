@@ -139,6 +139,22 @@ helix.end_edit();           // 期间所有编辑合并为一个事务 = 一次�
 - **未配对 begin**(begin 后无 end):下个命令/事件入口复位深度并丢弃积压编辑(不崩)。
 - 同步命令本身已是一个事务,本 API 主要用于 async 跨 await 场景。
 
+### `helix.by_path(path)`(跨 buffer 访问)
+
+按路径查**已打开**的 buffer,返回与 `ctx.doc` 同构的只读快照对象(路径已规范化,相对路径基于启动时 cwd):
+
+```js
+const other = helix.by_path("src/main.rs");
+// → { path: "/abs/src/main.rs", text: "...", cursor: { row: 0, col: 0 } }
+//   + insert(row, col, str) / replace(sr, sc, er, ec, str) / delete(sr, sc, er, ec)
+// 未打开 → null(不会自动打开文件)
+```
+
+- 编辑方法与 `ctx.doc` 一致,但作用于目标 buffer;一个命令改多个 buffer 时每个 buffer 一次撤销
+- `cursor` 恒为 {row: 0, col: 0}(后台 buffer 无视图光标)
+- 快照是命令开始时的文本;坐标基于该快照,跨 await 的过期坐标风险与 `ctx.doc` 相同
+- scratch(无路径)buffer 不可查
+
 ### `helix.set_cursor(row, col)` / `helix.set_selection(ar, ac, hr, hc)` / `helix.set_selection([...])`
 
 ```js
