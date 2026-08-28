@@ -4586,9 +4586,6 @@ pub(crate) fn apply_plugin_edits(
         Ok(Transaction::change(text, changes.into_iter()))
     };
 
-    // 先取当前 view id（复制，释放借用），供后台 doc 应用事务
-    let current_view_id = current!(editor).0.id;
-
     for (target, group) in &groups {
         match target {
             None => {
@@ -4605,12 +4602,15 @@ pub(crate) fn apply_plugin_edits(
                     .find(|(_, d)| d.path().is_some_and(|p| p.to_string_lossy() == path.as_str()))
                     .map(|(id, _)| *id)
                     .ok_or_else(|| anyhow!("plugin edit: buffer '{path}' not open"))?;
+                // 兜底 ensure_view_init：多窗口下当前 view 可能从未访问过后台 doc，
+                // 直接 apply 会因 selections 缺条目 panic——用内置三路兑底取有条目的 view
+                let view_id = editor.get_synced_view_id(id);
                 let doc = editor
                     .document_mut(id)
                     .ok_or_else(|| anyhow!("plugin edit: buffer '{path}' disappeared"))?;
                 let text = doc.text().clone();
                 let txn = build_txn(&text, group)?;
-                doc.apply(&txn, current_view_id);
+                doc.apply(&txn, view_id);
             }
         }
     }
