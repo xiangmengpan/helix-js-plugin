@@ -1081,6 +1081,24 @@ pub(crate) mod tests {
         let _ = take_ui_requests(); // 清 reload_all 入队的 ClosePanel
     }
 
+    /// 热重载不继承旧装饰:reload_all 在 reset 后 push 全局 Clear(doc: None),
+    /// 使 term 侧已应用的旧装饰在下一帧被清空。
+    #[test]
+    fn decorations_cleared_on_reload() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(r#"helix.register_command("dec-dummy", () => {});"#).unwrap();
+        // load_script 自身会 push 一个全局 Clear(见 decorations_cleared_on_script_load),先取走
+        assert_eq!(take_decorations().len(), 1);
+        assert!(take_decorations().is_empty());
+        reload_all().unwrap();
+        let reqs = take_decorations();
+        assert!(
+            reqs.iter().any(|r| r.doc.is_none() && matches!(r.kind, crate::types::DecorationKind::Clear)),
+            "reload 后应有全局 Clear: {reqs:?}"
+        );
+    }
+
     #[test]
     fn reload_closes_open_panel_layer() {
         let _guard = TEST_LOCK.lock().unwrap();

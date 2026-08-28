@@ -1229,6 +1229,9 @@ pub fn reload_all() -> Result<()> {
     crate::state::set_last_panel_id(None);
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());
     reset_plugin_state();
+    // 装饰不随 reload 继承:全局 Clear(term 侧 doc: None = 清空所有 doc;泵循环下一帧应用)。
+    // 必须放在 reset 之后(reset 清空队列);脚本重跑 eval 不 push 装饰,队列里只有这一个 Clear。
+    crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: None, kind: DecorationKind::Clear }));
     for (name, src) in &scripts {
         // 按名重读磁盘：js_load 记录的模块文件更新生效（相对名解析 PLUGINS_DIR，
         // 绝对路径直接用）；读不到（load_script_named 的字符串脚本/目录已删）用记录 src 兜底
