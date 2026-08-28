@@ -314,6 +314,9 @@ async fn plugin_edit_other_buffer_vsplit_no_panic() -> anyhow::Result<()> {
 // 相对路径 by_path:cwd-join 端到端(:cd 后 by_path("b.txt") 命中已打开 buffer)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_by_path_relative_resolves_from_cwd() -> anyhow::Result<()> {
+    // 保存进程 cwd:下面的 :cd 会真 chdir 整个测试进程 + 更新 helix-stdx 缓存,
+    // 必须在本测试结束时恢复,否则并行测试(如 filetree 定位)被 cwd 污染
+    let prev_cwd = std::env::current_dir()?;
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -345,5 +348,8 @@ async fn plugin_by_path_relative_resolves_from_cwd() -> anyhow::Result<()> {
         false,
     )
     .await?;
+    // 恢复进程级 cwd + helix-stdx 缓存(:cd 改了全局 chdir)。恢复失败不该让本测试红,
+    // 但留下错误 cwd 会污染其它测试——能恢复就恢复
+    let _ = helix_stdx::env::set_current_working_dir(&prev_cwd);
     Ok(())
 }
