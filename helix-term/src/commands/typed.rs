@@ -4548,34 +4548,72 @@ pub(crate) fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::Curso
     Ok(())
 }
 
-/// 把插件 Edit（0-based 行列，原始快照坐标）转成 Transaction 并应用。
-/// 一次事件的所有编辑合并为一个事务 → 一次撤销。
+/// 把插件 Edit（0-based 行列，原始快照坐标）按目标 buffer 分组，每组一个 Transaction。
+/// None = 当前 buffer（现状）；Some(path) = 其它 buffer。每个被改 buffer 一次撤销。
 pub(crate) fn apply_plugin_edits(
     editor: &mut Editor,
     edits: &[helix_js::Edit],
 ) -> anyhow::Result<()> {
     use helix_core::Change;
 
-    let (view, doc) = current!(editor);
-    let text = doc.text();
-    let to_char = |(row, col): (usize, usize)| pos_to_char(text, row, col);
-    let mut changes: Vec<Change> = edits
-        .iter()
-        // 用户把 (start,end) 传反时 swap 规范化，避免 helix 的 debug_assert 崩溃
-        .map(|edit| {
-            let (s, en) = (to_char(edit.start), to_char(edit.end));
-            let (from, to) = if s <= en { (s, en) } else { (en, s) };
-            (from, to, Some(edit.insert.clone().into()))
-        })
-        .collect();
-    changes.sort_by_key(|c| c.0);
-    for w in changes.windows(2) {
-        if w[0].1 > w[1].0 {
-            bail!("overlapping edits");
+    // 按目标分组，保持组内顺序
+    let mut groups: Vec<(Option<String>, Vec<&helix_js::Edit>)> = Vec::new();
+    for edit in edits {
+        if let Some(g) = groups.iter_mut().find(|(p, _)| p == &edit.doc) {
+            g.1.push(edit);
+        } else {
+            groups.push((edit.doc.clone(), vec![edit]));
         }
     }
-    let txn = Transaction::change(text, changes.into_iter());
-    doc.apply(&txn, view.id);
+
+    let build_txn = |text: &Rope, group: &[&helix_js::Edit]| -> anyhow::Result<Transaction> {
+        let to_char = |(row, col): (usize, usize)| pos_to_char(text, row, col);
+        let mut changes: Vec<Change> = group
+            .iter()
+            // 用户把 (start,end) 传反时 swap 规范化，避免 helix 的 debug_assert 崩溃
+            .map(|edit| {
+                let (s, en) = (to_char(edit.start), to_char(edit.end));
+                let (from, to) = if s <= en { (s, en) } else { (en, s) };
+                (from, to, Some(edit.insert.clone().into()))
+            })
+            .collect();
+        changes.sort_by_key(|c| c.0);
+        for w in changes.windows(2) {
+            if w[0].1 > w[1].0 {
+                bail!("overlapping edits");
+            }
+        }
+        Ok(Transaction::change(text, changes.into_iter()))
+    };
+
+    // 先取当前 view id（复制，释放借用），供后台 doc 应用事务
+    let current_view_id = current!(editor).0.id;
+
+    for (target, group) in &groups {
+        match target {
+            None => {
+                let (view, doc) = current!(editor);
+                let text = doc.text().clone();
+                let txn = build_txn(&text, group)?;
+                doc.apply(&txn, view.id);
+            }
+            Some(path) => {
+                // 命令期间被关闭 → 报错（不崩），与“plugin edit failed”惯例一致
+                let id = editor
+                    .documents
+                    .iter()
+                    .find(|(_, d)| d.path().is_some_and(|p| p.to_string_lossy() == path.as_str()))
+                    .map(|(id, _)| *id)
+                    .ok_or_else(|| anyhow!("plugin edit: buffer '{path}' not open"))?;
+                let doc = editor
+                    .document_mut(id)
+                    .ok_or_else(|| anyhow!("plugin edit: buffer '{path}' disappeared"))?;
+                let text = doc.text().clone();
+                let txn = build_txn(&text, group)?;
+                doc.apply(&txn, current_view_id);
+            }
+        }
+    }
     Ok(())
 }
 
