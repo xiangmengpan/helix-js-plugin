@@ -1,5 +1,10 @@
 # 设计:completion 弹窗候选图标(纯 JS)
 
+> **状态:已废弃(2026-08-29)**——目标已由原生钩子方案实现:`helix.set_completion_icon(kind => icon)`
+> (helix-term/src/ui/completion.rs `completion_kind_icon` + helix-js popup.rs),icons.js 的
+> `ICONS.completion` 段 + `getCompletionKindIcon` 已落地,load 即注册。本草案设想的
+> input-completion 独立弹窗不再需要,保留本文仅作历史记录。
+
 日期:2026-08-26
 状态:草案(待审核)
 
