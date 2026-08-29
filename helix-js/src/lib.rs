@@ -2347,6 +2347,7 @@ pub(crate) mod tests {
             helix.end_edit();
         });
         helix.register_command("dec-bad", () => { helix.set_virtual_text(42); });
+        helix.register_command("dec-bad2", () => { helix.set_virtual_text("/tmp/t.rs", 0, 0); });
     "#,
         )
         .unwrap();
@@ -2356,6 +2357,8 @@ pub(crate) mod tests {
         assert_eq!(take_decorations().len(), 1);
         // 类型校验:path 非字符串 → 命令失败
         assert!(run_command("dec-bad", &ctx).is_err());
+        // 给了坐标却缺 text → 报错而非静默 Clear(避免误清空;清除 = 只传 path)
+        assert!(run_command("dec-bad2", &ctx).is_err());
         // 命令开始复位:上一命令残留不跨命令(dec-bad 报错后队列也应被清)
         assert!(take_decorations().is_empty());
     }

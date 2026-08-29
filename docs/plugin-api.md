@@ -168,7 +168,7 @@ helix.set_virtual_text("src/main.rs");                            // 清除该 b
 ```
 
 - `style`: 主题 scope 字符串或 null(解析失败/省略 = 不渲染)
-- 路径规则与 `by_path` 一致(规范化匹配,未打开静默忽略);坐标基于命令开始时的快照,不随文档变更重映射——监听 `doc-change` 重推
+- 路径规则与 `by_path` 一致(规范化匹配,未打开静默忽略);坐标在命令结束时按当时文本换算,不随文档变更重映射——监听 `doc-change` 重推
 - 装饰按 buffer 存储,所有窗口共享;buffer 关闭或脚本重载时清空
 
 ### `helix.set_cursor(row, col)` / `helix.set_selection(ar, ac, hr, hc)` / `helix.set_selection([...])`

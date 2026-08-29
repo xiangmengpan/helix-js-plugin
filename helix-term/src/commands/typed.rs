@@ -4499,6 +4499,8 @@ fn emit_plugin_event_impl(
     if !edits.is_empty() {
         if let Err(err) = apply_plugin_edits(editor, &edits) {
             editor.set_error(format!("plugin event '{name}' edits failed: {err}"));
+            // 编辑失败:装饰坐标基于未生效的编辑,丢弃避免下一 drain 点按过期文本换算
+            let _ = helix_js::take_decorations();
             return;
         }
     }
@@ -4688,11 +4690,13 @@ pub(crate) fn apply_plugin_decorations(
                     });
                 }
                 helix_js::DecorationKind::Highlight { sr, sc, er, ec, style } => {
-                    highlights.push(PluginHighlight {
-                        start: pos_to_char(&text, *sr, *sc),
-                        end: pos_to_char(&text, *er, *ec),
-                        style: style.clone(),
-                    });
+                    let mut start = pos_to_char(&text, *sr, *sc);
+                    let mut end = pos_to_char(&text, *er, *ec);
+                    // 反向区间(sr,sc)>(er,ec) 归一化,与 apply_plugin_edits 的 swap 同款
+                    if start > end {
+                        std::mem::swap(&mut start, &mut end);
+                    }
+                    highlights.push(PluginHighlight { start, end, style: style.clone() });
                 }
             }
         }

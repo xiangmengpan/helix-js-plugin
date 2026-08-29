@@ -1019,20 +1019,23 @@ pub(crate) fn js_set_virtual_text(_this: &JsValue, args: &[JsValue], context: &m
             )))
         })?;
     let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
-    let kind = match args.get(3) {
-        // text 省略/undefined = 清除该 doc 全部插件装饰
-        Some(v) if v.is_null_or_undefined() => DecorationKind::Clear,
-        None => DecorationKind::Clear,
-        _ => {
-            let row: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-            let col: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-            let text: String = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-            let style: Option<String> = match args.get(4) {
-                Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
-                _ => None,
-            };
-            DecorationKind::VirtualText { row, col, text, style }
-        }
+    // 清除语义:只传 path(row/col/text 均省略)= Clear;给了坐标却缺 text → 走类型解析报 TypeError
+    let is_clear = match args.get(3) {
+        None => args.get(1).is_none() && args.get(2).is_none(),
+        Some(v) if v.is_null_or_undefined() => args.get(1).is_none() && args.get(2).is_none(),
+        _ => false,
+    };
+    let kind = if is_clear {
+        DecorationKind::Clear
+    } else {
+        let row: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+        let col: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+        let text: String = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+        let style: Option<String> = match args.get(4) {
+            Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
+            _ => None,
+        };
+        DecorationKind::VirtualText { row, col, text, style }
     };
     crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: Some(canonical), kind }));
     Ok(JsValue::undefined())

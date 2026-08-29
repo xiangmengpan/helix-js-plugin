@@ -502,7 +502,9 @@ impl View {
                     groups.push((a.style.clone(), vec![ann]));
                 }
             }
-            for (scope, anns) in groups {
+            for (scope, mut anns) in groups {
+                // TextAnnotations 要求组内按 char_idx 升序(Layer::consume debug_assert + partition_point)
+                anns.sort_unstable_by_key(|a| a.char_idx);
                 let style = scope.as_deref().and_then(|s| theme.and_then(|t| t.find_highlight(s)));
                 text_annotations.add_inline_annotations(anns, style);
             }

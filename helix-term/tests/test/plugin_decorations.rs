@@ -210,3 +210,85 @@ async fn plugin_decorations_async_begin_edit() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// 同 style 乱序 virtual text:渲染路径按 char_idx 排序(TextAnnotations 要求有序,
+// Layer::consume debug_assert)——无排序时 debug 构建渲染即 panic,本测试驱动渲染兜底
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_decorations_unsorted_virtual_text_renders() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("d.txt");
+    std::fs::write(&file, "one\ntwo\n")?;
+    let plugin_path = dir.path().join("dec-unsorted.js");
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"helix.register_command("dec-unsorted", () => {{
+                helix.set_virtual_text("{f}", 1, 1, "B", "ui.help");  // char_idx 5
+                helix.set_virtual_text("{f}", 0, 0, "A", "ui.help");  // char_idx 0(乱序)
+            }});"#,
+            f = file.display()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            // 重复运行:每次渲染都会走排序路径,乱序输入下无 sort 则 debug_assert panic
+            (
+                Some(":dec-unsorted<ret>"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.plugin_decorations.virtual_text.len(), 2);
+                    // 字段保持 push 顺序;排序发生在渲染层
+                    assert_eq!(doc.plugin_decorations.virtual_text[0].char_idx, 5);
+                    assert_eq!(doc.plugin_decorations.virtual_text[1].char_idx, 0);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// 反向高亮区间(sr,sc)>(er,ec):应用时 swap 归一化,产出 start<=end
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_decorations_reversed_highlight_normalized() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("d.txt");
+    std::fs::write(&file, "one\ntwo\n")?;
+    let plugin_path = dir.path().join("dec-rev.js");
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"helix.register_command("dec-rev", () => {{
+                helix.set_highlight("{f}", 1, 0, 0, 0, "ui.selection");  // 反向
+            }});"#,
+            f = file.display()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(":dec-rev<ret>"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(doc.plugin_decorations.highlights.len(), 1);
+                    // (1,0) char 4,(0,0) char 0 → swap 后 start 0, end 4
+                    assert_eq!(
+                        (doc.plugin_decorations.highlights[0].start, doc.plugin_decorations.highlights[0].end),
+                        (0, 4),
+                        "反向区间应归一化为 start<=end"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
