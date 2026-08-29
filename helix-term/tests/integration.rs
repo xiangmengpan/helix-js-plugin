@@ -33,6 +33,7 @@ mod test {
     mod plugin_layout;
     mod plugin_layout2;
     mod plugin_lsp;
+    mod plugin_lsp_mock;
     mod plugin_manager;
     mod plugin_multipanel;
     mod plugin_palette;

@@ -244,6 +244,37 @@ pub fn test_syntax_loader(overrides: Option<String>) -> helix_core::syntax::Load
     helix_core::syntax::Loader::new(lang.try_into().unwrap()).unwrap()
 }
 
+/// LSP 测试配置：test_config 默认 lsp.enable=false，mock LSP 测试需开启。
+pub fn test_config_with_lsp() -> Config {
+    let mut config = test_config();
+    config.editor.lsp.enable = true;
+    config
+}
+
+/// mock LSP server loader：把 .mock 文件类型接到 mock_lsp 二进制（CARGO_BIN_EXE_mock_lsp），
+/// argv[1]=场景、argv[2..]=场景附加参数（如第二文件路径）。
+pub fn mock_lsp_loader(scenario: &str, extra_args: &[&str]) -> helix_core::syntax::Loader {
+    let mut args = vec![scenario.to_string()];
+    args.extend(extra_args.iter().map(|s| s.to_string()));
+    // JSON 数组字面量是合法 TOML 内联数组；command 为测试二进制绝对路径
+    let toml = format!(
+        r#"
+[[language]]
+name = "mock"
+scope = "source.mock"
+file-types = ["mock"]
+language-servers = ["mock-lsp"]
+
+[language-server.mock-lsp]
+command = "{bin}"
+args = {args}
+"#,
+        bin = env!("CARGO_BIN_EXE_mock_lsp"),
+        args = serde_json::to_string(&args).unwrap(),
+    );
+    test_syntax_loader(Some(toml))
+}
+
 /// Use this for very simple test cases where there is one input
 /// document, selection, and sequence of key presses, and you just
 /// want to verify the resulting document and selection.

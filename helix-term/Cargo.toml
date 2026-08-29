@@ -40,6 +40,11 @@ git = ["helix-vcs/git"]
 name = "hx"
 path = "src/main.rs"
 
+# 集成测试用的 mock LSP server（stdio JSON-RPC，场景经 argv[1] 选择）
+[[bin]]
+name = "mock_lsp"
+path = "src/bin/mock_lsp.rs"
+
 [dependencies]
 helix-stdx = { path = "../helix-stdx" }
 helix-core = { path = "../helix-core" }
