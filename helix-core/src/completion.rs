@@ -10,6 +10,8 @@ pub struct CompletionItem {
     /// Containing Markdown
     pub documentation: Option<String>,
     pub provider: CompletionProvider,
+    /// nucleo 匹配位置(grapheme index),供 menu 渲染高亮
+    pub match_indices: Vec<u32>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]

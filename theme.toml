@@ -80,6 +80,7 @@ tabstop = { modifiers = ["italic"], bg = "bossanova" }
 "ui.menu" = { fg = "lavender", bg = "revolver" }
 "ui.menu.selected" = { fg = "revolver", bg = "white" }
 "ui.menu.scroll" = { fg = "lavender", bg = "comet" }
+"ui.completion.match" = { modifiers = ["underlined"] }
 
 "diagnostic.hint" = { underline = { color = "silver", style = "curl" } }
 "diagnostic.info" = { underline = { color = "delta", style = "curl" } }

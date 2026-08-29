@@ -2,6 +2,7 @@
 
 "ui.menu" = { fg = "black", bg = "white" }
 "ui.menu.selected" = { modifiers = ["reversed"] }
+"ui.completion.match" = { modifiers = ["underlined"] }
 "ui.linenr" = { fg = "gray", bg = "black" }
 "ui.popup" = { modifiers = ["reversed"] }
 "ui.linenr.selected" = { fg = "white", bg = "black", modifiers = ["bold"] }

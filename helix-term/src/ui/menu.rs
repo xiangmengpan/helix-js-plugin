@@ -2,18 +2,63 @@ use crate::{
     compositor::{Callback, Component, Compositor, Context, Event, EventResult},
     ctrl, key, shift,
 };
+use helix_core::unicode::segmentation::UnicodeSegmentation;
 use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use helix_view::{editor::SmartTabConfig, graphics::Rect, Editor};
+use helix_view::{editor::SmartTabConfig, graphics::Rect, theme::Style, Editor};
 use tui::layout::Constraint;
+use tui::text::Span;
 
 pub trait Item: Sync + Send + 'static {
     /// Additional editor state that is used for label calculation.
     type Data: Sync + Send + 'static;
 
     fn format(&self, data: &Self::Data) -> Row<'_>;
+
+    /// 匹配高亮位置(grapheme index);None/空 = 不高亮
+    fn match_indices(&self) -> Option<&[u32]> {
+        None
+    }
+}
+
+/// 按 grapheme 位置 patch Row 第一列的匹配段样式(参照 picker.rs 高亮遍历)。
+pub fn highlight_row(row: &mut Row, indices: &[u32], style: Style) {
+    let Some(cell) = row.cells.first_mut() else {
+        return;
+    };
+    let Some(spans) = cell.content.lines.first_mut() else {
+        return;
+    };
+    let mut span_list = Vec::new();
+    let mut current = String::new();
+    let mut current_style = Style::default();
+    let mut grapheme_idx = 0u32;
+    let mut iter = indices.iter();
+    let mut next = iter.next().copied().unwrap_or(u32::MAX);
+    for span in &spans.0 {
+        for grapheme in span.content.graphemes(true) {
+            let s = if grapheme_idx == next {
+                next = iter.next().copied().unwrap_or(u32::MAX);
+                span.style.patch(style)
+            } else {
+                span.style
+            };
+            if s != current_style {
+                if !current.is_empty() {
+                    span_list.push(Span::styled(std::mem::take(&mut current), current_style));
+                }
+                current_style = s;
+            }
+            current.push_str(grapheme);
+            grapheme_idx += 1;
+        }
+    }
+    if !current.is_empty() {
+        span_list.push(Span::styled(current, current_style));
+    }
+    spans.0 = span_list;
 }
 
 pub type MenuCallback<T> = Box<dyn Fn(&mut Editor, Option<&T>, MenuEvent)>;
@@ -356,9 +401,16 @@ impl<T: Item + 'static> Component for Menu<T> {
 
         let win_height = area.height as usize;
 
-        let rows = options
-            .iter()
-            .map(|option| option.format(&self.editor_data));
+        let rows = options.iter().map(|option| {
+            let mut row = option.format(&self.editor_data);
+            if let Some(indices) = option.match_indices() {
+                if !indices.is_empty() {
+                    let style = theme.try_get("ui.completion.match").unwrap_or_default();
+                    highlight_row(&mut row, indices, style);
+                }
+            }
+            row
+        });
         let table = Table::new(rows)
             .style(style)
             .highlight_style(selected)
@@ -417,5 +469,25 @@ impl<T: Item + 'static> Component for Menu<T> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_view::graphics::UnderlineStyle;
+    use helix_view::theme::Style;
+
+    #[test]
+    fn highlight_row_splits_matched_graphemes() {
+        let mut row = Row::new(vec![Cell::from("formatName"), Cell::from("word")]);
+        let style = Style::default().underline_style(UnderlineStyle::Line);
+        highlight_row(&mut row, &[0, 1, 2], style);
+        let spans = &row.cells[0].content.lines[0].0;
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), "for");
+        assert_eq!(spans[0].style, style);
+        assert_eq!(spans[1].content.as_ref(), "matName");
+        assert_eq!(spans[1].style, Style::default());
     }
 }

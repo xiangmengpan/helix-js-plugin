@@ -50,6 +50,7 @@ fn build_items(raw: &str) -> Option<Vec<CompletionItem>> {
                     body,
                     description: def.description,
                     provider_priority: 0,
+                    match_indices: Vec::new(),
                 }))
             })
             .collect(),

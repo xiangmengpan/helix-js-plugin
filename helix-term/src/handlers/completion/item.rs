@@ -38,6 +38,7 @@ impl CompletionResponse {
                     },
                     resolved: false,
                     provider_priority: self.context.priority,
+                    match_indices: Vec::new(),
                 })
             })),
             CompletionItems::Other(items) if dst.is_empty() => mem::swap(dst, items),
@@ -46,7 +47,7 @@ impl CompletionResponse {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct LspCompletionItem {
     pub item: lsp::CompletionItem,
     pub provider: LanguageServerId,
@@ -56,6 +57,18 @@ pub struct LspCompletionItem {
     // including rust-analyzer) rely on that.. so we can't do that without
     // breaking completions.
     pub provider_priority: i8,
+    /// nucleo 匹配位置(grapheme index),供 menu 渲染高亮
+    pub match_indices: Vec<u32>,
+}
+
+// 手动 PartialEq:忽略 match_indices——resolve 后 replace_option 的比较不应因匹配位置差异失效
+impl PartialEq for LspCompletionItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.item == other.item
+            && self.provider == other.provider
+            && self.resolved == other.resolved
+            && self.provider_priority == other.provider_priority
+    }
 }
 
 impl LspCompletionItem {
@@ -75,6 +88,8 @@ pub struct SnippetCompletionItem {
     pub body: String,
     pub description: Option<String>,
     pub provider_priority: i8,
+    /// nucleo 匹配位置(grapheme index),供 menu 渲染高亮
+    pub match_indices: Vec<u32>,
 }
 
 #[allow(clippy::large_enum_variant)] // TODO: In a separate PR attempt the `Box<LspCompletionItem>` pattern.
@@ -138,6 +153,15 @@ impl CompletionItem {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.preselect.unwrap_or(false),
             CompletionItem::Snippet(_) => false,
             CompletionItem::Other(_) => false,
+        }
+    }
+
+    /// 记录 nucleo 匹配位置(grapheme index),供 menu 渲染高亮。
+    pub fn set_match_indices(&mut self, indices: Vec<u32>) {
+        match self {
+            CompletionItem::Lsp(item) => item.match_indices = indices,
+            CompletionItem::Snippet(item) => item.match_indices = indices,
+            CompletionItem::Other(item) => item.match_indices = indices,
         }
     }
 }

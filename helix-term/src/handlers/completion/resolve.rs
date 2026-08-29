@@ -154,6 +154,7 @@ impl ResolveRequest {
                     Ok(item) => LspCompletionItem {
                         item,
                         resolved: true,
+                        match_indices: self.item.match_indices.clone(),
                         ..*self.item
                     },
                     Err(err) => {

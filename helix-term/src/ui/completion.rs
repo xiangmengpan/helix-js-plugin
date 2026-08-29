@@ -126,6 +126,18 @@ impl menu::Item for CompletionItem {
 
         menu::Row::new([menu::Cell::from(label), kind_cell])
     }
+
+    fn match_indices(&self) -> Option<&[u32]> {
+        match self {
+            CompletionItem::Lsp(LspCompletionItem { match_indices, .. }) => Some(match_indices),
+            CompletionItem::Snippet(SnippetCompletionItem { match_indices, .. }) => {
+                Some(match_indices)
+            }
+            CompletionItem::Other(core::CompletionItem { match_indices, .. }) => {
+                Some(match_indices)
+            }
+        }
+    }
 }
 
 /// Wraps a Menu.
@@ -362,12 +374,17 @@ impl Completion {
         let (matches, options) = self.popup.contents_mut().update_options();
         if incremental {
             matches.retain_mut(|(index, score)| {
-                let option = &options[*index as usize];
-                let text = option.filter_text();
-                let new_score = pattern.score(Utf32Str::new(text, &mut buf), &mut matcher);
+                let option = &mut options[*index as usize];
+                let mut indices = Vec::new();
+                let new_score = pattern.indices(
+                    Utf32Str::new(option.filter_text(), &mut buf),
+                    &mut matcher,
+                    &mut indices,
+                );
                 match new_score {
                     Some(new_score) => {
                         *score = new_score as u32 / 2;
+                        option.set_match_indices(indices);
                         true
                     }
                     None => false,
@@ -375,11 +392,18 @@ impl Completion {
             })
         } else {
             matches.clear();
-            matches.extend(options.iter().enumerate().filter_map(|(i, option)| {
-                let text = option.filter_text();
+            matches.extend(options.iter_mut().enumerate().filter_map(|(i, option)| {
+                let mut indices = Vec::new();
                 pattern
-                    .score(Utf32Str::new(text, &mut buf), &mut matcher)
-                    .map(|score| (i as u32, score as u32 / 3))
+                    .indices(
+                        Utf32Str::new(option.filter_text(), &mut buf),
+                        &mut matcher,
+                        &mut indices,
+                    )
+                    .map(|score| {
+                        option.set_match_indices(indices);
+                        (i as u32, score as u32 / 3)
+                    })
             }));
         }
         // Nucleo is meant as an FZF-like fuzzy matcher and only hides matches that are truly
@@ -759,6 +783,7 @@ mod tests {
             provider: core::diagnostic::LanguageServerId::default(),
             resolved: false,
             provider_priority: 0,
+            match_indices: Vec::new(),
         })
     }
 
@@ -775,12 +800,35 @@ mod tests {
             body: "function ${1:name}(${2:params}) {\n\t${0}\n}".into(),
             description: Some("Function declaration".into()),
             provider_priority: 0,
+            match_indices: Vec::new(),
         });
         assert_eq!(item.provider(), CompletionProvider::Snippet);
         assert_eq!(item.provider_priority(), 0);
         // format:kind 文本 "snippet"、kind_num 15
         let row = CompletionItem::format(&item, &Style::default());
         assert_eq!(cells(&row), vec!["fn".to_string(), "snippet".to_string()]);
+    }
+
+    #[test]
+    fn highlight_matched_indices() {
+        // match_indices 存进候选;format 输出不因高亮字段变化
+        let mut item = CompletionItem::Other(core::CompletionItem {
+            transaction: Transaction::new(&core::Rope::from("x")),
+            label: "formatName".into(),
+            kind: "word".into(),
+            documentation: None,
+            provider: core::completion::CompletionProvider::Word,
+            match_indices: Vec::new(),
+        });
+        item.set_match_indices(vec![0, 1, 2]);
+        assert_eq!(item.match_indices(), Some(&[0, 1, 2][..]));
+        let row = CompletionItem::format(&item, &Style::default());
+        let joined: String = row.cells[0].content.lines[0]
+            .0
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(joined, "formatName");
     }
 
     #[test]
@@ -855,6 +903,7 @@ mod tests {
             kind: "word".into(),
             documentation: None,
             provider: core::completion::CompletionProvider::Word,
+            match_indices: Vec::new(),
         });
         let row = CompletionItem::format(&item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "word".to_string()]);

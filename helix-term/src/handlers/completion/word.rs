@@ -87,6 +87,7 @@ pub(super) fn completion(
                     kind: Cow::Borrowed(COMPLETION_KIND),
                     documentation: None,
                     provider: CompletionProvider::Word,
+                    match_indices: Vec::new(),
                 })
             })
             .collect();

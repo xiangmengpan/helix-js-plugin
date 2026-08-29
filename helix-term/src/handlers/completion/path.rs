@@ -115,6 +115,7 @@ pub(crate) fn path_completion(
                     transaction,
                     documentation: Some(documentation),
                     provider: CompletionProvider::Path,
+                    match_indices: Vec::new(),
                 }))
             })
             .collect();
