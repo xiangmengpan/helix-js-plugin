@@ -590,8 +590,8 @@ pub fn workspace_diagnostics_picker(cx: &mut Context) {
 
 impl ui::menu::Item for CodeActionItem {
     type Data = ();
-    fn format(&self, _data: &Self::Data) -> Row<'_> {
-        self.title().into()
+    fn format(&mut self, _data: &Self::Data) -> Row<'static> {
+        self.title().to_string().into()
     }
 }
 

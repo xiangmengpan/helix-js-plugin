@@ -1627,8 +1627,8 @@ impl Application {
 
 impl ui::menu::Item for lsp::MessageActionItem {
     type Data = ();
-    fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
-        self.title.as_str().into()
+    fn format(&mut self, _data: &Self::Data) -> tui::widgets::Row<'static> {
+        self.title.clone().into()
     }
 }
 

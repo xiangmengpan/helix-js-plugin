@@ -28,7 +28,7 @@ use std::cmp::Reverse;
 impl menu::Item for CompletionItem {
     type Data = Style;
 
-    fn format(&self, dir_style: &Self::Data) -> menu::Row<'_> {
+    fn format(&mut self, dir_style: &Self::Data) -> menu::Row<'static> {
         let deprecated = match self {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => {
                 item.deprecated.unwrap_or_default()
@@ -41,10 +41,11 @@ impl menu::Item for CompletionItem {
             CompletionItem::Other(_) => false,
         };
 
+        // label/detail 取 owned 值:钩子命中后需 &mut self 清 match_indices,不能持有对 self 的借用
         let label_text = match self {
-            CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.label.as_str(),
-            CompletionItem::Snippet(SnippetCompletionItem { label, .. }) => label,
-            CompletionItem::Other(core::CompletionItem { label, .. }) => label,
+            CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.label.to_string(),
+            CompletionItem::Snippet(SnippetCompletionItem { label, .. }) => label.to_string(),
+            CompletionItem::Other(core::CompletionItem { label, .. }) => label.to_string(),
         };
 
         let (kind_spans, kind_num) = match self {
@@ -104,7 +105,9 @@ impl menu::Item for CompletionItem {
                 None => ("".into(), 0),
             },
             CompletionItem::Snippet(_) => ("snippet".into(), 15),
-            CompletionItem::Other(core::CompletionItem { kind, .. }) => (kind.as_ref().into(), 0),
+            CompletionItem::Other(core::CompletionItem { kind, .. }) => {
+                (kind.to_string().into(), 0)
+            }
         };
 
         // JS 行渲染钩子：注册时自定义整行外观；未注册/抛错/返回不可用内容 → 回退原生两列。
@@ -117,19 +120,22 @@ impl menu::Item for CompletionItem {
             core::completion::CompletionProvider::Snippet => "snippet",
         };
         let detail = match self {
-            CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.detail.as_deref(),
+            CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.detail.clone(),
             _ => None,
         };
         if let Ok(content) = helix_js::render_completion_row(
-            label_text,
+            &label_text,
             &kind_text,
             kind_num,
             provider_str,
-            detail,
+            detail.as_deref(),
             deprecated,
             self.match_indices().unwrap_or(&[]),
         ) {
             if let Some(row) = content_to_row(content) {
+                // 钩子已完全自定义该行:清空匹配位置 → menu 渲染层跳过 highlight patch
+                // (JS 内容与 label 的 match_indices 无对应关系,按索引 patch 会错位)
+                self.set_match_indices(Vec::new());
                 return row;
             }
         }
@@ -846,7 +852,7 @@ mod tests {
     fn snippet_item_kind_and_priority() {
         use crate::handlers::completion::{CompletionItem, SnippetCompletionItem};
         use helix_core::completion::CompletionProvider;
-        let item = CompletionItem::Snippet(SnippetCompletionItem {
+        let mut item = CompletionItem::Snippet(SnippetCompletionItem {
             label: "fn".into(),
             body: "function ${1:name}(${2:params}) {\n\t${0}\n}".into(),
             description: Some("Function declaration".into()),
@@ -856,7 +862,7 @@ mod tests {
         assert_eq!(item.provider(), CompletionProvider::Snippet);
         assert_eq!(item.provider_priority(), 0);
         // format:kind 文本 "snippet"、kind_num 15
-        let row = CompletionItem::format(&item, &Style::default());
+        let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(cells(&row), vec!["fn".to_string(), "snippet".to_string()]);
     }
 
@@ -873,7 +879,7 @@ mod tests {
         });
         item.set_match_indices(vec![0, 1, 2]);
         assert_eq!(item.match_indices(), Some(&[0, 1, 2][..]));
-        let row = CompletionItem::format(&item, &Style::default());
+        let row = CompletionItem::format(&mut item, &Style::default());
         let joined: String = row.cells[0].content.lines[0]
             .0
             .iter()
@@ -883,10 +889,34 @@ mod tests {
     }
 
     #[test]
+    fn hook_rendered_row_clears_match_indices() {
+        // 行渲染钩子生效时,JS 已完全自定义该行:按 label 的 match_indices 去 patch 会错位——
+        // format 命中钩子后应清空 match_indices,menu 渲染层据此跳过高亮 patch
+        helix_js::init();
+        helix_js::load_script(
+            r#"helix.set_completion_render((ctx) => [{ type: "text", text: ctx.label + "|" + ctx.provider, style: "ui.completion" }]);"#,
+        )
+        .unwrap();
+        let mut item = CompletionItem::Other(core::CompletionItem {
+            transaction: Transaction::new(&core::Rope::from("x")),
+            label: "formatName".into(),
+            kind: "word".into(),
+            documentation: None,
+            provider: core::completion::CompletionProvider::Word,
+            match_indices: vec![0, 1, 2],
+        });
+        let row = CompletionItem::format(&mut item, &Style::default());
+        assert_eq!(row.cells.len(), 1); // 钩子行单列(原生两列)
+        assert!(item.match_indices().map_or(true, |i| i.is_empty())); // 清空 → 渲染层跳过 patch
+                                                                      // 收尾:重注册无害钩子,防线程复用残留影响后续断言
+        helix_js::load_script(r#"helix.set_completion_render(() => []);"#).unwrap();
+    }
+
+    #[test]
     fn format_kind_text_without_hook() {
         // 未注册钩子 → kind 文本
-        let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
-        let row = CompletionItem::format(&item, &Style::default());
+        let mut item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
+        let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "method".to_string()]);
     }
 
@@ -895,8 +925,8 @@ mod tests {
         // 注册钩子 → kind cell 是图标字符
         helix_js::init();
         helix_js::load_script(r#"helix.set_completion_icon((k) => "i" + k);"#).unwrap();
-        let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
-        let row = CompletionItem::format(&item, &Style::default());
+        let mut item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
+        let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "i2".to_string()]);
     }
 
@@ -948,7 +978,7 @@ mod tests {
             r#"helix.set_completion_icon((k) => k >= 1 && k <= 25 ? "i" + k : "");"#,
         )
         .unwrap();
-        let item = CompletionItem::Other(core::CompletionItem {
+        let mut item = CompletionItem::Other(core::CompletionItem {
             transaction: Transaction::new(&core::Rope::from("foo")),
             label: "foo".into(),
             kind: "word".into(),
@@ -956,7 +986,7 @@ mod tests {
             provider: core::completion::CompletionProvider::Word,
             match_indices: Vec::new(),
         });
-        let row = CompletionItem::format(&item, &Style::default());
+        let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "word".to_string()]);
     }
 
@@ -968,13 +998,13 @@ mod tests {
             r#"helix.set_completion_render((ctx) => [{ type: "text", text: ctx.label + "[" + ctx.kind + "]", style: "ui.completion" }]);"#,
         )
         .unwrap();
-        let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
-        let row = CompletionItem::format(&item, &Style::default());
+        let mut item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
+        let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(cells(&row), vec!["foo[method]".to_string()]);
         // 抛错 → 回退原生两列
         helix_js::load_script(r#"helix.set_completion_render(() => { throw new Error("x"); });"#)
             .unwrap();
-        let row = CompletionItem::format(&item, &Style::default());
+        let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "method".to_string()]);
         // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
         helix_js::load_script(r#"helix.set_completion_render(() => []);"#).unwrap();

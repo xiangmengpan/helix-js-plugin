@@ -15,7 +15,9 @@ pub trait Item: Sync + Send + 'static {
     /// Additional editor state that is used for label calculation.
     type Data: Sync + Send + 'static;
 
-    fn format(&self, data: &Self::Data) -> Row<'_>;
+    /// 渲染行。返回 owned row(`'static`),允许实现者完全自定义渲染(如 JS 行渲染钩子)
+    /// 时调整自身状态(如清空 match_indices),渲染层据此跳过匹配高亮 patch。
+    fn format(&mut self, data: &Self::Data) -> Row<'static>;
 
     /// 匹配高亮位置(grapheme index);None/空 = 不高亮
     fn match_indices(&self) -> Option<&[u32]> {
@@ -182,10 +184,10 @@ impl<T: Item> Menu<T> {
     fn recalculate_size(&mut self, viewport: (u16, u16)) {
         let n = self
             .options
-            .first()
+            .first_mut()
             .map(|option| option.format(&self.editor_data).cells.len())
             .unwrap_or_default();
-        let max_lens = self.options.iter().fold(vec![0; n], |mut acc, option| {
+        let max_lens = self.options.iter_mut().fold(vec![0; n], |mut acc, option| {
             let row = option.format(&self.editor_data);
             // maintain max for each column
             for (acc, cell) in acc.iter_mut().zip(row.cells.iter()) {
@@ -387,30 +389,25 @@ impl<T: Item + 'static> Component for Menu<T> {
         surface.clear_with(area, style);
 
         let scroll = self.scroll;
-
-        let options: Vec<_> = self
-            .matches
-            .iter()
-            .map(|(index, _score)| {
-                // (index, self.options.get(*index).unwrap()) // get_unchecked
-                &self.options[*index as usize] // get_unchecked
-            })
-            .collect();
-
-        let len = options.len();
-
+        let len = self.matches.len();
         let win_height = area.height as usize;
 
-        let rows = options.iter().map(|option| {
-            let mut row = option.format(&self.editor_data);
-            if let Some(indices) = option.match_indices() {
-                if !indices.is_empty() {
-                    let style = theme.try_get("ui.completion.match").unwrap_or_default();
-                    highlight_row(&mut row, indices, style);
+        // 行借用 item(&mut format)→ 用循环而非闭包 collect(闭包无法返回对捕获的 &mut 借用)
+        let rows = {
+            let mut rows = Vec::with_capacity(len);
+            for (index, _score) in &self.matches {
+                let option = &mut self.options[*index as usize]; // get_unchecked
+                let mut row = option.format(&self.editor_data);
+                if let Some(indices) = option.match_indices() {
+                    if !indices.is_empty() {
+                        let style = theme.try_get("ui.completion.match").unwrap_or_default();
+                        highlight_row(&mut row, indices, style);
+                    }
                 }
+                rows.push(row);
             }
-            row
-        });
+            rows
+        };
         let table = Table::new(rows)
             .style(style)
             .highlight_style(selected)

@@ -121,7 +121,7 @@ fn select(workspace: PathBuf) -> ui::Select<TrustChoice> {
 impl crate::ui::menu::Item for TrustChoice {
     type Data = ();
 
-    fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
+    fn format(&mut self, _data: &Self::Data) -> tui::widgets::Row<'static> {
         match self {
             TrustChoice::Trust => "Trust",
             TrustChoice::Never => "Never",
