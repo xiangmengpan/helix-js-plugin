@@ -38,11 +38,19 @@ where
 }
 
 fn build_items(raw: &str) -> Option<Vec<CompletionItem>> {
-    let parsed: HashMap<String, SnippetDef> = serde_json::from_str(raw).ok()?;
+    // 外层整体反序列化:坏 JSON(非对象)直接 None;好 JSON 逐条解析,单条失败 log + 跳过,不崩整文件
+    let parsed: HashMap<String, serde_json::Value> = serde_json::from_str(raw).ok()?;
     Some(
         parsed
             .into_iter()
-            .filter_map(|(_, def)| {
+            .filter_map(|(name, value)| {
+                let def: SnippetDef = match serde_json::from_value(value) {
+                    Ok(def) => def,
+                    Err(e) => {
+                        log::warn!("snippet {name} parse failed: {e}");
+                        return None;
+                    }
+                };
                 let label: Cow<'static, str> = def.prefix.into_iter().next()?.into();
                 let body = def.body.join("\n");
                 Some(CompletionItem::Snippet(SnippetCompletionItem {
@@ -147,6 +155,22 @@ mod tests {
                 assert_eq!(s.description.as_deref(), Some("Function"));
                 assert_eq!(s.provider_priority, 0);
             }
+            _ => panic!("expected snippet item"),
+        }
+    }
+
+    #[test]
+    fn build_items_skips_bad_entry_keeps_good() {
+        // 混入坏条目(body 类型错 + prefix 缺失):好条目保留,坏条目跳过并 log,不崩整文件
+        let raw = r#"{
+      "fn": { "prefix": "fn", "body": ["function ${1:name}() {", "\t${0}", "}"] },
+      "broken": { "prefix": "br", "body": "not an array" },
+      "no-prefix": { "body": ["x"] }
+    }"#;
+        let items = build_items(raw).unwrap();
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            CompletionItem::Snippet(s) => assert_eq!(s.label.as_ref(), "fn"),
             _ => panic!("expected snippet item"),
         }
     }
