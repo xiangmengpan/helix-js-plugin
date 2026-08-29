@@ -1934,7 +1934,6 @@ mod tests {
                 .is_err()
         );
         // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
-        crate::load_script(r#"helix.set_completion_render(() => [{ type: "text", text: "" }]);"#)
-            .unwrap();
+        crate::load_script(r#"helix.set_completion_render(() => []);"#).unwrap();
     }
 }

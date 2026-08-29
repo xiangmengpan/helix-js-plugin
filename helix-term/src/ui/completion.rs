@@ -977,9 +977,6 @@ mod tests {
         let row = CompletionItem::format(&item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "method".to_string()]);
         // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
-        helix_js::load_script(
-            r#"helix.set_completion_render(() => [{ type: "text", text: "" }]);"#,
-        )
-        .unwrap();
+        helix_js::load_script(r#"helix.set_completion_render(() => []);"#).unwrap();
     }
 }
