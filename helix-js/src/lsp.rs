@@ -101,7 +101,14 @@ fn enqueue_lsp_request(
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     crate::state::with_lsp_promises(|m| m.insert(id, resolving));
-    LSP_REQUESTS.with(|q| q.borrow_mut().push(LspRequest { id, method, pos, params }));
+    LSP_REQUESTS.with(|q| {
+        q.borrow_mut().push(LspRequest {
+            id,
+            method,
+            pos,
+            params,
+        })
+    });
     Ok(promise.into())
 }
 
@@ -183,7 +190,10 @@ pub struct LspResult {
 #[derive(Debug)]
 pub enum LspApply {
     /// format:TextEdit 列表应用到指定 doc(doc_id 为 DocumentId 的 u64 透传)
-    Format { doc_id: u64, edits: serde_json::Value },
+    Format {
+        doc_id: u64,
+        edits: serde_json::Value,
+    },
     /// rename:WorkspaceEdit(URI 自含,apply_workspace_edit 处理跨 doc/打开)
     WorkspaceEdit(serde_json::Value),
     /// execute code action:完整 CodeActionOrCommand JSON

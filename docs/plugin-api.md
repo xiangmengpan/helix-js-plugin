@@ -746,6 +746,10 @@ helix.lsp.hover([{ row, col }]) -> Promise       // → Hover | null
 helix.lsp.completion([{ row, col }]) -> Promise  // → CompletionItem[] | {isIncomplete, items} | null
 helix.lsp.goto_definition([{ row, col }]) -> Promise // → Location | Location[] | LocationLink[] | null（含 path）
 helix.lsp.document_symbols() -> Promise          // → DocumentSymbol[] | null
+helix.lsp.format() -> Promise                    // → {applied:true} | null（自动应用）
+helix.lsp.rename(newName) -> Promise             // → {applied:true,files:n} | null（自动应用）
+helix.lsp.code_actions([{ row, col }]) -> Promise // → CodeAction[] | null
+helix.lsp.execute_code_action(action) -> Promise // → {applied:true} | null（自动应用）
 helix.el(type, arg, opts)                       // text|row|col|scroll|button|input
 helix.open_terminal({ cmd, side, size, onExit? }) -> view_id
 helix.set_terminal_mode(view_id, "dock"|"fullscreen"|"floating"|"minimized")
@@ -796,7 +800,7 @@ split 方向：right | left | top | bottom
 
 ## 20. LSP 请求
 
-插件可主动向当前 buffer 的语言服务器发请求。四个方法都挂在 `helix.lsp` 命名空间下，全部返回 Promise；响应为 LSP 协议原始 JSON（`serde_json` 序列化后 `JSON.parse` 透传），字段名与 LSP 协议一致。请求在**调用时**快照当前光标位置，之后移动光标不影响已发出的请求。
+插件可主动向当前 buffer 的语言服务器发请求。八个方法都挂在 `helix.lsp` 命名空间下，全部返回 Promise；响应为 LSP 协议原始 JSON（`serde_json` 序列化后 `JSON.parse` 透传），字段名与 LSP 协议一致。请求在**调用时**快照当前光标位置，之后移动光标不影响已发出的请求。
 
 ```js
 const hover = await helix.lsp.hover();            // → Hover | null
@@ -828,6 +832,19 @@ await helix.lsp.hover({ row: 5, col: 3 });
 | `completion` | `items[]`（`label`/`detail`/`documentation`/`insertText`/`data` 等，零丢失）；List 变体（rust-analyzer 等常见）为 `{isIncomplete, items}` 对象 |
 | `goto_definition` | 标量 `Location`（非数组）或 `Location[]`（`uri`+`range`）或 `LocationLink[]`（`targetUri`+`targetRange`），每项附 `path` |
 | `document_symbols` | `DocumentSymbol[]`（`name`/`kind`/`range`/`selectionRange`/`children`）或 `SymbolInformation[]` |
+
+### `helix.lsp.format()` / `helix.lsp.rename(newName)` / `helix.lsp.code_actions(pos?)` / `helix.lsp.execute_code_action(action)`（LSP 编辑操作）
+
+```js
+await helix.lsp.format();                        // → { applied: true } 或 null
+await helix.lsp.rename("newName");               // → { applied: true, files: n } 或 null
+const actions = await helix.lsp.code_actions();  // → [{ title, kind, ...完整 LSP action }] 或 null
+await helix.lsp.execute_code_action(actions[0]); // → { applied: true } 或 null
+```
+
+- 自动应用编辑（一次撤销/文件）；rename 可跨 buffer（自动打开未打开文件）；code_actions 两阶段无状态（execute 原样传回列表项）
+- 无 server / 能力不支持 / 请求失败 → null（与查询类方法不同，不 reject）；无超时（可能悬挂，与其它 lsp 方法一致）
+- 响应到达即应用（不检查文档版本，插件用 await 时序自行控制）；format 仅全文档
 
 ### 空 / 错语义
 

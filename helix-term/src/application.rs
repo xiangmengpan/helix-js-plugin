@@ -1,10 +1,12 @@
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::Stream;
-use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Range, Selection};
+use helix_core::{
+    diagnostic::Severity, pos_at_coords, syntax, Change, Range, Rope, Selection, Transaction,
+};
 use helix_lsp::{
     lsp::{self, notification::Notification},
     util::lsp_range_to_range,
-    LanguageServerId, LspProgressMap,
+    LanguageServerId, LspProgressMap, OffsetEncoding,
 };
 use helix_stdx::path::get_relative_path;
 use helix_view::{
@@ -381,9 +383,20 @@ impl Application {
                 error = Some(err);
             }
         }
-        // 段 A：LSP 响应 → 兑现 Promise（须在 pump_jobs 前，.then 才能同帧跑）
+        // 段 A：LSP 响应 → 先应用编辑（编辑生效）再兑现 Promise（须在 pump_jobs 前，.then 才能同帧跑）
         for r in lsp_results {
-            let helix_js::LspResult { id, result, .. } = r;
+            let helix_js::LspResult { id, result, apply } = r;
+            // 有编辑载荷 → 先应用；成功覆写为摘要 JSON，失败 resolve null（不 panic）
+            let result = match apply {
+                Some(apply) => match apply_lsp_edits(&mut self.editor, apply) {
+                    Ok(summary) => Ok(Some(summary)),
+                    Err(err) => {
+                        log::error!("lsp apply {id}: {err}");
+                        Ok(None)
+                    }
+                },
+                None => result,
+            };
             if let Err(err) = helix_js::resolve_lsp(id, result) {
                 log::error!("lsp result {id}: {err}");
             }
@@ -1649,13 +1662,12 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
             LanguageServerFeature::DocumentSymbols,
             LspReqKind::DocumentSymbols,
         ),
-        // 任务 1 占位:新方法暂 resolve null;任务 2 接入真实映射与编辑应用
-        helix_js::LspMethod::Format
-        | helix_js::LspMethod::Rename
-        | helix_js::LspMethod::CodeActions
-        | helix_js::LspMethod::ExecuteCodeAction => {
-            let _ = helix_js::resolve_lsp(req.id, Ok(None));
-            return;
+        // 新 4 方法响应形状不同（编辑载荷/列表/无请求），各自独立处理
+        helix_js::LspMethod::Format => return handle_lsp_format(editor, req),
+        helix_js::LspMethod::Rename => return handle_lsp_rename(editor, req),
+        helix_js::LspMethod::CodeActions => return handle_lsp_code_actions(editor, req),
+        helix_js::LspMethod::ExecuteCodeAction => {
+            return handle_lsp_execute_code_action(editor, req);
         }
     };
 
@@ -1722,8 +1734,291 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
             Ok(None) => Ok(None),
             Err(e) => Err(e),
         };
-        let _ = tx.send(helix_js::LspResult { id, result, apply: None });
+        let _ = tx.send(helix_js::LspResult {
+            id,
+            result,
+            apply: None,
+        });
     });
+}
+
+/// TextEdit 列表 → Transaction：UTF-16 坐标换算、排序 + 重叠检查（重叠 → Err，不 panic）。
+/// 纯函数可单测；与 helix-lsp generate_transaction_from_edits 同逻辑，但重叠编辑报错而非静默丢弃。
+fn lsp_text_edits_to_transaction(
+    text: &Rope,
+    edits: &[lsp::TextEdit],
+    offset_encoding: OffsetEncoding,
+) -> anyhow::Result<Transaction> {
+    let mut changes: Vec<Change> = edits
+        .iter()
+        .filter_map(|e| {
+            lsp_range_to_range(text, e.range, offset_encoding)
+                .map(|r| (r.from(), r.to(), Some(e.new_text.clone().into())))
+        })
+        .collect();
+    // 部分 LSP 逆序发送（如 Omnisharp），先排序
+    changes.sort_by_key(|c| c.0);
+    for w in changes.windows(2) {
+        if w[0].1 > w[1].0 {
+            anyhow::bail!("overlapping LSP edits");
+        }
+    }
+    Ok(Transaction::change(text, changes.into_iter()))
+}
+
+/// format：TextEdit 响应 → apply 载荷（doc_id + 序列化 edits）；主线程段 A 应用后 resolve 摘要。
+fn handle_lsp_format(editor: &Editor, req: helix_js::LspRequest) {
+    use helix_core::syntax::config::LanguageServerFeature;
+    let (_, doc) = current_ref!(editor);
+    let Some(client) = doc
+        .language_servers_with_feature(LanguageServerFeature::Format)
+        .next()
+    else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    let Some(future) = client.text_document_formatting(
+        doc.identifier(),
+        lsp::FormattingOptions {
+            tab_size: doc.tab_width() as u32,
+            insert_spaces: matches!(doc.indent_style, helix_core::indent::IndentStyle::Spaces(_)),
+            ..Default::default()
+        },
+        None,
+    ) else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    let id = req.id;
+    let doc_id = doc.id().as_u64();
+    let tx = helix_js::lsp_result_tx();
+    tokio::spawn(async move {
+        // result 传 Ok(None) 占位：应用成功时段 A 覆写为摘要 JSON；失败保留 null
+        let payload = match future.await {
+            Ok(Some(edits)) => Some(helix_js::LspApply::Format {
+                doc_id,
+                edits: serde_json::to_value(&edits).unwrap_or(serde_json::Value::Null),
+            }),
+            _ => None,
+        };
+        let _ = tx.send(helix_js::LspResult {
+            id,
+            result: Ok(None),
+            apply: payload,
+        });
+    });
+}
+
+/// rename：WorkspaceEdit 响应 → apply 载荷；newName 从 req.params 取（缺失 → null）。
+fn handle_lsp_rename(editor: &Editor, req: helix_js::LspRequest) {
+    use helix_core::syntax::config::LanguageServerFeature;
+    let Some(new_name) = req
+        .params
+        .as_ref()
+        .and_then(|p| p.as_str())
+        .map(str::to_string)
+    else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    let (view, doc) = current_ref!(editor);
+    let Some(client) = doc
+        .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
+        .next()
+    else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    let offset_encoding = client.offset_encoding();
+    let pos = match req.pos {
+        // JS 传入的字符坐标（row, col）→ LSP 位置；越界 clamp 到文档末尾，防 ropey panic
+        Some((row, col)) => {
+            let text = doc.text();
+            let line = (row as usize).min(text.len_lines().saturating_sub(1));
+            let line_start = text.line_to_char(line);
+            let line_end = text.line_to_char(line + 1); // line < len_lines → line+1 ≤ len_lines，合法
+            let char_off = line_start + (col as usize).min(line_end.saturating_sub(line_start));
+            helix_lsp::util::pos_to_lsp_pos(text, char_off, offset_encoding)
+        }
+        None => doc.position(view.id, offset_encoding),
+    };
+    let Some(future) = client.rename_symbol(doc.identifier(), pos, new_name) else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    let id = req.id;
+    let tx = helix_js::lsp_result_tx();
+    tokio::spawn(async move {
+        let payload = match future.await {
+            Ok(Some(edit)) => Some(helix_js::LspApply::WorkspaceEdit(
+                serde_json::to_value(&edit).unwrap_or(serde_json::Value::Null),
+            )),
+            _ => None,
+        };
+        let _ = tx.send(helix_js::LspResult {
+            id,
+            result: Ok(None),
+            apply: payload,
+        });
+    });
+}
+
+/// code_actions：复用菜单同源查询（全部 CodeAction server），过滤 disabled 后 resolve 数组（无 apply）。
+fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
+    let (view, doc) = current_ref!(editor);
+    let range = match req.pos {
+        Some((row, col)) => {
+            let text = doc.text();
+            let line = (row as usize).min(text.len_lines().saturating_sub(1));
+            let line_start = text.line_to_char(line);
+            let line_end = text.line_to_char(line + 1);
+            Range::point(line_start + (col as usize).min(line_end.saturating_sub(line_start)))
+        }
+        None => doc.selection(view.id).primary(),
+    };
+    let futures = crate::commands::lsp::code_actions_for_range(
+        doc,
+        range,
+        None,
+        lsp::CodeActionTriggerKind::INVOKED,
+    );
+    if futures.is_empty() {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    }
+    let id = req.id;
+    let tx = helix_js::lsp_result_tx();
+    tokio::spawn(async move {
+        let mut actions = Vec::new();
+        for (future, _ls_id) in futures {
+            if let Ok(Some(list)) = future.await {
+                // 过滤 disabled（与 code-action 菜单同规则）
+                actions.extend(list.into_iter().filter(|action| {
+                    matches!(
+                        action,
+                        lsp::CodeActionOrCommand::Command(_)
+                            | lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                                disabled: None,
+                                ..
+                            })
+                    )
+                }));
+            }
+        }
+        // 无可用 action（含全部请求失败）→ null
+        let result = if actions.is_empty() {
+            Ok(None)
+        } else {
+            serde_json::to_value(&actions)
+                .map(|v| Ok(Some(v.to_string())))
+                .unwrap_or(Ok(None))
+        };
+        let _ = tx.send(helix_js::LspResult {
+            id,
+            result,
+            apply: None,
+        });
+    });
+}
+
+/// execute_code_action：无 server 请求——action JSON（插件从列表回传）直接走 apply 载荷，
+/// 主线程段 A 应用后 resolve。与 code_actions 同 server 选择：无 CodeAction server → null。
+fn handle_lsp_execute_code_action(editor: &Editor, req: helix_js::LspRequest) {
+    use helix_core::syntax::config::LanguageServerFeature;
+    let (_, doc) = current_ref!(editor);
+    let server_exists = doc
+        .language_servers_with_feature(LanguageServerFeature::CodeAction)
+        .next()
+        .is_some();
+    let Some(params) = req.params else {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    };
+    if !server_exists {
+        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        return;
+    }
+    let tx = helix_js::lsp_result_tx();
+    // result 占位：段 A 应用成功后覆写为摘要；失败 resolve null
+    let _ = tx.send(helix_js::LspResult {
+        id: req.id,
+        result: Ok(None),
+        apply: Some(helix_js::LspApply::ExecuteAction(params)),
+    });
+}
+
+/// 主线程应用 LSP 编辑载荷；成功 → 摘要 JSON 字符串（resolve 用），失败 → Err（调用方 resolve null）。
+fn apply_lsp_edits(editor: &mut Editor, apply: helix_js::LspApply) -> anyhow::Result<String> {
+    use helix_core::syntax::config::LanguageServerFeature;
+    match apply {
+        helix_js::LspApply::Format { doc_id, edits } => {
+            let Some(did) = editor
+                .documents
+                .keys()
+                .find(|did| did.as_u64() == doc_id)
+                .copied()
+            else {
+                anyhow::bail!("format: doc {doc_id} 已关闭或不存在");
+            };
+            let edits: Vec<lsp::TextEdit> = serde_json::from_value(edits)?;
+            // 后台 doc 需同步视图（批次 2 教训，防 panic）；doc 不存在已在上方拦截
+            let view_id = editor.get_synced_view_id(did);
+            let doc = editor.documents.get_mut(&did).unwrap();
+            // 与请求侧同源选择（Format server 第一个）；多 server 极少见，简化取默认 Utf16
+            let offset_encoding = doc
+                .language_servers_with_feature(LanguageServerFeature::Format)
+                .next()
+                .map(|ls| ls.offset_encoding())
+                .unwrap_or_default();
+            let txn = lsp_text_edits_to_transaction(doc.text(), &edits, offset_encoding)?;
+            doc.apply(&txn, view_id);
+            let view = editor.tree.get_mut(view_id);
+            doc.append_changes_to_history(view);
+            Ok(r#"{"applied":true}"#.to_string())
+        }
+        helix_js::LspApply::WorkspaceEdit(v) => {
+            let edit: lsp::WorkspaceEdit = serde_json::from_value(v)?;
+            let files = workspace_edit_file_count(&edit);
+            // offset_encoding 与请求侧同源（当前 doc RenameSymbol server 第一个）
+            let (_, doc) = current_ref!(editor);
+            let offset_encoding = doc
+                .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
+                .next()
+                .map(|ls| ls.offset_encoding())
+                .unwrap_or_default();
+            editor
+                .apply_workspace_edit(offset_encoding, &edit)
+                .map_err(|e| anyhow::anyhow!("workspace edit: {}", e.kind))?;
+            Ok(format!(r#"{{"applied":true,"files":{files}}}"#))
+        }
+        helix_js::LspApply::ExecuteAction(v) => {
+            let action: lsp::CodeActionOrCommand = serde_json::from_value(v)?;
+            let (_, doc) = current_ref!(editor);
+            // 与 code_actions 列表同 server 选择（多 server 简化：取第一个）
+            let Some(server) = doc
+                .language_servers_with_feature(LanguageServerFeature::CodeAction)
+                .next()
+            else {
+                anyhow::bail!("execute code action: no code action server");
+            };
+            let server_id = server.id();
+            helix_view::action::Action::lsp(server_id, action).execute(editor);
+            Ok(r#"{"applied":true}"#.to_string())
+        }
+    }
+}
+
+/// WorkspaceEdit 涉及的文档/文件数（rename 摘要用）：document_changes 编辑数、operations 编辑数、
+/// 或 changes map 的 uri 数；不含 resource 操作（create/delete/rename file 极少出现在 rename 响应）。
+fn workspace_edit_file_count(edit: &lsp::WorkspaceEdit) -> usize {
+    match &edit.document_changes {
+        Some(lsp::DocumentChanges::Edits(edits)) => edits.len(),
+        Some(lsp::DocumentChanges::Operations(ops)) => ops
+            .iter()
+            .filter(|op| matches!(op, lsp::DocumentChangeOperation::Edit(_)))
+            .count(),
+        None => edit.changes.as_ref().map_or(0, |c| c.len()),
+    }
 }
 
 /// LSP client 响应 → serde_json::Value（透传原始 JSON 给 JS 侧）
@@ -1739,5 +2034,51 @@ where
             .map_err(|e| e.to_string()),
         Ok(None) => Ok(None),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TextEdit 列表 → Transaction：排序 + UTF-16 坐标换算，应用后文本正确
+    #[test]
+    fn lsp_text_edits_to_transaction_basic() {
+        use helix_core::Rope;
+        use helix_lsp::OffsetEncoding;
+        let text = Rope::from("one\ntwo\nthree\n");
+        let edits = vec![
+            lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 3)),
+                new_text: "ONE".into(),
+            },
+            lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(2, 0), lsp::Position::new(2, 5)),
+                new_text: "THREE".into(),
+            },
+        ];
+        let txn = lsp_text_edits_to_transaction(&text, &edits, OffsetEncoding::Utf16).unwrap();
+        let mut result = text.clone();
+        txn.apply(&mut result);
+        assert_eq!(result.to_string(), "ONE\ntwo\nTHREE\n");
+    }
+
+    /// 重叠编辑 → Err（不 panic；与 generate_transaction_from_edits 的丢弃策略不同）
+    #[test]
+    fn lsp_text_edits_reversed_overlap_bails() {
+        use helix_core::Rope;
+        use helix_lsp::OffsetEncoding;
+        let text = Rope::from("abcdef");
+        let edits = vec![
+            lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 3)),
+                new_text: "X".into(),
+            },
+            lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(0, 2), lsp::Position::new(0, 4)),
+                new_text: "Y".into(),
+            },
+        ];
+        assert!(lsp_text_edits_to_transaction(&text, &edits, OffsetEncoding::Utf16).is_err());
     }
 }

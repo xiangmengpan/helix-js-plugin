@@ -52,6 +52,77 @@ async fn plugin_lsp_no_server_resolves_null() -> anyhow::Result<()> {
     Ok(())
 }
 
+// LSP 增强 4 方法无 server 环境下的 null 路径：
+// format/rename/code_actions 无 server → resolve null；execute_code_action 与列表同 server 选择，无则 null。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_lsp_enhance_no_server_resolves_null() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt"); // 无 LSP
+    std::fs::write(&file, "hello\n")?;
+    let plugin_path = dir.path().join("lsp-enhance.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("lsp-fmt", async () => {
+            const r = await helix.lsp.format();
+            helix.echo("fmt:" + String(r));
+        });
+        helix.register_command("lsp-ren", async () => {
+            const r = await helix.lsp.rename("x");
+            helix.echo("ren:" + String(r));
+        });
+        helix.register_command("lsp-ca", async () => {
+            const r = await helix.lsp.code_actions();
+            helix.echo("ca:" + String(r));
+        });
+        helix.register_command("lsp-exec", async () => {
+            const r = await helix.lsp.execute_code_action({ title: "t" });
+            helix.echo("exec:" + String(r));
+        });
+        "#,
+    )?;
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (
+                Some(":lsp-fmt<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "fmt:null");
+                }),
+            ),
+            (
+                Some(":lsp-ren<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "ren:null");
+                }),
+            ),
+            (
+                Some(":lsp-ca<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "ca:null");
+                }),
+            ),
+            (
+                Some(":lsp-exec<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "exec:null");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
 // open_file 第二参数 {row, col}：打开后光标定位到指定行列（字符坐标 0-based）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_open_file_with_position() -> anyhow::Result<()> {

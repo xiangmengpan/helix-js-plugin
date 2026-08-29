@@ -89,8 +89,16 @@ pub fn init() {
                         JsString::from("document_symbols"),
                         1,
                     )
-                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_format), JsString::from("format"), 0)
-                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_rename), JsString::from("rename"), 1)
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_format),
+                        JsString::from("format"),
+                        0,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_rename),
+                        JsString::from("rename"),
+                        1,
+                    )
                     .function(
                         NativeFunction::from_fn_ptr(lsp::js_lsp_code_actions),
                         JsString::from("code_actions"),
