@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::JsPromise;
-use boa_engine::{Context, JsNativeError, JsString, JsValue};
+use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
 use std::cell::RefCell;
 
 use crate::state::WakeSender;
@@ -15,6 +15,14 @@ pub enum LspMethod {
     Completion,
     GotoDefinition,
     DocumentSymbols,
+    /// 全文档格式化(自动应用 TextEdit)
+    Format,
+    /// 重命名当前符号(自动应用 WorkspaceEdit,newName 走 params)
+    Rename,
+    /// 列出光标处 code actions(不应用)
+    CodeActions,
+    /// 执行选中的 code action(action JSON 走 params)
+    ExecuteCodeAction,
 }
 
 #[derive(Debug)]
@@ -23,6 +31,8 @@ pub struct LspRequest {
     pub method: LspMethod,
     /// 字符坐标覆盖（row, col）；None = 当前光标（helix-term 泵处理时取）
     pub pos: Option<(u16, u16)>,
+    /// 方法参数(rename 的 new_name 字符串、execute_code_action 的 action JSON;其余 None)
+    pub params: Option<serde_json::Value>,
 }
 
 thread_local! {
@@ -34,7 +44,7 @@ pub fn take_lsp_requests() -> Vec<LspRequest> {
     LSP_REQUESTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
-/// 通用入口：解析可选位置对象 → 入队 → 注册 Promise
+/// 通用入口：解析可选位置对象与各方法专属参数 → 入队 → 注册 Promise
 fn enqueue_lsp_request(
     method: LspMethod,
     args: &[JsValue],
@@ -51,10 +61,47 @@ fn enqueue_lsp_request(
         }
         _ => None,
     };
+    // 各方法专属参数(校验失败 → TypeError,不入队)
+    let params: Option<serde_json::Value> = match method {
+        LspMethod::Rename => {
+            let name: String = args
+                .first()
+                .unwrap_or(&JsValue::undefined())
+                .try_js_into(context)
+                .map_err(|_| {
+                    JsError::from_opaque(JsValue::from(JsString::from(
+                        "helix.lsp.rename: newName must be a string",
+                    )))
+                })?;
+            Some(serde_json::Value::String(name))
+        }
+        LspMethod::ExecuteCodeAction => {
+            let obj = args
+                .first()
+                .unwrap_or(&JsValue::undefined())
+                .as_object()
+                .ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(
+                        "helix.lsp.execute_code_action: action must be an object",
+                    )))
+                })?;
+            Some(
+                JsValue::from(obj.clone())
+                    .to_json(context)
+                    .map_err(|e| {
+                        JsError::from_opaque(JsValue::from(JsString::from(format!(
+                            "helix.lsp.execute_code_action: {e}"
+                        ))))
+                    })?
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        }
+        _ => None,
+    };
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     crate::state::with_lsp_promises(|m| m.insert(id, resolving));
-    LSP_REQUESTS.with(|q| q.borrow_mut().push(LspRequest { id, method, pos }));
+    LSP_REQUESTS.with(|q| q.borrow_mut().push(LspRequest { id, method, pos, params }));
     Ok(promise.into())
 }
 
@@ -90,11 +137,57 @@ pub(crate) fn js_lsp_document_symbols(
     enqueue_lsp_request(LspMethod::DocumentSymbols, args, ctx)
 }
 
+pub(crate) fn js_lsp_format(
+    _: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    enqueue_lsp_request(LspMethod::Format, args, ctx)
+}
+
+pub(crate) fn js_lsp_rename(
+    _: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    enqueue_lsp_request(LspMethod::Rename, args, ctx)
+}
+
+pub(crate) fn js_lsp_code_actions(
+    _: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    enqueue_lsp_request(LspMethod::CodeActions, args, ctx)
+}
+
+pub(crate) fn js_lsp_execute_code_action(
+    _: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    enqueue_lsp_request(LspMethod::ExecuteCodeAction, args, ctx)
+}
+
 /// LSP 响应（helix-term 泵回结果用；与 ASYNC_EVENTS 同款 WakeSender 通道）
 #[derive(Debug)]
 pub struct LspResult {
     pub id: u64,
     pub result: Result<Option<String>, String>,
+    /// 需要主线程应用的 LSP 编辑载荷(纯 JSON,跨线程;lsp 类型在 term 侧反序列化)。
+    /// 泵循环段 A 先应用再 resolve——promise resolve 时编辑已生效。
+    pub apply: Option<LspApply>,
+}
+
+/// 主线程应用的编辑载荷:tokio 任务把响应序列化成 JSON,主线程反序列化并应用。
+#[derive(Debug)]
+pub enum LspApply {
+    /// format:TextEdit 列表应用到指定 doc(doc_id 为 DocumentId 的 u64 透传)
+    Format { doc_id: u64, edits: serde_json::Value },
+    /// rename:WorkspaceEdit(URI 自含,apply_workspace_edit 处理跨 doc/打开)
+    WorkspaceEdit(serde_json::Value),
+    /// execute code action:完整 CodeActionOrCommand JSON
+    ExecuteAction(serde_json::Value),
 }
 
 /// 克隆 LSP 响应通道发送端（helix-term tokio 任务发结果用）

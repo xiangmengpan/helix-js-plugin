@@ -88,6 +88,18 @@ pub fn init() {
                         NativeFunction::from_fn_ptr(lsp::js_lsp_document_symbols),
                         JsString::from("document_symbols"),
                         1,
+                    )
+                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_format), JsString::from("format"), 0)
+                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_rename), JsString::from("rename"), 1)
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_code_actions),
+                        JsString::from("code_actions"),
+                        1,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_execute_code_action),
+                        JsString::from("execute_code_action"),
+                        1,
                     );
                 lsp_builder.build()
             };
@@ -3284,5 +3296,61 @@ pub(crate) mod tests {
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].doc, None);
         assert!(matches!(reqs[0].kind, crate::types::DecorationKind::Clear));
+    }
+
+    #[test]
+    fn lsp_enhance_request_shapes() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 清残留队列(其它测试不入队,防御)
+        let _ = take_lsp_requests();
+        // rename newName 非字符串 / execute 非对象 → 命令失败且不入队
+        // (同步命令:参数校验错误同步抛出;async 命令会包进 promise 拒绝)
+        load_script(
+            r#"
+        helix.register_command("ren-bad", () => { helix.lsp.rename(42); });
+        helix.register_command("exec-bad", () => { helix.lsp.execute_code_action("x"); });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(run_command("ren-bad", &ctx).is_err());
+        assert!(run_command("exec-bad", &ctx).is_err());
+        assert!(take_lsp_requests().is_empty(), "校验失败不应入队");
+        // 合法调用 → 请求形态正确(同步命令:四个调用都同步入队)
+        load_script(
+            r#"
+        helix.register_command("ren-ok", () => {
+            helix.lsp.rename("newName");
+            helix.lsp.format();
+            helix.lsp.code_actions({ row: 1, col: 2 });
+            helix.lsp.execute_code_action({ title: "fix", kind: "quickfix" });
+        });
+        "#,
+        )
+        .unwrap();
+        run_command("ren-ok", &ctx).unwrap();
+        let reqs = take_lsp_requests();
+        assert_eq!(reqs.len(), 4);
+        assert!(matches!(reqs[0].method, crate::lsp::LspMethod::Rename));
+        assert_eq!(
+            reqs[0].params.as_ref().and_then(|v| v.as_str()),
+            Some("newName")
+        );
+        assert!(matches!(reqs[1].method, crate::lsp::LspMethod::Format));
+        assert!(matches!(reqs[2].method, crate::lsp::LspMethod::CodeActions));
+        assert_eq!(reqs[2].pos, Some((1, 2)));
+        assert!(matches!(
+            reqs[3].method,
+            crate::lsp::LspMethod::ExecuteCodeAction
+        ));
+        let action = reqs[3].params.as_ref().unwrap();
+        assert_eq!(action["title"], serde_json::Value::String("fix".into()));
     }
 }

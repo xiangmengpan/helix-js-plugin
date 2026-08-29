@@ -383,7 +383,7 @@ impl Application {
         }
         // 段 A：LSP 响应 → 兑现 Promise（须在 pump_jobs 前，.then 才能同帧跑）
         for r in lsp_results {
-            let helix_js::LspResult { id, result } = r;
+            let helix_js::LspResult { id, result, .. } = r;
             if let Err(err) = helix_js::resolve_lsp(id, result) {
                 log::error!("lsp result {id}: {err}");
             }
@@ -1649,6 +1649,14 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
             LanguageServerFeature::DocumentSymbols,
             LspReqKind::DocumentSymbols,
         ),
+        // 任务 1 占位:新方法暂 resolve null;任务 2 接入真实映射与编辑应用
+        helix_js::LspMethod::Format
+        | helix_js::LspMethod::Rename
+        | helix_js::LspMethod::CodeActions
+        | helix_js::LspMethod::ExecuteCodeAction => {
+            let _ = helix_js::resolve_lsp(req.id, Ok(None));
+            return;
+        }
     };
 
     let (view, doc) = current_ref!(editor);
@@ -1714,7 +1722,7 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
             Ok(None) => Ok(None),
             Err(e) => Err(e),
         };
-        let _ = tx.send(helix_js::LspResult { id, result });
+        let _ = tx.send(helix_js::LspResult { id, result, apply: None });
     });
 }
 
