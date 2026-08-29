@@ -909,7 +909,7 @@ pub(crate) fn js_el(
 fn parse_line_item(
     item: &JsValue,
     ctx: &mut Context,
-    id: u64,
+    what: &str,
     i: usize,
 ) -> boa_engine::JsResult<StyledLine> {
     if let Some(obj) = item.as_object() {
@@ -918,7 +918,7 @@ fn parse_line_item(
             .try_js_into(ctx)
             .map_err(|_| {
                 JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "popup {id} render line {i}: object must have a string 'text' property"
+                    "{what} render line {i}: object must have a string 'text' property"
                 ))))
             })?;
         let style = obj.get(JsString::from("style"), ctx)?;
@@ -927,7 +927,7 @@ fn parse_line_item(
         } else {
             Some(style.try_js_into::<String>(ctx).map_err(|_| {
                 JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "popup {id} render line {i}: 'style' must be a string"
+                    "{what} render line {i}: 'style' must be a string"
                 ))))
             })?)
         };
@@ -939,8 +939,53 @@ fn parse_line_item(
         Ok(StyledLine::plain(text))
     } else {
         Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("popup {id} render line {i} must be a string or an object with 'text'"),
+            format!("{what} render line {i} must be a string or an object with 'text'"),
         ))))
+    }
+}
+
+/// 把 render 回调返回值转成 Content：数组 → Lines（旧行 API）；单对象（含 type）→ Tree。
+/// 数组也是对象，数组判断在前。what 用于错误消息（如 "popup 3" / "completion row"）。
+fn content_from_value(
+    value: &JsValue,
+    engine: &mut Context,
+    id: u64,
+    what: &str,
+) -> Result<Content> {
+    if let Ok(arr) = value.try_js_into::<JsArray>(engine) {
+        let len: usize = arr
+            .get(JsString::from("length"), engine)
+            .map_err(|e| anyhow!("{what} length read failed: {e}"))?
+            .try_js_into(engine)
+            .map_err(|e| anyhow!("{what} render length invalid: {e}"))?;
+        let mut lines = Vec::with_capacity(len);
+        for i in 0..len {
+            let item = arr
+                .get(i, engine)
+                .map_err(|e| anyhow!("{what} render line {i} read failed: {e}"))?;
+            lines.push(
+                parse_line_item(&item, engine, what, i)
+                    .map_err(|e| anyhow!("{what} render failed: {e}"))?,
+            );
+        }
+        Ok(Content::Lines(lines))
+    } else if let Some(obj) = value.as_object() {
+        let has_type = obj
+            .has_own_property(JsString::from("type"), engine)
+            .map_err(|e| anyhow!("{what} type read failed: {e}"))?;
+        if has_type {
+            let node = parse_node(value, engine, id, what)
+                .map_err(|e| anyhow!("{what} render failed: {e}"))?;
+            Ok(Content::Tree(node))
+        } else {
+            Err(anyhow!(
+                "{what} render must return an array of strings/styled objects, or a node object with 'type'"
+            ))
+        }
+    } else {
+        Err(anyhow!(
+            "{what} render must return an array of strings/styled objects, or a node object with 'type'"
+        ))
     }
 }
 
@@ -974,48 +1019,19 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
         let value: JsValue = func
             .call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine)
             .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
-        // 数组 → 旧行 API；单对象含 type → 组件树（数组也是对象，数组判断在前）
-        if let Ok(arr) = value.try_js_into::<JsArray>(engine) {
-            let len: usize = arr
-                .get(JsString::from("length"), engine)
-                .map_err(|e| anyhow!("popup {id} length read failed: {e}"))?
-                .try_js_into(engine)
-                .map_err(|e| anyhow!("popup {id} render length invalid: {e}"))?;
-            let mut lines = Vec::with_capacity(len);
-            for i in 0..len {
-                let item = arr
-                    .get(i, engine)
-                    .map_err(|e| anyhow!("popup {id} render line {i} read failed: {e}"))?;
-                lines.push(
-                    parse_line_item(&item, engine, id, i)
-                        .map_err(|e| anyhow!("popup {id} render failed: {e}"))?,
-                );
-            }
-            Ok(Content::Lines(lines))
-        } else if let Some(obj) = value.as_object() {
-            let has_type = obj
-                .has_own_property(JsString::from("type"), engine)
-                .map_err(|e| anyhow!("popup {id} type read failed: {e}"))?;
-            if has_type {
-                let node = parse_node(&value, engine, id)
-                    .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
-                Ok(Content::Tree(node))
-            } else {
-                Err(anyhow!(
-                    "popup {id} render must return an array of strings/styled objects, or a node object with 'type'"
-                ))
-            }
-        } else {
-            Err(anyhow!(
-                "popup {id} render must return an array of strings/styled objects, or a node object with 'type'"
-            ))
-        }
+        content_from_value(&value, engine, id, &format!("popup {id}"))
     })
 }
 
 /// 递归解析节点对象 → CompNode。type 白名单 + 字段校验（text 必需；style/width/gap/height 可选）。
-fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResult<CompNode> {
-    let api = format!("popup {id} render");
+/// id 供节点事件处理器注册（输入状态键）；what 用于错误消息。
+fn parse_node(
+    value: &JsValue,
+    ctx: &mut Context,
+    id: u64,
+    what: &str,
+) -> boa_engine::JsResult<CompNode> {
+    let api = format!("{what} render");
     let obj = value.as_object().ok_or_else(|| {
         JsError::from_opaque(JsValue::from(JsString::from(format!(
             "{api}: node must be an object with 'type'"
@@ -1083,7 +1099,7 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             })
         }
         "row" | "col" => {
-            let children = parse_children(&obj, ctx, id)?;
+            let children = parse_children(&obj, ctx, id, what)?;
             let gap = obj_opt_u16(&obj, "gap", ctx, &api)?.unwrap_or(0);
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
             Ok(if type_ == "row" {
@@ -1101,7 +1117,7 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             })
         }
         "scroll" => {
-            let children = parse_children(&obj, ctx, id)?;
+            let children = parse_children(&obj, ctx, id, what)?;
             let height = obj_opt_u16(&obj, "height", ctx, &api)?.unwrap_or(0);
             let offset = obj_opt_u16(&obj, "offset", ctx, &api)?;
             Ok(CompNode::Scroll {
@@ -1257,8 +1273,9 @@ fn parse_children(
     obj: &JsObject,
     ctx: &mut Context,
     id: u64,
+    what: &str,
 ) -> boa_engine::JsResult<Vec<CompNode>> {
-    let api = format!("popup {id} render");
+    let api = format!("{what} render");
     let v = obj.get(JsString::from("children"), ctx)?;
     let arr: JsArray = v.try_js_into(ctx).map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from(format!(
@@ -1280,7 +1297,7 @@ fn parse_children(
                 "{api}: children[{i}] read failed"
             ))))
         })?;
-        out.push(parse_node(&item, ctx, id)?);
+        out.push(parse_node(&item, ctx, id, what)?);
     }
     Ok(out)
 }
@@ -1750,6 +1767,98 @@ pub fn completion_kind_icon(kind: u8) -> Option<String> {
     })
 }
 
+/// 补全行渲染钩子注册：helix.set_completion_render(fn)。
+pub(crate) fn js_set_completion_render(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let undefined = JsValue::undefined();
+    let hook = args.first().unwrap_or(&undefined);
+    if !hook.is_callable() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "set_completion_render: expected a function",
+        ))));
+    }
+    crate::state::with_completion_render_hook(|h| *h = Some(hook.clone()));
+    Ok(JsValue::undefined())
+}
+
+/// 调用补全行渲染钩子；未注册 / 抛错 / 返回不可用内容 → Err（调用方回退原生两列）。
+/// ctx 对象：{ label, kind, kindNum, provider, detail, deprecated, matchIndices }。
+/// 返回 Content：数组 → Lines；对象含 type → Tree（与 render_popup 同语义）。
+pub fn render_completion_row(
+    label: &str,
+    kind: &str,
+    kind_num: u8,
+    provider: &str,
+    detail: Option<&str>,
+    deprecated: bool,
+    match_indices: &[u32],
+) -> Result<Content> {
+    crate::init();
+    let hook = crate::state::with_completion_render_hook(|h| h.clone());
+    let hook = hook.ok_or_else(|| anyhow!("completion render hook not registered"))?;
+    crate::state::with_engine(|engine| {
+        let func = hook
+            .as_callable()
+            .and_then(JsFunction::from_object)
+            .ok_or_else(|| anyhow!("completion render hook is not a function"))?;
+        let match_indices_arr = JsArray::new(engine);
+        for i in match_indices {
+            match_indices_arr
+                .push(JsValue::from(*i as f64), engine)
+                .map_err(|e| anyhow!("completion render matchIndices push failed: {e}"))?;
+        }
+        let ctx_obj = ObjectInitializer::new(engine)
+            .property(
+                JsString::from("label"),
+                JsValue::from(JsString::from(label.to_string())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("kind"),
+                JsValue::from(JsString::from(kind.to_string())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("kindNum"),
+                JsValue::from(kind_num as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("provider"),
+                JsValue::from(JsString::from(provider.to_string())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("detail"),
+                match detail {
+                    Some(d) => JsValue::from(JsString::from(d.to_string())),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("deprecated"),
+                JsValue::from(deprecated),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("matchIndices"),
+                JsValue::from(match_indices_arr),
+                Attribute::all(),
+            )
+            .build();
+        let undefined = JsValue::undefined();
+        let value: JsValue = func
+            .call(&undefined, &[JsValue::from(ctx_obj)], engine)
+            .map_err(|e| anyhow!("completion render hook failed: {e}"))?;
+        // 补全行不做节点交互:解析组件树时节点处理器注册到 id 0 空间(无实际交互,content_to_row 也只消费 Lines)
+        content_from_value(&value, engine, 0, "completion row")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1789,5 +1898,43 @@ mod tests {
         assert!(crate::popup::completion_kind_icon(0).is_none());
         // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
         crate::load_script(r#"helix.set_completion_icon((kind) => "");"#).unwrap();
+    }
+
+    #[test]
+    fn completion_render_hook() {
+        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 未注册 → Err(调用方回退原生两列)
+        assert!(
+            crate::popup::render_completion_row("foo", "method", 2, "lsp", None, false, &[])
+                .is_err()
+        );
+        // 注册后 → 行文本(ctx 字段透传)
+        crate::load_script(
+            r#"helix.set_completion_render((ctx) => [{ type: "text", text: ctx.label + "|" + ctx.provider, style: "ui.completion" }]);"#,
+        )
+        .unwrap();
+        let content =
+            crate::popup::render_completion_row("foo", "method", 2, "lsp", None, false, &[0, 1])
+                .unwrap();
+        let joined = match &content {
+            crate::types::Content::Lines(lines) => lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            _ => panic!("expected lines"),
+        };
+        assert_eq!(joined, "foo|lsp");
+        // 抛错 → Err(回退原生两列)
+        crate::load_script(r#"helix.set_completion_render(() => { throw new Error("x"); });"#)
+            .unwrap();
+        assert!(
+            crate::popup::render_completion_row("foo", "method", 2, "lsp", None, false, &[])
+                .is_err()
+        );
+        // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
+        crate::load_script(r#"helix.set_completion_render(() => [{ type: "text", text: "" }]);"#)
+            .unwrap();
     }
 }

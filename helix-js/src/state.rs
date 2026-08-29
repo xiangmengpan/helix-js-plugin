@@ -71,6 +71,8 @@ thread_local! {
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static COMPLETION_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
+    static COMPLETION_RENDER_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
+    // 持有 JsValue：线程退出时内容泄漏（同上）
     static STATUSLINE_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // keymap 前缀提示回调(set_keymap_hint):无注册 → 内置 Info
     static KEYMAP_HINT_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
@@ -223,6 +225,14 @@ pub(crate) fn with_buffer_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T
 /// 访问 COMPLETION_ICON_HOOK：同上（内容泄漏）
 pub(crate) fn with_completion_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     COMPLETION_ICON_HOOK.with(|h| {
+        let mut slot = h.borrow_mut();
+        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
+    })
+}
+
+/// 访问 COMPLETION_RENDER_HOOK：同上（内容泄漏）
+pub(crate) fn with_completion_render_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+    COMPLETION_RENDER_HOOK.with(|h| {
         let mut slot = h.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })

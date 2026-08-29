@@ -25,6 +25,12 @@ use ui::completers::{self, Completer};
 /// 测试里样式值的精确断言走 app 局部的 editor.theme，不依赖此快照。
 static CURRENT_THEME: Mutex<Option<helix_view::theme::Theme>> = Mutex::new(None);
 
+/// 当前主题快照（sync_theme_snapshot 维护）；未同步过 → None。
+/// 渲染钩子（如补全行自定义）在无 Editor 上下文处解析 scope 用。
+pub(crate) fn current_theme_snapshot() -> Option<helix_view::theme::Theme> {
+    CURRENT_THEME.lock().expect("theme snapshot lock").clone()
+}
+
 /// 可用主题名列表（list_themes 用；初始化时从 loader 扫描）
 static AVAILABLE_THEMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 

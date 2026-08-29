@@ -191,6 +191,11 @@ pub fn init() {
                     1,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_completion_render),
+                    JsString::from("set_completion_render"),
+                    1,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(popup::js_el),
                     JsString::from("el"),
                     2,

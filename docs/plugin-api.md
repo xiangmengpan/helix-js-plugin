@@ -564,6 +564,24 @@ helix.set_buffer_icon((path) => path?.endsWith(".rs") ? "🦀" : null);
 
 - 返回图标字符串或 null（null = 默认行为）；单例，重复调用覆盖。
 
+### `helix.set_completion_render(fn)`
+
+补全菜单行渲染钩子：注册后每个候选行由 JS 生成，未注册/抛错/返回不可用内容时回退原生两列（label + kind）。
+
+```js
+helix.set_completion_render((ctx) => [
+  { type: "text", text: `${ctx.label}  ${ctx.kind}`, style: "ui.completion" },
+]);
+```
+
+- 回调 `fn(ctx) -> 数组 | 组件树节点`，每帧对每个可见候选行调用一次。返回语义与 `open_popup` 的 render 一致：数组（字符串/`{text, style?}` 对象）→ 行；含 `type` 的节点对象 → 组件树。
+- `ctx = { label, kind, kindNum, provider, detail, deprecated, matchIndices }`：
+  - `label`：候选标签；`kind`：kind 文本（如 `"method"`）；`kindNum`：数字 kind（1-25，非 LSP/未知为 0）；
+  - `provider`：`"lsp"` | `"word"` | `"path"` | `"snippet"`；`detail`：LSP 候选的详情（字符串或 null）；
+  - `deprecated`：候选是否标记弃用；`matchIndices`：当前输入匹配位置数组（grapheme 索引，高亮用）。
+- 当前实现把返回内容**全部拼进第一列**（单行单列拼接，多 Cell/多行会破坏 Table 对齐，本批次不支持）；`style` 字符串经当前主题查表（未知 scope → 默认样式）。
+- ⚠️ 每行每帧调用——不要在钩子里跑 `helix.run`（同步阻塞）或重逻辑。
+
 ### `helix.set_diagnostic_icons({ error?, warning?, info?, hint? })`
 
 诊断标记列图标（gutter 诊断符号；未设置时用默认 ●）。
@@ -769,6 +787,7 @@ helix.stat_async(path)                          // Promise → {is_dir, size, mt
 helix.glob_async(pattern)                       // Promise → paths[]
 helix.set_statusline(fn)                        // fn({path, mode, cursor}) -> string|null
 helix.set_buffer_icon(fn)                       // fn(path) -> string|null
+helix.set_completion_render(fn)                 // fn(ctx) -> 行内容数组|组件树（补全菜单行钩子）
 helix.set_diagnostic_icons({...})               // 诊断标记列图标（gutter）
 helix.set_theme({ scope: color | {fg,bg,modifiers} })
 helix.reset_theme()

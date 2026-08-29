@@ -41,7 +41,7 @@ impl menu::Item for CompletionItem {
             CompletionItem::Other(_) => false,
         };
 
-        let label = match self {
+        let label_text = match self {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.label.as_str(),
             CompletionItem::Snippet(SnippetCompletionItem { label, .. }) => label,
             CompletionItem::Other(core::CompletionItem { label, .. }) => label,
@@ -107,8 +107,35 @@ impl menu::Item for CompletionItem {
             CompletionItem::Other(core::CompletionItem { kind, .. }) => (kind.as_ref().into(), 0),
         };
 
+        // JS 行渲染钩子：注册时自定义整行外观；未注册/抛错/返回不可用内容 → 回退原生两列。
+        // 每行每帧调用（~20 行 × 钩子耗时），钩子里不要放重逻辑。
+        let kind_text: String = kind_spans.0.iter().map(|s| s.content.as_ref()).collect();
+        let provider_str = match self.provider() {
+            core::completion::CompletionProvider::Lsp(_) => "lsp",
+            core::completion::CompletionProvider::Path => "path",
+            core::completion::CompletionProvider::Word => "word",
+            core::completion::CompletionProvider::Snippet => "snippet",
+        };
+        let detail = match self {
+            CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.detail.as_deref(),
+            _ => None,
+        };
+        if let Ok(content) = helix_js::render_completion_row(
+            label_text,
+            &kind_text,
+            kind_num,
+            provider_str,
+            detail,
+            deprecated,
+            self.match_indices().unwrap_or(&[]),
+        ) {
+            if let Some(row) = content_to_row(content) {
+                return row;
+            }
+        }
+
         let label = Span::styled(
-            label,
+            label_text,
             if deprecated {
                 Style::default().add_modifier(Modifier::CROSSED_OUT)
             } else if kind_spans.0[0].content == "folder" {
@@ -138,6 +165,30 @@ impl menu::Item for CompletionItem {
             }
         }
     }
+}
+
+/// 把 JS 行渲染钩子的返回内容转成 menu 行。仅支持单行单列：所有 span 拼进第一个 Cell，
+/// 多 Cell/多行会破坏 Table 对齐（本批次不支持）。Tree / 空内容 → None（调用方回退原生两列）。
+/// style 字符串经当前主题查表（参照 set_statusline 的 style 解析）；scope 未知 → 默认样式。
+fn content_to_row(content: helix_js::Content) -> Option<menu::Row<'static>> {
+    let helix_js::Content::Lines(lines) = content else {
+        return None;
+    };
+    let theme = crate::commands::typed::current_theme_snapshot();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for line in lines {
+        for span in line.spans {
+            let style = theme
+                .as_ref()
+                .and_then(|t| span.style.as_deref().and_then(|scope| t.try_get(scope)))
+                .unwrap_or_default();
+            spans.push(Span::styled(span.text, style));
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    Some(menu::Row::new(vec![menu::Cell::from(Spans::from(spans))]))
 }
 
 /// Wraps a Menu.
@@ -907,5 +958,28 @@ mod tests {
         });
         let row = CompletionItem::format(&item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "word".to_string()]);
+    }
+
+    #[test]
+    fn format_render_hook_merges_into_single_cell() {
+        // 注册行渲染钩子 → 返回内容拼进第一个 Cell(单列,不破坏 Table 对齐)
+        helix_js::init();
+        helix_js::load_script(
+            r#"helix.set_completion_render((ctx) => [{ type: "text", text: ctx.label + "[" + ctx.kind + "]", style: "ui.completion" }]);"#,
+        )
+        .unwrap();
+        let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
+        let row = CompletionItem::format(&item, &Style::default());
+        assert_eq!(cells(&row), vec!["foo[method]".to_string()]);
+        // 抛错 → 回退原生两列
+        helix_js::load_script(r#"helix.set_completion_render(() => { throw new Error("x"); });"#)
+            .unwrap();
+        let row = CompletionItem::format(&item, &Style::default());
+        assert_eq!(cells(&row), vec!["foo".to_string(), "method".to_string()]);
+        // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
+        helix_js::load_script(
+            r#"helix.set_completion_render(() => [{ type: "text", text: "" }]);"#,
+        )
+        .unwrap();
     }
 }
