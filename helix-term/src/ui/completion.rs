@@ -6,8 +6,8 @@ use crate::{
         trigger_auto_completion, CompletionItem, CompletionResponse, ResolveHandler,
     },
 };
-use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
-use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
+use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet, SnippetRenderCtx};
+use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Rope, Selection, Transaction};
 use helix_lsp::{lsp, util, OffsetEncoding};
 use helix_view::{
     editor::CompleteAction,
@@ -258,9 +258,17 @@ impl Completion {
                                 snippet,
                             )
                         }
-                        CompletionItem::Snippet(_) => {
-                            // 占位:任务 3 实现 snippet 展开(前缀替换 + ActiveSnippet)
-                            (Transaction::new(doc.text()), None, None)
+                        CompletionItem::Snippet(item) => {
+                            let mut ctx = doc.snippet_ctx();
+                            let (transaction, snippet) = snippet_item_to_transaction(
+                                doc.text(),
+                                doc.selection(view.id),
+                                &item.body,
+                                trigger_offset,
+                                replace_mode,
+                                &mut ctx,
+                            );
+                            (transaction, None, snippet)
                         }
                         CompletionItem::Other(core::CompletionItem { transaction, .. }) => {
                             (transaction, None, None)
@@ -679,6 +687,44 @@ fn lsp_item_to_transaction(
     }
 }
 
+/// Snippet 候选 → transaction + RenderedSnippet。edit_offset 覆盖光标前已输入单词(删除前缀)。
+fn snippet_item_to_transaction(
+    text: &Rope,
+    selection: &Selection,
+    body: &str,
+    _trigger_offset: usize,
+    replace_mode: bool,
+    snippet_ctx: &mut SnippetRenderCtx,
+) -> (Transaction, Option<RenderedSnippet>) {
+    let primary_cursor = selection.primary().cursor(text.slice(..));
+    // 光标前单词范围(删除已输入 prefix);无单词则不替换
+    let edit_offset = {
+        let cursor = helix_core::movement::move_prev_word_start(
+            text.slice(..),
+            core::Range::point(primary_cursor),
+            1,
+        );
+        if cursor.head == primary_cursor {
+            None
+        } else {
+            Some((cursor.head as i128 - primary_cursor as i128, 0))
+        }
+    };
+    let Ok(snippet) = Snippet::parse(body) else {
+        log::error!("Failed to parse snippet: {body:?}");
+        return (Transaction::new(text), None);
+    };
+    let (transaction, snippet) = util::generate_transaction_from_snippet(
+        text,
+        selection,
+        edit_offset,
+        replace_mode,
+        snippet,
+        snippet_ctx,
+    );
+    (transaction, Some(snippet))
+}
+
 fn completion_changes(transaction: &Transaction, trigger_offset: usize) -> Vec<Change> {
     transaction
         .changes_iter()
@@ -741,6 +787,26 @@ mod tests {
         let item = lsp_item(Some(lsp::CompletionItemKind::METHOD));
         let row = CompletionItem::format(&item, &Style::default());
         assert_eq!(cells(&row), vec!["foo".to_string(), "i2".to_string()]);
+    }
+
+    #[test]
+    fn snippet_item_to_transaction_replaces_prefix() {
+        use helix_core::{indent::IndentStyle, snippets::SnippetRenderCtx};
+        let mut rope = core::Rope::from("fn");
+        let selection = Selection::point(2); // 光标在 "fn" 后
+        let body = "function ${1:name}() {\n\t${0}\n}";
+        let mut ctx = SnippetRenderCtx {
+            resolve_var: Box::new(|_| None),
+            tab_width: 4,
+            indent_style: IndentStyle::Spaces(4),
+            line_ending: "\n",
+        };
+        let (transaction, snippet) =
+            snippet_item_to_transaction(&rope, &selection, body, 2, false, &mut ctx);
+        assert!(snippet.is_some());
+        transaction.apply(&mut rope);
+        let out = rope.to_string();
+        assert!(out.starts_with("function")); // 前缀 "fn" 被 body 替换
     }
 
     #[test]
