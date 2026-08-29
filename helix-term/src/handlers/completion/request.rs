@@ -28,6 +28,7 @@ use crate::job::{dispatch, dispatch_blocking};
 use crate::ui;
 use crate::ui::editor::InsertEvent;
 
+use super::snippet;
 use super::word;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -249,9 +250,14 @@ fn request_completions(
         requests.spawn_blocking(path_completion_request);
     }
     if let Some(word_completion_request) =
-        word::completion(editor, trigger, handle.clone(), savepoint)
+        word::completion(editor, trigger, handle.clone(), savepoint.clone())
     {
         requests.spawn_blocking(word_completion_request);
+    }
+    if let Some(snippet_completion_request) =
+        snippet::completion(editor, trigger, handle.clone(), savepoint)
+    {
+        requests.spawn_blocking(snippet_completion_request);
     }
 
     let ui = compositor.find::<ui::EditorView>().unwrap();
