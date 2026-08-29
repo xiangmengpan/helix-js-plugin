@@ -1,6 +1,6 @@
 //! 测试用 mock LSP server：stdio JSON-RPC（Content-Length 帧）。
 //! 场景经 argv[1] 选择（per-server 配置，无并行竞争）；argv[2..] 为场景附加参数（如第二文件路径）。
-//! 不支持的方法 → null；shutdown/exit → 退出；stdin EOF → 退出。
+//! 不支持的方法 → null；shutdown → null；exit 通知 → 退出；stdin EOF → 退出。
 //! 注：file:// URI 拼接为 Unix 直接拼接（本仓测试环境为 Unix）；Windows 需按 lsp::Url::from_file_path 语义。
 
 use serde_json::json;
@@ -29,13 +29,17 @@ fn main() {
                 break;
             }
             if let Some(v) = line.strip_prefix("Content-Length:") {
-                content_length = v.trim().parse::<usize>().ok();
+                content_length = Some(v.trim().parse().expect("invalid Content-Length"));
             }
         }
-        let len = content_length.unwrap_or(0);
+        let len = content_length.expect("missing Content-Length");
         let mut body = vec![0u8; len];
         reader.read_exact(&mut body).unwrap();
         let msg: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // 收到 exit 通知立即退出（helix 关闭时先发 shutdown/exit，随后 EOF）
+        if msg.get("method").and_then(|m| m.as_str()) == Some("exit") {
+            return;
+        }
         let Some(response) = respond(&msg, scenario, &args) else {
             continue;
         };
@@ -52,8 +56,8 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
     if method == "shutdown" {
         return Some(json!({ "jsonrpc": "2.0", "id": id, "result": null }));
     }
-    if method == "exit" || (id.is_none() && method != "initialized") {
-        return None; // exit 通知 / 未知通知 → 忽略
+    if id.is_none() && method != "initialized" {
+        return None; // 未知通知 → 忽略
     }
     let result = match method {
         "initialize" => json!({
