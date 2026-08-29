@@ -16,13 +16,17 @@ async fn plugin_fsasync_read() -> anyhow::Result<()> {
                 helix.echo("fs::" + content);
             });
         });
-        "#.replace("PLACEHOLDER_FILE", &format!("{}", file.display())),
+        "#
+        .replace("PLACEHOLDER_FILE", &format!("{}", file.display())),
     )?;
 
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":fs-demo<ret>"),
                 Some(&|app| {

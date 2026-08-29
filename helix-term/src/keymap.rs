@@ -58,11 +58,7 @@ impl KeyTrieNode {
     /// 前缀提示:优先 JS set_keymap_hint 回调(文本 + 位置),无回调/返回 null → 内置 Info
     pub fn hint_info(&self) -> Info {
         if let Some((text, position)) = helix_js::keymap_hint(&self.name, &self.entries()) {
-            let width = text
-                .lines()
-                .map(|l| l.chars().count())
-                .max()
-                .unwrap_or(0) as u16;
+            let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
             let height = text.lines().count() as u16;
             let mut info = Info {
                 title: Cow::Owned(self.name.clone()),

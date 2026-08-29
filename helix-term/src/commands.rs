@@ -3604,21 +3604,25 @@ pub fn command_palette(cx: &mut Context) {
                 [&cx.editor.mode]
                 .reverse_map();
 
-            let commands = MappableCommand::STATIC_COMMAND_LIST.iter().cloned().chain(
-                typed::TYPABLE_COMMAND_LIST
-                    .iter()
-                    .map(|cmd| MappableCommand::Typable {
-                        name: cmd.name.to_owned(),
+            let commands = MappableCommand::STATIC_COMMAND_LIST
+                .iter()
+                .cloned()
+                .chain(
+                    typed::TYPABLE_COMMAND_LIST
+                        .iter()
+                        .map(|cmd| MappableCommand::Typable {
+                            name: cmd.name.to_owned(),
+                            args: String::new(),
+                            doc: cmd.doc.to_owned(),
+                        }),
+                )
+                .chain(helix_js::command_names().into_iter().map(|name| {
+                    MappableCommand::Typable {
+                        name,
                         args: String::new(),
-                        doc: cmd.doc.to_owned(),
-                    }),
-            ).chain(
-                helix_js::command_names().into_iter().map(|name| MappableCommand::Typable {
-                    name,
-                    args: String::new(),
-                    doc: String::new(),
-                }),
-            );
+                        doc: String::new(),
+                    }
+                }));
 
             let columns = [
                 ui::PickerColumn::new("name", |item, _| match item {

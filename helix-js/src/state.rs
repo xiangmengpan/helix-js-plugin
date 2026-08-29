@@ -19,7 +19,9 @@ pub struct WakeSender<T> {
 
 impl<T> Clone for WakeSender<T> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -199,9 +201,7 @@ pub fn unregister_component_state(id: u64) {
 
 /// 读取组件状态（JSON 字符串；未注册 → None）。
 pub fn get_component_state_json(id: u64) -> Option<String> {
-    COMPONENT_STATES.with(|s| {
-        s.borrow().get(&id).map(|f| f(id))
-    })
+    COMPONENT_STATES.with(|s| s.borrow().get(&id).map(|f| f(id)))
 }
 
 /// 访问 POPUPS：同上（内容泄漏）
@@ -270,7 +270,9 @@ pub fn statusline_zones() -> [u16; 3] {
 }
 
 /// 访问 NODE_HANDLERS：同上（内容泄漏）
-pub(crate) fn with_node_handlers<T>(f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T) -> T {
+pub(crate) fn with_node_handlers<T>(
+    f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T,
+) -> T {
     NODE_HANDLERS.with(|h| {
         let mut slot = h.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
@@ -392,7 +394,10 @@ pub(crate) fn set_last_panel_id(v: Option<u64>) {
 /// thread_local 会因线程不同读不到列表 → 面板漏关。
 pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
     static OPEN_PANELS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
-    let mut v = OPEN_PANELS.get_or_init(Default::default).lock().expect("open panels lock");
+    let mut v = OPEN_PANELS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("open panels lock");
     f(&mut v)
 }
 
@@ -498,7 +503,9 @@ pub(crate) fn with_term_workers<T>(
 
 #[cfg(unix)]
 /// 访问 TERM_MASTERS（进程 id → pty master fd）
-pub(crate) fn with_term_masters<T>(f: impl FnOnce(&mut HashMap<u64, std::os::fd::RawFd>) -> T) -> T {
+pub(crate) fn with_term_masters<T>(
+    f: impl FnOnce(&mut HashMap<u64, std::os::fd::RawFd>) -> T,
+) -> T {
     TERM_MASTERS.with(|t| f(&mut t.borrow_mut()))
 }
 
@@ -534,7 +541,9 @@ pub(crate) fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> 
 }
 
 /// 访问 TERM_PROMISES（run_async 的 promise 解析函数注册表）：同上（内容泄漏）
-pub(crate) fn with_term_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
+pub(crate) fn with_term_promises<T>(
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
     TERM_PROMISES.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
@@ -542,7 +551,9 @@ pub(crate) fn with_term_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFu
 }
 
 /// 访问 ASYNC_PROMISES（异步 fs 的 promise 解析函数注册表）：同上（内容泄漏）
-pub(crate) fn with_async_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
+pub(crate) fn with_async_promises<T>(
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
     ASYNC_PROMISES.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
@@ -550,7 +561,9 @@ pub(crate) fn with_async_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingF
 }
 
 /// 访问 LSP_PROMISES（helix.lsp.* 的 promise 解析函数注册表）：同上（内容泄漏）
-pub(crate) fn with_lsp_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T) -> T {
+pub(crate) fn with_lsp_promises<T>(
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
     LSP_PROMISES.with(|t| {
         let mut slot = t.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
@@ -560,7 +573,13 @@ pub(crate) fn with_lsp_promises<T>(f: impl FnOnce(&mut HashMap<u64, ResolvingFun
 /// 取走并清空 echo 消息队列
 pub fn take_messages() -> Vec<String> {
     crate::init();
-    std::mem::take(&mut *MESSAGES.get().expect("MESSAGES not initialized").lock().expect("messages lock poisoned"))
+    std::mem::take(
+        &mut *MESSAGES
+            .get()
+            .expect("MESSAGES not initialized")
+            .lock()
+            .expect("messages lock poisoned"),
+    )
 }
 
 pub fn cache_layout(json: &str) {
@@ -589,5 +608,11 @@ pub fn cache_diagnostics(json: &str) {
 /// 取走并清空 UI 请求队列
 pub fn take_ui_requests() -> Vec<UiRequest> {
     crate::init();
-    std::mem::take(&mut *UI_REQUESTS.get().expect("UI_REQUESTS initialized").lock().expect("ui requests lock"))
+    std::mem::take(
+        &mut *UI_REQUESTS
+            .get()
+            .expect("UI_REQUESTS initialized")
+            .lock()
+            .expect("ui requests lock"),
+    )
 }

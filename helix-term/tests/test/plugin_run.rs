@@ -19,13 +19,19 @@ async fn plugin_shell_run() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":runchain<ret>"),
                 Some(&|app| {
                     let (status, severity) = app.editor.get_status().unwrap();
                     assert_eq!(status.as_ref(), "plugin-shell-ok");
-                    assert!(matches!(severity, helix_core::diagnostic::Severity::Info), "no error");
+                    assert!(
+                        matches!(severity, helix_core::diagnostic::Severity::Info),
+                        "no error"
+                    );
                 }),
             ),
         ],

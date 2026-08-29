@@ -17,7 +17,10 @@ async fn plugin_command_doc_shown() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 一次断言同时证明：带 doc 的命令已注册且可执行。doc 文本本身靠单测
             // command_doc 覆盖（prompt doc 渲染在 Prompt 内部，无法外部断言）。
             (

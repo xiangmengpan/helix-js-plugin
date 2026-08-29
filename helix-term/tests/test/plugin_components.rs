@@ -1,5 +1,5 @@
-use helix_view::current_ref;
 use super::*;
+use helix_view::current_ref;
 
 use helix_term::application::Application;
 use helix_term::job::Jobs;
@@ -74,7 +74,11 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
 
     let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":tree-popup<ret>").await?;
 
     // DiffRenderer 有持久状态：app 真实 surface 已渲染过，不能复用其 diff——
@@ -98,7 +102,10 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
         })
         .collect();
     let joined = rows.join("\n");
-    assert!(rows.iter().any(|r| r.contains("title")), "title row missing: {joined:?}");
+    assert!(
+        rows.iter().any(|r| r.contains("title")),
+        "title row missing: {joined:?}"
+    );
     assert!(
         rows.iter().any(|r| r.contains("left right")),
         "row columns side by side missing: {joined:?}"
@@ -107,10 +114,7 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
         rows.iter().any(|r| r.contains('s') && r.contains("s2")),
         "scroll keeps last line s2: {joined:?}"
     );
-    assert!(
-        !joined.contains("s1"),
-        "scroll must drop s1: {joined:?}"
-    );
+    assert!(!joined.contains("s1"), "scroll must drop s1: {joined:?}");
 
     // 退出并关闭
     pump(&mut app, "<esc>:q!<ret>").await?;
@@ -141,7 +145,11 @@ async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
 
     let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":scroll-popup<ret>").await?;
 
     // DiffRenderer 有持久状态：app 真实 surface 已渲染过，不能复用其 diff——
@@ -151,7 +159,12 @@ async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
         .find::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>()
         .expect("popup layer");
     let lines: Vec<helix_js::StyledLine> = popup.contents().lines().to_vec();
-    assert_eq!(lines.len(), 5, "scroll window must be exactly 5 rows, got {}", lines.len());
+    assert_eq!(
+        lines.len(),
+        5,
+        "scroll window must be exactly 5 rows, got {}",
+        lines.len()
+    );
     let mut buf = tui::buffer::Buffer::empty(area);
     let mut diff = helix_term::ui::comp_layout::DiffRenderer::default();
     diff.render(&lines, area, &mut buf, &app.editor.theme);
@@ -207,11 +220,15 @@ async fn plugin_node_focus_events() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":focus-popup<ret>"),
                 Some(&|app| {
-                    let popup_type = std::any::type_name::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>();
+                    let popup_type =
+                        std::any::type_name::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>();
                     assert!(app.compositor.has_component(popup_type), "popup open");
                 }),
             ),
@@ -220,7 +237,11 @@ async fn plugin_node_focus_events() -> anyhow::Result<()> {
                 Some("<tab><ret>"),
                 Some(&|app| {
                     let (status, severity) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "PRESSED", "onPress should fire on Enter after Tab-focus");
+                    assert_eq!(
+                        status.as_ref(),
+                        "PRESSED",
+                        "onPress should fire on Enter after Tab-focus"
+                    );
                     assert!(matches!(severity, helix_core::diagnostic::Severity::Info));
                 }),
             ),
@@ -273,7 +294,10 @@ async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(":pf-panel<ret>"), None),
             (Some("<ret>"), None),
             // open_file 走 job 通道异步——settle 一轮再断言
@@ -288,7 +312,9 @@ async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
                         "open_file from panel onKey should open the file in a buffer"
                     );
                     assert!(
-                        doc.path().map(|p| p.ends_with("target.txt")).unwrap_or(false),
+                        doc.path()
+                            .map(|p| p.ends_with("target.txt"))
+                            .unwrap_or(false),
                         "current doc should be target.txt"
                     );
                 }),
@@ -321,7 +347,10 @@ async fn plugin_split_terminal_leaf() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":sp-open<ret>"),
                 Some(&|app| {

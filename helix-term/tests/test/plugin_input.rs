@@ -26,28 +26,43 @@ async fn plugin_input_edit_and_nav() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(":inp<ret>"), None),
             // Tab 聚焦 input，键入 'a' → onChange("a") → 状态栏 chg:a
-            (Some("<tab>a"), Some(&|app| {
-                let (status, _) = app.editor.get_status().unwrap();
-                assert!(status.as_ref().contains("chg:a"), "status: {status:?}");
-            })),
+            (
+                Some("<tab>a"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.as_ref().contains("chg:a"), "status: {status:?}");
+                }),
+            ),
             // Up → onKey("Up")
-            (Some("<up>"), Some(&|app| {
-                let (status, _) = app.editor.get_status().unwrap();
-                assert!(status.as_ref().contains("key:Up"), "status: {status:?}");
-            })),
+            (
+                Some("<up>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.as_ref().contains("key:Up"), "status: {status:?}");
+                }),
+            ),
             // Down → onKey("Down")
-            (Some("<down>"), Some(&|app| {
-                let (status, _) = app.editor.get_status().unwrap();
-                assert!(status.as_ref().contains("key:Down"), "status: {status:?}");
-            })),
+            (
+                Some("<down>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.as_ref().contains("key:Down"), "status: {status:?}");
+                }),
+            ),
             // Enter → input 有状态 → onKey("Enter")
-            (Some("<ret>"), Some(&|app| {
-                let (status, _) = app.editor.get_status().unwrap();
-                assert!(status.as_ref().contains("key:Enter"), "status: {status:?}");
-            })),
+            (
+                Some("<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.as_ref().contains("key:Enter"), "status: {status:?}");
+                }),
+            ),
         ],
         false,
     )

@@ -69,7 +69,8 @@ impl menu::Item for CompletionItem {
                             let text = match docs {
                                 lsp::Documentation::String(text) => text,
                                 lsp::Documentation::MarkupContent(lsp::MarkupContent {
-                                    value, ..
+                                    value,
+                                    ..
                                 }) => value,
                             };
                             // Language servers which send Color completion items tend to include a 6

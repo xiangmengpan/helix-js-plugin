@@ -56,7 +56,9 @@ impl PluginPopup {
                 }
                 self.lines = comp_layout::render(content, viewport);
             }
-            Err(err) => self.lines = vec![StyledLine::plain(format!("<plugin popup error: {err}>"))],
+            Err(err) => {
+                self.lines = vec![StyledLine::plain(format!("<plugin popup error: {err}>"))]
+            }
         }
     }
 }
@@ -73,7 +75,10 @@ impl Component for PluginPopup {
         // 不经过弹窗级 onKey。
         if !self.focusables.is_empty() {
             if key.name == "Tab" {
-                let idx = self.focusables.iter().position(|f| Some(f) == self.focus.as_ref());
+                let idx = self
+                    .focusables
+                    .iter()
+                    .position(|f| Some(f) == self.focus.as_ref());
                 let next = idx.map(|i| (i + 1) % self.focusables.len()).unwrap_or(0);
                 self.focus = Some(self.focusables[next].clone());
                 return EventResult::Consumed(None);
@@ -124,16 +129,19 @@ impl Component for PluginPopup {
                         }
                     }
                     // 编辑键：input → dispatch_input_key（改值 + onChange）；否则（button）→ onKey
-                    key_name if key_name.chars().count() == 1
-                        || key_name == "Backspace"
-                        || key_name == "Delete" =>
+                    key_name
+                        if key_name.chars().count() == 1
+                            || key_name == "Backspace"
+                            || key_name == "Delete" =>
                     {
                         if helix_js::input_has_state(self.id, fid) {
                             if helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok() {
                                 drain_msgs(cx);
                                 return EventResult::Consumed(None);
                             }
-                        } else if helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok() {
+                        } else if helix_js::dispatch_node_event(self.id, fid, Some(&key.name))
+                            .is_ok()
+                        {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
                         }
@@ -168,19 +176,22 @@ impl Component for PluginPopup {
         let cursor_reqs = helix_js::take_cursor_requests();
         if !cursor_reqs.is_empty() {
             if let Err(err) = apply_cursor_requests(cx.editor, &cursor_reqs) {
-                cx.editor.set_error(format!("plugin popup cursor failed: {err}"));
+                cx.editor
+                    .set_error(format!("plugin popup cursor failed: {err}"));
             }
         }
         let edits = helix_js::take_edits();
         if !edits.is_empty() {
             if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
-                cx.editor.set_error(format!("plugin popup edit failed: {err}"));
+                cx.editor
+                    .set_error(format!("plugin popup edit failed: {err}"));
             }
         }
         let decorations = helix_js::take_decorations();
         if !decorations.is_empty() {
             if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
-                cx.editor.set_error(format!("plugin popup decorations failed: {err}"));
+                cx.editor
+                    .set_error(format!("plugin popup decorations failed: {err}"));
             }
         }
         let msgs = helix_js::take_messages();
@@ -218,7 +229,8 @@ impl Component for PluginPopup {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         self.refresh((area.width, area.height));
         // 脏格 diff 渲染：只重绘变化格（方案乙③）
-        self.diff.render(&self.lines, area, surface, &cx.editor.theme);
+        self.diff
+            .render(&self.lines, area, surface, &cx.editor.theme);
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
@@ -230,7 +242,12 @@ impl Component for PluginPopup {
         let width = self
             .lines
             .iter()
-            .map(|l| l.spans.iter().map(|sp| sp.text.chars().count() as u16).sum())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|sp| sp.text.chars().count() as u16)
+                    .sum()
+            })
             .max()
             .unwrap_or(0)
             .min(viewport.0);
@@ -290,10 +307,7 @@ mod tests {
     #[test]
     fn required_size_without_hint_uses_content() {
         let mut p = PluginPopup::new(1, None);
-        p.lines = vec![
-            StyledLine::plain("abc"),
-            StyledLine::plain("a"),
-        ];
+        p.lines = vec![StyledLine::plain("abc"), StyledLine::plain("a")];
         assert_eq!(p.required_size((120, 30)), Some((3, 2)));
     }
 

@@ -26,7 +26,10 @@ async fn plugin_by_path_reads_other_buffer() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(&format!(":open {}<ret>", file2.display())), None),
             (
                 Some(":show-other<ret>"),
@@ -60,7 +63,10 @@ async fn plugin_by_path_missing_returns_null() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":show-null<ret>"),
                 Some(&|app| {
@@ -98,7 +104,10 @@ async fn plugin_edit_other_buffer_undo_per_doc() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1.clone(), None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(&format!(":open {}<ret>", file2.display())), None),
             (Some(":edit-other<ret>"), None),
             (
@@ -106,7 +115,11 @@ async fn plugin_edit_other_buffer_undo_per_doc() -> anyhow::Result<()> {
                 Some(&format!(":open {}<ret>", file1.display())),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "one\n", "file1 不被跨 buffer 编辑影响");
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "one\n",
+                        "file1 不被跨 buffer 编辑影响"
+                    );
                 }),
             ),
             (
@@ -118,10 +131,7 @@ async fn plugin_edit_other_buffer_undo_per_doc() -> anyhow::Result<()> {
             ),
             // 一次 undo 回退 file2 的插入(每 doc 一事务)
             (Some("u"), None),
-            (
-                Some(&format!(":open {}<ret>", file1.display())),
-                None,
-            ),
+            (Some(&format!(":open {}<ret>", file1.display())), None),
             (
                 Some(&format!(":open {}<ret>", file2.display())),
                 Some(&|app| {
@@ -160,7 +170,10 @@ async fn plugin_mixed_edits_undo_independent() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1.clone(), None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 先打开 file2 再切回 file1：by_path 只查已打开 buffer
             (Some(&format!(":open {}<ret>", file2.display())), None),
             (Some(&format!(":open {}<ret>", file1.display())), None),
@@ -177,7 +190,11 @@ async fn plugin_mixed_edits_undo_independent() -> anyhow::Result<()> {
                 Some(&format!(":open {}<ret>", file2.display())),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "Btwo\n", "另一 buffer 的 B 未被连带撤销");
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "Btwo\n",
+                        "另一 buffer 的 B 未被连带撤销"
+                    );
                 }),
             ),
             (Some("u"), None),
@@ -227,7 +244,10 @@ async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 先打开 file2：by_path 只查已打开 buffer
             (Some(&format!(":open {}<ret>", file2.display())), None),
             (Some(":async-xedit<ret>"), None),
@@ -236,7 +256,11 @@ async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
                 Some(&format!(":open {}<ret>", file2.display())),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "Xtwo\nZthree\n", "跨 await 两次编辑一次应用");
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "Xtwo\nZthree\n",
+                        "跨 await 两次编辑一次应用"
+                    );
                 }),
             ),
             // 一次 undo 回退两处(同一事务)
@@ -279,7 +303,10 @@ async fn plugin_edit_other_buffer_vsplit_no_panic() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1.clone(), None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // :vsplit 后焦点在新 view B(两个 view 都在 file1)
             (Some(":vsplit<ret>"), None),
             // view B 打开 file2;view A 仍是 file1 且从未访问 file2
@@ -334,7 +361,10 @@ async fn plugin_by_path_relative_resolves_from_cwd() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file1, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(&format!(":cd {}<ret>", dir.path().display())), None),
             (Some(":open b.txt<ret>"), None),
             (

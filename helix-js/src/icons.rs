@@ -20,11 +20,15 @@ pub(crate) fn js_set_diagnostic_icons(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let api = "helix.set_diagnostic_icons";
-    let obj = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: expected an object of {{ error, warning, info, hint }}"
-        ))))
-    })?;
+    let obj = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: expected an object of {{ error, warning, info, hint }}"
+            ))))
+        })?;
     let mut map = HashMap::new();
     for key in ["error", "warning", "info", "hint"] {
         if let Ok(v) = obj.get(JsString::from(key), ctx) {

@@ -7,7 +7,6 @@ use boa_engine::property::Attribute;
 use boa_engine::NativeFunction;
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
-
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
@@ -32,10 +31,9 @@ const EVENT_WHITELIST: [&str; 17] = [
 ];
 
 use crate::state::{
-    with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export,
-    with_popups, with_registry, with_script_exports, with_statusline_hook, MESSAGES, PLUGINS_DIR, UI_REQUESTS,
+    with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_popups,
+    with_registry, with_script_exports, with_statusline_hook, MESSAGES, PLUGINS_DIR, UI_REQUESTS,
 };
-
 
 use crate::types::*;
 
@@ -50,9 +48,9 @@ pub(crate) fn js_register_command(
         .try_js_into(context)?;
     let func = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if name.is_empty() || name.chars().any(char::is_whitespace) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "invalid command name: {name:?}"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("invalid command name: {name:?}"),
+        ))));
     }
     // 先校验/存入 doc 再注册：第三参类型非法（如 42）时整体失败，不产生半注册
     if let Some(doc_arg) = args.get(2) {
@@ -75,13 +73,19 @@ pub fn set_plugins_dir(dir: PathBuf) {
 /// 嵌套加载：内层 load 消费 LAST_EXPORT（take 语义），外层脚本自己的 export 随后设置。
 /// 直接用传入的 boa Context 调（不再借 CONTEXT 线程局部）——load 可能发生在命令运行中
 /// （lazy 桩），外层 run_command 正持有 CONTEXT 的 RefCell 借用，再借会 panic。
-pub(crate) fn js_load(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_load(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.load: name must be a string")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.load: name must be a string",
+            )))
         })?;
     if name.is_empty() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
@@ -94,26 +98,43 @@ pub(crate) fn js_load(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
 /// 加载脚本（含依赖递归）。依赖在脚本内 helix.plugin(name, { deps }) 声明：
 /// deps 是文件 key（load 参数，如 "lib/icons.js"），加载目标前先递归加载依赖；
 /// 已加载的跳过（with_script_exports 缓存），循环依赖报错。
-fn load_script_checked(ctx: &mut Context, name: &str, stack: &mut Vec<String>) -> boa_engine::JsResult<JsValue> {
-    let key = if name.ends_with(".js") { name.to_string() } else { format!("{name}.js") };
+fn load_script_checked(
+    ctx: &mut Context,
+    name: &str,
+    stack: &mut Vec<String>,
+) -> boa_engine::JsResult<JsValue> {
+    let key = if name.ends_with(".js") {
+        name.to_string()
+    } else {
+        format!("{name}.js")
+    };
     if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
         return Ok(cached);
     }
     if stack.contains(&key) {
-        let chain = stack.iter().chain([&key]).cloned().collect::<Vec<_>>().join(" -> ");
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.load: circular dependency: {chain}"
-        )))));
+        let chain = stack
+            .iter()
+            .chain([&key])
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("helix.load: circular dependency: {chain}"),
+        ))));
     }
     let path = if Path::new(&key).is_absolute() {
         PathBuf::from(&key)
     } else {
         PLUGINS_DIR.get().map(|d| d.join(&key)).ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.load: plugins dir not set")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.load: plugins dir not set",
+            )))
         })?
     };
     let src = std::fs::read_to_string(&path).map_err(|e| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!("helix.load('{key}'): {e}"))))
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.load('{key}'): {e}"
+        ))))
     })?;
     // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
     crate::state::with_last_plugin_deps(|d| d.clear());
@@ -141,7 +162,11 @@ fn load_script_checked(ctx: &mut Context, name: &str, stack: &mut Vec<String>) -
 
 /// helix.plugin(name, { deps, version })：声明当前脚本的依赖清单（方案 2）。
 /// deps 是文件 key 数组（load 参数，如 ["lib/icons.js"]），helix.load 自动拓扑加载。
-pub(crate) fn js_plugin(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_plugin(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     // name 仅校验类型（API 形状：helix.plugin(name, { deps, version })）；
     // 依赖清单只取 deps（文件 key），version 为元数据保留位暂不消费。
     let _name: String = args
@@ -149,11 +174,16 @@ pub(crate) fn js_plugin(_this: &JsValue, args: &[JsValue], ctx: &mut Context) ->
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.plugin: name must be a string")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.plugin: name must be a string",
+            )))
         })?;
     let mut deps: Vec<String> = Vec::new();
     if let Some(meta) = args.get(1).unwrap_or(&JsValue::undefined()).as_object() {
-        if let Ok(v) = meta.get(JsString::from("deps"), ctx).and_then(|v| v.try_js_into::<Vec<String>>(ctx)) {
+        if let Ok(v) = meta
+            .get(JsString::from("deps"), ctx)
+            .and_then(|v| v.try_js_into::<Vec<String>>(ctx))
+        {
             deps = v;
         }
     }
@@ -162,15 +192,29 @@ pub(crate) fn js_plugin(_this: &JsValue, args: &[JsValue], ctx: &mut Context) ->
 }
 
 /// helix.export(obj)：声明当前脚本的导出（被 helix.load 的返回值拿到）。undefined/null 清空。
-pub(crate) fn js_export(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_export(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::undefined());
-    with_last_export(|l| *l = if arg.is_null_or_undefined() { None } else { Some(arg) });
+    with_last_export(|l| {
+        *l = if arg.is_null_or_undefined() {
+            None
+        } else {
+            Some(arg)
+        }
+    });
     Ok(JsValue::undefined())
 }
 
 /// helix.lazy(name, ...cmds)：为每个 cmd 注册桩闭包——首次调用时加载 name 再转执行。
 /// 桩经 eval 工厂构造闭包（不经 REGISTRY 捕获 JsValue，避免闭包环境问题）。
-pub(crate) fn js_lazy(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_lazy(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     if args.len() < 2 {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.lazy: name and at least one command required",
@@ -181,7 +225,9 @@ pub(crate) fn js_lazy(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.lazy: name must be a string")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.lazy: name must be a string",
+            )))
         })?;
     if name.is_empty() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
@@ -197,7 +243,9 @@ pub(crate) fn js_lazy(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
         .as_callable()
         .and_then(JsFunction::from_object)
         .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.lazy: internal factory error")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.lazy: internal factory error",
+            )))
         })?;
     let undefined = JsValue::undefined();
     for cmd in &args[1..] {
@@ -207,9 +255,9 @@ pub(crate) fn js_lazy(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
             )))
         })?;
         if cmd.is_empty() || cmd.chars().any(char::is_whitespace) {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "invalid command name: {cmd:?}"
-            )))));
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                format!("invalid command name: {cmd:?}"),
+            ))));
         }
         let closure = factory
             .call(
@@ -229,26 +277,56 @@ pub(crate) fn js_lazy(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> b
 }
 
 /// 解析 JS { row, col } → 坐标（字段缺失/非对象用缺省值）
-fn parse_pos(v: &JsValue, ctx: &mut Context, dflt: (usize, usize)) -> boa_engine::JsResult<(usize, usize)> {
-    let Some(obj) = v.as_object() else { return Ok(dflt) };
+fn parse_pos(
+    v: &JsValue,
+    ctx: &mut Context,
+    dflt: (usize, usize),
+) -> boa_engine::JsResult<(usize, usize)> {
+    let Some(obj) = v.as_object() else {
+        return Ok(dflt);
+    };
     let row = obj.get(JsString::from("row"), ctx)?;
     let col = obj.get(JsString::from("col"), ctx)?;
     Ok((
-        if row.is_null_or_undefined() { dflt.0 } else { row.try_js_into::<usize>(ctx)? },
-        if col.is_null_or_undefined() { dflt.1 } else { col.try_js_into::<usize>(ctx)? },
+        if row.is_null_or_undefined() {
+            dflt.0
+        } else {
+            row.try_js_into::<usize>(ctx)?
+        },
+        if col.is_null_or_undefined() {
+            dflt.1
+        } else {
+            col.try_js_into::<usize>(ctx)?
+        },
     ))
 }
 
 /// 解析 JS ctx 对象 → CommandContext（缺省：path=None/text=""/cursor=(0,0)/selection 全 0）
 /// 从 JS 对象读可选字符串字段
-pub(crate) fn js_get_str(obj: &boa_engine::JsObject, key: &str, ctx: &mut Context) -> boa_engine::JsResult<Option<String>> {
+pub(crate) fn js_get_str(
+    obj: &boa_engine::JsObject,
+    key: &str,
+    ctx: &mut Context,
+) -> boa_engine::JsResult<Option<String>> {
     let v = obj.get(JsString::from(key), ctx)?;
-    if v.is_null_or_undefined() { Ok(None) } else { Ok(Some(v.try_js_into::<String>(ctx)?)) }
+    if v.is_null_or_undefined() {
+        Ok(None)
+    } else {
+        Ok(Some(v.try_js_into::<String>(ctx)?))
+    }
 }
 
 fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<CommandContext> {
-    let dflt = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
-    let Some(obj) = v.as_object() else { return Ok(dflt) };
+    let dflt = CommandContext {
+        docs: vec![],
+        path: None,
+        text: String::new(),
+        cursor: (0, 0),
+        selection: ((0, 0), (0, 0)),
+    };
+    let Some(obj) = v.as_object() else {
+        return Ok(dflt);
+    };
     // 命令实际收到的 ctx 形状是 { doc: { path, text, ... }, cursor, selection }——
     // 兼容两层（doc.path ?? path），保证 lazy 转发不丢 path/text
     let doc_val = obj.get(JsString::from("doc"), ctx)?;
@@ -258,9 +336,12 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
         None => js_get_str(&obj, "path", ctx)?,
     };
     let text = match &doc_obj {
-        Some(doc) => {
-            js_get_str(doc, "text", ctx)?.unwrap_or_else(|| js_get_str(&obj, "text", ctx).ok().flatten().unwrap_or_default())
-        }
+        Some(doc) => js_get_str(doc, "text", ctx)?.unwrap_or_else(|| {
+            js_get_str(&obj, "text", ctx)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        }),
         None => js_get_str(&obj, "text", ctx)?.unwrap_or_default(),
     };
     let cursor = parse_pos(&obj.get(JsString::from("cursor"), ctx)?, ctx, (0, 0))?;
@@ -279,19 +360,31 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
             (anchor, head)
         }
     };
-    Ok(CommandContext { docs: vec![], path, text, cursor, selection })
+    Ok(CommandContext {
+        docs: vec![],
+        path,
+        text,
+        cursor,
+        selection,
+    })
 }
 
 /// helix.run_command(name, ctx?)：程序化调用插件命令。ctx 缺省空快照。
 /// 嵌套调用合法：直接用传入的 boa Context 调（不再借 CONTEXT，避开 RefCell 重入 panic）；
 /// 编辑/光标请求排队，由外层命令的 drain 应用。
-pub(crate) fn js_run_command(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_run_command(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.run_command: name must be a string")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.run_command: name must be a string",
+            )))
         })?;
     let command_ctx = parse_command_ctx(args.get(1).unwrap_or(&JsValue::undefined()), ctx)?;
     let func = with_registry(|r| r.get(&name).cloned()).ok_or_else(|| {
@@ -299,13 +392,19 @@ pub(crate) fn js_run_command(_this: &JsValue, args: &[JsValue], ctx: &mut Contex
             "helix.run_command: '{name}' is not registered"
         ))))
     })?;
-    let func = func.as_callable().and_then(JsFunction::from_object).ok_or_else(|| {
+    let func = func
+        .as_callable()
+        .and_then(JsFunction::from_object)
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "registered value for '{name}' is not a function"
+            ))))
+        })?;
+    let arg = ctx_to_js(&command_ctx, ctx).map_err(|e| {
         JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "registered value for '{name}' is not a function"
+            "helix.run_command: {e}"
         ))))
     })?;
-    let arg = ctx_to_js(&command_ctx, ctx)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.run_command: {e}")))))?;
     let undefined = JsValue::undefined();
     func.call(&undefined, &[arg], ctx)
         .map(|_| JsValue::undefined())
@@ -320,14 +419,24 @@ pub(crate) fn js_run_command(_this: &JsValue, args: &[JsValue], ctx: &mut Contex
 const KEYMAP_MODES: [&str; 3] = ["normal", "insert", "select"];
 
 /// 注册键位绑定：字符串命令直接入队，函数注册为隐藏插件命令 __mapped_N
-pub(crate) fn js_map(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let mode: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_map(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let mode: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     if !KEYMAP_MODES.contains(&mode.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.map: unknown mode '{mode}'"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("helix.map: unknown mode '{mode}'"),
+        ))));
     }
-    let key: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let key: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     if key.is_empty() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.map: key must not be empty",
@@ -345,7 +454,12 @@ pub(crate) fn js_map(_this: &JsValue, args: &[JsValue], context: &mut Context) -
         command_arg.try_js_into(context)?
     };
 
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::MapKey { mode, key, command });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::MapKey { mode, key, command });
     Ok(JsValue::undefined())
 }
 
@@ -359,8 +473,16 @@ fn build_doc_object(
     engine: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let cursor_obj = ObjectInitializer::new(engine)
-        .property(JsString::from("row"), JsValue::from(cursor.0 as f64), Attribute::all())
-        .property(JsString::from("col"), JsValue::from(cursor.1 as f64), Attribute::all())
+        .property(
+            JsString::from("row"),
+            JsValue::from(cursor.0 as f64),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("col"),
+            JsValue::from(cursor.1 as f64),
+            Attribute::all(),
+        )
         .build();
     Ok(JsValue::from(
         ObjectInitializer::new(engine)
@@ -372,7 +494,11 @@ fn build_doc_object(
                 },
                 Attribute::all(),
             )
-            .property(JsString::from("text"), JsValue::from(JsString::from(text)), Attribute::all())
+            .property(
+                JsString::from("text"),
+                JsValue::from(JsString::from(text)),
+                Attribute::all(),
+            )
             .property(JsString::from("cursor"), cursor_obj, Attribute::all())
             // 内部目标:by_path 的 doc 用它路由编辑;ctx.doc 为 null。插件可见但无害。
             .property(
@@ -383,15 +509,30 @@ fn build_doc_object(
                 },
                 Attribute::all(),
             )
-            .function(NativeFunction::from_fn_ptr(js_doc_insert), JsString::from("insert"), 3)
-            .function(NativeFunction::from_fn_ptr(js_doc_replace), JsString::from("replace"), 5)
-            .function(NativeFunction::from_fn_ptr(js_doc_delete), JsString::from("delete"), 4)
+            .function(
+                NativeFunction::from_fn_ptr(js_doc_insert),
+                JsString::from("insert"),
+                3,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(js_doc_replace),
+                JsString::from("replace"),
+                5,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(js_doc_delete),
+                JsString::from("delete"),
+                4,
+            )
             .build(),
     ))
 }
 
 /// 把 CommandContext 转成 doc 对象（当前 buffer 编辑目标）
-pub(crate) fn doc_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn doc_to_js(
+    ctx: &CommandContext,
+    engine: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     build_doc_object(ctx.path.as_deref(), &ctx.text, ctx.cursor, None, engine)
 }
 
@@ -411,9 +552,13 @@ pub(crate) fn js_by_path(
                 "helix.by_path: path must be a string",
             )))
         })?;
-    let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
+    let canonical = helix_stdx::path::canonicalize(&path)
+        .to_string_lossy()
+        .into_owned();
     let hit = crate::state::with_doc_snapshots(|s| s.iter().find(|d| d.path == canonical).cloned());
-    let Some(hit) = hit else { return Ok(JsValue::null()) };
+    let Some(hit) = hit else {
+        return Ok(JsValue::null());
+    };
     build_doc_object(Some(&hit.path), &hit.text, (0, 0), Some(&hit.path), context)
 }
 
@@ -421,12 +566,28 @@ pub(crate) fn js_by_path(
 fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
     let doc = doc_to_js(ctx, engine)?;
     let anchor = ObjectInitializer::new(engine)
-        .property(JsString::from("row"), JsValue::from(ctx.selection.0 .0 as f64), Attribute::all())
-        .property(JsString::from("col"), JsValue::from(ctx.selection.0 .1 as f64), Attribute::all())
+        .property(
+            JsString::from("row"),
+            JsValue::from(ctx.selection.0 .0 as f64),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("col"),
+            JsValue::from(ctx.selection.0 .1 as f64),
+            Attribute::all(),
+        )
         .build();
     let head = ObjectInitializer::new(engine)
-        .property(JsString::from("row"), JsValue::from(ctx.selection.1 .0 as f64), Attribute::all())
-        .property(JsString::from("col"), JsValue::from(ctx.selection.1 .1 as f64), Attribute::all())
+        .property(
+            JsString::from("row"),
+            JsValue::from(ctx.selection.1 .0 as f64),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("col"),
+            JsValue::from(ctx.selection.1 .1 as f64),
+            Attribute::all(),
+        )
         .build();
     let selection = ObjectInitializer::new(engine)
         .property(JsString::from("anchor"), anchor, Attribute::all())
@@ -473,8 +634,8 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
         .ok_or_else(|| anyhow!("registered value for '{name}' is not a function"))?;
 
     crate::state::with_engine(|engine| {
-        let arg = ctx_to_js(ctx, engine)
-            .map_err(|e| anyhow!("failed to build command context: {e}"))?;
+        let arg =
+            ctx_to_js(ctx, engine).map_err(|e| anyhow!("failed to build command context: {e}"))?;
         let undefined = JsValue::undefined();
         func.call(&undefined, &[arg], engine)
             .map(|_| true)
@@ -494,13 +655,20 @@ pub fn command_doc(name: &str) -> Option<String> {
     crate::state::with_command_docs(|d| d.get(name).cloned())
 }
 
-pub(crate) fn js_on(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let name: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_on(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     let handler = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if !EVENT_WHITELIST.contains(&name.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.on: unknown event '{name}'"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("helix.on: unknown event '{name}'"),
+        ))));
     }
     if handler.as_callable().is_none() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
@@ -544,7 +712,9 @@ fn emit_event_impl(
     // 携带其它已打开 buffer 快照（by_path 读取；本次事件生命周期）
     crate::state::set_doc_snapshots(ctx.docs.clone());
     let handlers = with_event_handlers(|h| h.get(name).cloned());
-    let Some(handlers) = handlers else { return Ok(()) };
+    let Some(handlers) = handlers else {
+        return Ok(());
+    };
     if handlers.is_empty() {
         return Ok(());
     }
@@ -570,9 +740,9 @@ fn emit_event_impl(
             };
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 crate::state::with_edits(|c| c.clear());
-    crate::state::with_decoration_requests(|c| c.clear());
-    crate::state::with_cursor_requests(|c| c.clear());
-    crate::state::with_txn_depth(|d| *d = 0); // 与正常入口复位一致:错误路径也恢复事务深度
+                crate::state::with_decoration_requests(|c| c.clear());
+                crate::state::with_cursor_requests(|c| c.clear());
+                crate::state::with_txn_depth(|d| *d = 0); // 与正常入口复位一致:错误路径也恢复事务深度
                 anyhow!("event '{name}' handler failed: {e}")
             })?;
         }
@@ -582,7 +752,11 @@ fn emit_event_impl(
 
 /// 防抖窗口内变更合并为包围范围：old = (min old_start, max old_end)，new = (min new_start, max new_end)。
 /// 窗口无变更 → 空数组。坐标行列按当前文本换算（old 坐标相对变更时刻文本，窗口语义由插件处理）。
-fn build_changes_array(changes: &[DocChange], ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult<JsValue> {
+fn build_changes_array(
+    changes: &[DocChange],
+    ctx: &CommandContext,
+    engine: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     if changes.is_empty() {
         return Ok(JsValue::from(JsArray::new(engine)));
     }
@@ -641,8 +815,16 @@ fn point_js(engine: &mut Context, text: &str, pos: usize) -> boa_engine::JsResul
     let (row, col) = pos_to_row_col(text, pos);
     Ok(JsValue::from(
         ObjectInitializer::new(engine)
-            .property(JsString::from("row"), JsValue::from(row as f64), Attribute::all())
-            .property(JsString::from("col"), JsValue::from(col as f64), Attribute::all())
+            .property(
+                JsString::from("row"),
+                JsValue::from(row as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("col"),
+                JsValue::from(col as f64),
+                Attribute::all(),
+            )
             .build(),
     ))
 }
@@ -687,7 +869,13 @@ pub enum TermKeyDecision {
 
 /// term-key 钩子：构造 { code, shift, ctrl, alt } 对象传给 handler；
 /// 返回 "pass" | "consume" | "minimize" | "close"（字符串）→ 对应决策；其他/无 handler → None（走默认）。
-pub fn emit_term_key(pty_id: u64, code: &str, shift: bool, ctrl: bool, alt: bool) -> Option<TermKeyDecision> {
+pub fn emit_term_key(
+    pty_id: u64,
+    code: &str,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+) -> Option<TermKeyDecision> {
     crate::init();
     let handlers = with_event_handlers(|h| h.get("term-key").cloned())?;
     if handlers.is_empty() {
@@ -695,9 +883,21 @@ pub fn emit_term_key(pty_id: u64, code: &str, shift: bool, ctrl: bool, alt: bool
     }
     with_engine(|engine| {
         let key = ObjectInitializer::new(engine)
-            .property(JsString::from("code"), JsValue::from(JsString::from(code)), Attribute::all())
-            .property(JsString::from("shift"), JsValue::from(shift), Attribute::all())
-            .property(JsString::from("ctrl"), JsValue::from(ctrl), Attribute::all())
+            .property(
+                JsString::from("code"),
+                JsValue::from(JsString::from(code)),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("shift"),
+                JsValue::from(shift),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("ctrl"),
+                JsValue::from(ctrl),
+                Attribute::all(),
+            )
             .property(JsString::from("alt"), JsValue::from(alt), Attribute::all())
             .build();
         let args = [JsValue::from(pty_id), JsValue::from(key)];
@@ -706,7 +906,9 @@ pub fn emit_term_key(pty_id: u64, code: &str, shift: bool, ctrl: bool, alt: bool
             let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
                 continue;
             };
-            let Ok(ret) = func.call(&undefined, &args, engine) else { continue };
+            let Ok(ret) = func.call(&undefined, &args, engine) else {
+                continue;
+            };
             let s = ret.as_string().map(|s| s.to_std_string_escaped());
             let decision = match s.as_deref() {
                 Some("pass") => Some(TermKeyDecision::Pass),
@@ -727,31 +929,53 @@ pub fn emit_term_key(pty_id: u64, code: &str, shift: bool, ctrl: bool, alt: bool
 /// term-open / term-mode-change / term-exit / term-resize / term-title 通知；
 /// term-close 返回 true=放行关闭 / false=阻止。
 pub fn emit_term_open(pty_id: u64, cmd: &str) {
-    emit_hook("term-open", &[JsValue::from(pty_id), JsValue::from(JsString::from(cmd))]);
+    emit_hook(
+        "term-open",
+        &[JsValue::from(pty_id), JsValue::from(JsString::from(cmd))],
+    );
 }
 pub fn emit_term_mode(pty_id: u64, mode: &str) {
-    emit_hook("term-mode-change", &[JsValue::from(pty_id), JsValue::from(JsString::from(mode))]);
+    emit_hook(
+        "term-mode-change",
+        &[JsValue::from(pty_id), JsValue::from(JsString::from(mode))],
+    );
 }
 pub fn emit_term_exit(pty_id: u64, code: i32) {
     emit_hook("term-exit", &[JsValue::from(pty_id), JsValue::from(code)]);
 }
 pub fn emit_term_resize(pty_id: u64, rows: u16, cols: u16) {
-    emit_hook("term-resize", &[JsValue::from(pty_id), JsValue::from(rows), JsValue::from(cols)]);
+    emit_hook(
+        "term-resize",
+        &[
+            JsValue::from(pty_id),
+            JsValue::from(rows),
+            JsValue::from(cols),
+        ],
+    );
 }
 pub fn emit_term_title(pty_id: u64, title: &str) {
-    emit_hook("term-title", &[JsValue::from(pty_id), JsValue::from(JsString::from(title))]);
+    emit_hook(
+        "term-title",
+        &[JsValue::from(pty_id), JsValue::from(JsString::from(title))],
+    );
 }
 /// 组件事件(鼠标点击/滚动等):构造 {kind, x, y} 对象;插件返回 true → 消费该事件。
 pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
     crate::init();
     let handlers = with_event_handlers(|h| h.get("component-event").cloned());
-    let Some(handlers) = handlers else { return false };
+    let Some(handlers) = handlers else {
+        return false;
+    };
     if handlers.is_empty() {
         return false;
     }
     with_engine(|engine| {
         let ev = ObjectInitializer::new(engine)
-            .property(JsString::from("kind"), JsValue::from(JsString::from(kind)), Attribute::all())
+            .property(
+                JsString::from("kind"),
+                JsValue::from(JsString::from(kind)),
+                Attribute::all(),
+            )
             .property(JsString::from("x"), JsValue::from(x), Attribute::all())
             .property(JsString::from("y"), JsValue::from(y), Attribute::all())
             .build();
@@ -773,24 +997,39 @@ pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
 
 /// term-close 钩子：插件返回 false → 阻止关闭（返回 true=阻止）
 pub fn emit_term_close(pty_id: u64, reason: &str) -> bool {
-    emit_hook("term-close", &[JsValue::from(pty_id), JsValue::from(JsString::from(reason))])
-        .is_some_and(|v| v.as_boolean() == Some(false))
+    emit_hook(
+        "term-close",
+        &[JsValue::from(pty_id), JsValue::from(JsString::from(reason))],
+    )
+    .is_some_and(|v| v.as_boolean() == Some(false))
 }
 
 /// term_state(ptyId, key[, value])：终端任意状态持久化（跨会话存盘）。
 /// 读：值不存在返回 undefined；写：value 必须是字符串（覆盖）。
 /// 存储：~/.local/state/helix/term-state.json（{"<ptyId>": {"<key>": "<value>"}}）。
-pub(crate) fn js_term_state(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_term_state(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let pty_id: u64 = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("term_state: ptyId must be a number"))))?;
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "term_state: ptyId must be a number",
+            )))
+        })?;
     let key: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("term_state: key must be a string"))))?;
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "term_state: key must be a string",
+            )))
+        })?;
     let value = match args.get(2) {
         Some(v) => v,
         None => &JsValue::undefined(),
@@ -851,19 +1090,36 @@ fn write_term_state(pty_id: u64, key: &str, value: &str) {
         .entry(pty_id.to_string())
         .or_insert_with(|| serde_json::Value::Object(Default::default()));
     if let Some(obj) = entry.as_object_mut() {
-        obj.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+        obj.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
     }
     save_term_state(&map);
 }
 
-pub(crate) fn js_set_cursor(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let row: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let col: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_set_cursor(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let row: usize = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let col: usize = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     crate::state::with_cursor_requests(|c| c.push(CursorRequest::SetCursor { row, col }));
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_set_selection(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_selection(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     // 第一参是数组 → 多选区形态；否则走 4 参单选区兼容逻辑
     if let Some(obj) = args.first().unwrap_or(&JsValue::undefined()).as_object() {
         if obj.is_array() {
@@ -886,18 +1142,34 @@ pub(crate) fn js_set_selection(_this: &JsValue, args: &[JsValue], context: &mut 
                 let head = parse_sel_pos(&el.get(JsString::from("head"), context)?, context)?;
                 selections.push((anchor, head));
             }
-            crate::state::with_cursor_requests(|c| c.push(CursorRequest::SetSelections(selections)));
+            crate::state::with_cursor_requests(|c| {
+                c.push(CursorRequest::SetSelections(selections))
+            });
             return Ok(JsValue::undefined());
         }
     }
-    let ar: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let ac: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let hr: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let hc: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    crate::state::with_cursor_requests(|c| c.push(CursorRequest::SetSelection {
-        anchor: (ar, ac),
-        head: (hr, hc),
-    }));
+    let ar: usize = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let ac: usize = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let hr: usize = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let hc: usize = args
+        .get(3)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    crate::state::with_cursor_requests(|c| {
+        c.push(CursorRequest::SetSelection {
+            anchor: (ar, ac),
+            head: (hr, hc),
+        })
+    });
     Ok(JsValue::undefined())
 }
 
@@ -916,28 +1188,45 @@ fn parse_sel_pos(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<(usize,
             "set_selection: anchor/head missing row/col",
         ))));
     }
-    Ok((row.try_js_into::<usize>(ctx)?, col.try_js_into::<usize>(ctx)?))
+    Ok((
+        row.try_js_into::<usize>(ctx)?,
+        col.try_js_into::<usize>(ctx)?,
+    ))
 }
 
 /// shell 执行输出截断上限（防失控输出冻结状态栏）
 const RUN_OUTPUT_LIMIT: usize = 65536;
 
 // ponytail: 同步阻塞 + sh -c，仅 Unix；未来要 Windows 支持需改 cmd.exe /C。
-pub(crate) fn js_run(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_run(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     use std::process::Command;
-    let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let cmd: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     let output = Command::new("sh")
         .arg("-c")
         .arg(&cmd)
         .output()
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.run: failed to spawn: {e}")))))?;
+        .map_err(|e| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "helix.run: failed to spawn: {e}"
+            ))))
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr: String = stderr.chars().take(RUN_OUTPUT_LIMIT).collect();
-        let code = output.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string());
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.run: command failed ({code}): {stderr}"
-        )))));
+        let code = output
+            .status
+            .code()
+            .map_or_else(|| "signal".to_string(), |c| c.to_string());
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("helix.run: command failed ({code}): {stderr}"),
+        ))));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut stdout: String = stdout.chars().take(RUN_OUTPUT_LIMIT).collect();
@@ -947,7 +1236,11 @@ pub(crate) fn js_run(_this: &JsValue, args: &[JsValue], context: &mut Context) -
     Ok(JsValue::from(JsString::from(stdout)))
 }
 
-pub(crate) fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_echo(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let text: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -966,7 +1259,9 @@ pub(crate) fn js_echo(_this: &JsValue, args: &[JsValue], context: &mut Context) 
 /// aggregate=false：流式增量解码——拼上跨块的残留尾部（最多 3 字节，UTF-8 最长序列），
 /// 从 doc 对象读编辑目标：this._target 为字符串 → Some(path)；null/非对象 → None（当前 buffer）
 fn edit_target(_this: &JsValue, context: &mut Context) -> boa_engine::JsResult<Option<String>> {
-    let Some(obj) = _this.as_object() else { return Ok(None) };
+    let Some(obj) = _this.as_object() else {
+        return Ok(None);
+    };
     let v = obj.get(JsString::from("_target"), context)?;
     if v.is_null_or_undefined() {
         Ok(None)
@@ -975,40 +1270,113 @@ fn edit_target(_this: &JsValue, context: &mut Context) -> boa_engine::JsResult<O
     }
 }
 
-pub(crate) fn js_doc_insert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let row: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let col: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let insert: String = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_doc_insert(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let row: usize = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let col: usize = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let insert: String = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     let doc = edit_target(_this, context)?;
-    crate::state::with_edits(|c| c.push(Edit { doc, start: (row, col), end: (row, col), insert }));
+    crate::state::with_edits(|c| {
+        c.push(Edit {
+            doc,
+            start: (row, col),
+            end: (row, col),
+            insert,
+        })
+    });
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_doc_replace(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let sr: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let insert: String = args.get(4).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_doc_replace(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let sr: usize = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let sc: usize = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let er: usize = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let ec: usize = args
+        .get(3)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let insert: String = args
+        .get(4)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     let doc = edit_target(_this, context)?;
-    crate::state::with_edits(|c| c.push(Edit { doc, start: (sr, sc), end: (er, ec), insert }));
+    crate::state::with_edits(|c| {
+        c.push(Edit {
+            doc,
+            start: (sr, sc),
+            end: (er, ec),
+            insert,
+        })
+    });
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_doc_delete(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let sr: usize = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sc: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let er: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let ec: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_doc_delete(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let sr: usize = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let sc: usize = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let er: usize = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let ec: usize = args
+        .get(3)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     let doc = edit_target(_this, context)?;
-    crate::state::with_edits(|c| c.push(Edit { doc, start: (sr, sc), end: (er, ec), insert: String::new() }));
+    crate::state::with_edits(|c| {
+        c.push(Edit {
+            doc,
+            start: (sr, sc),
+            end: (er, ec),
+            insert: String::new(),
+        })
+    });
     Ok(JsValue::undefined())
 }
 
 /// helix.set_virtual_text(path[, row, col, text, style])：行内文本装饰入队。
 /// 只传 path（text 省略/undefined）→ Clear：清除该 doc 全部插件装饰。
 /// 路径 canonicalize（与 js_by_path / Edit.doc 同款）；未打开 doc 应用时静默忽略（term 侧）。
-pub(crate) fn js_set_virtual_text(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_virtual_text(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -1018,7 +1386,9 @@ pub(crate) fn js_set_virtual_text(_this: &JsValue, args: &[JsValue], context: &m
                 "helix.set_virtual_text: path must be a string",
             )))
         })?;
-    let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
+    let canonical = helix_stdx::path::canonicalize(&path)
+        .to_string_lossy()
+        .into_owned();
     // 清除语义:只传 path(row/col/text 均省略)= Clear;给了坐标却缺 text → 走类型解析报 TypeError
     let is_clear = match args.get(3) {
         None => args.get(1).is_none() && args.get(2).is_none(),
@@ -1028,22 +1398,45 @@ pub(crate) fn js_set_virtual_text(_this: &JsValue, args: &[JsValue], context: &m
     let kind = if is_clear {
         DecorationKind::Clear
     } else {
-        let row: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-        let col: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-        let text: String = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+        let row: usize = args
+            .get(1)
+            .unwrap_or(&JsValue::undefined())
+            .try_js_into(context)?;
+        let col: usize = args
+            .get(2)
+            .unwrap_or(&JsValue::undefined())
+            .try_js_into(context)?;
+        let text: String = args
+            .get(3)
+            .unwrap_or(&JsValue::undefined())
+            .try_js_into(context)?;
         let style: Option<String> = match args.get(4) {
             Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
             _ => None,
         };
-        DecorationKind::VirtualText { row, col, text, style }
+        DecorationKind::VirtualText {
+            row,
+            col,
+            text,
+            style,
+        }
     };
-    crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: Some(canonical), kind }));
+    crate::state::with_decoration_requests(|c| {
+        c.push(DecorationRequest {
+            doc: Some(canonical),
+            kind,
+        })
+    });
     Ok(JsValue::undefined())
 }
 
 /// helix.set_highlight(path, sr, sc, er, ec[, style])：区域高亮装饰入队。
 /// 路径 canonicalize（与 js_by_path / Edit.doc 同款）；style 省略/undefined → None。
-pub(crate) fn js_set_highlight(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_highlight(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -1053,19 +1446,41 @@ pub(crate) fn js_set_highlight(_this: &JsValue, args: &[JsValue], context: &mut 
                 "helix.set_highlight: path must be a string",
             )))
         })?;
-    let canonical = helix_stdx::path::canonicalize(&path).to_string_lossy().into_owned();
-    let sr: usize = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let sc: usize = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let er: usize = args.get(3).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let ec: usize = args.get(4).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+    let canonical = helix_stdx::path::canonicalize(&path)
+        .to_string_lossy()
+        .into_owned();
+    let sr: usize = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let sc: usize = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let er: usize = args
+        .get(3)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let ec: usize = args
+        .get(4)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     let style: Option<String> = match args.get(5) {
         Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
         _ => None,
     };
-    crate::state::with_decoration_requests(|c| c.push(DecorationRequest {
-        doc: Some(canonical),
-        kind: DecorationKind::Highlight { sr, sc, er, ec, style },
-    }));
+    crate::state::with_decoration_requests(|c| {
+        c.push(DecorationRequest {
+            doc: Some(canonical),
+            kind: DecorationKind::Highlight {
+                sr,
+                sc,
+                er,
+                ec,
+                style,
+            },
+        })
+    });
     Ok(JsValue::undefined())
 }
 
@@ -1091,13 +1506,21 @@ pub fn take_decorations() -> Vec<DecorationRequest> {
 }
 
 /// 声明批量编辑事务开始:期间编辑积压,end 后合并取走(一次撤销)
-pub(crate) fn js_begin_edit(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_begin_edit(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     crate::state::with_txn_depth(|d| *d += 1);
     Ok(JsValue::undefined())
 }
 
 /// 声明批量编辑事务结束:积压编辑可被 take_edits 取走
-pub(crate) fn js_end_edit(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_end_edit(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     crate::state::with_txn_depth(|d| *d = d.saturating_sub(1));
     Ok(JsValue::undefined())
 }
@@ -1115,24 +1538,36 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
                     on_change: hd.on_change.clone(),
                 })
         });
-        let Some(handlers) = handlers else { return Ok(()) };
+        let Some(handlers) = handlers else {
+            return Ok(());
+        };
         let undefined = JsValue::undefined();
         match key {
             None => {
                 // button 按下（Enter/Space）
                 if let Some(f) = handlers.on_press {
-                    let func = f.as_callable().and_then(JsFunction::from_object)
+                    let func = f
+                        .as_callable()
+                        .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("node {node_id} onPress not callable"))?;
-                    let _: JsValue = func.call(&undefined, &[], engine)
+                    let _: JsValue = func
+                        .call(&undefined, &[], engine)
                         .map_err(|e| anyhow!("node {node_id} onPress failed: {e}"))?;
                 }
             }
             Some(k) => {
                 // input 按键
                 if let Some(f) = handlers.on_key {
-                    let func = f.as_callable().and_then(JsFunction::from_object)
+                    let func = f
+                        .as_callable()
+                        .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("node {node_id} onKey not callable"))?;
-                    let _: JsValue = func.call(&undefined, &[JsValue::from(JsString::from(k.to_string()))], engine)
+                    let _: JsValue = func
+                        .call(
+                            &undefined,
+                            &[JsValue::from(JsString::from(k.to_string()))],
+                            engine,
+                        )
                         .map_err(|e| anyhow!("node {node_id} onKey failed: {e}"))?;
                 }
             }
@@ -1146,7 +1581,9 @@ pub fn focusable_node_ids(node: &CompNode, out: &mut Vec<String>) {
     match node {
         CompNode::Button { id, .. } => out.push(id.clone()),
         CompNode::Input { id, .. } => out.push(id.clone()),
-        CompNode::Row { children, .. } | CompNode::Col { children, .. } | CompNode::Scroll { children, .. } => {
+        CompNode::Row { children, .. }
+        | CompNode::Col { children, .. }
+        | CompNode::Scroll { children, .. } => {
             for c in children {
                 focusable_node_ids(c, out);
             }
@@ -1178,7 +1615,12 @@ fn eval_wrapped(engine: &mut boa_engine::Context, src: &str) -> boa_engine::JsRe
 pub fn load_script_named(name: &str, src: &str) -> Result<()> {
     crate::init();
     // 脚本(重)加载不继承旧装饰:全局 Clear(term 侧 doc: None = 清空所有 doc)
-    crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: None, kind: DecorationKind::Clear }));
+    crate::state::with_decoration_requests(|c| {
+        c.push(DecorationRequest {
+            doc: None,
+            kind: DecorationKind::Clear,
+        })
+    });
     crate::state::with_engine(|engine| {
         eval_wrapped(engine, src)
             .map(|_| ())
@@ -1227,14 +1669,24 @@ pub fn reload_all() -> Result<()> {
     // 只关 last_panel_id 会漏掉多面板场景，遍历全部。
     let open_panels = crate::state::with_open_panels(std::mem::take);
     for panel_id in open_panels {
-        UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id: panel_id });
+        UI_REQUESTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .push(UiRequest::ClosePanel { id: panel_id });
     }
     crate::state::set_last_panel_id(None);
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());
     reset_plugin_state();
     // 装饰不随 reload 继承:全局 Clear(term 侧 doc: None = 清空所有 doc;泵循环下一帧应用)。
     // 必须放在 reset 之后(reset 清空队列);脚本重跑 eval 不 push 装饰,队列里只有这一个 Clear。
-    crate::state::with_decoration_requests(|c| c.push(DecorationRequest { doc: None, kind: DecorationKind::Clear }));
+    crate::state::with_decoration_requests(|c| {
+        c.push(DecorationRequest {
+            doc: None,
+            kind: DecorationKind::Clear,
+        })
+    });
     for (name, src) in &scripts {
         // 按名重读磁盘：js_load 记录的模块文件更新生效（相对名解析 PLUGINS_DIR，
         // 绝对路径直接用）；读不到（load_script_named 的字符串脚本/目录已删）用记录 src 兜底
@@ -1257,4 +1709,3 @@ pub fn reload_all() -> Result<()> {
     }
     Ok(())
 }
-

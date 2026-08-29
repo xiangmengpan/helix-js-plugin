@@ -215,7 +215,10 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
     // 陷阱回归:先最小化后 fixed 的叶子可还原(还原不受 fixed 拦截;否则无恢复路径)
     app.compositor.set_leaf_fixed(fixed_id, false);
     pump(&mut app, "<C-w>z<esc>").await?;
-    assert!(app.compositor.layout_tree().minimized().is_some(), "z 最小化(未 fixed)");
+    assert!(
+        app.compositor.layout_tree().minimized().is_some(),
+        "z 最小化(未 fixed)"
+    );
     app.compositor.set_leaf_fixed(fixed_id, true);
     pump(&mut app, "<C-w>z<esc>").await?;
     assert!(
@@ -243,7 +246,11 @@ async fn buffer_open_creates_leaf_with_content() -> anyhow::Result<()> {
     .replace("ARG_PATH", &format!("{:?}", b.display()));
     let plugin_path = dir.path().join("bo.js");
     std::fs::write(&plugin_path, src)?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":bo<ret>").await?;
     // 布局:2 叶(原编辑器 0 + 新 buffer 叶)
     let types = app.compositor.layout_tree().leaf_types();
@@ -270,10 +277,7 @@ async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
         "不显示 [WINDOW] 文本: {status:?}"
     );
     // 窗口模式指示 = 窗口图标(Rust 默认状态栏;replace 模式 statusline.js 从 ICONS 引入同款)
-    assert!(
-        status.contains('\u{f108}'),
-        "显示窗口图标: {status:?}"
-    );
+    assert!(status.contains('\u{f108}'), "显示窗口图标: {status:?}");
     pump(&mut app, "<esc>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     assert!(
@@ -287,7 +291,12 @@ async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn zoom_unzoom_restores_tree_render() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;
-    app.compositor.split_leaf_with_ratio(SplitDir::H, false, 40, Box::new(PluginPanel::new(1, PanelSide::Right)));
+    app.compositor.split_leaf_with_ratio(
+        SplitDir::H,
+        false,
+        40,
+        Box::new(PluginPanel::new(1, PanelSide::Right)),
+    );
     pump(&mut app, "<C-w>f<esc>").await?;
     assert_eq!(app.compositor.layout_tree().zoomed(), Some(1));
     pump(&mut app, "<C-w>f<esc>").await?;
@@ -304,7 +313,11 @@ async fn commandline_yields_bottom_row_to_statusline_when_hidden() -> anyhow::Re
     let mut app = AppBuilder::new().build()?;
     // 无 prompt:状态栏在最底行(行 29)
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
-    assert!(!rows[29].trim().is_empty(), "无 prompt 时状态栏在最底行: {:?}", &rows[29]);
+    assert!(
+        !rows[29].trim().is_empty(),
+        "无 prompt 时状态栏在最底行: {:?}",
+        &rows[29]
+    );
     // 打开命令 prompt(':' 键)
     pump(&mut app, ":").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
@@ -321,6 +334,10 @@ async fn commandline_yields_bottom_row_to_statusline_when_hidden() -> anyhow::Re
     // 关闭(Esc)→ prompt 行消失,状态栏仍在最底行
     pump(&mut app, "<esc>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
-    assert!(!rows[29].trim().is_empty(), "关闭后状态栏仍最底行: {:?}", &rows[29]);
+    assert!(
+        !rows[29].trim().is_empty(),
+        "关闭后状态栏仍最底行: {:?}",
+        &rows[29]
+    );
     Ok(())
 }

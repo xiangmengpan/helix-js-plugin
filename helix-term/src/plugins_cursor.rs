@@ -8,10 +8,7 @@ use helix_view::Editor;
 /// 取当前焦点视图所在文档的 primary cursor(行, 列),与 `last` 比较:
 /// 变化 → 更新 `last` 并返回 Some((row, col));未变化 → None(零开销,调用方不 emit)。
 /// 终端/无文档焦点时返回 None 且不改动 `last`。
-pub fn cursor_change(
-    editor: &Editor,
-    last: &mut Option<(usize, usize)>,
-) -> Option<(usize, usize)> {
+pub fn cursor_change(editor: &Editor, last: &mut Option<(usize, usize)>) -> Option<(usize, usize)> {
     let view_id = editor.tree.focus;
     let doc_id = editor.tree.try_get(view_id).map(|view| view.doc)?;
     let doc = editor.documents.get(&doc_id)?;

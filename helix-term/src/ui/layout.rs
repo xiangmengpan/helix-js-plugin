@@ -54,7 +54,8 @@ fn subtree_all_excluded(node: &LayoutNode, skip: Option<u64>, minimized: Option<
     match node {
         LayoutNode::Leaf { id } => Some(*id) == skip || Some(*id) == minimized,
         LayoutNode::Split { first, second, .. } => {
-            subtree_all_excluded(first, skip, minimized) && subtree_all_excluded(second, skip, minimized)
+            subtree_all_excluded(first, skip, minimized)
+                && subtree_all_excluded(second, skip, minimized)
         }
     }
 }
@@ -72,7 +73,12 @@ fn layout_node(
                 out.push((*id, area));
             }
         }
-        LayoutNode::Split { dir, ratio, first, second } => {
+        LayoutNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
             // 排除叶子所在子树整体不占空间：另一侧占满本区域（浮动/最小化时
             // 不留白——否则 dock 位置留白 → 其余叶子出现一块空白）
             if skip.is_some() || minimized.is_some() {
@@ -90,10 +96,21 @@ fn layout_node(
             match dir {
                 SplitDir::H => {
                     let w = (area.width as f32 * ratio) as u16;
-                    layout_node(first, Rect::new(area.x, area.y, w, area.height), out, skip, minimized);
+                    layout_node(
+                        first,
+                        Rect::new(area.x, area.y, w, area.height),
+                        out,
+                        skip,
+                        minimized,
+                    );
                     layout_node(
                         second,
-                        Rect::new(area.x + w, area.y, area.width.saturating_sub(w), area.height),
+                        Rect::new(
+                            area.x + w,
+                            area.y,
+                            area.width.saturating_sub(w),
+                            area.height,
+                        ),
                         out,
                         skip,
                         minimized,
@@ -101,10 +118,21 @@ fn layout_node(
                 }
                 SplitDir::V => {
                     let h = (area.height as f32 * ratio) as u16;
-                    layout_node(first, Rect::new(area.x, area.y, area.width, h), out, skip, minimized);
+                    layout_node(
+                        first,
+                        Rect::new(area.x, area.y, area.width, h),
+                        out,
+                        skip,
+                        minimized,
+                    );
                     layout_node(
                         second,
-                        Rect::new(area.x, area.y + h, area.width, area.height.saturating_sub(h)),
+                        Rect::new(
+                            area.x,
+                            area.y + h,
+                            area.width,
+                            area.height.saturating_sub(h),
+                        ),
                         out,
                         skip,
                         minimized,
@@ -170,8 +198,12 @@ impl LayoutTree {
 
     /// 浮动浮窗矩形：视口居中，宽 60%、高 70%（带边框），最小 40×10
     pub fn float_rect(area: Rect) -> Rect {
-        let w = (area.width as f32 * 0.6).round().clamp(40.0, area.width.max(1) as f32) as u16;
-        let h = (area.height as f32 * 0.7).round().clamp(10.0, area.height.max(1) as f32) as u16;
+        let w = (area.width as f32 * 0.6)
+            .round()
+            .clamp(40.0, area.width.max(1) as f32) as u16;
+        let h = (area.height as f32 * 0.7)
+            .round()
+            .clamp(10.0, area.height.max(1) as f32) as u16;
         Rect::new(
             area.x + (area.width - w) / 2,
             area.y + (area.height - h) / 2,
@@ -182,12 +214,9 @@ impl LayoutTree {
 
     /// 按组件类型 + 谓词找叶子 id（终端 view_id → 叶子 id 映射用）
     pub fn find_leaf_id<T: 'static>(&self, mut f: impl FnMut(&T) -> bool) -> Option<u64> {
-        self.components.iter().find_map(|(id, c)| {
-            c.as_any()
-                .downcast_ref::<T>()
-                .filter(|t| f(t))
-                .map(|_| *id)
-        })
+        self.components
+            .iter()
+            .find_map(|(id, c)| c.as_any().downcast_ref::<T>().filter(|t| f(t)).map(|_| *id))
     }
     /// 设置主编辑器叶子（id=0，特殊：事件路由的兜底目标）
     pub fn set_editor(&mut self, component: Box<dyn Component>) {
@@ -235,7 +264,11 @@ impl LayoutTree {
         if !self.components.contains_key(&id) {
             return None;
         }
-        let (first, second) = if new_first { (new_id, id) } else { (id, new_id) };
+        let (first, second) = if new_first {
+            (new_id, id)
+        } else {
+            (id, new_id)
+        };
         replace_leaf(&mut self.root, id, &|_| LayoutNode::Split {
             dir,
             ratio,
@@ -334,13 +367,22 @@ impl LayoutTree {
         fn adjust(node: &mut LayoutNode, id: u64, dir: SplitDir, delta: f32) -> bool {
             match node {
                 LayoutNode::Leaf { .. } => false,
-                LayoutNode::Split { dir: sd, ratio, first, second } => {
+                LayoutNode::Split {
+                    dir: sd,
+                    ratio,
+                    first,
+                    second,
+                } => {
                     let first_target =
                         matches!(&**first, LayoutNode::Leaf { id: lid } if *lid == id);
                     let second_target =
                         matches!(&**second, LayoutNode::Leaf { id: lid } if *lid == id);
                     if (first_target || second_target) && *sd == dir {
-                        let nr = if first_target { *ratio + delta } else { *ratio - delta };
+                        let nr = if first_target {
+                            *ratio + delta
+                        } else {
+                            *ratio - delta
+                        };
                         *ratio = nr.clamp(0.05, 0.95);
                         return true;
                     }
@@ -381,7 +423,11 @@ impl LayoutTree {
     pub fn neighbor_leaf(&self, target: u64, dir: SplitDir, first_side: bool) -> Option<u64> {
         // 祖先链（从直接父到根），记录每层 target 在 first/second 侧
         let mut chain: Vec<(&LayoutNode, bool)> = Vec::new();
-        fn collect<'a>(node: &'a LayoutNode, target: u64, chain: &mut Vec<(&'a LayoutNode, bool)>) -> bool {
+        fn collect<'a>(
+            node: &'a LayoutNode,
+            target: u64,
+            chain: &mut Vec<(&'a LayoutNode, bool)>,
+        ) -> bool {
             match node {
                 LayoutNode::Leaf { id } => *id == target,
                 LayoutNode::Split { first, second, .. } => {
@@ -401,7 +447,13 @@ impl LayoutTree {
             return None;
         }
         for (parent, target_in_first) in chain {
-            let LayoutNode::Split { dir: sd, first, second, .. } = parent else {
+            let LayoutNode::Split {
+                dir: sd,
+                first,
+                second,
+                ..
+            } = parent
+            else {
                 unreachable!()
             };
             if *sd != dir {
@@ -443,9 +495,16 @@ impl LayoutTree {
         fn eq(node: &mut LayoutNode, id: u64) {
             match node {
                 LayoutNode::Leaf { .. } => {}
-                LayoutNode::Split { ratio, first, second, .. } => {
-                    let first_is_target = matches!(&**first, LayoutNode::Leaf { id: lid } if *lid == id);
-                    let second_is_target = matches!(&**second, LayoutNode::Leaf { id: lid } if *lid == id);
+                LayoutNode::Split {
+                    ratio,
+                    first,
+                    second,
+                    ..
+                } => {
+                    let first_is_target =
+                        matches!(&**first, LayoutNode::Leaf { id: lid } if *lid == id);
+                    let second_is_target =
+                        matches!(&**second, LayoutNode::Leaf { id: lid } if *lid == id);
                     if first_is_target || second_is_target {
                         *ratio = 0.5;
                     } else if contains_leaf(first, id) {
@@ -524,9 +583,7 @@ impl LayoutTree {
 
     /// 是否有某类型组件（叶子内）
     pub fn has_component(&self, type_name: &str) -> bool {
-        self.components
-            .values()
-            .any(|c| c.type_name() == type_name)
+        self.components.values().any(|c| c.type_name() == type_name)
     }
 
     /// 某类型组件数量
@@ -544,13 +601,14 @@ impl LayoutTree {
         &self,
         area: Rect,
         editor: &helix_view::Editor,
-    ) -> (Option<helix_core::Position>, helix_view::graphics::CursorKind) {
+    ) -> (
+        Option<helix_core::Position>,
+        helix_view::graphics::CursorKind,
+    ) {
         use helix_view::graphics::CursorKind;
         let active = self.active();
-        let (Some(comp), Some(rect)) = (
-            self.components.get(&active),
-            self.leaf_rects.get(&active),
-        ) else {
+        let (Some(comp), Some(rect)) = (self.components.get(&active), self.leaf_rects.get(&active))
+        else {
             return (None, CursorKind::Hidden);
         };
         let (pos, kind) = comp.cursor(*rect, editor);
@@ -592,12 +650,20 @@ impl LayoutTree {
 
     pub fn dump(&self) -> LayoutDump {
         let fixed = &self.fixed;
-        fn dump_node(node: &LayoutNode, fixed: &std::collections::HashSet<u64>) -> serde_json::Value {
+        fn dump_node(
+            node: &LayoutNode,
+            fixed: &std::collections::HashSet<u64>,
+        ) -> serde_json::Value {
             match node {
                 LayoutNode::Leaf { id } => {
                     serde_json::json!({ "type": "leaf", "id": id, "fixed": fixed.contains(id) })
                 }
-                LayoutNode::Split { dir, ratio, first, second } => serde_json::json!({
+                LayoutNode::Split {
+                    dir,
+                    ratio,
+                    first,
+                    second,
+                } => serde_json::json!({
                     "type": "split",
                     "dir": match dir { SplitDir::H => "h", SplitDir::V => "v" },
                     "ratio": ratio,
@@ -613,7 +679,10 @@ impl LayoutTree {
         ) {
             match node {
                 LayoutNode::Leaf { id } => {
-                    out.push(LeafInfo { id: *id, fixed: fixed.contains(id) });
+                    out.push(LeafInfo {
+                        id: *id,
+                        fixed: fixed.contains(id),
+                    });
                 }
                 LayoutNode::Split { first, second, .. } => {
                     collect_leafs(first, fixed, out);
@@ -657,8 +726,7 @@ impl LayoutTree {
         for (id, rect) in rects {
             if let Some(comp) = self.components.get_mut(&id) {
                 if focus == Some(id) && rect.width >= 4 && rect.height >= 4 {
-                    let inner =
-                        Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+                    let inner = Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
                     comp.render(inner, surface, cx);
                     draw_focus_border(rect, surface, &cx.editor.theme);
                 } else {
@@ -675,7 +743,11 @@ impl LayoutTree {
                 let text = format!("─ {title} ─");
                 let chars: Vec<char> = text.chars().collect();
                 for x in 0..area.width {
-                    let ch = if (x as usize) < chars.len() { chars[x as usize] } else { '─' };
+                    let ch = if (x as usize) < chars.len() {
+                        chars[x as usize]
+                    } else {
+                        '─'
+                    };
                     if let Some(cell) = surface.get_mut(area.x + x, y) {
                         cell.set_symbol(&ch.to_string());
                         cell.set_style(style);
@@ -687,7 +759,12 @@ impl LayoutTree {
         if let Some(fid) = self.float {
             if let Some(comp) = self.components.get_mut(&fid) {
                 let outer = Self::float_rect(area);
-                let inner = Rect::new(outer.x + 1, outer.y + 1, outer.width.saturating_sub(2), outer.height.saturating_sub(2));
+                let inner = Rect::new(
+                    outer.x + 1,
+                    outer.y + 1,
+                    outer.width.saturating_sub(2),
+                    outer.height.saturating_sub(2),
+                );
                 // 边框 + 背景（ui.popup 配色）
                 let border_style = cx.editor.theme.get("ui.popup");
                 let bg_style = cx.editor.theme.get("ui.background");
@@ -782,17 +859,10 @@ impl LayoutTree {
         }
         removed
     }
-
-
-
 }
 
 /// 把目标叶子替换为新节点（split 用）
-fn replace_leaf(
-    node: &mut LayoutNode,
-    target: u64,
-    f: &dyn Fn(&mut LayoutNode) -> LayoutNode,
-) {
+fn replace_leaf(node: &mut LayoutNode, target: u64, f: &dyn Fn(&mut LayoutNode) -> LayoutNode) {
     match node {
         LayoutNode::Leaf { id } => {
             if *id == target {
@@ -822,7 +892,11 @@ fn extreme_leaf(node: &LayoutNode, prefer_first: bool) -> u64 {
 }
 
 /// 活动叶子高亮边框（ui.popup 色，与浮窗边框同风格）：┌ ┐ └ ┘ ─ │
-fn draw_focus_border(rect: Rect, surface: &mut tui::buffer::Buffer, theme: &helix_view::theme::Theme) {
+fn draw_focus_border(
+    rect: Rect,
+    surface: &mut tui::buffer::Buffer,
+    theme: &helix_view::theme::Theme,
+) {
     let style = theme.get("ui.popup");
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let bottom = y + h - 1;
@@ -867,7 +941,13 @@ fn draw_focus_border(rect: Rect, surface: &mut tui::buffer::Buffer, theme: &heli
 
 /// 调整包含目标叶子的 Split 比例
 fn adjust_ratio(node: &mut LayoutNode, target: u64, ratio: f32) {
-    if let LayoutNode::Split { ratio: r, first, second, .. } = node {
+    if let LayoutNode::Split {
+        ratio: r,
+        first,
+        second,
+        ..
+    } = node
+    {
         if contains_leaf(first, target) || contains_leaf(second, target) {
             *r = ratio.clamp(0.05, 0.95);
         }
@@ -950,7 +1030,12 @@ mod tests {
         // default 树的 components 是空的：先挂一个 id=0 占位组件（split 依赖它存在）
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let tid = tree
-            .split_side(0, SplitDir::H, true, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::H,
+                true,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap();
         tree.set_float(tid);
         assert_eq!(tree.floating(), Some(tid));
@@ -967,7 +1052,12 @@ mod tests {
         let mut tree = LayoutTree::default();
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let tid = tree
-            .split_side(0, SplitDir::V, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::V,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap();
         let area = Rect::new(0, 0, 80, 24);
         // 未浮动：终端占底部，编辑器只剩上部
@@ -991,23 +1081,49 @@ mod tests {
         let mut tree = LayoutTree::default();
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let a = tree
-            .split_side(0, SplitDir::H, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap(); // termA 在 second
         let b = tree
-            .split_side(a, SplitDir::V, false, Box::new(PluginTerminal::new(2, 2, 80)))
+            .split_side(
+                a,
+                SplitDir::V,
+                false,
+                Box::new(PluginTerminal::new(2, 2, 80)),
+            )
             .unwrap(); // termB 在 termA 下方
-        // 结构：root H(editor | V(termA / termB))
+                       // 结构：root H(editor | V(termA / termB))
 
         // termB 的右邻居：无（H 分割里 termB 在 root 的 second 子树，右邻居不存在）
-        assert_eq!(tree.neighbor_leaf(b, SplitDir::H, false), None, "termB 右侧边界");
+        assert_eq!(
+            tree.neighbor_leaf(b, SplitDir::H, false),
+            None,
+            "termB 右侧边界"
+        );
         // termB 的左邻居：跨过 V 分割向上 → editor（H 的 first 子树靠 second 边极值）
-        assert_eq!(tree.neighbor_leaf(b, SplitDir::H, true), Some(0), "termB 左侧 = editor");
+        assert_eq!(
+            tree.neighbor_leaf(b, SplitDir::H, true),
+            Some(0),
+            "termB 左侧 = editor"
+        );
         // termB 的上邻居：termA（V 分割 first 侧）
-        assert_eq!(tree.neighbor_leaf(b, SplitDir::V, true), Some(a), "termB 上方 = termA");
+        assert_eq!(
+            tree.neighbor_leaf(b, SplitDir::V, true),
+            Some(a),
+            "termB 上方 = termA"
+        );
         // termB 的下邻居：无
         assert_eq!(tree.neighbor_leaf(b, SplitDir::V, false), None);
         // editor 的右邻居：V(termA/termB) 子树靠 first 边极值 = termA
-        assert_eq!(tree.neighbor_leaf(0, SplitDir::H, false), Some(a), "editor 右侧 = termA");
+        assert_eq!(
+            tree.neighbor_leaf(0, SplitDir::H, false),
+            Some(a),
+            "editor 右侧 = termA"
+        );
         // editor 的左邻居：无
         assert_eq!(tree.neighbor_leaf(0, SplitDir::H, true), None);
 
@@ -1044,7 +1160,12 @@ mod tests {
         let mut tree = LayoutTree::default();
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let tid = tree
-            .split_side(0, SplitDir::H, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap();
         // term 增大 0.2：second 侧 → ratio 0.5-0.2=0.3
         assert!(tree.resize_leaf_dir(tid, SplitDir::H, 0.2));
@@ -1066,7 +1187,12 @@ mod tests {
         let mut tree = LayoutTree::default();
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let tid = tree
-            .split_side(0, SplitDir::H, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap();
         assert!(tree.swap(0, tid));
         // id0 位置现在是 PluginTerminal（原 tid 的组件）
@@ -1090,19 +1216,34 @@ mod tests {
         let mut tree = LayoutTree::default();
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let panel = tree
-            .split_side(0, SplitDir::H, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap();
         tree.set_fixed(panel, true);
-        assert!(!tree.resize_leaf_dir(panel, SplitDir::H, 0.1), "fixed 不可 resize");
+        assert!(
+            !tree.resize_leaf_dir(panel, SplitDir::H, 0.1),
+            "fixed 不可 resize"
+        );
         assert!(!tree.remove(panel), "fixed 不可 remove");
         assert!(!tree.swap(0, panel), "fixed 不可 swap");
         // 焦点可穿过 fixed 叶子
-        assert_eq!(tree.focus_dir(0, SplitDir::H, false), Some(panel), "焦点可移到 fixed");
+        assert_eq!(
+            tree.focus_dir(0, SplitDir::H, false),
+            Some(panel),
+            "焦点可移到 fixed"
+        );
         // dump 输出含 fixed 字段
         let dump = tree.dump();
         let l = dump.leafs.iter().find(|l| l.id == panel).unwrap();
         assert!(l.fixed, "dump 含 fixed 字段");
-        assert!(!dump.leafs.iter().find(|l| l.id == 0).unwrap().fixed, "编辑器默认不 fixed");
+        assert!(
+            !dump.leafs.iter().find(|l| l.id == 0).unwrap().fixed,
+            "编辑器默认不 fixed"
+        );
         // 取消标记后恢复可操作
         tree.set_fixed(panel, false);
         assert!(tree.remove(panel), "取消 fixed 后可 remove");
@@ -1114,7 +1255,12 @@ mod tests {
         let mut tree = LayoutTree::default();
         tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
         let tid = tree
-            .split_side(0, SplitDir::V, false, Box::new(PluginTerminal::new(1, 1, 80)))
+            .split_side(
+                0,
+                SplitDir::V,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
             .unwrap();
         tree.set_minimized(tid, true);
         assert_eq!(tree.minimized_leaf(), Some(tid));

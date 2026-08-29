@@ -31,7 +31,11 @@ pub enum UiRequest {
         id: u64,
         side: String,
     },
-    MapKey { mode: String, key: String, command: String },
+    MapKey {
+        mode: String,
+        key: String,
+        command: String,
+    },
     /// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
     /// pty_id 是内部 spawn 的 pty 进程 id（term_write/term_resize/关闭时 kill 用）。
     OpenTerminal {
@@ -73,37 +77,79 @@ pub enum UiRequest {
         cmd: Option<String>,
         size: u16,
     },
-    CloseLeaf { id: u64 },
-    ZoomLeaf { id: u64 },
+    CloseLeaf {
+        id: u64,
+    },
+    ZoomLeaf {
+        id: u64,
+    },
     Unzoom,
-    ResizeLeaf { id: u64, ratio: f32 },
+    ResizeLeaf {
+        id: u64,
+        ratio: f32,
+    },
     /// 按方向调整叶子份额（dir: h/v；delta>0 增大该叶子）
-    ResizeLeafDir { id: u64, dir: String, delta: f32 },
+    ResizeLeafDir {
+        id: u64,
+        dir: String,
+        delta: f32,
+    },
     /// 聚焦方向邻居（dir: left/right/up/down）
-    FocusLeafDir { id: u64, dir: String },
+    FocusLeafDir {
+        id: u64,
+        dir: String,
+    },
     /// 与方向邻居交换内容（dir: left/right/up/down）
-    SwapLeafDir { id: u64, dir: String },
+    SwapLeafDir {
+        id: u64,
+        dir: String,
+    },
     /// 叶子所在 Split 恢复 50/50
-    EqualizeLeaf { id: u64 },
+    EqualizeLeaf {
+        id: u64,
+    },
     /// 交换两个叶子的内容（组件引用互换）
-    SwapLeaves { id1: u64, id2: u64 },
+    SwapLeaves {
+        id1: u64,
+        id2: u64,
+    },
     /// 最小化/恢复叶子（渲染为底部标题横条，不占布局）
-    MinimizeLeaf { id: u64, minimized: bool },
+    MinimizeLeaf {
+        id: u64,
+        minimized: bool,
+    },
     /// 设置/取消叶子 fixed 标记（fixed 叶子不被 swap/resize/close/minimize/equalize）
-    LayoutFix { id: u64, fixed: bool },
-    FocusLeaf { id: u64 },
+    LayoutFix {
+        id: u64,
+        fixed: bool,
+    },
+    FocusLeaf {
+        id: u64,
+    },
     /// 把布局树序列化结果缓存到 helix-js（get_layout 读取）
     CacheLayout(String),
     /// 切换基准主题（set_theme_name；helix-term 加载 + set_theme + 清覆盖）
-    SetTheme { name: String },
+    SetTheme {
+        name: String,
+    },
     /// 按 view_id 关闭指定终端（term_close；解决 remove_type 关全部的问题）
-    TermClose { view_id: u64 },
+    TermClose {
+        view_id: u64,
+    },
     /// 打开文件为新的 BufferLeaf 叶子（split: "h" 水平在右 / 其余垂直在下）
-    OpenBufferLeaf { path: String, split: Option<String> },
+    OpenBufferLeaf {
+        path: String,
+        split: Option<String>,
+    },
     /// 文件系统 watcher：id 由 JS 侧分配（helix.watch 返回值）；helix-term 据此建 notify watcher
-    Watch { id: u64, path: String },
+    Watch {
+        id: u64,
+        path: String,
+    },
     /// 停止 watcher：按 id 移除 notify watcher（JS 侧回调注册表同步移除）
-    Unwatch { id: u64 },
+    Unwatch {
+        id: u64,
+    },
 }
 
 /// 文件系统 watcher 变更条目（JS 回调收到 [{kind, path}] 数组）
@@ -204,11 +250,21 @@ pub struct StyledLine {
 
 impl StyledLine {
     pub fn plain(text: impl Into<String>) -> Self {
-        Self { spans: vec![TextSpan { text: text.into(), style: None }] }
+        Self {
+            spans: vec![TextSpan {
+                text: text.into(),
+                style: None,
+            }],
+        }
     }
 
     pub fn styled(text: impl Into<String>, style: impl Into<String>) -> Self {
-        Self { spans: vec![TextSpan { text: text.into(), style: Some(style.into()) }] }
+        Self {
+            spans: vec![TextSpan {
+                text: text.into(),
+                style: Some(style.into()),
+            }],
+        }
     }
 
     pub fn width(&self) -> usize {
@@ -221,14 +277,43 @@ impl StyledLine {
 /// Col 垂直堆叠（gap 行间距，flex 弹性高占比）；Scroll 高度裁剪容器（保留最后 height 行，offset 指定起始行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompNode {
-    Text { spans: Vec<TextSpan>, width: Option<u16>, id: Option<String>, flex: Option<u16>, wrap: bool },
-    Row { children: Vec<CompNode>, gap: u16, flex: Option<u16> },
-    Col { children: Vec<CompNode>, gap: u16, flex: Option<u16> },
-    Scroll { children: Vec<CompNode>, height: u16, offset: Option<u16> },
+    Text {
+        spans: Vec<TextSpan>,
+        width: Option<u16>,
+        id: Option<String>,
+        flex: Option<u16>,
+        wrap: bool,
+    },
+    Row {
+        children: Vec<CompNode>,
+        gap: u16,
+        flex: Option<u16>,
+    },
+    Col {
+        children: Vec<CompNode>,
+        gap: u16,
+        flex: Option<u16>,
+    },
+    Scroll {
+        children: Vec<CompNode>,
+        height: u16,
+        offset: Option<u16>,
+    },
     /// 可聚焦按钮：Enter/Space 触发 onPress（id 必填）
-    Button { label: Vec<TextSpan>, width: Option<u16>, id: String, flex: Option<u16> },
+    Button {
+        label: Vec<TextSpan>,
+        width: Option<u16>,
+        id: String,
+        flex: Option<u16>,
+    },
     /// 可聚焦输入框：按键路由到 onKey（id 必填，value/cursor 由引擎状态渲染）
-    Input { value: String, cursor: usize, width: Option<u16>, id: String, flex: Option<u16> },
+    Input {
+        value: String,
+        cursor: usize,
+        width: Option<u16>,
+        id: String,
+        flex: Option<u16>,
+    },
 }
 
 /// render 回调的返回：数组（字符串/样式对象）→ 旧行 API；单节点对象（含 type）→ 组件树
@@ -293,8 +378,19 @@ pub struct Edit {
 /// 插件装饰请求:set_virtual_text / set_highlight 入队,应用时按 doc 整体替换
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecorationKind {
-    VirtualText { row: usize, col: usize, text: String, style: Option<String> },
-    Highlight { sr: usize, sc: usize, er: usize, ec: usize, style: Option<String> },
+    VirtualText {
+        row: usize,
+        col: usize,
+        text: String,
+        style: Option<String>,
+    },
+    Highlight {
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        style: Option<String>,
+    },
     /// 清除该 doc 全部插件装饰(set_virtual_text 只传 path 时产生)
     Clear,
 }
@@ -309,8 +405,14 @@ pub struct DecorationRequest {
 /// 光标/选区请求（命令返回后由 helix-term 应用）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CursorRequest {
-    SetCursor { row: usize, col: usize },
-    SetSelection { anchor: (usize, usize), head: (usize, usize) },
+    SetCursor {
+        row: usize,
+        col: usize,
+    },
+    SetSelection {
+        anchor: (usize, usize),
+        head: (usize, usize),
+    },
     SetSelections(Vec<((usize, usize), (usize, usize))>),
 }
 

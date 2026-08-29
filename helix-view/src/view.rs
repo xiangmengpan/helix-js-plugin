@@ -493,9 +493,13 @@ impl View {
         };
         // 插件 virtual text:按 style 分组注入(同组共享一个 style 是 TextAnnotations 的形态)
         if !doc.plugin_decorations.virtual_text.is_empty() {
-            let mut groups: Vec<(Option<String>, Vec<helix_core::text_annotations::InlineAnnotation>)> = Vec::new();
+            let mut groups: Vec<(
+                Option<String>,
+                Vec<helix_core::text_annotations::InlineAnnotation>,
+            )> = Vec::new();
             for a in &doc.plugin_decorations.virtual_text {
-                let ann = helix_core::text_annotations::InlineAnnotation::new(a.char_idx, a.text.clone());
+                let ann =
+                    helix_core::text_annotations::InlineAnnotation::new(a.char_idx, a.text.clone());
                 if let Some(g) = groups.iter_mut().find(|(s, _)| s == &a.style) {
                     g.1.push(ann);
                 } else {
@@ -505,7 +509,9 @@ impl View {
             for (scope, mut anns) in groups {
                 // TextAnnotations 要求组内按 char_idx 升序(Layer::consume debug_assert + partition_point)
                 anns.sort_unstable_by_key(|a| a.char_idx);
-                let style = scope.as_deref().and_then(|s| theme.and_then(|t| t.find_highlight(s)));
+                let style = scope
+                    .as_deref()
+                    .and_then(|s| theme.and_then(|t| t.find_highlight(s)));
                 text_annotations.add_inline_annotations(anns, style);
             }
         }

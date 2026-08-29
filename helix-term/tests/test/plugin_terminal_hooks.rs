@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-
 use helix_term::application::Application;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
@@ -27,7 +26,6 @@ async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-
 async fn pump_mouse(app: &mut Application, col: u16, row: u16) -> anyhow::Result<()> {
     // termina 事件流;application 经 .into() 转 helix_view 事件
     #[cfg(not(windows))]
@@ -46,7 +44,8 @@ async fn pump_mouse(app: &mut Application, col: u16, row: u16) -> anyhow::Result
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tx.send(Ok(Event::Mouse(mouse)))?;
-    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx)).await;
+    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx))
+        .await;
     Ok(())
 }
 
@@ -86,10 +85,15 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":th-open<ret>").await?;
-    let has_term = app.compositor
-        .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>());
+    let has_term = app.compositor.has_component(std::any::type_name::<
+        helix_term::ui::plugin_terminal::PluginTerminal,
+    >());
     let has_hook = helix_js::has_handlers("term-key");
     // Esc → term-key 返回 minimize → 叶子最小化(而非关闭)
     pump(&mut app, "<esc>").await?;
@@ -98,8 +102,9 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
         "Esc 触发 term-key=minimize → 叶子最小化"
     );
     assert!(
-        app.compositor
-            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        app.compositor.has_component(std::any::type_name::<
+            helix_term::ui::plugin_terminal::PluginTerminal,
+        >()),
         "终端未被关闭(pty 保活)"
     );
     Ok(())
@@ -122,34 +127,42 @@ async fn esc_switches_to_normal_q_noop() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":th-open<ret>").await?;
     // Insert 模式 Esc → 切 terminal normal 模式(终端仍在,不关闭)
     pump(&mut app, "<esc>").await?;
     assert!(
-        app.compositor
-            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        app.compositor.has_component(std::any::type_name::<
+            helix_term::ui::plugin_terminal::PluginTerminal,
+        >()),
         "Esc 切 normal 模式,终端不关闭"
     );
     // normal 模式 Esc 无操作(与全局一致:不切回 insert,回 insert 用 i)
     pump(&mut app, "<esc>").await?;
     assert!(
-        app.compositor
-            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        app.compositor.has_component(std::any::type_name::<
+            helix_term::ui::plugin_terminal::PluginTerminal,
+        >()),
         "Esc(normal)无操作,终端仍在"
     );
     // q 无操作(不关闭,关闭归 window 模式 x)
     pump(&mut app, "q").await?;
     assert!(
-        app.compositor
-            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        app.compositor.has_component(std::any::type_name::<
+            helix_term::ui::plugin_terminal::PluginTerminal,
+        >()),
         "q 不再关闭终端"
     );
     // i 回 insert 模式(继续直通)
     pump(&mut app, "i").await?;
     assert!(
-        app.compositor
-            .has_component(std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>()),
+        app.compositor.has_component(std::any::type_name::<
+            helix_term::ui::plugin_terminal::PluginTerminal,
+        >()),
         "i 回 insert 模式,终端仍在"
     );
     Ok(())
@@ -179,7 +192,10 @@ async fn term_hooks_notify_events() -> anyhow::Result<()> {
     fn wait_for(pat: &str, timeout_ms: u64) -> Option<String> {
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
-            if let Some(m) = helix_js::take_messages().into_iter().find(|m| m.contains(pat)) {
+            if let Some(m) = helix_js::take_messages()
+                .into_iter()
+                .find(|m| m.contains(pat))
+            {
                 return Some(m);
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -188,7 +204,11 @@ async fn term_hooks_notify_events() -> anyhow::Result<()> {
     }
 
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     // term-open(OpenTerminal 走 job 通道,首帧后到达)
     pump(&mut app, ":th-open<ret>").await?;
     if let Some(m) = wait_for("open:cat", 2000) {
@@ -203,7 +223,8 @@ async fn term_hooks_notify_events() -> anyhow::Result<()> {
     }));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tx.send(Ok(ctrl_bs))?;
-    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx)).await;
+    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx))
+        .await;
     if let Some(m) = wait_for("mode:normal", 2000) {
         assert_eq!(m, "mode:normal", "term-mode-change 参数");
     } else {
@@ -226,8 +247,9 @@ async fn window_mode_x_closes_layer_terminal() -> anyhow::Result<()> {
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut app = AppBuilder::new().build()?;
     // 终端组件直接作为覆盖层(不进布局树;id=99 不会误匹配 active=0)
-    app.compositor
-        .push(Box::new(helix_term::ui::plugin_terminal::PluginTerminal::new(99, 99, 40)));
+    app.compositor.push(Box::new(
+        helix_term::ui::plugin_terminal::PluginTerminal::new(99, 99, 40),
+    ));
     let term_type = std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>();
     assert!(app.compositor.has_component(term_type), "层中终端存在");
     // C-w 进窗口模式(active=0 编辑器,非 insert)→ x 关闭层中终端
@@ -258,7 +280,11 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":st-open<ret>").await?;
     // echo 消息经 application 泵 set_status;直接读 editor 状态
     pump(&mut app, "<esc><C-w>h<esc>:st-dump<ret>").await?;
@@ -269,7 +295,9 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
         .unwrap_or_default();
     // 回编辑器序列的 esc 已切 normal;此处验状态结构完整(通道工作)
     assert!(
-        status.contains("minimized") && status.contains("scroll_offset") && status.contains("title"),
+        status.contains("minimized")
+            && status.contains("scroll_offset")
+            && status.contains("title"),
         "get_component_state 状态结构完整: {status:?}"
     );
     // Esc → normal 模式(切模式;仍在终端焦点,先回编辑器再 dump)
@@ -303,7 +331,11 @@ async fn terminal_title_bar_from_js_view() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":tv-open<ret>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     let joined = rows.join("\n");
@@ -331,14 +363,14 @@ async fn tabbar_renders_top_row_from_js_view() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     // 无叶子时 TAB-0(编辑器算一个?看 get_layout 的 leafs 语义——编辑器 id=0 是否在 leafs)
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
-    assert!(
-        rows[0].contains("TAB-"),
-        "标签条渲染在顶部: {:?}",
-        &rows[0]
-    );
+    assert!(rows[0].contains("TAB-"), "标签条渲染在顶部: {:?}", &rows[0]);
     Ok(())
 }
 
@@ -365,7 +397,11 @@ async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":mh-open<ret>").await?;
     // 渲染一次(记录叶子区域)
     let _rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
@@ -384,9 +420,6 @@ async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
     Ok(())
 }
 
-
-
-
 /// keymap 前缀提示:set_keymap_hint 回调文本渲染(替代内置 Info)
 #[tokio::test(flavor = "multi_thread")]
 async fn keymap_hint_js_replaces_info() -> anyhow::Result<()> {
@@ -400,7 +433,11 @@ async fn keymap_hint_js_replaces_info() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     // 按 g(前缀)→ autoinfo 设置 → 渲染含 JS 提示
     pump(&mut app, "g").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
@@ -471,10 +508,7 @@ async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
     pump(&mut app, "<C-w>").await?;
     assert!(app.compositor.window_mode_active(), "C-w 进模式");
     pump(&mut app, "<ret>").await?;
-    assert!(
-        !app.compositor.window_mode_active(),
-        "Enter 退出窗口模式"
-    );
+    assert!(!app.compositor.window_mode_active(), "Enter 退出窗口模式");
     // 焦点仍是当前叶子(编辑器 id=0),编辑器 normal
     assert_eq!(app.compositor.layout_tree().active(), 0);
     Ok(())
@@ -483,7 +517,9 @@ async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
 /// filetree Enter 打开文件 → 聚焦编辑器叶子(active=0)+ 编辑器 buffer 切换
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
-    let _guard = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = super::PANEL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("z.txt");
     let file_str = file.to_string_lossy().into_owned();
@@ -511,7 +547,10 @@ async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.has_component(panel_type), "filetree 面板应就位");
+    assert!(
+        app.compositor.has_component(panel_type),
+        "filetree 面板应就位"
+    );
     // 面板焦点:Enter 打开当前项(z.txt)
     for key_event in parse_macro("<ret>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
@@ -532,8 +571,6 @@ async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
     Ok(())
 }
 
-
-
 /// 提示位置:JS 返回 {position:"bottom-left"} → Info 渲染在左下角(全屏坐标,开面板不漂移)
 #[tokio::test(flavor = "multi_thread")]
 async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
@@ -547,7 +584,11 @@ async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, "g").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     // 左下角:提示框出现在屏幕左下部(状态栏上方)
@@ -564,8 +605,6 @@ async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
     assert!(pos < 40, "提示在左侧: col={pos} row={hint_row_idx}");
     Ok(())
 }
-
-
 
 /// buffer 遍历:helix.buffers() 列出文档;focus_buffer 切换当前 view
 #[tokio::test(flavor = "multi_thread")]
@@ -595,12 +634,20 @@ async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().with_file(f1, None).build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
-    pump(&mut app, ":open {}<ret>", ).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
+    pump(&mut app, ":open {}<ret>").await?;
     pump(&mut app, &format!(":open {}<ret>", f2.display())).await?;
     // buffers 应含 a.txt + b.txt
     pump(&mut app, ":bt-dump<ret>").await?;
-    let status = app.editor.get_status().map(|(s, _)| s.to_string()).unwrap_or_default();
+    let status = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default();
     assert!(
         status.contains("a.txt") && status.contains("b.txt"),
         "buffers 列出文档: {status:?}"
@@ -634,7 +681,11 @@ async fn cursor_move_event_fires() -> anyhow::Result<()> {
         "#,
     )?;
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     // 移动光标(j)→ 事件触发
     pump(&mut app, "j").await?;
     pump(&mut app, ":cm-dump<ret>").await?;
@@ -672,7 +723,11 @@ async fn fs_watch_event_fires_on_change() -> anyhow::Result<()> {
         ),
     )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":fw-watch<ret>").await?;
     // 创建文件 → notify → idle 泵 resolve
     std::fs::write(watch_dir.join("newfile.txt"), "x\n")?;
@@ -705,8 +760,6 @@ async fn layout_tree_cursor_forwarding() -> anyhow::Result<()> {
     assert!(pos.is_some(), "编辑器叶子光标应转发(非 Hidden)");
     Ok(())
 }
-
-
 
 /// 光标坐标:insert 后 compositor.cursor 返回的 Position{row, col} 不应交换
 /// (回归:Position::new(row, col) 曾把 col 偏移当 row → 光标恒在"第 8 行"、回车 x+1)

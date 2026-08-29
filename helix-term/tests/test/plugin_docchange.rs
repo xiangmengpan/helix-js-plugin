@@ -19,7 +19,10 @@ async fn plugin_doc_change_event() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 修改文本：i + 输入 + esc → idle 触发 doc-change → 状态栏 "changed"
             (
                 Some("ix<esc>"),
@@ -60,7 +63,10 @@ async fn plugin_doc_change_single_change_range() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 光标 (0,0) 插 "x":old = (0,0)-(0,0)(插入点),new = (0,0)-(0,1)
             (
                 Some("ix<esc>"),
@@ -91,7 +97,10 @@ async fn plugin_doc_change_merged_range() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 两次插入:a 在 char0,b 在 char1 → 合并 old = (0,0)-(1,1) → (0,0)-(0,1);new = (0,0)-(1,2) → (0,0)-(0,2)
             (
                 Some("iab<esc>"),
@@ -122,7 +131,10 @@ async fn plugin_doc_change_delete_range() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 删除 char0 'h' → old (0,1),new (0,0) → 当前文本 "ello\n" 换算 (0,0)-(0,1)|(0,0)-(0,0)
             (
                 Some("d"),
@@ -153,7 +165,10 @@ async fn plugin_doc_change_replace_range() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // c 删 char0(→ (0,1)|(0,0)) + 插 "Z"(→ (0,0)|(0,1)) → 合并 (0,0)-(0,1)|(0,0)-(0,1)
             (
                 Some("cZ<esc>"),

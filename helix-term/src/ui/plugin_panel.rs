@@ -28,7 +28,12 @@ pub struct PluginPanel {
 
 impl PluginPanel {
     pub fn new(id: u64, side: PanelSide) -> Self {
-        Self { id, side, lines: Vec::new(), diff: Default::default() }
+        Self {
+            id,
+            side,
+            lines: Vec::new(),
+            diff: Default::default(),
+        }
     }
 
     /// 清空脏格 diff 状态（测试向不同 surface 渲染时需要重置）
@@ -61,8 +66,9 @@ impl PluginPanel {
             move |compositor: &mut Compositor, cx: &mut Context| {
                 helix_js::close_panel_state(id);
                 // popup id ≠ leaf id：按 popup id 找面板 leaf 再移除（remove_panel 只清 layers）
-                if let Some(leaf) =
-                    compositor.layout_tree().find_leaf_id::<PluginPanel>(|p| p.id() == id)
+                if let Some(leaf) = compositor
+                    .layout_tree()
+                    .find_leaf_id::<PluginPanel>(|p| p.id() == id)
                 {
                     compositor.remove_leaf(leaf);
                 }
@@ -119,19 +125,22 @@ impl Component for PluginPanel {
         let cursor_reqs = helix_js::take_cursor_requests();
         if !cursor_reqs.is_empty() {
             if let Err(err) = apply_cursor_requests(cx.editor, &cursor_reqs) {
-                cx.editor.set_error(format!("plugin panel cursor failed: {err}"));
+                cx.editor
+                    .set_error(format!("plugin panel cursor failed: {err}"));
             }
         }
         let edits = helix_js::take_edits();
         if !edits.is_empty() {
             if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
-                cx.editor.set_error(format!("plugin panel edit failed: {err}"));
+                cx.editor
+                    .set_error(format!("plugin panel edit failed: {err}"));
             }
         }
         let decorations = helix_js::take_decorations();
         if !decorations.is_empty() {
             if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
-                cx.editor.set_error(format!("plugin panel decorations failed: {err}"));
+                cx.editor
+                    .set_error(format!("plugin panel decorations failed: {err}"));
             }
         }
         let msgs = helix_js::take_messages();
@@ -170,14 +179,15 @@ impl Component for PluginPanel {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         match helix_js::render_popup(self.id, area.width, area.height, None) {
             Ok(content) => self.lines = comp_layout::render(content, (area.width, area.height)),
-            Err(err) => self.lines = vec![StyledLine::plain(format!("<plugin panel error: {err}>"))],
+            Err(err) => {
+                self.lines = vec![StyledLine::plain(format!("<plugin panel error: {err}>"))]
+            }
         }
         // 脏格 diff 渲染：只重绘变化格（方案乙③）
-        self.diff.render(&self.lines, area, surface, &cx.editor.theme);
+        self.diff
+            .render(&self.lines, area, surface, &cx.editor.theme);
     }
 
     // 无静态 id：多面板下各层需独立标识，移除/排布一律走 u64 实例 id
     //（compositor.remove_panel / layout_panels 收集）。
 }
-
-

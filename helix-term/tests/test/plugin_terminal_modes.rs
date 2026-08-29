@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-
 use helix_term::application::Application;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
@@ -33,7 +32,10 @@ async fn plugin_terminal_modes() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":tm-open<ret>"),
                 Some(&|app| {
@@ -110,7 +112,10 @@ async fn plugin_terminal_floating_and_mode() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.floating().is_some(), "floating 模式应设置 float 叶子");
+    assert!(
+        app.compositor.floating().is_some(),
+        "floating 模式应设置 float 叶子"
+    );
 
     // 渲染到 buffer：浮窗边框字符应出现在中央区域（ui.popup 风格边框 ┌/┐/└/┘）
     {
@@ -222,7 +227,11 @@ async fn plugin_terminal_dock_focus_back_to_editor() -> anyhow::Result<()> {
     }
     app.event_loop_until_idle(&mut rx_stream).await;
     let (_, doc) = current_ref!(app.editor);
-    assert_eq!(doc.text().to_string(), "helloabc\n", "C-\\×2 后按键应进编辑器");
+    assert_eq!(
+        doc.text().to_string(),
+        "helloabc\n",
+        "C-\\×2 后按键应进编辑器"
+    );
     Ok(())
 }
 
@@ -283,7 +292,11 @@ async fn plugin_terminal_float_plus_dock_focus_editor() -> anyhow::Result<()> {
     }
     app.event_loop_until_idle(&mut rx_stream).await;
     let (_, doc) = current_ref!(app.editor);
-    assert_eq!(doc.text().to_string(), "helloabc\n", "浮动+dock 并存时 C-\\×2 后按键应进编辑器");
+    assert_eq!(
+        doc.text().to_string(),
+        "helloabc\n",
+        "浮动+dock 并存时 C-\\×2 后按键应进编辑器"
+    );
     Ok(())
 }
 
@@ -326,12 +339,20 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
-    eprintln!("[dbg] after esc: window={} active={}", app.compositor.window_mode_active(), app.compositor.layout_tree().active());
+    eprintln!(
+        "[dbg] after esc: window={} active={}",
+        app.compositor.window_mode_active(),
+        app.compositor.layout_tree().active()
+    );
     for key_event in parse_macro("<C-w>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
-    eprintln!("[dbg] after C-w: window={} active={}", app.compositor.window_mode_active(), app.compositor.layout_tree().active());
+    eprintln!(
+        "[dbg] after C-w: window={} active={}",
+        app.compositor.window_mode_active(),
+        app.compositor.layout_tree().active()
+    );
     for key_event in parse_macro("x<esc>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
@@ -342,7 +363,10 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(!app.compositor.has_component(term_type), "window 模式 x 应关闭终端");
+    assert!(
+        !app.compositor.has_component(term_type),
+        "window 模式 x 应关闭终端"
+    );
 
     for key_event in parse_macro(":term<ret>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
@@ -354,7 +378,10 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.floating().is_some(), "第二次 :term 应重新浮动");
+    assert!(
+        app.compositor.floating().is_some(),
+        "第二次 :term 应重新浮动"
+    );
     assert_status_not_error(&app.editor);
     Ok(())
 }
@@ -416,7 +443,9 @@ async fn plugin_terminal_save_and_yank() -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        found.as_deref().is_some_and(|s| s.contains("hello-save") && s.contains("line2")),
+        found
+            .as_deref()
+            .is_some_and(|s| s.contains("hello-save") && s.contains("line2")),
         "term_save 应导出内容，实际: {found:?}"
     );
 
@@ -430,7 +459,11 @@ async fn plugin_terminal_save_and_yank() -> anyhow::Result<()> {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
-    let reg = app.editor.registers.first('"', &app.editor).map(|c| c.to_string());
+    let reg = app
+        .editor
+        .registers
+        .first('"', &app.editor)
+        .map(|c| c.to_string());
     assert!(
         reg.as_deref().is_some_and(|s| s.contains("hello-save")),
         "y 应把可视区写入 \" 寄存器，实际: {reg:?}"
@@ -489,7 +522,10 @@ async fn plugin_layout_ops_api() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.minimized_leaf().is_some(), "layout_minimize 应设置最小化叶子");
+    assert!(
+        app.compositor.minimized_leaf().is_some(),
+        "layout_minimize 应设置最小化叶子"
+    );
     assert_status_not_error(&app.editor);
     Ok(())
 }
@@ -535,8 +571,15 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.has_component(panel_type), "filetree 面板应就位");
-    assert_ne!(app.compositor.layout_tree().active(), 0, "filetree 打开后焦点在面板");
+    assert!(
+        app.compositor.has_component(panel_type),
+        "filetree 面板应就位"
+    );
+    assert_ne!(
+        app.compositor.layout_tree().active(),
+        0,
+        "filetree 打开后焦点在面板"
+    );
 
     // filetree 焦点：C-\ 回编辑器（保留面板；filetree.js 新加）
     let ctrl_bs = Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
@@ -564,20 +607,32 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(app.compositor.has_component(term_type), "终端应就位");
-    assert_ne!(app.compositor.layout_tree().active(), 0, "终端打开后焦点在终端");
+    assert_ne!(
+        app.compositor.layout_tree().active(),
+        0,
+        "终端打开后焦点在终端"
+    );
 
     // 终端 C-\ ×2 回编辑器
     tx.send(Ok(ctrl_bs.clone()))?;
     tx.send(Ok(ctrl_bs.clone()))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.compositor.layout_tree().active(), 0, "C-\\×2 从终端回编辑器");
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "C-\\×2 从终端回编辑器"
+    );
 
     // 回编辑器后 i → insert（可编辑），: 开命令
     for key_event in parse_macro("i")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.editor.mode(), helix_view::document::Mode::Insert, "回编辑器后可进入 insert");
+    assert_eq!(
+        app.editor.mode(),
+        helix_view::document::Mode::Insert,
+        "回编辑器后可进入 insert"
+    );
     for key_event in parse_macro("<esc>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
@@ -587,7 +642,8 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
     }
     app.event_loop_until_idle(&mut rx_stream).await;
     assert!(
-        app.compositor.has_component(std::any::type_name::<helix_term::ui::prompt::Prompt>()),
+        app.compositor
+            .has_component(std::any::type_name::<helix_term::ui::prompt::Prompt>()),
         "回编辑器后 : 应打开命令提示"
     );
 
@@ -613,7 +669,10 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(&format!(":plugin-load {}<ret>:fb-open<ret>", opener.display()))? {
+    for key_event in parse_macro(&format!(
+        ":plugin-load {}<ret>:fb-open<ret>",
+        opener.display()
+    ))? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
@@ -661,10 +720,12 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
         }))
     };
     tx.send(Ok(cw('w')))?;
-    tx.send(Ok(Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
-        code: helix_view::input::KeyCode::Char('h'),
-        modifiers: helix_view::input::KeyModifiers::NONE,
-    }))))?;
+    tx.send(Ok(Event::Key(KeyEvent::from(
+        helix_view::input::KeyEvent {
+            code: helix_view::input::KeyCode::Char('h'),
+            modifiers: helix_view::input::KeyModifiers::NONE,
+        },
+    ))))?;
     app.event_loop_until_idle(&mut rx_stream).await;
     let col = border_col(&mut app).expect("应有 ┌ 边框");
     assert!(col < 60, "焦点回编辑器：边框在左半区（col {col}）");
@@ -691,7 +752,10 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(&format!(":plugin-load {}<ret>:wk-open<ret>", opener.display()))? {
+    for key_event in parse_macro(&format!(
+        ":plugin-load {}<ret>:wk-open<ret>",
+        opener.display()
+    ))? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
@@ -731,12 +795,19 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
     tx.send(Ok(ctrl('\\')))?;
     tx.send(Ok(ctrl('w')))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert!(app.compositor.window_mode_active(), "终端 Normal(滚动)焦点 C-w 进窗口模式");
+    assert!(
+        app.compositor.window_mode_active(),
+        "终端 Normal(滚动)焦点 C-w 进窗口模式"
+    );
     // h → 聚焦左邻居(编辑器);Esc 退出
     tx.send(Ok(plain('h')))?;
     tx.send(Ok(esc))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert_eq!(app.compositor.layout_tree().active(), 0, "C-w h 聚焦左邻居(编辑器)");
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "C-w h 聚焦左邻居(编辑器)"
+    );
     assert!(!app.compositor.window_mode_active(), "Esc 退出窗口模式");
     Ok(())
 }
@@ -744,14 +815,17 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
 /// 回归：filetree 面板热重载后残留（render_popup not open → 显示 error、无法关闭）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _rl = super::PANEL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("z.txt");
     std::fs::write(&file, "x\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
     let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
     let layout_plugin = format!("{home}/.config/helix/plugins/lib/layout.js");
-    if !std::path::Path::new(&filetree_plugin).exists() || !std::path::Path::new(&layout_plugin).exists()
+    if !std::path::Path::new(&filetree_plugin).exists()
+        || !std::path::Path::new(&layout_plugin).exists()
     {
         return Ok(());
     }
@@ -774,7 +848,10 @@ async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.has_component(panel_type), "filetree 面板应就位");
+    assert!(
+        app.compositor.has_component(panel_type),
+        "filetree 面板应就位"
+    );
 
     // 渲染检查：无 error 文本
     {
@@ -817,7 +894,9 @@ async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
 /// 不再"渲染报错 + 无法关闭"。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _rl = super::PANEL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("zh.txt");
     std::fs::write(&file, "x\n")?;
@@ -830,7 +909,10 @@ async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(&format!(":plugin-load {}<ret>:filetree<ret>", filetree_plugin))? {
+    for key_event in parse_macro(&format!(
+        ":plugin-load {}<ret>:filetree<ret>",
+        filetree_plugin
+    ))? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
@@ -842,7 +924,10 @@ async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(app.compositor.has_component(panel_type), "filetree 面板应就位");
+    assert!(
+        app.compositor.has_component(panel_type),
+        "filetree 面板应就位"
+    );
 
     // 模拟 JS 注册表丢失（面板 id=1 的 render/onKey 被清）
     let _ = helix_term::helix_js::close_popup(1);
@@ -869,7 +954,9 @@ async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
 /// 多面板热重载：全部关闭（不只 last_panel_id），不留僵尸。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_multi_panel_reload_all_closed() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _rl = super::PANEL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("mp.txt");
     std::fs::write(&file, "x\n")?;
@@ -948,7 +1035,10 @@ async fn plugin_statusline_global() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(&format!(":plugin-load {}<ret>:sg-open<ret>", opener.display()))? {
+    for key_event in parse_macro(&format!(
+        ":plugin-load {}<ret>:sg-open<ret>",
+        opener.display()
+    ))? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
@@ -981,7 +1071,9 @@ async fn plugin_statusline_global() -> anyhow::Result<()> {
         "全局状态栏应显示在屏幕底部，实际: {bottom:?}"
     );
     // 终端区域下方（x=90..120, y=29）也应有状态栏内容——证明全局覆盖（不只编辑器底部）
-    let over_term: String = (90..120).map(|x| buf[(x, 29)].symbol.as_str().to_string()).collect();
+    let over_term: String = (90..120)
+        .map(|x| buf[(x, 29)].symbol.as_str().to_string())
+        .collect();
     assert!(
         over_term.chars().any(|c| !c.is_whitespace()),
         "状态栏应覆盖到终端区域下方（全局），实际: {over_term:?}"

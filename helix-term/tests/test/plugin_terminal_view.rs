@@ -27,7 +27,10 @@ async fn term_native_opens_and_renders_feed() -> anyhow::Result<()> {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert!(app.compositor.has_component(terminal_type), "terminal layer open");
+    assert!(
+        app.compositor.has_component(terminal_type),
+        "terminal layer open"
+    );
 
     // 渲染 compositor 到 Buffer：__term_native 内的 term_feed 模拟输出应可见
     let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
@@ -43,7 +46,10 @@ async fn term_native_opens_and_renders_feed() -> anyhow::Result<()> {
         buf.content.iter().map(|c| c.symbol.as_str()).collect()
     };
     let all = render_all(&mut app, area);
-    assert!(all.contains("hello from pty"), "terminal text rendered: {all:?}");
+    assert!(
+        all.contains("hello from pty"),
+        "terminal text rendered: {all:?}"
+    );
 
     // 真实回环：按键直通 pty → cat 回显 → chunk → bridge 闭包 → term_feed → 网格
     for key_event in parse_macro("xyz")? {

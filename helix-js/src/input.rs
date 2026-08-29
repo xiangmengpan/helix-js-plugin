@@ -80,12 +80,17 @@ pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Re
 
     crate::init();
     let changed = with_input_states(|m| {
-        let entry = m.entry((popup_id, node_id.to_string())).or_insert_with(|| {
-            InputState { value: String::new(), cursor: 0 }
-        });
+        let entry = m
+            .entry((popup_id, node_id.to_string()))
+            .or_insert_with(|| InputState {
+                value: String::new(),
+                cursor: 0,
+            });
         input_edit(entry, key)
     });
-    let Some(new_value) = changed else { return Ok(()) };
+    let Some(new_value) = changed else {
+        return Ok(());
+    };
     // 调 onChange(若有)：注册在 NODE_HANDLERS，与 onKey 同机制
     crate::state::with_engine(|engine| {
         let on_change = crate::state::with_node_handlers(|h| {
@@ -99,25 +104,57 @@ pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Re
             .ok_or_else(|| anyhow!("node {node_id} onChange not callable"))?;
         let undefined = JsValue::undefined();
         let _: JsValue = func
-            .call(&undefined, &[JsValue::from(JsString::from(new_value))], engine)
+            .call(
+                &undefined,
+                &[JsValue::from(JsString::from(new_value))],
+                engine,
+            )
             .map_err(|e| anyhow!("node {node_id} onChange failed: {e}"))?;
         Ok(())
     })
 }
 
 /// JS 强制改值（候选回填/清空）：`helix.set_input_value(popupId, nodeId, value)`。cursor 置末尾。
-pub fn js_set_input_value(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let popup_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("set_input_value: popup id must be a number")))
-    })?;
-    let node_id: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("set_input_value: node id must be a string")))
-    })?;
-    let value: String = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("set_input_value: value must be a string")))
-    })?;
+pub fn js_set_input_value(
+    _: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let popup_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "set_input_value: popup id must be a number",
+            )))
+        })?;
+    let node_id: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "set_input_value: node id must be a string",
+            )))
+        })?;
+    let value: String = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "set_input_value: value must be a string",
+            )))
+        })?;
     with_input_states(|m| {
-        m.insert((popup_id, node_id), InputState { cursor: value.chars().count(), value });
+        m.insert(
+            (popup_id, node_id),
+            InputState {
+                cursor: value.chars().count(),
+                value,
+            },
+        );
     });
     Ok(JsValue::undefined())
 }
@@ -136,7 +173,10 @@ pub fn input_has_state(popup_id: u64, node_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{close_popup, load_script, render_popup, take_messages, take_ui_requests, CompNode, Content, UiRequest};
+    use crate::{
+        close_popup, load_script, render_popup, take_messages, take_ui_requests, CompNode, Content,
+        UiRequest,
+    };
     use std::sync::Mutex;
 
     // 与 lib.rs 测试同模式：共享全局运行时用锁串行化

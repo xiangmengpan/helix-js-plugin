@@ -43,7 +43,11 @@ pub fn set_theme_info_cb(f: Box<ThemeQuery>) {
 }
 
 /// 解析覆盖值：字符串 = fg；对象 = { fg?, bg?, modifiers?: [...] }（未知字段忽略）
-fn parse_style_value(v: &JsValue, ctx: &mut Context, api: &str) -> boa_engine::JsResult<StyleOverride> {
+fn parse_style_value(
+    v: &JsValue,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<StyleOverride> {
     if v.is_string() {
         return Ok(StyleOverride {
             fg: Some(v.try_js_into::<String>(ctx).map_err(|_| {
@@ -55,9 +59,9 @@ fn parse_style_value(v: &JsValue, ctx: &mut Context, api: &str) -> boa_engine::J
         });
     }
     let Some(obj) = v.as_object() else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: expected a color string or {{ fg, bg, modifiers }} object"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("{api}: expected a color string or {{ fg, bg, modifiers }} object"),
+        ))));
     };
     let mut out = StyleOverride::default();
     for key in ["fg", "bg"] {
@@ -82,7 +86,9 @@ fn parse_style_value(v: &JsValue, ctx: &mut Context, api: &str) -> boa_engine::J
             .and_then(|o| boa_engine::object::builtins::JsArray::from_object(o.clone()).ok())
         {
             let len: u64 = arr.length(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!("{api}: modifiers length"))))
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "{api}: modifiers length"
+                ))))
             })?;
             for i in 0..len {
                 if let Ok(item) = arr.get(i, ctx) {
@@ -98,16 +104,26 @@ fn parse_style_value(v: &JsValue, ctx: &mut Context, api: &str) -> boa_engine::J
 
 /// 设置主题覆盖：scope → 颜色字符串或 { fg, bg, modifiers } 对象，整体替换旧覆盖集并置脏。
 /// 空对象等价清空。非字符串/非对象值忽略（不整体报错——部分非法条目不阻断其余覆盖）。
-pub(crate) fn js_set_theme(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_theme(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let api = "helix.set_theme";
-    let obj = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: expected an object of {{ scope: color|{{fg,bg,modifiers}} }}"
-        ))))
-    })?;
+    let obj = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: expected an object of {{ scope: color|{{fg,bg,modifiers}} }}"
+            ))))
+        })?;
     let mut overrides = HashMap::new();
     for key in obj.own_property_keys(ctx)? {
-        let boa_engine::property::PropertyKey::String(scope) = &key else { continue };
+        let boa_engine::property::PropertyKey::String(scope) = &key else {
+            continue;
+        };
         let scope = scope.to_std_string_escaped();
         let value = obj.get(key, ctx)?;
         if let Ok(style) = parse_style_value(&value, ctx, api) {
@@ -120,7 +136,11 @@ pub(crate) fn js_set_theme(_this: &JsValue, args: &[JsValue], ctx: &mut Context)
 }
 
 /// 清除主题覆盖并置脏（helix-term 下次 drain 还原基准主题）
-pub(crate) fn js_reset_theme(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_reset_theme(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     with_theme_overrides(|o| o.clear());
     mark_theme_dirty();
     Ok(JsValue::undefined())
@@ -147,7 +167,11 @@ pub fn theme_overrides() -> HashMap<String, StyleOverride> {
 
 /// 当前解析后的样式（fg/bg/modifiers，hex）；scope 未知返回 null。
 /// 依赖 helix-term 注册的 STYLE_SOURCE；未注册时返回 null。
-pub(crate) fn js_get_style(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_get_style(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let Some(scope) = args.first().and_then(|v| v.as_string()) else {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.get_style: expected a scope string",
@@ -171,29 +195,49 @@ pub(crate) fn js_get_style(_this: &JsValue, args: &[JsValue], ctx: &mut Context)
     // modifiers 数组
     let mods = boa_engine::object::builtins::JsArray::new(ctx);
     for m in &info.modifiers {
-        mods.push(JsValue::from(JsString::from(m.clone())), ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.get_style: modifiers push")))
-        })?;
+        mods.push(JsValue::from(JsString::from(m.clone())), ctx)
+            .map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "helix.get_style: modifiers push",
+                )))
+            })?;
     }
     let obj = boa_engine::object::ObjectInitializer::new(ctx)
-        .property(JsString::from("fg"), fg, boa_engine::property::Attribute::all())
-        .property(JsString::from("bg"), bg, boa_engine::property::Attribute::all())
-        .property(JsString::from("modifiers"), mods, boa_engine::property::Attribute::all())
+        .property(
+            JsString::from("fg"),
+            fg,
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
+            JsString::from("bg"),
+            bg,
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
+            JsString::from("modifiers"),
+            mods,
+            boa_engine::property::Attribute::all(),
+        )
         .build();
     Ok(obj.into())
 }
 
 /// 当前主题名 + 可用主题列表（切换器用）；未注册回调时返回 { name: null, themes: [] }。
-pub(crate) fn js_theme_info(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_theme_info(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let (name, themes) = match THEME_SOURCE.get() {
         Some(src) => src(),
         None => (String::new(), Vec::new()),
     };
     let arr = boa_engine::object::builtins::JsArray::new(ctx);
     for t in &themes {
-        arr.push(JsValue::from(JsString::from(t.clone())), ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.theme_info: push")))
-        })?;
+        arr.push(JsValue::from(JsString::from(t.clone())), ctx)
+            .map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from("helix.theme_info: push")))
+            })?;
     }
     let obj = boa_engine::object::ObjectInitializer::new(ctx)
         .property(
@@ -205,13 +249,21 @@ pub(crate) fn js_theme_info(_this: &JsValue, _args: &[JsValue], ctx: &mut Contex
             },
             boa_engine::property::Attribute::all(),
         )
-        .property(JsString::from("themes"), arr, boa_engine::property::Attribute::all())
+        .property(
+            JsString::from("themes"),
+            arr,
+            boa_engine::property::Attribute::all(),
+        )
         .build();
     Ok(obj.into())
 }
 
 /// 切换基准主题（UI 请求：helix-term 加载 + set_theme + 清覆盖）。空串/非字符串报错。
-pub(crate) fn js_set_theme_name(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_theme_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let Some(name) = args.first().and_then(|v| v.as_string()) else {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.set_theme_name: expected a theme name string",

@@ -31,7 +31,10 @@ async fn plugin_decorations_applied_and_replaced() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(":dec1<ret>"), None),
             (
                 Some(":dec1<ret>"),
@@ -56,7 +59,10 @@ async fn plugin_decorations_applied_and_replaced() -> anyhow::Result<()> {
                     assert_eq!(doc.plugin_decorations.virtual_text.len(), 1);
                     assert_eq!(doc.plugin_decorations.virtual_text[0].char_idx, 0);
                     assert_eq!(doc.plugin_decorations.virtual_text[0].text.to_string(), "Y");
-                    assert!(doc.plugin_decorations.highlights.is_empty(), "整体替换:旧高亮不残留");
+                    assert!(
+                        doc.plugin_decorations.highlights.is_empty(),
+                        "整体替换:旧高亮不残留"
+                    );
                 }),
             ),
             // Clear:只传 path → 全部清空
@@ -93,13 +99,19 @@ async fn plugin_decorations_unknown_path_ignored() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(":dec-unknown<ret>"), None),
             (
                 Some(":dec-unknown<ret>"),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
-                    assert!(doc.plugin_decorations.virtual_text.is_empty(), "未打开 path 静默忽略");
+                    assert!(
+                        doc.plugin_decorations.virtual_text.is_empty(),
+                        "未打开 path 静默忽略"
+                    );
                 }),
             ),
         ],
@@ -112,7 +124,8 @@ async fn plugin_decorations_unknown_path_ignored() -> anyhow::Result<()> {
 // doc-change 监听重推:替换语义保证无残留(插件在 doc-change 里重推)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_repush_on_doc_change() -> anyhow::Result<()> {
-    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();    let dir = tempfile::tempdir()?;
+    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\n")?;
     let plugin_path = dir.path().join("dec-docchange.js");
@@ -135,7 +148,10 @@ async fn plugin_decorations_repush_on_doc_change() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(":dec-init<ret>"), None),
             (
                 Some(":dec-init<ret>"),
@@ -190,7 +206,10 @@ async fn plugin_decorations_async_begin_edit() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (Some(":dec-async<ret>"), None),
             // 后续键驱动 pump,等 async 回调 settle;断言最终状态
             (Some(":dec-async<ret>"), None),
@@ -233,7 +252,10 @@ async fn plugin_decorations_unsorted_virtual_text_renders() -> anyhow::Result<()
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             // 重复运行:每次渲染都会走排序路径,乱序输入下无 sort 则 debug_assert panic
             (
                 Some(":dec-unsorted<ret>"),
@@ -272,7 +294,10 @@ async fn plugin_decorations_reversed_highlight_normalized() -> anyhow::Result<()
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":dec-rev<ret>"),
                 Some(&|app| {
@@ -280,7 +305,10 @@ async fn plugin_decorations_reversed_highlight_normalized() -> anyhow::Result<()
                     assert_eq!(doc.plugin_decorations.highlights.len(), 1);
                     // (1,0) char 4,(0,0) char 0 → swap 后 start 0, end 4
                     assert_eq!(
-                        (doc.plugin_decorations.highlights[0].start, doc.plugin_decorations.highlights[0].end),
+                        (
+                            doc.plugin_decorations.highlights[0].start,
+                            doc.plugin_decorations.highlights[0].end
+                        ),
                         (0, 4),
                         "反向区间应归一化为 start<=end"
                     );

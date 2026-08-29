@@ -7,12 +7,12 @@ use crate::job::Job;
 
 use super::*;
 
+use crate::ui::plugin_terminal::PluginTerminal;
 use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
 use helix_js::CommandContext;
-use crate::ui::plugin_terminal::PluginTerminal;
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
@@ -118,7 +118,10 @@ fn theme_overrides_value(overrides: &HashMap<String, helix_js::StyleOverride>) -
 /// 把插件覆盖集合并进基准主题并应用（None/空 → 还原基准）。
 /// 走 Editor::set_theme：更新 syn_loader scope 集（新 scope 高亮索引）、
 /// 刷新并广播 ConfigEvent::ThemeChanged（终端背景）与 ui.selection 校验。
-pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&HashMap<String, helix_js::StyleOverride>>) {
+pub(crate) fn apply_theme_overrides(
+    editor: &mut Editor,
+    overrides: Option<&HashMap<String, helix_js::StyleOverride>>,
+) {
     // 基准从当前主题名现场加载（app 局部，避免全局静态在多 app 并行时互相覆盖）；
     // load_resolved 特判 default/base16_default，含 inherits 的主题解析父样式。
     let name = editor.theme.name().to_string();
@@ -127,9 +130,9 @@ pub(crate) fn apply_theme_overrides(editor: &mut Editor, overrides: Option<&Hash
         .load_resolved(&name)
         .unwrap_or_else(|_| helix_view::theme::DEFAULT_THEME_DATA.clone());
     let merged = match overrides {
-        Some(ov) if !ov.is_empty() => {
-            editor.theme_loader.merge_themes(base, theme_overrides_value(ov))
-        }
+        Some(ov) if !ov.is_empty() => editor
+            .theme_loader
+            .merge_themes(base, theme_overrides_value(ov)),
         _ => base,
     };
     let mut theme = helix_view::theme::Theme::from(merged);
@@ -4397,10 +4400,13 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
                 }
             }
             // 应用插件装饰（编辑之后：坐标按应用时文本换算）。
+            // 编辑失败时装饰仍应用（坐标按当时文本换算，插件可 doc-change 重推）；
+            // 与事件路径的"编辑失败丢弃装饰"策略不同——命令路径无跨帧滞留问题。
             let decorations = helix_js::take_decorations();
             if !decorations.is_empty() {
                 if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
-                    cx.editor.set_error(format!("plugin decorations failed: {err}"));
+                    cx.editor
+                        .set_error(format!("plugin decorations failed: {err}"));
                 }
             }
             Ok(true)
@@ -4532,7 +4538,10 @@ fn pos_to_char(text: &Rope, row: usize, col: usize) -> usize {
 
 /// 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
 /// 快照坐标的光标正确推进）
-pub(crate) fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::CursorRequest]) -> anyhow::Result<()> {
+pub(crate) fn apply_cursor_requests(
+    editor: &mut Editor,
+    reqs: &[helix_js::CursorRequest],
+) -> anyhow::Result<()> {
     use helix_core::{Range, Selection, SmallVec};
     let (view, doc) = current!(editor);
     let text = doc.text();
@@ -4552,7 +4561,9 @@ pub(crate) fn apply_cursor_requests(editor: &mut Editor, reqs: &[helix_js::Curso
                 // 多选区：先排序再取末位作 primary（normalize 只重定位 primary，不保证末位）
                 let mut ranges: SmallVec<[Range; 1]> = sel
                     .iter()
-                    .map(|(a, h)| Range::new(pos_to_char(text, a.0, a.1), pos_to_char(text, h.0, h.1)))
+                    .map(|(a, h)| {
+                        Range::new(pos_to_char(text, a.0, a.1), pos_to_char(text, h.0, h.1))
+                    })
                     .collect();
                 ranges.sort_unstable_by_key(Range::from);
                 let primary = ranges.len() - 1;
@@ -4620,7 +4631,10 @@ pub(crate) fn apply_plugin_edits(
                 let id = editor
                     .documents
                     .iter()
-                    .find(|(_, d)| d.path().is_some_and(|p| p.to_string_lossy() == path.as_str()))
+                    .find(|(_, d)| {
+                        d.path()
+                            .is_some_and(|p| p.to_string_lossy() == path.as_str())
+                    })
                     .map(|(id, _)| *id)
                     .ok_or_else(|| anyhow!("plugin edit: buffer '{path}' not open"))?;
                 // 兜底 ensure_view_init：多窗口下当前 view 可能从未访问过后台 doc，
@@ -4667,7 +4681,10 @@ pub(crate) fn apply_plugin_decorations(
         let Some(id) = editor
             .documents
             .iter()
-            .find(|(_, d)| d.path().is_some_and(|p| p.to_string_lossy() == path.as_str()))
+            .find(|(_, d)| {
+                d.path()
+                    .is_some_and(|p| p.to_string_lossy() == path.as_str())
+            })
             .map(|(id, _)| *id)
         else {
             continue; // 未打开 → 忽略
@@ -4682,25 +4699,43 @@ pub(crate) fn apply_plugin_decorations(
                     virtual_text.clear();
                     highlights.clear();
                 }
-                helix_js::DecorationKind::VirtualText { row, col, text: t, style } => {
+                helix_js::DecorationKind::VirtualText {
+                    row,
+                    col,
+                    text: t,
+                    style,
+                } => {
                     virtual_text.push(PluginInlineAnnotation {
                         char_idx: pos_to_char(&text, *row, *col),
                         text: t.clone().into(),
                         style: style.clone(),
                     });
                 }
-                helix_js::DecorationKind::Highlight { sr, sc, er, ec, style } => {
+                helix_js::DecorationKind::Highlight {
+                    sr,
+                    sc,
+                    er,
+                    ec,
+                    style,
+                } => {
                     let mut start = pos_to_char(&text, *sr, *sc);
                     let mut end = pos_to_char(&text, *er, *ec);
                     // 反向区间(sr,sc)>(er,ec) 归一化,与 apply_plugin_edits 的 swap 同款
                     if start > end {
                         std::mem::swap(&mut start, &mut end);
                     }
-                    highlights.push(PluginHighlight { start, end, style: style.clone() });
+                    highlights.push(PluginHighlight {
+                        start,
+                        end,
+                        style: style.clone(),
+                    });
                 }
             }
         }
-        doc.plugin_decorations = PluginDecorations { virtual_text, highlights };
+        doc.plugin_decorations = PluginDecorations {
+            virtual_text,
+            highlights,
+        };
     }
     Ok(())
 }
@@ -4710,10 +4745,18 @@ pub(crate) fn apply_plugin_decorations(
 pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Result<()> {
     for req in reqs {
         match req {
-            helix_js::UiRequest::OpenPopup { id, width, height, position } => {
-                let popup = ui::Popup::new("plugin-popup", ui::PluginPopup::new(id, width.zip(height)))
-                    .position(position.map(|(row, col)| helix_core::Position::new(row as usize, col as usize)))
-                    .auto_close(false);
+            helix_js::UiRequest::OpenPopup {
+                id,
+                width,
+                height,
+                position,
+            } => {
+                let popup =
+                    ui::Popup::new("plugin-popup", ui::PluginPopup::new(id, width.zip(height)))
+                        .position(position.map(|(row, col)| {
+                            helix_core::Position::new(row as usize, col as usize)
+                        }))
+                        .auto_close(false);
                 // 由事件循环在下一轮推层并渲染。
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.replace_or_push("plugin-popup", popup);
@@ -4743,9 +4786,9 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 job::dispatch_blocking(move |_editor, compositor| {
                     // popup id ≠ 布局树 leaf id（split 分配）：按 popup id 找面板 leaf 再移除
                     use crate::ui::plugin_panel::PluginPanel;
-                    let found = compositor.layout_tree().find_leaf_id::<PluginPanel>(|p| {
-                        p.id() == id
-                    });
+                    let found = compositor
+                        .layout_tree()
+                        .find_leaf_id::<PluginPanel>(|p| p.id() == id);
                     if let Some(leaf) = found {
                         compositor.remove_leaf(leaf);
                     }
@@ -4786,7 +4829,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::OpenTerminal { view_id, pty_id, cmd, side, size } => {
+            helix_js::UiRequest::OpenTerminal {
+                view_id,
+                pty_id,
+                cmd,
+                side,
+                size,
+            } => {
                 // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）；
                 // cmd 由 JS 侧 spawn 完成，这里只用于错误提示不真正执行
                 match side.as_str() {
@@ -4828,9 +4877,9 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         // Floating：叶子浮动到视口中央浮窗（最上层）；其他模式取消浮动
                         let leaf_id = compositor
                             .layout_tree()
-                            .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
-                                t.view_id() == view_id
-                            });
+                            .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(
+                            |t| t.view_id() == view_id,
+                        );
                         match (tm, leaf_id) {
                             (crate::ui::plugin_terminal::TermMode::Floating, Some(id)) => {
                                 compositor.set_float(id);
@@ -4844,15 +4893,15 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(id) = compositor
                         .layout_tree()
-                        .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
-                            t.view_id() == view_id
-                        })
-                    {
+                        .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(
+                        |t| t.view_id() == view_id,
+                    ) {
                         compositor.remove_leaf(id);
                     }
                 });
             }
-            ref request @ (helix_js::UiRequest::Watch { .. } | helix_js::UiRequest::Unwatch { .. }) => {
+            ref request @ (helix_js::UiRequest::Watch { .. }
+            | helix_js::UiRequest::Unwatch { .. }) => {
                 crate::plugins_watch::apply_watch(request)?;
             }
             helix_js::UiRequest::FocusBuffer { id } => {
@@ -4881,7 +4930,8 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     // 先 insert 拿 id,再 clone 出 view 并 remove——id 保持有效,BufferLeaf 持有该 view。
                     // 为何安全:insert/remove 之间无渲染、无焦点切换,活视图树仅此瞬态改动,
                     // 依赖 Tree 内部不变式(remove 不销毁已取出的 view,id 仍可被 ensure_view_init 使用)。
-                    let mut view = helix_view::view::View::new(doc_id, editor.config().gutters.clone());
+                    let mut view =
+                        helix_view::view::View::new(doc_id, editor.config().gutters.clone());
                     let id = editor.tree.insert(view);
                     view = editor.tree.get_mut(id).clone();
                     editor.tree.remove(id);
@@ -4892,7 +4942,8 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         Some("h") => crate::ui::layout::SplitDir::H,
                         _ => crate::ui::layout::SplitDir::V,
                     };
-                    let _ = compositor.split_leaf(dir, false, Box::new(crate::ui::BufferLeaf { view }));
+                    let _ =
+                        compositor.split_leaf(dir, false, Box::new(crate::ui::BufferLeaf { view }));
                 });
             }
             helix_js::UiRequest::TermClear { view_id } => {
@@ -4944,7 +4995,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::SplitLeaf { id, dir, kind, size, .. } => {
+            helix_js::UiRequest::SplitLeaf {
+                id,
+                dir,
+                kind,
+                size,
+                ..
+            } => {
                 use crate::ui::layout::SplitDir;
                 let (dir, first) = match dir.as_str() {
                     "right" => (SplitDir::H, false),
@@ -4958,9 +5015,10 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         "terminal" => Box::new(crate::ui::plugin_terminal::PluginTerminal::new(
                             id, id, size,
                         )),
-                        _ => {
-                            Box::new(crate::ui::PluginPanel::new(id, crate::ui::plugin_panel::PanelSide::Right))
-                        }
+                        _ => Box::new(crate::ui::PluginPanel::new(
+                            id,
+                            crate::ui::plugin_panel::PanelSide::Right,
+                        )),
                     };
                     // 用预分配 id 直接建叶子（split 的 id 由 JS 分配，回调已注册）
                     compositor.split_leaf_prealloc(id, dir, first, size, component);
@@ -5066,12 +5124,15 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     let theme = match editor.theme_loader.load(&name) {
                         Ok(t) => t,
                         Err(e) => {
-                            editor.set_error(format!("set_theme_name: 加载主题 '{name}' 失败: {e}"));
+                            editor
+                                .set_error(format!("set_theme_name: 加载主题 '{name}' 失败: {e}"));
                             return;
                         }
                     };
                     if !(true_color || theme.is_16_color()) {
-                        editor.set_error(format!("set_theme_name: 主题 '{name}' 需要 true color 支持"));
+                        editor.set_error(format!(
+                            "set_theme_name: 主题 '{name}' 需要 true color 支持"
+                        ));
                         return;
                     }
                     if let Err(e) = editor.set_theme(theme) {
@@ -5101,7 +5162,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(view) = compositor.find::<ui::EditorView>() {
                         view.keymaps.insert_binding(mode, &keys, cmd);
-                    } 
+                    }
                 });
             }
         }
@@ -5151,7 +5212,11 @@ fn parse_plugin_binding(
     Ok((mode, keys, cmd))
 }
 
-fn plugin_reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn plugin_reload(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
@@ -5190,7 +5255,10 @@ fn plugin_name_from_path(path: &str) -> anyhow::Result<String> {
     let path = std::path::Path::new(path);
     // 显式拒绝目录（尾斜杠目录的 file_name() 也会返回名字，不能依赖它）
     if path.is_dir() {
-        return Err(anyhow!("invalid plugin path: '{}' (is a directory)", path.display()));
+        return Err(anyhow!(
+            "invalid plugin path: '{}' (is a directory)",
+            path.display()
+        ));
     }
     let name = path
         .file_name()
@@ -5203,11 +5271,7 @@ fn plugin_name_from_path(path: &str) -> anyhow::Result<String> {
 
 /// 插件名校验：非空、拒绝含 / 的路径（防目录逃逸）、拒绝 .. 前缀、强制 .js 后缀
 fn validate_plugin_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || name.contains('/')
-        || name.starts_with("..")
-        || !name.ends_with(".js")
-    {
+    if name.is_empty() || name.contains('/') || name.starts_with("..") || !name.ends_with(".js") {
         return Err(anyhow!(
             "invalid plugin name: '{name}' (expected a bare name ending in .js)"
         ));
@@ -5229,7 +5293,8 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             if names.is_empty() {
                 cx.editor.set_status("no plugins loaded");
             } else {
-                cx.editor.set_status(format!("plugins: {}", names.join(", ")));
+                cx.editor
+                    .set_status(format!("plugins: {}", names.join(", ")));
             }
         }
         "install" => {
@@ -5239,18 +5304,23 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             let name = plugin_name_from_path(path)?;
             let plugin_dir = helix_loader::config_dir().join("plugins");
             std::fs::create_dir_all(&plugin_dir).map_err(|e| {
-                anyhow!("failed to create plugin dir '{}': {e}", plugin_dir.display())
+                anyhow!(
+                    "failed to create plugin dir '{}': {e}",
+                    plugin_dir.display()
+                )
             })?;
             std::fs::copy(path, plugin_dir.join(&name))
                 .map_err(|e| anyhow!("failed to copy '{path}': {e}"))?;
-            let src = std::fs::read_to_string(path).map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
+            let src = std::fs::read_to_string(path)
+                .map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
             helix_js::load_script_named(&name, &src).map_err(|e| anyhow!("plugin install: {e}"))?;
             let msgs = helix_js::take_messages();
             if !msgs.is_empty() {
                 cx.editor.set_status(msgs.join(" "));
             }
             apply_ui_requests(helix_js::take_ui_requests())?;
-            cx.editor.set_status(format!("installed and loaded '{name}'"));
+            cx.editor
+                .set_status(format!("installed and loaded '{name}'"));
         }
         "remove" => {
             let Some(name) = args.get(1) else {
@@ -5260,7 +5330,8 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             let plugin_dir = helix_loader::config_dir().join("plugins");
             std::fs::remove_file(plugin_dir.join(name))
                 .map_err(|e| anyhow!("failed to remove '{name}': {e}"))?;
-            cx.editor.set_status("removed; run :plugin reload if it was loaded");
+            cx.editor
+                .set_status("removed; run :plugin reload if it was loaded");
         }
         "reload" => reload_plugins(cx)?,
         "status" => {
@@ -5296,7 +5367,11 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
 
 /// :panel-close 入队 ClosePanel 并手动 drain（与 plugin_reload 同款——命令路径的 drain
 /// 只在 run_command Ok(true) 分支，TypableCommand 需自己触发）
-fn panel_close(_cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn panel_close(
+    _cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
@@ -5316,8 +5391,12 @@ pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<Stri
     let mut out = serde_json::Map::new();
     let mut errors: Vec<String> = Vec::new();
     for (name, schema_json) in schemas {
-        let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_json) else { continue };
-        let Some(schema_obj) = schema.as_object() else { continue };
+        let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_json) else {
+            continue;
+        };
+        let Some(schema_obj) = schema.as_object() else {
+            continue;
+        };
         // 用户覆盖 [plugins.<name>]
         let user = plugins
             .get(&name)
@@ -5326,9 +5405,14 @@ pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<Stri
             .unwrap_or_default();
         let mut merged = serde_json::Map::new();
         for (key, field) in schema_obj {
-            let Some(fo) = field.as_object() else { continue };
+            let Some(fo) = field.as_object() else {
+                continue;
+            };
             let ftype = fo.get("type").and_then(|t| t.as_str()).unwrap_or("string");
-            let default = fo.get("default").cloned().unwrap_or(serde_json::Value::Null);
+            let default = fo
+                .get("default")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             // 校验用户值
             let user_val = user.get(key).map(toml_to_json);
             let val = match user_val {
@@ -5403,11 +5487,11 @@ fn toml_to_json(v: &toml::Value) -> serde_json::Value {
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         toml::Value::String(s) => serde_json::Value::String(s.clone()),
-        toml::Value::Array(a) => {
-            serde_json::Value::Array(a.iter().map(toml_to_json).collect())
-        }
+        toml::Value::Array(a) => serde_json::Value::Array(a.iter().map(toml_to_json).collect()),
         toml::Value::Table(t) => serde_json::Value::Object(
-            t.iter().map(|(k, v)| (k.clone(), toml_to_json(v))).collect(),
+            t.iter()
+                .map(|(k, v)| (k.clone(), toml_to_json(v)))
+                .collect(),
         ),
         _ => serde_json::Value::Null,
     }
@@ -5475,7 +5559,11 @@ pub fn serialize_diagnostics(editor: &helix_view::Editor) -> String {
 /// :term-native 打开原生终端面板（PoC 演示命令）：注册两个隐藏命令——
 /// __term_native 走真实 JS API 路径（helix.open_terminal 入队 OpenTerminal）并执行；
 /// __term_feed 把模拟输出注入对应视图（集成测试用，绕开 pty 时序）。
-fn term_native(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn term_native(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
@@ -5487,7 +5575,13 @@ fn term_native(cx: &mut compositor::Context, _args: Args, event: PromptEvent) ->
         });
     "#;
     helix_js::load_script_named("term-native.js", src).map_err(|e| anyhow!("term-native: {e}"))?;
-    let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+    let ctx = CommandContext {
+        docs: vec![],
+        path: None,
+        text: String::new(),
+        cursor: (0, 0),
+        selection: ((0, 0), (0, 0)),
+    };
     helix_js::run_command("__term_native", &ctx).map_err(|e| anyhow!("term-native: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
@@ -5978,7 +6072,6 @@ mod plugin_manager_tests {
         assert!(validate_plugin_name("foo").is_err());
     }
 }
-
 
 #[cfg(test)]
 mod plugin_config_tests {

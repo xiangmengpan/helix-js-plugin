@@ -15,7 +15,9 @@ use crate::state::{with_engine, with_event_handlers};
 pub fn emit_cursor_move(doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
     crate::init();
     let handlers = with_event_handlers(|h| h.get("cursor-move").cloned());
-    let Some(handlers) = handlers else { return false };
+    let Some(handlers) = handlers else {
+        return false;
+    };
     if handlers.is_empty() {
         return false;
     }
@@ -29,7 +31,11 @@ pub fn emit_cursor_move(doc_id: u64, row: usize, col: usize, mode: &str) -> bool
                 Attribute::all(),
             )
             .build();
-        call_handlers(&handlers, &[JsValue::from(doc_id), JsValue::from(ev)], engine)
+        call_handlers(
+            &handlers,
+            &[JsValue::from(doc_id), JsValue::from(ev)],
+            engine,
+        )
     })
 }
 
@@ -43,20 +49,38 @@ pub fn emit_selection_change(
 ) -> bool {
     crate::init();
     let handlers = with_event_handlers(|h| h.get("selection-change").cloned());
-    let Some(handlers) = handlers else { return false };
+    let Some(handlers) = handlers else {
+        return false;
+    };
     if handlers.is_empty() {
         return false;
     }
     with_engine(|engine| {
         let primary = ObjectInitializer::new(engine)
-            .property(JsString::from("row"), JsValue::from(primary_row), Attribute::all())
-            .property(JsString::from("col"), JsValue::from(primary_col), Attribute::all())
+            .property(
+                JsString::from("row"),
+                JsValue::from(primary_row),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("col"),
+                JsValue::from(primary_col),
+                Attribute::all(),
+            )
             .build();
         let ev = ObjectInitializer::new(engine)
-            .property(JsString::from("count"), JsValue::from(count), Attribute::all())
+            .property(
+                JsString::from("count"),
+                JsValue::from(count),
+                Attribute::all(),
+            )
             .property(JsString::from("primary"), primary, Attribute::all())
             .build();
-        call_handlers(&handlers, &[JsValue::from(doc_id), JsValue::from(ev)], engine)
+        call_handlers(
+            &handlers,
+            &[JsValue::from(doc_id), JsValue::from(ev)],
+            engine,
+        )
     })
 }
 

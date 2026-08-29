@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Result};
 use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::object::builtins::{JsArray, JsFunction, JsPromise};
@@ -9,14 +8,10 @@ use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
 use crate::commands::emit_term_exit;
 use crate::pty;
 
-use crate::state::{
-    with_async_promises, with_terms,
-    WakeSender,
-};
+use crate::state::{with_async_promises, with_terms, WakeSender};
 
 /// worker 读块大小
 const TERM_CHUNK_SIZE: usize = 4096;
-
 
 use crate::types::*;
 
@@ -240,7 +235,10 @@ pub(crate) fn spawn_pty_worker(
         // 子进程进程组设为 pty 前台组（交互 bash 的 job control 正常；tcsetpgrp 失败静默）
         #[cfg(unix)]
         unsafe {
-            libc::tcsetpgrp(std::os::unix::io::AsRawFd::as_raw_fd(&master), child.id() as libc::pid_t);
+            libc::tcsetpgrp(
+                std::os::unix::io::AsRawFd::as_raw_fd(&master),
+                child.id() as libc::pid_t,
+            );
         }
         // master 读端单独 dup（读写两端并发：写线程主循环 + 读线程）
         let master_reader = match master.try_clone() {
@@ -297,14 +295,26 @@ pub(crate) fn spawn_pty_worker(
     });
 }
 
-pub(crate) fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let cmd: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.run_async: command must be a string")))
-    })?;
+pub(crate) fn js_run_async(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let cmd: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.run_async: command must be a string",
+            )))
+        })?;
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_term_id();
-    crate::state::with_term_promises(|m| { m.insert(id, resolving); });
+    crate::state::with_term_promises(|m| {
+        m.insert(id, resolving);
+    });
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx.clone()));
     spawn_worker(
@@ -317,10 +327,20 @@ pub(crate) fn js_run_async(_this: &JsValue, args: &[JsValue], context: &mut Cont
     Ok(promise.into())
 }
 
-pub(crate) fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.spawn: options object required")))
-    })?;
+pub(crate) fn js_spawn(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let opts = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.spawn: options object required",
+            )))
+        })?;
     let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
     let on_chunk = opts.get(JsString::from("onChunk"), ctx)?;
     if on_chunk.as_callable().is_none() {
@@ -344,9 +364,7 @@ pub(crate) fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
         }
     };
     let id = crate::state::next_term_id();
-    with_terms(|m| {
-        m.insert(id, TermCallbacks { on_chunk, on_exit })
-    });
+    with_terms(|m| m.insert(id, TermCallbacks { on_chunk, on_exit }));
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx));
     let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
@@ -374,9 +392,19 @@ pub(crate) fn js_spawn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
     Ok(JsValue::from(id))
 }
 
-pub(crate) fn js_term_write(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let text: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_term_write(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let text: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     term_write(id, &text)
         .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
     Ok(JsValue::undefined())
@@ -385,16 +413,25 @@ pub(crate) fn js_term_write(_this: &JsValue, args: &[JsValue], context: &mut Con
 /// 向进程 stdin 写数据（Rust 侧入口，PluginTerminal 按键直通用；js_term_write 转发到这里）。
 /// 不调 init()：可能从渲染/事件循环（CONTEXT 未借用）触发，但保持与 term_kill 同款约束。
 pub fn term_write(id: u64, text: &str) -> Result<()> {
-    let sender = crate::state::with_term_workers(|m| m.get(&id).cloned()).ok_or_else(|| anyhow!("term_write: unknown id"))?;
+    let sender = crate::state::with_term_workers(|m| m.get(&id).cloned())
+        .ok_or_else(|| anyhow!("term_write: unknown id"))?;
     sender
         .send(TermCtrl::Write(text.to_string()))
         .map_err(|_| anyhow!("term_write: worker gone"))?;
     Ok(())
 }
 
-pub(crate) fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    term_kill(id).map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
+pub(crate) fn js_term_kill(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    term_kill(id)
+        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
     Ok(JsValue::undefined())
 }
 
@@ -403,8 +440,11 @@ pub(crate) fn js_term_kill(_this: &JsValue, args: &[JsValue], context: &mut Cont
 /// 不调 init()：可能从命令执行（CONTEXT 已借用）里触发，且 TERM_WORKERS 是普通 thread_local。
 pub fn term_kill(id: u64) -> Result<()> {
     crate::state::unregister_term(id);
-    let sender = crate::state::with_term_workers(|m| m.remove(&id)).ok_or_else(|| anyhow!("term_kill: unknown id"))?;
-    sender.send(TermCtrl::Kill).map_err(|_| anyhow!("term_kill: worker gone"))?;
+    let sender = crate::state::with_term_workers(|m| m.remove(&id))
+        .ok_or_else(|| anyhow!("term_kill: unknown id"))?;
+    sender
+        .send(TermCtrl::Kill)
+        .map_err(|_| anyhow!("term_kill: worker gone"))?;
     Ok(())
 }
 
@@ -420,21 +460,48 @@ pub fn term_resize(id: u64, rows: u16, cols: u16) -> Result<()> {
 }
 
 #[cfg(unix)]
-pub(crate) fn js_term_resize(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: id must be a number")))
-    })?;
-    let rows: u16 = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: rows must be a number")))
-    })?;
-    let cols: u16 = args.get(2).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: cols must be a number")))
-    })?;
+pub(crate) fn js_term_resize(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.term_resize: id must be a number",
+            )))
+        })?;
+    let rows: u16 = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.term_resize: rows must be a number",
+            )))
+        })?;
+    let cols: u16 = args
+        .get(2)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.term_resize: cols must be a number",
+            )))
+        })?;
     let fd = crate::state::with_term_masters(|m| m.get(&id).copied()).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.term_resize: unknown id")))
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "helix.term_resize: unknown id",
+        )))
     })?;
-    pty::set_winsize(fd, rows, cols)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.term_resize: {e}")))))?;
+    pty::set_winsize(fd, rows, cols).map_err(|e| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "helix.term_resize: {e}"
+        ))))
+    })?;
     Ok(JsValue::undefined())
 }
 
@@ -467,7 +534,11 @@ pub(crate) fn glob_matches(pattern: &str) -> std::result::Result<Vec<String>, St
 }
 
 /// 递归 walk 目录树，匹配完整路径字符串（含目录本身——glob 常规语义）
-fn walk_glob(dir: &std::path::Path, matcher: &globset::GlobMatcher, out: &mut Vec<String>) -> std::io::Result<()> {
+fn walk_glob(
+    dir: &std::path::Path,
+    matcher: &globset::GlobMatcher,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -497,64 +568,135 @@ fn spawn_async_op<T: Send + 'static>(
     });
 }
 
-pub(crate) fn js_read_file_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.read_file_async: path must be a string")))
-    })?;
+pub(crate) fn js_read_file_async(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.read_file_async: path must be a string",
+            )))
+        })?;
     // 返回 promise：worker 结果经 resolve_async_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_promises(|m| { m.insert(id, resolving); });
-    spawn_async_op(id, move || {
-        std::fs::read_to_string(&path).map_err(|e| format!("read_file_async('{path}'): {e}"))
-    }, AsyncEvent::FsRead);
+    with_async_promises(|m| {
+        m.insert(id, resolving);
+    });
+    spawn_async_op(
+        id,
+        move || {
+            std::fs::read_to_string(&path).map_err(|e| format!("read_file_async('{path}'): {e}"))
+        },
+        AsyncEvent::FsRead,
+    );
     Ok(promise.into())
 }
 
-pub(crate) fn js_write_file_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.write_file_async: path must be a string")))
-    })?;
-    let content: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.write_file_async: content must be a string")))
-    })?;
+pub(crate) fn js_write_file_async(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.write_file_async: path must be a string",
+            )))
+        })?;
+    let content: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.write_file_async: content must be a string",
+            )))
+        })?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_promises(|m| { m.insert(id, resolving); });
-    spawn_async_op(id, move || {
-        std::fs::write(&path, &content).map_err(|e| format!("write_file_async('{path}'): {e}"))
-    }, AsyncEvent::FsWrite);
+    with_async_promises(|m| {
+        m.insert(id, resolving);
+    });
+    spawn_async_op(
+        id,
+        move || {
+            std::fs::write(&path, &content).map_err(|e| format!("write_file_async('{path}'): {e}"))
+        },
+        AsyncEvent::FsWrite,
+    );
     Ok(promise.into())
 }
 
-pub(crate) fn js_stat_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.stat_async: path must be a string")))
-    })?;
+pub(crate) fn js_stat_async(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.stat_async: path must be a string",
+            )))
+        })?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_promises(|m| { m.insert(id, resolving); });
-    spawn_async_op(id, move || {
-        std::fs::metadata(&path)
-            .map(|m| FsStat {
-                size: m.len(),
-                is_dir: m.is_dir(),
-                mtime: m.modified()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).map_err(std::io::Error::other))
-                    .unwrap_or(0),
-            })
-            .map_err(|e| format!("stat_async('{path}'): {e}"))
-    }, AsyncEvent::FsStat);
+    with_async_promises(|m| {
+        m.insert(id, resolving);
+    });
+    spawn_async_op(
+        id,
+        move || {
+            std::fs::metadata(&path)
+                .map(|m| FsStat {
+                    size: m.len(),
+                    is_dir: m.is_dir(),
+                    mtime: m
+                        .modified()
+                        .and_then(|t| {
+                            t.duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .map_err(std::io::Error::other)
+                        })
+                        .unwrap_or(0),
+                })
+                .map_err(|e| format!("stat_async('{path}'): {e}"))
+        },
+        AsyncEvent::FsStat,
+    );
     Ok(promise.into())
 }
 
-pub(crate) fn js_glob_async(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let pattern: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("helix.glob_async: pattern must be a string")))
-    })?;
+pub(crate) fn js_glob_async(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let pattern: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.glob_async: pattern must be a string",
+            )))
+        })?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    with_async_promises(|m| { m.insert(id, resolving); });
+    with_async_promises(|m| {
+        m.insert(id, resolving);
+    });
     spawn_async_op(id, move || glob_matches(&pattern), AsyncEvent::FsGlob);
     Ok(promise.into())
 }
@@ -563,7 +705,9 @@ pub(crate) fn js_glob_async(_this: &JsValue, args: &[JsValue], context: &mut Con
 pub fn pump_jobs() -> Result<()> {
     crate::init();
     crate::state::with_engine(|engine| {
-        engine.run_jobs().map_err(|e| anyhow!("promise job queue: {e}"))
+        engine
+            .run_jobs()
+            .map_err(|e| anyhow!("promise job queue: {e}"))
     })
 }
 
@@ -597,7 +741,11 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
                 TermEvent::Exit(_, code, stdout) => {
                     let out = stdout.unwrap_or_default();
-                    let f = if code == 0 { &resolving.resolve } else { &resolving.reject };
+                    let f = if code == 0 {
+                        &resolving.resolve
+                    } else {
+                        &resolving.reject
+                    };
                     let args: Vec<JsValue> = if code == 0 {
                         vec![JsValue::from(JsString::from(out))]
                     } else {
@@ -612,7 +760,8 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                             .to_opaque(engine);
                         vec![err.into()]
                     };
-                    let _: JsValue = f.call(&JsValue::undefined(), &args, engine)
+                    let _: JsValue = f
+                        .call(&JsValue::undefined(), &args, engine)
                         .map_err(|e| anyhow!("term {id} promise settle failed: {e}"))?;
                 }
             }
@@ -627,20 +776,29 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 on_exit: c.on_exit.clone(),
             })
         });
-        let Some(callbacks) = callbacks else { return Ok(()) };
+        let Some(callbacks) = callbacks else {
+            return Ok(());
+        };
         let undefined = JsValue::undefined();
         match event {
             TermEvent::Chunk(_, chunk) => {
-                let func = callbacks.on_chunk.as_callable().and_then(JsFunction::from_object)
+                let func = callbacks
+                    .on_chunk
+                    .as_callable()
+                    .and_then(JsFunction::from_object)
                     .ok_or_else(|| anyhow!("term {id} onChunk not callable"))?;
-                let _: JsValue = func.call(&undefined, &[JsValue::from(JsString::from(chunk))], engine)
+                let _: JsValue = func
+                    .call(&undefined, &[JsValue::from(JsString::from(chunk))], engine)
                     .map_err(|e| anyhow!("term {id} onChunk failed: {e}"))?;
             }
             TermEvent::Exit(_, code, _stdout) => {
                 if let Some(on_exit) = callbacks.on_exit {
-                    let func = on_exit.as_callable().and_then(JsFunction::from_object)
+                    let func = on_exit
+                        .as_callable()
+                        .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("term {id} onExit not callable"))?;
-                    let _: JsValue = func.call(&undefined, &[JsValue::from(code)], engine)
+                    let _: JsValue = func
+                        .call(&undefined, &[JsValue::from(code)], engine)
                         .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
                 }
                 with_terms(|m| m.remove(&id));
@@ -671,9 +829,21 @@ pub fn drain_async_events() -> Vec<AsyncEvent> {
 fn stat_to_js(st: &FsStat, ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
     Ok(JsValue::from(
         ObjectInitializer::new(ctx)
-            .property(JsString::from("size"), JsValue::from(st.size as f64), Attribute::all())
-            .property(JsString::from("is_dir"), JsValue::from(st.is_dir), Attribute::all())
-            .property(JsString::from("mtime"), JsValue::from(st.mtime as f64), Attribute::all())
+            .property(
+                JsString::from("size"),
+                JsValue::from(st.size as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("is_dir"),
+                JsValue::from(st.is_dir),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("mtime"),
+                JsValue::from(st.mtime as f64),
+                Attribute::all(),
+            )
             .build(),
     ))
 }
@@ -687,19 +857,44 @@ pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
     crate::init();
     crate::state::with_engine(|engine| {
         let resolving = with_async_promises(|m| m.remove(&id));
-        let Some(resolving) = resolving else { return Ok(()) }; // 已 resolve / 未知 id → no-op（幂等）
+        let Some(resolving) = resolving else {
+            return Ok(());
+        }; // 已 resolve / 未知 id → no-op（幂等）
         let undefined = JsValue::undefined();
         let result: Result<(), JsError> = match event {
-            AsyncEvent::FsRead(_, Ok(content)) => resolving.resolve.call(&undefined, &[JsValue::from(JsString::from(content))], engine).map(|_| ()),
+            AsyncEvent::FsRead(_, Ok(content)) => resolving
+                .resolve
+                .call(
+                    &undefined,
+                    &[JsValue::from(JsString::from(content))],
+                    engine,
+                )
+                .map(|_| ()),
             AsyncEvent::FsRead(_, Err(e)) => reject_msg(&resolving, &e, engine),
-            AsyncEvent::FsWrite(_, Ok(())) => resolving.resolve.call(&undefined, &[], engine).map(|_| ()),
+            AsyncEvent::FsWrite(_, Ok(())) => {
+                resolving.resolve.call(&undefined, &[], engine).map(|_| ())
+            }
             AsyncEvent::FsWrite(_, Err(e)) => reject_msg(&resolving, &e, engine),
-            AsyncEvent::FsStat(_, Ok(st)) => resolving.resolve.call(&undefined, &[stat_to_js(&st, engine).map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?], engine).map(|_| ()),
+            AsyncEvent::FsStat(_, Ok(st)) => resolving
+                .resolve
+                .call(
+                    &undefined,
+                    &[stat_to_js(&st, engine)
+                        .map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?],
+                    engine,
+                )
+                .map(|_| ()),
             AsyncEvent::FsStat(_, Err(e)) => reject_msg(&resolving, &e, engine),
             AsyncEvent::FsGlob(_, Ok(paths)) => {
-                let arr = paths.iter().map(|p| JsValue::from(JsString::from(p.clone()))).collect::<Vec<_>>();
+                let arr = paths
+                    .iter()
+                    .map(|p| JsValue::from(JsString::from(p.clone())))
+                    .collect::<Vec<_>>();
                 let js_arr = JsArray::from_iter(arr, engine);
-                resolving.resolve.call(&undefined, &[js_arr.into()], engine).map(|_| ())
+                resolving
+                    .resolve
+                    .call(&undefined, &[js_arr.into()], engine)
+                    .map(|_| ())
             }
             AsyncEvent::FsGlob(_, Err(e)) => reject_msg(&resolving, &e, engine),
         };
@@ -708,8 +903,16 @@ pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
 }
 
 /// reject 一个 Error 对象（错误字符串 → e.message），使 .catch 能读到消息
-fn reject_msg(resolving: &ResolvingFunctions, msg: &str, engine: &mut Context) -> Result<(), JsError> {
-    let err = JsNativeError::error().with_message(msg.to_string()).to_opaque(engine);
-    resolving.reject.call(&JsValue::undefined(), &[err.into()], engine).map(|_| ())
+fn reject_msg(
+    resolving: &ResolvingFunctions,
+    msg: &str,
+    engine: &mut Context,
+) -> Result<(), JsError> {
+    let err = JsNativeError::error()
+        .with_message(msg.to_string())
+        .to_opaque(engine);
+    resolving
+        .reject
+        .call(&JsValue::undefined(), &[err.into()], engine)
+        .map(|_| ())
 }
-

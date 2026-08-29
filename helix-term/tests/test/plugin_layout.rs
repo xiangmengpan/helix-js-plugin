@@ -14,7 +14,10 @@ async fn panel_shrinks_editor() -> anyhow::Result<()> {
         helix_term::ui::layout::SplitDir::H,
         false,
         20,
-        Box::new(helix_term::ui::PluginPanel::new(1, helix_term::ui::PanelSide::Right)),
+        Box::new(helix_term::ui::PluginPanel::new(
+            1,
+            helix_term::ui::PanelSide::Right,
+        )),
     );
 
     // 渲染 compositor 到 Buffer，断言编辑器区域被面板收缩：

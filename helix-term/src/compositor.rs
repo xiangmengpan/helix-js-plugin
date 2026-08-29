@@ -27,8 +27,8 @@ use crate::ui::picker;
 use crate::ui::plugin_panel::{PanelSide, PluginPanel};
 use helix_view::Editor;
 
-pub use helix_view::input::Event;
 use helix_view::document::Mode;
+pub use helix_view::input::Event;
 
 pub struct Context<'a> {
     pub editor: &'a mut Editor,
@@ -470,9 +470,9 @@ impl Compositor {
                     .main_tree
                     .find_component::<crate::ui::BufferLeaf>()
                     .and_then(|bl| {
-                        cx.editor.document(bl.view.doc).and_then(|d| {
-                            d.path().map(|p| p.to_string_lossy().into_owned())
-                        })
+                        cx.editor
+                            .document(bl.view.doc)
+                            .and_then(|d| d.path().map(|p| p.to_string_lossy().into_owned()))
                     });
                 return ("buffer", path);
             }
@@ -513,9 +513,8 @@ impl Compositor {
         self.layers
             .iter()
             .any(|component| component.type_name() == type_name)
-    
-        || self.main_tree.has_component(type_name)
-}
+            || self.main_tree.has_component(type_name)
+    }
 
     pub fn find<T: 'static>(&mut self) -> Option<&mut T> {
         let type_name = std::any::type_name::<T>();
@@ -579,7 +578,11 @@ impl Compositor {
         component: Box<dyn Component>,
     ) -> Option<u64> {
         let active = self.main_tree.active();
-        let total = if dir == crate::ui::layout::SplitDir::H { self.area.width } else { self.area.height };
+        let total = if dir == crate::ui::layout::SplitDir::H {
+            self.area.width
+        } else {
+            self.area.height
+        };
         let share = if new_first {
             new_size as f32 / total.max(1) as f32
         } else {
@@ -588,7 +591,9 @@ impl Compositor {
         let ratio = share.clamp(0.1, 0.9);
         let new_id = self.main_tree.next_id_for_split();
         // 直接构造带 ratio 的 split
-        let ret = self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, new_id);
+        let ret = self
+            .main_tree
+            .split_side_ratio(active, dir, new_first, ratio, component, new_id);
         self.sync_layout_cache();
         ret
     }
@@ -603,14 +608,20 @@ impl Compositor {
         component: Box<dyn Component>,
     ) {
         let active = self.main_tree.active();
-        let total = if dir == crate::ui::layout::SplitDir::H { self.area.width } else { self.area.height };
+        let total = if dir == crate::ui::layout::SplitDir::H {
+            self.area.width
+        } else {
+            self.area.height
+        };
         let share = if new_first {
             new_size as f32 / total.max(1) as f32
         } else {
             1.0 - new_size as f32 / total.max(1) as f32
         };
         let ratio = share.clamp(0.1, 0.9);
-        let _ = self.main_tree.split_side_ratio(active, dir, new_first, ratio, component, id);
+        let _ = self
+            .main_tree
+            .split_side_ratio(active, dir, new_first, ratio, component, id);
         self.sync_layout_cache();
     }
 
@@ -639,7 +650,12 @@ impl Compositor {
     }
 
     /// 按方向调整叶子份额（H=左右 / V=上下；delta>0 增大该叶子）。返回是否调整。
-    pub fn resize_leaf_dir(&mut self, id: u64, dir: crate::ui::layout::SplitDir, delta: f32) -> bool {
+    pub fn resize_leaf_dir(
+        &mut self,
+        id: u64,
+        dir: crate::ui::layout::SplitDir,
+        delta: f32,
+    ) -> bool {
         let ret = self.main_tree.resize_leaf_dir(id, dir, delta);
         self.sync_layout_cache();
         ret
@@ -659,14 +675,24 @@ impl Compositor {
     }
 
     /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None
-    pub fn focus_leaf_dir(&mut self, id: u64, dir: crate::ui::layout::SplitDir, first: bool) -> Option<u64> {
+    pub fn focus_leaf_dir(
+        &mut self,
+        id: u64,
+        dir: crate::ui::layout::SplitDir,
+        first: bool,
+    ) -> Option<u64> {
         let ret = self.main_tree.focus_dir(id, dir, first);
         self.sync_layout_cache();
         ret
     }
 
     /// 与方向邻居交换内容（布局模式 H/J/K/L）；无邻居返回 false
-    pub fn swap_leaf_dir(&mut self, id: u64, dir: crate::ui::layout::SplitDir, first: bool) -> bool {
+    pub fn swap_leaf_dir(
+        &mut self,
+        id: u64,
+        dir: crate::ui::layout::SplitDir,
+        first: bool,
+    ) -> bool {
         let ret = self.main_tree.swap_dir(id, dir, first);
         self.sync_layout_cache();
         ret
@@ -868,10 +894,16 @@ impl Compositor {
             if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::PluginPanel>() {
                 p.reset_render_state();
             }
-            if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::plugin_popup::PluginPopup>() {
+            if let Some(p) = layer
+                .as_any_mut()
+                .downcast_mut::<crate::ui::plugin_popup::PluginPopup>()
+            {
                 p.reset_render_state();
             }
-            if let Some(p) = layer.as_any_mut().downcast_mut::<crate::ui::plugin_terminal::PluginTerminal>() {
+            if let Some(p) = layer
+                .as_any_mut()
+                .downcast_mut::<crate::ui::plugin_terminal::PluginTerminal>()
+            {
                 p.reset_render_state();
             }
         }
@@ -881,10 +913,12 @@ impl Compositor {
 
     /// 按类型统计层数量（测试/诊断）
     pub fn count_type(&self, type_name: &str) -> usize {
-        self.layers.iter().filter(|l| l.type_name() == type_name).count()
-    
-        + self.main_tree.count_type(type_name)
-}
+        self.layers
+            .iter()
+            .filter(|l| l.type_name() == type_name)
+            .count()
+            + self.main_tree.count_type(type_name)
+    }
 
     pub fn need_full_redraw(&mut self) {
         self.full_redraw = true;

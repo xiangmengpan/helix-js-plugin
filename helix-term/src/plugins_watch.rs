@@ -27,8 +27,8 @@ pub fn apply_watch(request: &helix_js::UiRequest) -> Result<()> {
             // notify 7 无内置防抖（DebouncedEvent 已移除）——用立即 watcher +
             // 防抖转发线程；事件经 mpsc 送达，转发线程按 500ms 静默窗口批量投递
             let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
-            let mut watcher = notify::recommended_watcher(tx)
-                .map_err(|e| anyhow!("watch '{path}': {e}"))?;
+            let mut watcher =
+                notify::recommended_watcher(tx).map_err(|e| anyhow!("watch '{path}': {e}"))?;
             let mode = if std::path::Path::new(path).is_dir() {
                 notify::RecursiveMode::Recursive
             } else {
@@ -48,7 +48,11 @@ pub fn apply_watch(request: &helix_js::UiRequest) -> Result<()> {
         }
         helix_js::UiRequest::Unwatch { id } => {
             // drop watcher → notify 线程停 → 转发线程 rx 断开自动退出
-            WATCHERS.get_or_init(Default::default).lock().unwrap().remove(id);
+            WATCHERS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .remove(id);
             Ok(())
         }
         _ => Ok(()),
@@ -98,6 +102,10 @@ fn event_to_change(ev: &notify::Event) -> Option<(&'static str, String)> {
         EventKind::Modify(_) => "modify",
         EventKind::Access(_) | EventKind::Other | EventKind::Any => return None,
     };
-    let path = if is_rename { ev.paths.last() } else { ev.paths.first() }?;
+    let path = if is_rename {
+        ev.paths.last()
+    } else {
+        ev.paths.first()
+    }?;
     Some((kind, path.to_string_lossy().into_owned()))
 }

@@ -21,7 +21,10 @@ helix.register_command("show-panel", () => { helix.open_panel({ side: "right", s
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":show-panel<ret>"),
                 Some(&|app| {
@@ -37,17 +40,26 @@ helix.register_command("show-panel", () => { helix.open_panel({ side: "right", s
                     );
                 }),
             ),
-            (Some(":panel-close<ret>"), Some(&|app| {
-                // LAST_PANEL_ID 已清空 → 不误报有面板，也不产生残留层
-                let (status, severity) = app.editor.get_status().unwrap();
-                assert!(matches!(severity, helix_core::diagnostic::Severity::Error), "panel-close reports no panel");
-                assert!(status.as_ref().contains("no panel open"));
-                assert!(!app.compositor.has_component(panel_type));
-            })),
-            (Some(":reload-demo<ret>"), Some(&|app| {
-                let (status, _) = app.editor.get_status().unwrap();
-                assert_eq!(status.as_ref(), "reloaded-ok");
-            })),
+            (
+                Some(":panel-close<ret>"),
+                Some(&|app| {
+                    // LAST_PANEL_ID 已清空 → 不误报有面板，也不产生残留层
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert!(
+                        matches!(severity, helix_core::diagnostic::Severity::Error),
+                        "panel-close reports no panel"
+                    );
+                    assert!(status.as_ref().contains("no panel open"));
+                    assert!(!app.compositor.has_component(panel_type));
+                }),
+            ),
+            (
+                Some(":reload-demo<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "reloaded-ok");
+                }),
+            ),
         ],
         false,
     )

@@ -33,7 +33,10 @@ async fn plugin_popup_edits_document() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":snippet<ret>"),
                 Some(&|app| {
@@ -45,8 +48,15 @@ async fn plugin_popup_edits_document() -> anyhow::Result<()> {
                 Some("<down><down><ret>"),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "CCChello\n", "snippet inserted at cursor");
-                    assert!(!app.compositor.has_component(popup_type), "popup closed after Enter");
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "CCChello\n",
+                        "snippet inserted at cursor"
+                    );
+                    assert!(
+                        !app.compositor.has_component(popup_type),
+                        "popup closed after Enter"
+                    );
                 }),
             ),
         ],

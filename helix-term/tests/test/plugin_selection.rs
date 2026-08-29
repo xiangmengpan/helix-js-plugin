@@ -26,9 +26,15 @@ async fn plugin_selection_upper() -> anyhow::Result<()> {
 
     // 初始选中 "hello"（#[hello|]# 标记）
     test_key_sequences(
-        &mut AppBuilder::new().with_file(file, None).with_input_text("#[hello|]# world\n").build()?,
+        &mut AppBuilder::new()
+            .with_file(file, None)
+            .with_input_text("#[hello|]# world\n")
+            .build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":upper<ret>"),
                 Some(&|app| {
@@ -43,7 +49,10 @@ async fn plugin_selection_upper() -> anyhow::Result<()> {
                 Some(":jumpend<ret>"),
                 Some(&|app| {
                     let (view, doc) = current_ref!(app.editor);
-                    let pos = doc.selection(view.id).primary().cursor(doc.text().slice(..));
+                    let pos = doc
+                        .selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..));
                     assert_eq!(pos, 11, "cursor after jumpend");
                 }),
             ),
@@ -77,7 +86,10 @@ async fn plugin_selection_multicursor() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some(":multi<ret>"),
                 Some(&|app| {

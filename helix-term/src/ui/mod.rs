@@ -1,6 +1,6 @@
 mod buffer_leaf;
-mod completion;
 pub mod comp_layout;
+mod completion;
 mod document;
 pub(crate) mod editor;
 mod info;
@@ -10,10 +10,10 @@ mod markdown;
 pub mod menu;
 pub mod overlay;
 pub mod picker;
-pub mod popup;
-pub mod plugin_popup;
 pub mod plugin_panel;
+pub mod plugin_popup;
 pub mod plugin_terminal;
+pub mod popup;
 pub mod prompt;
 mod select;
 mod spinner;
@@ -32,10 +32,10 @@ use helix_view::theme::Style;
 pub use markdown::Markdown;
 pub use menu::Menu;
 pub use picker::{Column as PickerColumn, FileLocation, Picker};
-pub use popup::Popup;
-pub use plugin_popup::PluginPopup;
 pub use plugin_panel::{PanelSide, PluginPanel};
+pub use plugin_popup::PluginPopup;
 pub use plugin_terminal::PluginTerminal;
+pub use popup::Popup;
 pub use prompt::{Prompt, PromptEvent};
 pub use select::Select;
 pub use spinner::{ProgressSpinners, Spinner};
@@ -831,4 +831,3 @@ mod tests {
         assert_eq!(get_child_if_single_dir(root.path()), None);
     }
 }
-

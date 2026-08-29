@@ -7,12 +7,12 @@ use anyhow::{anyhow, Result};
 pub(crate) struct Master(RawFd);
 
 impl Master {
-pub(crate) fn fd(&self) -> RawFd {
+    pub(crate) fn fd(&self) -> RawFd {
         self.0
     }
 
     /// 把裸 fd 交给 File，不再 Drop close（防双关）
-pub(crate) fn into_file(self) -> File {
+    pub(crate) fn into_file(self) -> File {
         let fd = self.0;
         std::mem::forget(self);
         unsafe { File::from_raw_fd(fd) }
@@ -45,7 +45,9 @@ pub(crate) fn open_pty() -> Result<(Master, File)> {
         if name.is_null() {
             return Err(anyhow!("ptsname: {}", std::io::Error::last_os_error()));
         }
-        let name = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+        let name = std::ffi::CStr::from_ptr(name)
+            .to_string_lossy()
+            .into_owned();
         let slave = libc::open(
             std::ffi::CString::new(name)?.as_ptr(),
             libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
@@ -57,9 +59,9 @@ pub(crate) fn open_pty() -> Result<(Master, File)> {
         // 默认尺寸：内核新建 pty 的 winsize 是 0×0，stty size 会读成 "0 0"；
         // 简报期望缺省 "24 80"。在子进程启动前设好（master ioctl 作用于同一 tty）。
         set_winsize(master.fd(), 24, 80)?; // 失败时 master/slave 由 Drop 兜底关闭
-        // termios 保持内核默认（ICANON|ECHO|ISIG|OPOST|ONLCR），与真实终端模拟器一致：
-        // 不设 raw——raw 关掉内核 ECHO 后，cat 等依赖内核回显的程序输入无显示；
-        // bash/readline 会自己切 raw 并回显，主控端无需代劳。
+                                           // termios 保持内核默认（ICANON|ECHO|ISIG|OPOST|ONLCR），与真实终端模拟器一致：
+                                           // 不设 raw——raw 关掉内核 ECHO 后，cat 等依赖内核回显的程序输入无显示；
+                                           // bash/readline 会自己切 raw 并回显，主控端无需代劳。
         Ok((master, slave))
     }
 }

@@ -190,7 +190,10 @@ impl EditorView {
                         merged.push(r);
                     }
                     if let Some(style) = scope.as_deref().and_then(|s| theme.find_highlight(s)) {
-                        overlays.push(syntax::OverlayHighlights::Homogeneous { highlight: style, ranges: merged });
+                        overlays.push(syntax::OverlayHighlights::Homogeneous {
+                            highlight: style,
+                            ranges: merged,
+                        });
                     }
                 }
             }
@@ -721,7 +724,8 @@ impl EditorView {
             };
 
             // JS 插件图标钩子：返回非空图标则拼到文件名前
-            let icon = helix_js::bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()));
+            let icon =
+                helix_js::bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()));
             let fname = match icon {
                 Some(icon) if !icon.is_empty() => format!("{icon} {fname}"),
                 _ => fname.to_string(),
@@ -1672,7 +1676,15 @@ impl Component for EditorView {
 
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
-            EditorView::render_view(cx.editor, doc, view, area, surface, is_focused, self.terminal_focused);
+            EditorView::render_view(
+                cx.editor,
+                doc,
+                view,
+                area,
+                surface,
+                is_focused,
+                self.terminal_focused,
+            );
         }
 
         // auto_info 渲染已移至 compositor 层(全屏坐标,不随叶子区域漂移)

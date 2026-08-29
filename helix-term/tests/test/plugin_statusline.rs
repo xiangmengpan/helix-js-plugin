@@ -29,7 +29,10 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some("i"), // 进入 insert 模式，触发重渲染
                 Some(&|app| {
@@ -125,13 +128,28 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
     // 左区 "LL" 在 x0，中区 "CC" 在 x≈27（居中），右区 "RR" 在右侧
     assert!(row0.starts_with("LL"), "left 区从左渲染: {row0:?}");
     // 左区段间 gap：left 区右边界（x=26）应为空格
-    assert_eq!(row0.chars().nth(2).unwrap(), ' ', "left 区段尾 gap: {row0:?}");
+    assert_eq!(
+        row0.chars().nth(2).unwrap(),
+        ' ',
+        "left 区段尾 gap: {row0:?}"
+    );
     // 中区居中：left_w=26, right_w=26, center_w=80-52=28，内容 "CC" 居中 → x=26+(28-2)/2=39
-    assert_eq!(row0.chars().nth(39).unwrap(), 'C', "center 区居中: {row0:?}");
-    assert_eq!(row0.chars().nth(40).unwrap(), 'C', "center 区第二字符: {row0:?}");
+    assert_eq!(
+        row0.chars().nth(39).unwrap(),
+        'C',
+        "center 区居中: {row0:?}"
+    );
+    assert_eq!(
+        row0.chars().nth(40).unwrap(),
+        'C',
+        "center 区第二字符: {row0:?}"
+    );
     // 右区右对齐（末尾 "RR"）
     assert!(row0.trim_end().ends_with("RR"), "right 区右对齐: {row0:?}");
-    assert!(!row0.contains("sl.txt"), "replace 模式不显示默认文件名组件: {row0:?}");
+    assert!(
+        !row0.contains("sl.txt"),
+        "replace 模式不显示默认文件名组件: {row0:?}"
+    );
 
     Ok(())
 }
@@ -169,7 +187,16 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
         let (view, doc) = current_ref!(app.editor);
-        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false, "editor", None);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            "editor",
+            None,
+        );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -213,7 +240,16 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
         let (view, doc) = current_ref!(app.editor);
-        let mut rc = helix_term::ui::statusline::RenderContext::new(&app.editor, doc, view, true, &spinners, false, "editor", None);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            "editor",
+            None,
+        );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -238,7 +274,10 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
     test_key_sequences(
         &mut AppBuilder::new().build()?,
         vec![
-            (Some(&format!(":plugin-load {}<ret>", plugin_path.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
             (
                 Some("C-w"),
                 Some(&|app| {
@@ -247,11 +286,21 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                     let mut buf = tui::buffer::Buffer::empty(area);
                     let spinners = helix_term::ui::ProgressSpinners::default();
                     let mut rc = helix_term::ui::statusline::RenderContext::new(
-                        &app.editor, doc, view, true, &spinners, true, "editor", None, // window_mode=true
+                        &app.editor,
+                        doc,
+                        view,
+                        true,
+                        &spinners,
+                        true,
+                        "editor",
+                        None, // window_mode=true
                     );
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
-                    assert!(rendered.contains("MODE_ON"), "window_mode 透传给 JS: {rendered:?}");
+                    assert!(
+                        rendered.contains("MODE_ON"),
+                        "window_mode 透传给 JS: {rendered:?}"
+                    );
                 }),
             ),
         ],
@@ -260,7 +309,6 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
-
 
 /// 窗口图标链路:active_leaf_type/active_leaf_path 透传给 replace 模式 JS 钩子
 #[tokio::test(flavor = "multi_thread")]

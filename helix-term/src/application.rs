@@ -143,8 +143,9 @@ impl Application {
         // 每个 app 从自己的 config.keys（已含默认+用户合并）建键位槽：进程内多个 app
         // （集成测试并行构造）互不污染，插件 helix.map 绑定经 job 通道写入同一槽。
         // ponytail: 启动快照——config-reload 不再热更新键位（需重启才能重载插件绑定）。
-        let editor_view =
-            Box::new(ui::EditorView::new(Keymaps::new(config.load().keys.clone())));
+        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(
+            config.load().keys.clone(),
+        )));
         // 编辑器成为布局树的主叶子（id=0）
         compositor.set_main_editor(editor_view);
 
@@ -180,16 +181,15 @@ impl Application {
                         for msg in helix_js::take_messages() {
                             editor.set_status(msg);
                         }
-                        if let Err(err) = crate::commands::typed::apply_ui_requests(
-                            helix_js::take_ui_requests(),
-                        ) {
+                        if let Err(err) =
+                            crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
+                        {
                             editor.set_error(format!("plugin '{}': {err}", init_path.display()));
                         }
                     }
-                    Err(err) => editor.set_error(format!(
-                        "plugin '{}' failed: {err}",
-                        init_path.display()
-                    )),
+                    Err(err) => {
+                        editor.set_error(format!("plugin '{}' failed: {err}", init_path.display()))
+                    }
                 }
             }
         }
@@ -655,8 +655,7 @@ impl Application {
 
             self.terminal.reconfigure((&default_config.editor).into())?;
             // 插件配置:合并 [plugins] 段覆盖 + 校验 → 缓存;错误显示
-            let (json, errors) =
-                crate::commands::typed::build_plugin_configs(&default_config);
+            let (json, errors) = crate::commands::typed::build_plugin_configs(&default_config);
             helix_js::cache_configs(&json);
             if let Some(first) = errors.first().cloned() {
                 self.editor.set_error(first);
@@ -1642,12 +1641,14 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
         helix_js::LspMethod::Completion => {
             (LanguageServerFeature::Completion, LspReqKind::Completion)
         }
-        helix_js::LspMethod::GotoDefinition => {
-            (LanguageServerFeature::GotoDefinition, LspReqKind::GotoDefinition)
-        }
-        helix_js::LspMethod::DocumentSymbols => {
-            (LanguageServerFeature::DocumentSymbols, LspReqKind::DocumentSymbols)
-        }
+        helix_js::LspMethod::GotoDefinition => (
+            LanguageServerFeature::GotoDefinition,
+            LspReqKind::GotoDefinition,
+        ),
+        helix_js::LspMethod::DocumentSymbols => (
+            LanguageServerFeature::DocumentSymbols,
+            LspReqKind::DocumentSymbols,
+        ),
     };
 
     let (view, doc) = current_ref!(editor);
@@ -1671,29 +1672,28 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
     let doc_id = doc.identifier();
 
     // client 方法返回 Option<impl Future>（capabilities 不支持 → None → resolve null）
-    let future: Option<LspFuture> =
-        match kind {
-            LspReqKind::Hover => client
-                .text_document_hover(doc_id.clone(), pos, None)
-                .map(|f| Box::pin(lsp_json(f)) as _),
-            LspReqKind::Completion => client
-                .completion(
-                    doc_id.clone(),
-                    pos,
-                    None,
-                    lsp::CompletionContext {
-                        trigger_kind: lsp::CompletionTriggerKind::INVOKED,
-                        trigger_character: None,
-                    },
-                )
-                .map(|f| Box::pin(lsp_json(f)) as _),
-            LspReqKind::GotoDefinition => client
-                .goto_definition(doc_id.clone(), pos, None)
-                .map(|f| Box::pin(lsp_json(f)) as _),
-            LspReqKind::DocumentSymbols => {
-                client.document_symbols(doc_id).map(|f| Box::pin(lsp_json(f)) as _)
-            }
-        };
+    let future: Option<LspFuture> = match kind {
+        LspReqKind::Hover => client
+            .text_document_hover(doc_id.clone(), pos, None)
+            .map(|f| Box::pin(lsp_json(f)) as _),
+        LspReqKind::Completion => client
+            .completion(
+                doc_id.clone(),
+                pos,
+                None,
+                lsp::CompletionContext {
+                    trigger_kind: lsp::CompletionTriggerKind::INVOKED,
+                    trigger_character: None,
+                },
+            )
+            .map(|f| Box::pin(lsp_json(f)) as _),
+        LspReqKind::GotoDefinition => client
+            .goto_definition(doc_id.clone(), pos, None)
+            .map(|f| Box::pin(lsp_json(f)) as _),
+        LspReqKind::DocumentSymbols => client
+            .document_symbols(doc_id)
+            .map(|f| Box::pin(lsp_json(f)) as _),
+    };
     let Some(future) = future else {
         let _ = helix_js::resolve_lsp(req.id, Ok(None));
         return;
@@ -1726,7 +1726,9 @@ where
     T: serde::Serialize,
 {
     match f.await {
-        Ok(Some(v)) => serde_json::to_value(&v).map(Some).map_err(|e| e.to_string()),
+        Ok(Some(v)) => serde_json::to_value(&v)
+            .map(Some)
+            .map_err(|e| e.to_string()),
         Ok(None) => Ok(None),
         Err(e) => Err(e.to_string()),
     }

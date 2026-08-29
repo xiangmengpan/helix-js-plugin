@@ -87,7 +87,10 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
                 .cursor(context.doc.text().slice(..));
             (
                 context.doc.text().char_to_line(pos),
-                pos - context.doc.text().line_to_char(context.doc.text().char_to_line(pos)),
+                pos - context
+                    .doc
+                    .text()
+                    .line_to_char(context.doc.text().char_to_line(pos)),
             )
         },
         total_lines: context.doc.text().len_lines(),
@@ -117,7 +120,10 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         let w = viewport.width as u32;
         let left_w = (w * zl as u32 / sum) as u16;
         let right_w = (w * zr as u32 / sum) as u16;
-        let center_w = viewport.width.saturating_sub(left_w).saturating_sub(right_w);
+        let center_w = viewport
+            .width
+            .saturating_sub(left_w)
+            .saturating_sub(right_w);
         let center_x = left_w;
         let right_x = left_w.saturating_add(center_w);
 
@@ -146,12 +152,15 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         surface.set_spans(viewport.x, viewport.y, &spans[0], left_w);
         // center 区：居中（内容宽 < 区域宽时居中）
         let center_offset = center_w.saturating_sub(spans[1].width() as u16) / 2;
-        surface.set_spans(viewport.x + center_x + center_offset, viewport.y, &spans[1], center_w);
+        surface.set_spans(
+            viewport.x + center_x + center_offset,
+            viewport.y,
+            &spans[1],
+            center_w,
+        );
         // right 区：右对齐（起点 = right_x + right_w - 内容宽）
         surface.set_spans(
-            viewport.x
-                + right_x
-                + right_w.saturating_sub(spans[2].width() as u16),
+            viewport.x + right_x + right_w.saturating_sub(spans[2].width() as u16),
             viewport.y,
             &spans[2],
             right_w,

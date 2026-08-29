@@ -12,20 +12,23 @@ mod state;
 mod theme;
 mod types;
 
-pub mod watch;
-pub mod diagnostics;
-pub mod cursor;
 pub mod config;
+pub mod cursor;
+pub mod diagnostics;
+pub mod watch;
 
 pub use commands::*;
-pub use types::DocChange;
 pub use icons::*;
-pub use input::{clear_popup_inputs, dispatch_input_key, input_edit, input_has_state, js_set_input_value, with_input_states, InputState};
+pub use input::{
+    clear_popup_inputs, dispatch_input_key, input_edit, input_has_state, js_set_input_value,
+    with_input_states, InputState,
+};
 pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
 pub use state::*;
 pub use theme::*;
+pub use types::DocChange;
 pub use types::*;
 
 use boa_engine::object::ObjectInitializer;
@@ -66,105 +69,445 @@ pub fn init() {
             let lsp_obj = {
                 let mut lsp_builder = ObjectInitializer::new(engine);
                 lsp_builder
-                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_hover), JsString::from("hover"), 1)
-                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_completion), JsString::from("completion"), 1)
-                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_goto_definition), JsString::from("goto_definition"), 1)
-                    .function(NativeFunction::from_fn_ptr(lsp::js_lsp_document_symbols), JsString::from("document_symbols"), 1);
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_hover),
+                        JsString::from("hover"),
+                        1,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_completion),
+                        JsString::from("completion"),
+                        1,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_goto_definition),
+                        JsString::from("goto_definition"),
+                        1,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(lsp::js_lsp_document_symbols),
+                        JsString::from("document_symbols"),
+                        1,
+                    );
                 lsp_builder.build()
             };
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
             let mut builder = ObjectInitializer::new(engine);
             builder
-                .function(NativeFunction::from_fn_ptr(commands::js_echo), JsString::from("echo"), 1)
-                .function(NativeFunction::from_fn_ptr(commands::js_begin_edit), JsString::from("begin_edit"), 0)
-                .function(NativeFunction::from_fn_ptr(commands::js_end_edit), JsString::from("end_edit"), 0)
-                .function(NativeFunction::from_fn_ptr(commands::js_by_path), JsString::from("by_path"), 1)
-                .function(NativeFunction::from_fn_ptr(commands::js_term_state), JsString::from("term_state"), 3)
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_echo),
+                    JsString::from("echo"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_begin_edit),
+                    JsString::from("begin_edit"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_end_edit),
+                    JsString::from("end_edit"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_by_path),
+                    JsString::from("by_path"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_term_state),
+                    JsString::from("term_state"),
+                    3,
+                )
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_register_command),
                     JsString::from("register_command"),
                     2,
                 )
-                .function(NativeFunction::from_fn_ptr(popup::js_open_popup), JsString::from("open_popup"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_set_component_render), JsString::from("set_component_render"), 2)
-                .function(NativeFunction::from_fn_ptr(popup::js_open_panel), JsString::from("open_panel"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_close_panel), JsString::from("close_panel"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_read_dir), JsString::from("read_dir"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_open_file), JsString::from("open_file"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_move_panel), JsString::from("move_panel"), 2)
-                .function(NativeFunction::from_fn_ptr(popup::js_set_buffer_icon), JsString::from("set_buffer_icon"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_set_completion_icon), JsString::from("set_completion_icon"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_el), JsString::from("el"), 2)
-                .function(NativeFunction::from_fn_ptr(input::js_set_input_value), JsString::from("set_input_value"), 3)
-                .function(NativeFunction::from_fn_ptr(commands::js_on), JsString::from("on"), 2)
-                .function(NativeFunction::from_fn_ptr(commands::js_map), JsString::from("map"), 3)
-                .function(NativeFunction::from_fn_ptr(commands::js_set_cursor), JsString::from("set_cursor"), 2)
-                .function(NativeFunction::from_fn_ptr(commands::js_set_selection), JsString::from("set_selection"), 4)
-                .function(NativeFunction::from_fn_ptr(commands::js_set_virtual_text), JsString::from("set_virtual_text"), 5)
-                .function(NativeFunction::from_fn_ptr(commands::js_set_highlight), JsString::from("set_highlight"), 7)
-                .function(NativeFunction::from_fn_ptr(popup::js_set_statusline), JsString::from("set_statusline"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_set_keymap_hint), JsString::from("set_keymap_hint"), 1)
-                .function(NativeFunction::from_fn_ptr(commands::js_load), JsString::from("load"), 1)
-                .function(NativeFunction::from_fn_ptr(commands::js_plugin), JsString::from("plugin"), 2)
-                .function(NativeFunction::from_fn_ptr(commands::js_export), JsString::from("export"), 1)
-                .function(NativeFunction::from_fn_ptr(commands::js_lazy), JsString::from("lazy"), 2)
-                .function(NativeFunction::from_fn_ptr(commands::js_run_command), JsString::from("run_command"), 1)
-                .function(NativeFunction::from_fn_ptr(commands::js_run), JsString::from("run"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_run_async), JsString::from("run_async"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_spawn), JsString::from("spawn"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_term_write), JsString::from("term_write"), 2)
-                .function(NativeFunction::from_fn_ptr(shell::js_term_kill), JsString::from("term_kill"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_read_file_async), JsString::from("read_file_async"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_write_file_async), JsString::from("write_file_async"), 2)
-                .function(NativeFunction::from_fn_ptr(shell::js_stat_async), JsString::from("stat_async"), 1)
-                .function(NativeFunction::from_fn_ptr(shell::js_glob_async), JsString::from("glob_async"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_open_terminal), JsString::from("open_terminal"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_term_feed), JsString::from("term_feed"), 2)
-                .function(NativeFunction::from_fn_ptr(popup::js_set_terminal_mode), JsString::from("set_terminal_mode"), 2)
-                .function(NativeFunction::from_fn_ptr(popup::js_term_clear), JsString::from("term_clear"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_term_save), JsString::from("term_save"), 2)
-                .function(NativeFunction::from_fn_ptr(popup::js_resize_term), JsString::from("resize_term"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_split), JsString::from("split"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_buffer_open), JsString::from("buffer_open"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_close_leaf), JsString::from("close_leaf"), 1)
-                .function(NativeFunction::from_fn_ptr(layout::js_zoom_leaf), JsString::from("zoom"), 1)
-                .function(NativeFunction::from_fn_ptr(layout::js_unzoom), JsString::from("unzoom"), 0)
-                .function(NativeFunction::from_fn_ptr(layout::js_resize_leaf), JsString::from("resize_leaf"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_resize_leaf_dir), JsString::from("layout_resize"), 3)
-                .function(NativeFunction::from_fn_ptr(layout::js_swap_leaves), JsString::from("layout_swap"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_minimize_leaf), JsString::from("layout_minimize"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir), JsString::from("layout_focus"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir), JsString::from("layout_swap_dir"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_equalize_leaf), JsString::from("layout_equalize"), 1)
-                .function(NativeFunction::from_fn_ptr(layout::js_layout_fix), JsString::from("layout_fix"), 2)
-                .function(NativeFunction::from_fn_ptr(layout::js_focus_leaf), JsString::from("focus"), 1)
-                .function(NativeFunction::from_fn_ptr(layout::js_get_layout), JsString::from("get_layout"), 0)
-                .function(NativeFunction::from_fn_ptr(layout::js_get_component_state), JsString::from("get_component_state"), 1)
-                .function(NativeFunction::from_fn_ptr(layout::js_buffers), JsString::from("buffers"), 0)
-                .function(NativeFunction::from_fn_ptr(layout::js_current_buffer), JsString::from("current_buffer"), 0)
-                .function(NativeFunction::from_fn_ptr(layout::js_focus_buffer), JsString::from("focus_buffer"), 1)
-                .function(NativeFunction::from_fn_ptr(watch::js_watch), JsString::from("watch"), 2)
-                .function(NativeFunction::from_fn_ptr(watch::js_unwatch), JsString::from("unwatch"), 1)
-                .function(NativeFunction::from_fn_ptr(diagnostics::js_diagnostics), JsString::from("diagnostics"), 0)
-                .function(NativeFunction::from_fn_ptr(config::js_define_config), JsString::from("define_config"), 2)
-                .function(NativeFunction::from_fn_ptr(config::js_get_config), JsString::from("get_config"), 1)
-                .function(NativeFunction::from_fn_ptr(config::js_get_config_docs), JsString::from("get_config_docs"), 1)
-                .function(NativeFunction::from_fn_ptr(layout::js_restore_layout), JsString::from("restore_layout"), 1)
-                .function(NativeFunction::from_fn_ptr(theme::js_set_theme), JsString::from("set_theme"), 1)
-                .function(NativeFunction::from_fn_ptr(theme::js_reset_theme), JsString::from("reset_theme"), 0)
-                .function(NativeFunction::from_fn_ptr(theme::js_get_style), JsString::from("get_style"), 1)
-                .function(NativeFunction::from_fn_ptr(theme::js_theme_info), JsString::from("theme_info"), 0)
-                .function(NativeFunction::from_fn_ptr(theme::js_set_theme_name), JsString::from("set_theme_name"), 1)
-                .function(NativeFunction::from_fn_ptr(icons::js_set_diagnostic_icons), JsString::from("set_diagnostic_icons"), 1)
-                .function(NativeFunction::from_fn_ptr(popup::js_term_list), JsString::from("term_list"), 0)
-                .function(NativeFunction::from_fn_ptr(popup::js_term_close), JsString::from("term_close"), 1);
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_open_popup),
+                    JsString::from("open_popup"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_component_render),
+                    JsString::from("set_component_render"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_open_panel),
+                    JsString::from("open_panel"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_close_panel),
+                    JsString::from("close_panel"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_read_dir),
+                    JsString::from("read_dir"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_open_file),
+                    JsString::from("open_file"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_move_panel),
+                    JsString::from("move_panel"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_buffer_icon),
+                    JsString::from("set_buffer_icon"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_completion_icon),
+                    JsString::from("set_completion_icon"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_el),
+                    JsString::from("el"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(input::js_set_input_value),
+                    JsString::from("set_input_value"),
+                    3,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_on),
+                    JsString::from("on"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_map),
+                    JsString::from("map"),
+                    3,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_set_cursor),
+                    JsString::from("set_cursor"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_set_selection),
+                    JsString::from("set_selection"),
+                    4,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_set_virtual_text),
+                    JsString::from("set_virtual_text"),
+                    5,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_set_highlight),
+                    JsString::from("set_highlight"),
+                    7,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_statusline),
+                    JsString::from("set_statusline"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_keymap_hint),
+                    JsString::from("set_keymap_hint"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_load),
+                    JsString::from("load"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_plugin),
+                    JsString::from("plugin"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_export),
+                    JsString::from("export"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_lazy),
+                    JsString::from("lazy"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_run_command),
+                    JsString::from("run_command"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_run),
+                    JsString::from("run"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_run_async),
+                    JsString::from("run_async"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_spawn),
+                    JsString::from("spawn"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_term_write),
+                    JsString::from("term_write"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_term_kill),
+                    JsString::from("term_kill"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_read_file_async),
+                    JsString::from("read_file_async"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_write_file_async),
+                    JsString::from("write_file_async"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_stat_async),
+                    JsString::from("stat_async"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(shell::js_glob_async),
+                    JsString::from("glob_async"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_open_terminal),
+                    JsString::from("open_terminal"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_term_feed),
+                    JsString::from("term_feed"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_set_terminal_mode),
+                    JsString::from("set_terminal_mode"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_term_clear),
+                    JsString::from("term_clear"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_term_save),
+                    JsString::from("term_save"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_resize_term),
+                    JsString::from("resize_term"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_split),
+                    JsString::from("split"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_buffer_open),
+                    JsString::from("buffer_open"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_close_leaf),
+                    JsString::from("close_leaf"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_zoom_leaf),
+                    JsString::from("zoom"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_unzoom),
+                    JsString::from("unzoom"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_resize_leaf),
+                    JsString::from("resize_leaf"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_resize_leaf_dir),
+                    JsString::from("layout_resize"),
+                    3,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_swap_leaves),
+                    JsString::from("layout_swap"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_minimize_leaf),
+                    JsString::from("layout_minimize"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir),
+                    JsString::from("layout_focus"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir),
+                    JsString::from("layout_swap_dir"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_equalize_leaf),
+                    JsString::from("layout_equalize"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_layout_fix),
+                    JsString::from("layout_fix"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_focus_leaf),
+                    JsString::from("focus"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_get_layout),
+                    JsString::from("get_layout"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_get_component_state),
+                    JsString::from("get_component_state"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_buffers),
+                    JsString::from("buffers"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_current_buffer),
+                    JsString::from("current_buffer"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_focus_buffer),
+                    JsString::from("focus_buffer"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(watch::js_watch),
+                    JsString::from("watch"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(watch::js_unwatch),
+                    JsString::from("unwatch"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(diagnostics::js_diagnostics),
+                    JsString::from("diagnostics"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(config::js_define_config),
+                    JsString::from("define_config"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(config::js_get_config),
+                    JsString::from("get_config"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(config::js_get_config_docs),
+                    JsString::from("get_config_docs"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_restore_layout),
+                    JsString::from("restore_layout"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(theme::js_set_theme),
+                    JsString::from("set_theme"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(theme::js_reset_theme),
+                    JsString::from("reset_theme"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(theme::js_get_style),
+                    JsString::from("get_style"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(theme::js_theme_info),
+                    JsString::from("theme_info"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(theme::js_set_theme_name),
+                    JsString::from("set_theme_name"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(icons::js_set_diagnostic_icons),
+                    JsString::from("set_diagnostic_icons"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_term_list),
+                    JsString::from("term_list"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(popup::js_term_close),
+                    JsString::from("term_close"),
+                    1,
+                );
             #[cfg(unix)]
-            builder.function(NativeFunction::from_fn_ptr(shell::js_term_resize), JsString::from("term_resize"), 3);
-            builder.property(JsString::from("lsp"), lsp_obj, Attribute::READONLY | Attribute::NON_ENUMERABLE);
+            builder.function(
+                NativeFunction::from_fn_ptr(shell::js_term_resize),
+                JsString::from("term_resize"),
+                3,
+            );
+            builder.property(
+                JsString::from("lsp"),
+                lsp_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
             let helix = builder.build();
             engine
-                .register_global_property(JsString::from("helix"), helix, Attribute::READONLY | Attribute::NON_ENUMERABLE)
+                .register_global_property(
+                    JsString::from("helix"),
+                    helix,
+                    Attribute::READONLY | Attribute::NON_ENUMERABLE,
+                )
                 .expect("register helix object");
             // 布局标签条组件 id(与 helix-term::compositor::TABBAR_ID 一致)
             engine
@@ -208,15 +551,26 @@ pub(crate) mod tests {
             "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("wk", &ctx).unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !fired.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        while !fired.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
             // 消费事件（让 worker 继续/完成），wake 在 send 时触发
             let _ = drain_term_events();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "wake should fire on event send");
+        assert!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            "wake should fire on event send"
+        );
     }
 
     #[test]
@@ -233,15 +587,26 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("ot", &ctx).unwrap());
         assert!(take_messages()[0].starts_with("pid:"));
         let reqs = take_ui_requests();
-        assert!(matches!(&reqs[0], UiRequest::OpenTerminal { side, size, .. } if side == "right" && *size == 40));
+        assert!(
+            matches!(&reqs[0], UiRequest::OpenTerminal { side, size, .. } if side == "right" && *size == 40)
+        );
         assert!(matches!(&reqs[1], UiRequest::TermFeed { chunk, .. } if chunk == "abc"));
         // 校验
-        assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "top", size: 10 });"#).is_err());
-        assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "right" });"#).is_err()); // 缺 size
+        assert!(
+            load_script(r#"helix.open_terminal({ cmd: "x", side: "top", size: 10 });"#).is_err()
+        );
+        assert!(load_script(r#"helix.open_terminal({ cmd: "x", side: "right" });"#).is_err());
+        // 缺 size
     }
 
     /// 交互 bash 启动不应报 "cannot set terminal process group"（缺 setsid/控制终端）。
@@ -259,7 +624,13 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("bi", &ctx).unwrap());
         let _ = take_messages();
         let pty_id = match &take_ui_requests()[0] {
@@ -319,7 +690,13 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("t3", &ctx).unwrap(), "第一次 open_terminal");
         let _ = take_messages();
         let pty_id = match &take_ui_requests()[0] {
@@ -334,7 +711,10 @@ pub(crate) mod tests {
             let _ = drain_term_events();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(run_command("t3", &ctx).unwrap(), "kill 后再 open_terminal 应成功");
+        assert!(
+            run_command("t3", &ctx).unwrap(),
+            "kill 后再 open_terminal 应成功"
+        );
         let _ = take_messages();
         let _ = take_ui_requests(); // 清空第二次 open 的请求，避免污染后续测试
     }
@@ -344,7 +724,7 @@ pub(crate) mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
         let dir = std::env::temp_dir().join(format!("helix-js-sidecar-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         std::fs::write(dir.join("b.js"), "b").unwrap();
@@ -368,7 +748,13 @@ pub(crate) mod tests {
             file = file_str,
         );
         load_script(&script).unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("sc", &ctx).unwrap());
         let msgs = take_messages();
         assert!(msgs[0].starts_with("count:3 sorted:true"), "{msgs:?}");
@@ -511,13 +897,21 @@ pub(crate) mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         // 编译器建议：matches! 守卫未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
-        assert!(matches!(&reqs[0], UiRequest::OpenPanel { id: _, side, size } if side == "right" && *size == 30));
+        assert!(
+            matches!(&reqs[0], UiRequest::OpenPanel { id: _, side, size } if side == "right" && *size == 30)
+        );
         assert!(matches!(&reqs[1], UiRequest::ClosePanel { id: _ }));
         assert!(take_messages()[0].starts_with("id:"));
         // 校验：side 白名单 / size / render
-        assert!(load_script(r#"helix.open_panel({ side: "top", size: 10, render: () => [] });"#).is_err());
+        assert!(
+            load_script(r#"helix.open_panel({ side: "top", size: 10, render: () => [] });"#)
+                .is_err()
+        );
         assert!(load_script(r#"helix.open_panel({ side: "right", size: 10 });"#).is_err()); // 缺 render
-        assert!(load_script(r#"helix.open_panel({ side: "right", size: "big", render: () => [] });"#).is_err());
+        assert!(load_script(
+            r#"helix.open_panel({ side: "right", size: "big", render: () => [] });"#
+        )
+        .is_err());
         crate::state::with_open_panels(|p| p.clear()); // 清 OPEN_PANELS，防污染后续测试
     }
 
@@ -540,18 +934,34 @@ pub(crate) mod tests {
         // 编译器建议：matches! 未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
         assert!(matches!(&reqs[0], UiRequest::OpenPanel { id: _, .. }));
         // 编译器要求：单臂 match 非穷尽 → 改 let-else（与 popup_lifecycle 同款）
-        let UiRequest::OpenPanel { id, .. } = reqs[0] else { unreachable!("expected OpenPanel") };
+        let UiRequest::OpenPanel { id, .. } = reqs[0] else {
+            unreachable!("expected OpenPanel")
+        };
         assert!(take_messages()[0].starts_with("pid:"));
         // popup_key 走同一注册表：Esc → close，其他 → handled
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
-        let esc = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        let esc = PluginKey {
+            name: "Esc".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
         assert_eq!(popup_key(id, &esc, &ctx).unwrap(), PopupKeyResult::Close);
         assert_eq!(take_messages(), vec!["panel-key:Esc"]);
         // panel_has_onkey：有 onKey → true（简报测试的补充断言）
         assert!(panel_has_onkey(id));
         // 无 onKey 的面板：false（helix-term 侧据此全 Ignore 穿透，不调 popup_key）
-        load_script(r#"helix.open_panel({ side: "left", size: 10, render: () => ["x"] });"#).unwrap();
-        let UiRequest::OpenPanel { id: id2, .. } = take_ui_requests()[0] else { unreachable!("expected OpenPanel") };
+        load_script(r#"helix.open_panel({ side: "left", size: 10, render: () => ["x"] });"#)
+            .unwrap();
+        let UiRequest::OpenPanel { id: id2, .. } = take_ui_requests()[0] else {
+            unreachable!("expected OpenPanel")
+        };
         assert!(!panel_has_onkey(id2));
         crate::state::with_open_panels(|p| p.clear()); // 清 OPEN_PANELS（两个面板未 close），防污染
         let _ = take_ui_requests();
@@ -574,7 +984,9 @@ pub(crate) mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
-        let UiRequest::OpenPopup { id, .. } = reqs[0] else { unreachable!("expected OpenPopup") };
+        let UiRequest::OpenPopup { id, .. } = reqs[0] else {
+            unreachable!("expected OpenPopup")
+        };
         assert_eq!(id, 1); // 自增从 1 开始
 
         let lines = render_popup(id, 40, 10, None).unwrap();
@@ -587,10 +999,26 @@ pub(crate) mod tests {
             ])
         );
 
-        let key = PluginKey { name: "Down".into(), shift: false, ctrl: false, alt: false };
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let key = PluginKey {
+            name: "Down".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Handled);
-        let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
+        let key = PluginKey {
+            name: "Esc".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
 
         close_popup(id).unwrap();
@@ -608,10 +1036,26 @@ pub(crate) mod tests {
             UiRequest::OpenPopup { id, .. } => id,
             _ => unreachable!("expected OpenPopup"),
         };
-        let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let key = PluginKey {
+            name: "Enter".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Ignored);
-        let key = PluginKey { name: "Esc".into(), shift: false, ctrl: false, alt: false };
+        let key = PluginKey {
+            name: "Esc".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
         close_popup(id).unwrap();
 
@@ -643,7 +1087,12 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 2);
         match &reqs[0] {
-            UiRequest::OpenPopup { width, height, position, .. } => {
+            UiRequest::OpenPopup {
+                width,
+                height,
+                position,
+                ..
+            } => {
                 assert_eq!(*width, Some(40));
                 assert_eq!(*height, Some(10));
                 assert_eq!(*position, Some((3, 4)));
@@ -651,7 +1100,12 @@ pub(crate) mod tests {
             other => panic!("expected OpenPopup, got {other:?}"),
         }
         match &reqs[1] {
-            UiRequest::OpenPopup { width, height, position, .. } => {
+            UiRequest::OpenPopup {
+                width,
+                height,
+                position,
+                ..
+            } => {
                 assert_eq!(*width, None);
                 assert_eq!(*height, None);
                 assert_eq!(*position, None);
@@ -678,7 +1132,10 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id, .. } => id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         let lines = render_popup(id, 40, 10, None).unwrap();
         assert_eq!(
             lines,
@@ -691,7 +1148,10 @@ pub(crate) mod tests {
         close_popup(id).unwrap();
         // 非法元素（缺 text / 非字符串非对象）→ Err
         load_script(r#"helix.open_popup({ render: () => [{ style: "error" }] });"#).unwrap();
-        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id, .. } => id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
     }
@@ -726,11 +1186,21 @@ pub(crate) mod tests {
             selection: ((0, 0), (0, 0)),
             docs: vec![],
         };
-        let key = PluginKey { name: "Enter".into(), shift: false, ctrl: false, alt: false };
+        let key = PluginKey {
+            name: "Enter".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
         assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
         assert_eq!(
             take_edits(),
-            vec![Edit { doc: None, start: (1, 2), end: (1, 2), insert: "XYZ".into() }]
+            vec![Edit {
+                doc: None,
+                start: (1, 2),
+                end: (1, 2),
+                insert: "XYZ".into()
+            }]
         );
         close_popup(id).unwrap();
     }
@@ -766,15 +1236,36 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (1, 2), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (1, 2),
+            selection: ((0, 0), (0, 0)),
+        };
         run_command("edit", &ctx).unwrap();
         let edits = take_edits();
         assert_eq!(
             edits,
             vec![
-                Edit { doc: None, start: (1, 2), end: (1, 2), insert: "ab".into() },
-                Edit { doc: None, start: (0, 0), end: (0, 5), insert: "new".into() },
-                Edit { doc: None, start: (3, 0), end: (4, 0), insert: String::new() },
+                Edit {
+                    doc: None,
+                    start: (1, 2),
+                    end: (1, 2),
+                    insert: "ab".into()
+                },
+                Edit {
+                    doc: None,
+                    start: (0, 0),
+                    end: (0, 5),
+                    insert: "new".into()
+                },
+                Edit {
+                    doc: None,
+                    start: (3, 0),
+                    end: (4, 0),
+                    insert: String::new()
+                },
             ]
         );
         // take_edits 清空
@@ -794,14 +1285,21 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("bad1", &ctx).is_err());
         assert!(take_edits().is_empty());
         assert!(run_command("bad2", &ctx).is_err());
         assert!(run_command("bad3", &ctx).is_err());
         assert!(take_edits().is_empty());
         // 正常命令运行后队列仍有值（供 helix-term 消费）
-        load_script(r#"helix.register_command("ok", (ctx) => { ctx.doc.insert(0, 0, "z"); });"#).unwrap();
+        load_script(r#"helix.register_command("ok", (ctx) => { ctx.doc.insert(0, 0, "z"); });"#)
+            .unwrap();
         run_command("ok", &ctx).unwrap();
         assert_eq!(take_edits().len(), 1);
     }
@@ -826,7 +1324,10 @@ pub(crate) mod tests {
             text: "current".into(),
             cursor: (0, 0),
             selection: ((0, 0), (0, 0)),
-            docs: vec![DocSnapshot { path: "/tmp/other.rs".into(), text: "other text".into() }],
+            docs: vec![DocSnapshot {
+                path: "/tmp/other.rs".into(),
+                text: "other text".into(),
+            }],
         };
         run_command("read-other", &ctx).unwrap();
     }
@@ -853,7 +1354,10 @@ pub(crate) mod tests {
             text: "current".into(),
             cursor: (0, 0),
             selection: ((0, 0), (0, 0)),
-            docs: vec![DocSnapshot { path: "/tmp/other.rs".into(), text: "other text".into() }],
+            docs: vec![DocSnapshot {
+                path: "/tmp/other.rs".into(),
+                text: "other text".into(),
+            }],
         };
         run_command("edit-other", &ctx).unwrap();
         let edits = take_edits();
@@ -885,7 +1389,13 @@ pub(crate) mod tests {
         assert!(!has_handlers("buffer-open"));
 
         // emit 带编辑队列清空 + 多处理器按注册顺序
-        let ctx = CommandContext { docs: vec![], path: Some("/tmp/e.rs".into()), text: "x".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: Some("/tmp/e.rs".into()),
+            text: "x".into(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         emit_event("save", &ctx, None).unwrap();
         assert!(take_edits().is_empty());
 
@@ -909,7 +1419,13 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(has_handlers("doc-change"));
-        let ctx = CommandContext { docs: vec![], path: None, text: "x".into(), cursor: (2, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: "x".into(),
+            cursor: (2, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         emit_event("doc-change", &ctx, None).unwrap();
         assert_eq!(take_messages(), vec!["changed:2"]);
         // 未注册的事件名仍然报错
@@ -930,7 +1446,13 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: "hello world".into(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: "hello world".into(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         // 两次插入:a 在 char0、b 在 char1 → 合并 old = (0,0)-(1,1),new = (0,0)-(1,2);行列按当前文本换算
         let changes = vec![((0, 0), (0, 1)), ((1, 1), (1, 2))];
         emit_doc_change(&ctx, &changes).unwrap();
@@ -973,7 +1495,13 @@ pub(crate) mod tests {
         };
         assert!(command.starts_with("__mapped_"), "command: {command}");
         // 注册的命令可以运行（与普通插件命令同机制）
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command(&command, &ctx).unwrap());
         assert_eq!(take_messages(), vec!["cb"]);
 
@@ -1005,7 +1533,11 @@ pub(crate) mod tests {
         load_script(r#"helix.set_statusline((ctx) => ctx.mode + ":" + ctx.cursor.row);"#).unwrap();
         assert_eq!(
             statusline_parts(&ctx),
-            Some(vec![StatuslinePart { text: "insert:3".into(), style: None, zone: None }])
+            Some(vec![StatuslinePart {
+                text: "insert:3".into(),
+                style: None,
+                zone: None
+            }])
         );
 
         // 数组 → 多段（字符串项 / {text, style} 项混用；style 透传）
@@ -1022,9 +1554,21 @@ pub(crate) mod tests {
         assert_eq!(
             statusline_parts(&ctx),
             Some(vec![
-                StatuslinePart { text: " N ".into(), style: Some("ui.statusline.normal".into()), zone: None },
-                StatuslinePart { text: "insert:3".into(), style: None, zone: None },
-                StatuslinePart { text: "2".into(), style: Some("error".into()), zone: Some("right".into()) },
+                StatuslinePart {
+                    text: " N ".into(),
+                    style: Some("ui.statusline.normal".into()),
+                    zone: None
+                },
+                StatuslinePart {
+                    text: "insert:3".into(),
+                    style: None,
+                    zone: None
+                },
+                StatuslinePart {
+                    text: "2".into(),
+                    style: Some("error".into()),
+                    zone: Some("right".into())
+                },
             ])
         );
 
@@ -1065,11 +1609,21 @@ pub(crate) mod tests {
     fn plugin_reload() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
-        load_script_named("a.js", r#"helix.register_command("reload-cmd", () => { helix.echo("v1"); });"#).unwrap();
+        load_script_named(
+            "a.js",
+            r#"helix.register_command("reload-cmd", () => { helix.echo("v1"); });"#,
+        )
+        .unwrap();
         load_script_named("b.js", r#"helix.on("save", () => {});"#).unwrap();
 
         assert!(has_handlers("save"));
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("reload-cmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["v1"]);
 
@@ -1094,7 +1648,8 @@ pub(crate) mod tests {
         reload_all().unwrap();
         let reqs = take_decorations();
         assert!(
-            reqs.iter().any(|r| r.doc.is_none() && matches!(r.kind, crate::types::DecorationKind::Clear)),
+            reqs.iter()
+                .any(|r| r.doc.is_none() && matches!(r.kind, crate::types::DecorationKind::Clear)),
             "reload 后应有全局 Clear: {reqs:?}"
         );
     }
@@ -1121,7 +1676,10 @@ pub(crate) mod tests {
         // reload：面板层还挂在 compositor 上 → 必须入队 ClosePanel 供 apply_ui_requests 移除
         reload_all().unwrap();
         let reqs = take_ui_requests();
-        assert!(matches!(&reqs[0], UiRequest::ClosePanel { .. }), "layer removed after reload");
+        assert!(
+            matches!(&reqs[0], UiRequest::ClosePanel { .. }),
+            "layer removed after reload"
+        );
         // LAST_PANEL_ID 已清空 → :panel-close 不再误报有面板
         assert!(close_last_panel().is_err());
     }
@@ -1153,13 +1711,17 @@ pub(crate) mod tests {
             reqs,
             vec![
                 CursorRequest::SetCursor { row: 2, col: 3 },
-                CursorRequest::SetSelection { anchor: (0, 1), head: (0, 5) },
+                CursorRequest::SetSelection {
+                    anchor: (0, 1),
+                    head: (0, 5)
+                },
             ]
         );
         assert_eq!(take_messages(), vec!["sel:0,1-0,5"]);
 
         // 类型错误 → 命令失败（run_command 返回 Err），请求队列被清空
-        load_script(r#"helix.register_command("badsel", (ctx) => { helix.set_cursor("x", 0); });"#).unwrap();
+        load_script(r#"helix.register_command("badsel", (ctx) => { helix.set_cursor("x", 0); });"#)
+            .unwrap();
         assert!(run_command("badsel", &ctx).is_err());
         assert!(take_cursor_requests().is_empty());
     }
@@ -1193,13 +1755,25 @@ pub(crate) mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
         // 成功路径
-        load_script(r#"helix.register_command("r1", () => { helix.echo(helix.run("echo hi")); });"#).unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        load_script(
+            r#"helix.register_command("r1", () => { helix.echo(helix.run("echo hi")); });"#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("r1", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["hi\n"]);
 
         // 非零退出码 → 错误
-        load_script(r#"helix.register_command("r2", () => { helix.run("echo boom >&2; exit 3"); });"#).unwrap();
+        load_script(
+            r#"helix.register_command("r2", () => { helix.run("echo boom >&2; exit 3"); });"#,
+        )
+        .unwrap();
         let err = run_command("r2", &ctx).unwrap_err().to_string();
         assert!(err.contains("command failed"), "err: {err}");
         assert!(err.contains("boom"), "stderr should be included: {err}");
@@ -1220,9 +1794,23 @@ pub(crate) mod tests {
         .unwrap();
         assert!(run_command("r4", &ctx).unwrap());
         let msg = take_messages();
-        assert!(msg[0].contains("tail:(truncated)"), "marker expected: {:?}", msg[0]);
-        let len: usize = msg[0].strip_prefix("len:").unwrap().split(" tail:").next().unwrap().parse().unwrap();
-        assert!(len <= 65536 + "(truncated)".len(), "truncated output, len={len}");
+        assert!(
+            msg[0].contains("tail:(truncated)"),
+            "marker expected: {:?}",
+            msg[0]
+        );
+        let len: usize = msg[0]
+            .strip_prefix("len:")
+            .unwrap()
+            .split(" tail:")
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            len <= 65536 + "(truncated)".len(),
+            "truncated output, len={len}"
+        );
     }
 
     /// 轮询 drain_term_events 直到谓词命中或超时（async 测试需要）。
@@ -1274,7 +1862,9 @@ pub(crate) mod tests {
         )
         .unwrap();
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
-        let TermEvent::Exit(id, code, stdout) = &events[0] else { unreachable!() };
+        let TermEvent::Exit(id, code, stdout) = &events[0] else {
+            unreachable!()
+        };
         assert_eq!(*code, 0);
         resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
         pump_jobs().unwrap();
@@ -1290,7 +1880,9 @@ pub(crate) mod tests {
         )
         .unwrap();
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
-        let TermEvent::Exit(id2, code2, _) = &events[0] else { unreachable!() };
+        let TermEvent::Exit(id2, code2, _) = &events[0] else {
+            unreachable!()
+        };
         assert_ne!(*code2, 0);
         resolve_term_event(*id2, TermEvent::Exit(*id2, *code2, None)).unwrap();
         pump_jobs().unwrap();
@@ -1307,11 +1899,24 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("sp", &ctx).unwrap());
-        let events = wait_for_term_event(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term")));
-        let ev = events.iter().find(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term"))).expect("chunk event");
-        let TermEvent::Chunk(id, chunk) = ev else { unreachable!() };
+        let events = wait_for_term_event(
+            |e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term")),
+        );
+        let ev = events
+            .iter()
+            .find(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term")))
+            .expect("chunk event");
+        let TermEvent::Chunk(id, chunk) = ev else {
+            unreachable!()
+        };
         resolve_term_event(*id, TermEvent::Chunk(*id, chunk.clone())).unwrap();
         assert!(take_messages().contains(&format!("chunk:{chunk}")));
 
@@ -1327,7 +1932,9 @@ pub(crate) mod tests {
         .unwrap();
         assert!(run_command("kp", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
-        let TermEvent::Exit(id, code, _) = &events[0] else { unreachable!() };
+        let TermEvent::Exit(id, code, _) = &events[0] else {
+            unreachable!()
+        };
         assert!(*code != 0, "killed process should have non-zero exit");
         resolve_term_event(*id, TermEvent::Exit(*id, *code, None)).unwrap();
         assert!(take_messages()[0].starts_with("killed:"));
@@ -1336,8 +1943,9 @@ pub(crate) mod tests {
         // 注:原 helix.run_async("x", 42) 断言是回调校验报错,现 JS 多参天然容忍 → 删除
         assert!(load_script(r#"helix.run_async(42);"#).is_err());
         assert!(load_script(r#"helix.spawn({ cmd: "x" });"#).is_err()); // 缺 onChunk
-        // term_write 未知 id 在 load 时不会执行（命令体），须放进命令里跑
-        load_script(r#"helix.register_command("badid", () => { helix.term_write(999, "x"); });"#).unwrap();
+                                                                        // term_write 未知 id 在 load 时不会执行（命令体），须放进命令里跑
+        load_script(r#"helix.register_command("badid", () => { helix.term_write(999, "x"); });"#)
+            .unwrap();
         assert!(run_command("badid", &ctx).is_err());
     }
 
@@ -1363,12 +1971,21 @@ pub(crate) mod tests {
             .iter()
             .find(|e| matches!(e, TermEvent::Exit(_, _, Some(_))))
             .expect("run_async exit");
-        let TermEvent::Exit(_, code, stdout) = ev else { unreachable!() };
+        let TermEvent::Exit(_, code, stdout) = ev else {
+            unreachable!()
+        };
         assert_eq!(*code, 0);
         let out = stdout.clone().unwrap_or_default();
         assert_eq!(out.len(), 19999, "aggregated bytes intact across chunks");
-        assert!(!out.contains('\u{FFFD}'), "no replacement chars in aggregated output");
-        assert_eq!(out.matches("中文").count(), 2857, "CJK lines preserved (7 bytes/line)");
+        assert!(
+            !out.contains('\u{FFFD}'),
+            "no replacement chars in aggregated output"
+        );
+        assert_eq!(
+            out.matches("中文").count(),
+            2857,
+            "CJK lines preserved (7 bytes/line)"
+        );
         for ev in &events {
             if let TermEvent::Exit(id, code, stdout) = ev {
                 resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
@@ -1376,7 +1993,10 @@ pub(crate) mod tests {
         }
         pump_jobs().unwrap();
         let msg = take_messages();
-        let m = msg.iter().find(|m| m.starts_with("len:")).expect("run_async echo");
+        let m = msg
+            .iter()
+            .find(|m| m.starts_with("len:"))
+            .expect("run_async echo");
         // JS 收到完整输出：19999 字节 = 2857 行 × 3 个 BMP 字符 = 8571 个 UTF-16 单元
         assert!(m.starts_with("len:8571 tail:"), "full output length: {m}");
         assert!(m.contains("中文"), "tail should be CJK: {m}");
@@ -1395,7 +2015,13 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("spcjk", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         // 按序 resolve：先 Chunk 后 Exit，JS 的 parts 才能拼全
@@ -1410,16 +2036,29 @@ pub(crate) mod tests {
             }
         }
         let msg = take_messages();
-        let m = msg.iter().find(|m| m.starts_with("spawn:0:")).expect("spawn echo");
+        let m = msg
+            .iter()
+            .find(|m| m.starts_with("spawn:0:"))
+            .expect("spawn echo");
         let mut it = m.splitn(4, ':');
         assert_eq!(it.next(), Some("spawn"));
         assert_eq!(it.next(), Some("0"));
         let chunks: usize = it.next().unwrap().parse().expect("chunk count");
-        assert!(chunks >= 4, "streaming should split into multiple chunks, got {chunks}");
+        assert!(
+            chunks >= 4,
+            "streaming should split into multiple chunks, got {chunks}"
+        );
         let joined = it.next().unwrap();
         assert_eq!(joined.len(), 19999, "streamed bytes intact across chunks");
-        assert!(!joined.contains('\u{FFFD}'), "no replacement chars in streamed output");
-        assert_eq!(joined.matches("中文").count(), 2857, "CJK lines preserved in streamed output");
+        assert!(
+            !joined.contains('\u{FFFD}'),
+            "no replacement chars in streamed output"
+        );
+        assert_eq!(
+            joined.matches("中文").count(),
+            2857,
+            "CJK lines preserved in streamed output"
+        );
     }
 
     /// 任务简报验证测试：四个异步 fs API（read/write/stat/glob）Promise → echo；
@@ -1435,7 +2074,8 @@ pub(crate) mod tests {
         std::fs::write(dir.join("a.txt"), "hello fs").unwrap();
         std::fs::write(dir.join("b.js"), "x").unwrap();
 
-        load_script(&format!(r#"
+        load_script(&format!(
+            r#"
         helix.register_command("fsd", () => {{
             helix.read_file_async("{dir}/a.txt").then((content) => {{
                 helix.echo("read::" + content);
@@ -1450,9 +2090,18 @@ pub(crate) mod tests {
                 helix.echo("glob:" + paths.length);
             }});
         }});
-    "#, dir = dir.display())).unwrap();
+    "#,
+            dir = dir.display()
+        ))
+        .unwrap();
 
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("fsd", &ctx).unwrap());
         // 轮询 drain_async_events 直到四个回调都到（wait_for_async 辅助，仿 wait_for_term_event）
         let mut events = Vec::new();
@@ -1463,7 +2112,10 @@ pub(crate) mod tests {
         // resolve 全部（事件里带 id）→ 断言回调 echo
         for ev in events {
             let id = match &ev {
-                AsyncEvent::FsRead(id, _) | AsyncEvent::FsWrite(id, _) | AsyncEvent::FsStat(id, _) | AsyncEvent::FsGlob(id, _) => *id,
+                AsyncEvent::FsRead(id, _)
+                | AsyncEvent::FsWrite(id, _)
+                | AsyncEvent::FsStat(id, _)
+                | AsyncEvent::FsGlob(id, _) => *id,
             };
             resolve_async_event(id, ev).unwrap();
         }
@@ -1471,49 +2123,72 @@ pub(crate) mod tests {
         let msgs = take_messages();
         assert!(msgs.iter().any(|m| m == "read::hello fs"), "{msgs:?}");
         assert!(msgs.iter().any(|m| m == "write:ok"), "{msgs:?}");
-        assert!(msgs.iter().any(|m| m.starts_with("stat:8:false")), "{msgs:?}");
+        assert!(
+            msgs.iter().any(|m| m.starts_with("stat:8:false")),
+            "{msgs:?}"
+        );
         assert!(msgs.iter().any(|m| m == "glob:1"), "{msgs:?}");
-        assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap(), "written");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("out.txt")).unwrap(),
+            "written"
+        );
 
         // review: ** 中缀（`dir/**/*.js`）——嵌套目录也要命中（独立回合：wait_for_async 为
         // any 语义，同一事件类型不能连续 wait 两次）
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/deep.js"), "d").unwrap();
-        load_script(&format!(r#"
+        load_script(&format!(
+            r#"
         helix.register_command("fsd2", () => {{
             helix.glob_async("{dir}/**/*.js").then((paths) => {{
                 helix.echo("glob2::" + paths.length);
             }});
         }});
-    "#, dir = dir.display())).unwrap();
+    "#,
+            dir = dir.display()
+        ))
+        .unwrap();
         assert!(run_command("fsd2", &ctx).unwrap());
         let mut g2 = Vec::new();
         wait_for_async(&mut g2, |e| matches!(e, AsyncEvent::FsGlob(_, _)));
         for ev in g2 {
             let id = match &ev {
-                AsyncEvent::FsRead(id, _) | AsyncEvent::FsWrite(id, _) | AsyncEvent::FsStat(id, _) | AsyncEvent::FsGlob(id, _) => *id,
+                AsyncEvent::FsRead(id, _)
+                | AsyncEvent::FsWrite(id, _)
+                | AsyncEvent::FsStat(id, _)
+                | AsyncEvent::FsGlob(id, _) => *id,
             };
             resolve_async_event(id, ev).unwrap();
         }
         pump_jobs().unwrap();
         let msgs2 = take_messages();
-        assert!(msgs2.iter().any(|m| m == "glob2::2"), "** 应命中根目录+嵌套: {msgs2:?}");
+        assert!(
+            msgs2.iter().any(|m| m == "glob2::2"),
+            "** 应命中根目录+嵌套: {msgs2:?}"
+        );
 
         // 错误路径：读不存在 → err 非空
-        load_script(&format!(r#"
+        load_script(&format!(
+            r#"
         helix.register_command("fsbad", () => {{
             helix.read_file_async("{dir}/nope.txt").catch((e) => {{
                 helix.echo("bad:" + (e !== null ? "err" : "noerr"));
             }});
         }});
-    "#, dir = dir.display())).unwrap();
+    "#,
+            dir = dir.display()
+        ))
+        .unwrap();
         assert!(run_command("fsbad", &ctx).unwrap());
         let mut bad = Vec::new();
         wait_for_async(&mut bad, |e| matches!(e, AsyncEvent::FsRead(_, _)));
         // resolve → 断言
         for ev in bad {
             let id = match &ev {
-                AsyncEvent::FsRead(id, _) | AsyncEvent::FsWrite(id, _) | AsyncEvent::FsStat(id, _) | AsyncEvent::FsGlob(id, _) => *id,
+                AsyncEvent::FsRead(id, _)
+                | AsyncEvent::FsWrite(id, _)
+                | AsyncEvent::FsStat(id, _)
+                | AsyncEvent::FsGlob(id, _) => *id,
             };
             resolve_async_event(id, ev).unwrap();
         }
@@ -1544,7 +2219,11 @@ pub(crate) mod tests {
         let explicit = glob_matches("./*.js"); // ./ 归一化与裸模式一致
         std::env::set_current_dir(cwd).unwrap();
         assert_eq!(bare.unwrap(), vec!["x.js"], "裸 * 不跨目录分隔符");
-        assert_eq!(dbl.unwrap(), vec!["sub/z.js", "x.js"], "** 跨目录（含零层）");
+        assert_eq!(
+            dbl.unwrap(),
+            vec!["sub/z.js", "x.js"],
+            "** 跨目录（含零层）"
+        );
         assert_eq!(explicit.unwrap(), vec!["x.js"], "前导 ./ 归一化");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1568,7 +2247,10 @@ pub(crate) mod tests {
             "#,
         )
         .unwrap();
-        let id = match &take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => *id, other => panic!("expected OpenPopup, got {other:?}") };
+        let id = match &take_ui_requests()[0] {
+            UiRequest::OpenPopup { id, .. } => *id,
+            other => panic!("expected OpenPopup, got {other:?}"),
+        };
         // render 传 focus → JS render(focus, ctx) 收到（focus 样式分支由 JS 处理，这里验证渲染不崩 + focusables 收集）
         let content = render_popup(id, 60, 20, Some("btn1")).unwrap();
         let mut focusables = Vec::new();
@@ -1604,7 +2286,13 @@ pub(crate) mod tests {
             "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("tm", &ctx).unwrap());
         let reqs = take_ui_requests();
         assert!(matches!(&reqs[0], UiRequest::OpenTerminal { .. }));
@@ -1641,14 +2329,22 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
 
         // tty：stdin 是 pty → 输出 /dev/pts/N（CRLF 行尾，用 contains 断言）
         assert!(run_command("pty-tty", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         for ev in &events {
             match ev {
-                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Chunk(id, c) => {
+                    resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap()
+                }
                 TermEvent::Exit(id, code, stdout) => {
                     resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
                 }
@@ -1664,7 +2360,9 @@ pub(crate) mod tests {
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         for ev in &events {
             match ev {
-                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Chunk(id, c) => {
+                    resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap()
+                }
                 TermEvent::Exit(id, code, stdout) => {
                     resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
                 }
@@ -1683,11 +2381,17 @@ pub(crate) mod tests {
         while !got_exit && std::time::Instant::now() < deadline {
             for e in drain_term_events() {
                 let is_exit = matches!(e, TermEvent::Exit(_, _, _));
-                let id = match &e { TermEvent::Chunk(id, _) | TermEvent::Exit(id, _, _) => *id };
+                let id = match &e {
+                    TermEvent::Chunk(id, _) | TermEvent::Exit(id, _, _) => *id,
+                };
                 let _ = resolve_term_event(id, e);
-                if is_exit { got_exit = true; }
+                if is_exit {
+                    got_exit = true;
+                }
             }
-            if !got_exit { std::thread::sleep(std::time::Duration::from_millis(20)); }
+            if !got_exit {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
         assert!(got_exit, "cat should exit after kill");
         let msgs = take_messages();
@@ -1701,7 +2405,9 @@ pub(crate) mod tests {
         );
 
         // 校验：pty 非布尔 / resize 未知 id → 报错
-        assert!(load_script(r#"helix.spawn({ pty: "yes", cmd: "tty", onChunk: () => {} });"#).is_err());
+        assert!(
+            load_script(r#"helix.spawn({ pty: "yes", cmd: "tty", onChunk: () => {} });"#).is_err()
+        );
         assert!(run_command("pty-badresize", &ctx).is_err());
     }
 
@@ -1721,12 +2427,20 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("pty-resize", &ctx).unwrap());
         let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
         for ev in &events {
             match ev {
-                TermEvent::Chunk(id, c) => resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap(),
+                TermEvent::Chunk(id, c) => {
+                    resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap()
+                }
                 TermEvent::Exit(id, code, stdout) => {
                     resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
                 }
@@ -1754,7 +2468,13 @@ pub(crate) mod tests {
         .unwrap();
 
         reload_all().unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("ccmd", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["ok"]);
     }
@@ -1800,7 +2520,13 @@ pub(crate) mod tests {
             icons = icons_abs,
         );
         load_script_named("driver.js", &script).unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("deps-run", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["feat:feat icons:icons same:true"]);
 
@@ -1845,7 +2571,11 @@ pub(crate) mod tests {
         set_plugins_dir(dir.path().to_path_buf());
 
         // 导出 + 加载往返
-        std::fs::write(dir.path().join("exp.js"), r#"helix.export({ a: 1, b: "x" });"#).unwrap();
+        std::fs::write(
+            dir.path().join("exp.js"),
+            r#"helix.export({ a: 1, b: "x" });"#,
+        )
+        .unwrap();
         load_script_named("init.js", r#"helix.load("exp.js");"#).unwrap();
         // init.js 的 load 本身无法断言返回值——直接测 js_load 路径：
         // 用 helix.run_command 间接：注册命令调用 load 并把结果 echo 出来
@@ -1864,7 +2594,13 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("load-exp", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["a:1 b:x"]);
         assert!(run_command("load-cached", &ctx).unwrap());
@@ -1897,7 +2633,11 @@ pub(crate) mod tests {
         assert_eq!(take_messages(), vec!["at:3,7"]);
 
         // 校验：未知文件 → 抛错
-        load_script_named("bad-driver.js", r#"helix.register_command("bad-load", () => { helix.load("nope.js"); });"#).unwrap();
+        load_script_named(
+            "bad-driver.js",
+            r#"helix.register_command("bad-load", () => { helix.load("nope.js"); });"#,
+        )
+        .unwrap();
         assert!(run_command("bad-load", &ctx).is_err());
 
         std::mem::forget(dir);
@@ -1927,19 +2667,30 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("tree", &ctx).unwrap());
         assert_eq!(take_messages(), vec!["type:text text:hello w:10"]);
 
         let reqs = take_ui_requests();
-        let id = match &reqs[0] { UiRequest::OpenPopup { id, .. } => *id, _ => unreachable!("expected OpenPopup") };
+        let id = match &reqs[0] {
+            UiRequest::OpenPopup { id, .. } => *id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         match render_popup(id, 40, 10, None).unwrap() {
             Content::Tree(root) => {
                 assert!(matches!(&root, CompNode::Col { .. }));
                 match &root {
                     CompNode::Col { children, .. } => {
                         assert_eq!(children.len(), 3);
-                        assert!(matches!(&children[0], CompNode::Text { spans, .. } if spans.len() == 1 && spans[0].text == "title" && spans[0].style.as_deref() == Some("error")));
+                        assert!(
+                            matches!(&children[0], CompNode::Text { spans, .. } if spans.len() == 1 && spans[0].text == "title" && spans[0].style.as_deref() == Some("error"))
+                        );
                         assert!(matches!(&children[1], CompNode::Row { .. }));
                         assert!(matches!(&children[2], CompNode::Scroll { .. }));
                     }
@@ -1951,7 +2702,10 @@ pub(crate) mod tests {
         close_popup(id).unwrap();
         // 非法节点类型 → Err
         load_script(r#"helix.open_popup({ render: () => ({ type: "bogus" }) });"#).unwrap();
-        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id, .. } => id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
     }
@@ -1977,29 +2731,71 @@ pub(crate) mod tests {
         )
         .unwrap();
         let reqs = take_ui_requests();
-        let id = match &reqs[0] { UiRequest::OpenPopup { id, .. } => *id, _ => unreachable!("expected OpenPopup") };
+        let id = match &reqs[0] {
+            UiRequest::OpenPopup { id, .. } => *id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         match render_popup(id, 40, 10, None).unwrap() {
             Content::Tree(CompNode::Col { children, .. }) => {
                 assert_eq!(children.len(), 6);
-                assert!(matches!(&children[0], CompNode::Scroll { height: 4, offset: Some(2), .. }));
-                assert!(matches!(&children[1], CompNode::Text { flex: Some(2), wrap: true, .. }));
-                assert!(matches!(&children[2], CompNode::Text { flex: None, wrap: false, .. }));
-                assert!(matches!(&children[3], CompNode::Row { gap: 1, flex: Some(3), children, .. }
-                    if matches!(&children[0], CompNode::Text { flex: Some(1), .. })));
-                assert!(matches!(&children[4], CompNode::Button { flex: Some(1), .. }));
-                assert!(matches!(&children[5], CompNode::Input { flex: Some(2), .. }));
+                assert!(matches!(
+                    &children[0],
+                    CompNode::Scroll {
+                        height: 4,
+                        offset: Some(2),
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    &children[1],
+                    CompNode::Text {
+                        flex: Some(2),
+                        wrap: true,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    &children[2],
+                    CompNode::Text {
+                        flex: None,
+                        wrap: false,
+                        ..
+                    }
+                ));
+                assert!(
+                    matches!(&children[3], CompNode::Row { gap: 1, flex: Some(3), children, .. }
+                    if matches!(&children[0], CompNode::Text { flex: Some(1), .. }))
+                );
+                assert!(matches!(
+                    &children[4],
+                    CompNode::Button { flex: Some(1), .. }
+                ));
+                assert!(matches!(
+                    &children[5],
+                    CompNode::Input { flex: Some(2), .. }
+                ));
             }
             _ => panic!("expected tree"),
         }
         close_popup(id).unwrap();
         // 类型错误：flex 传字符串 → Err（el 构造时即抛）
-        load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { flex: "big" }) });"#).unwrap();
-        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        load_script(
+            r#"helix.open_popup({ render: () => helix.el("text", "x", { flex: "big" }) });"#,
+        )
+        .unwrap();
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id, .. } => id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
         // 类型错误：wrap 传数字 → Err
-        load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { wrap: 1 }) });"#).unwrap();
-        let id = match take_ui_requests()[0] { UiRequest::OpenPopup { id, .. } => id, _ => unreachable!("expected OpenPopup") };
+        load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { wrap: 1 }) });"#)
+            .unwrap();
+        let id = match take_ui_requests()[0] {
+            UiRequest::OpenPopup { id, .. } => id,
+            _ => unreachable!("expected OpenPopup"),
+        };
         assert!(render_popup(id, 40, 10, None).is_err());
         close_popup(id).unwrap();
     }
@@ -2027,13 +2823,29 @@ pub(crate) mod tests {
         .unwrap();
         use crate::commands::TermKeyDecision;
         // term-key 映射
-        assert!(matches!(emit_term_key(1, "esc", false, false, false), Some(TermKeyDecision::Minimize)));
-        assert!(matches!(emit_term_key(1, "x", false, true, false), Some(TermKeyDecision::Close)));
-        assert!(matches!(emit_term_key(1, "a", false, false, false), Some(TermKeyDecision::Pass)));
+        assert!(matches!(
+            emit_term_key(1, "esc", false, false, false),
+            Some(TermKeyDecision::Minimize)
+        ));
+        assert!(matches!(
+            emit_term_key(1, "x", false, true, false),
+            Some(TermKeyDecision::Close)
+        ));
+        assert!(matches!(
+            emit_term_key(1, "a", false, false, false),
+            Some(TermKeyDecision::Pass)
+        ));
         // term-close:false → 阻止
         assert!(emit_term_close(7, "esc"), "handler 返回 false → 阻止关闭");
         // 通知型钩子(参数不经 boa 也可构造)
-        emit_hook("term-resize", &[JsValue::from(1_i32), JsValue::from(24_i32), JsValue::from(80_i32)]);
+        emit_hook(
+            "term-resize",
+            &[
+                JsValue::from(1_i32),
+                JsValue::from(24_i32),
+                JsValue::from(80_i32),
+            ],
+        );
     }
 
     /// term_state 持久化读写(临时 HOME 隔离)
@@ -2053,9 +2865,15 @@ pub(crate) mod tests {
         )
         .unwrap();
         crate::state::with_engine(|engine| {
-            let v1 = engine.global_object().get(JsString::from("__st"), engine).unwrap();
+            let v1 = engine
+                .global_object()
+                .get(JsString::from("__st"), engine)
+                .unwrap();
             assert!(v1.is_undefined(), "不存在 → undefined");
-            let v2 = engine.global_object().get(JsString::from("__st2"), engine).unwrap();
+            let v2 = engine
+                .global_object()
+                .get(JsString::from("__st2"), engine)
+                .unwrap();
             assert_eq!(
                 v2.as_string().unwrap().to_std_string_escaped(),
                 "/tmp/proj",
@@ -2076,7 +2894,8 @@ pub(crate) mod tests {
         assert!(load_script(r#"helix.set_component_render("x", () => []);"#).is_err());
         assert!(load_script(r#"helix.set_component_render(3, 42);"#).is_err());
         // 注册后 render_component 可读
-        load_script(r#"helix.set_component_render(3, () => [{ type: "text", text: "hi-view" }]);"#).unwrap();
+        load_script(r#"helix.set_component_render(3, () => [{ type: "text", text: "hi-view" }]);"#)
+            .unwrap();
         let content = render_component(3, 10, 1, None).unwrap();
         // 数组返回 → Lines;组件树对象 → Tree;两种都支持(与 popup render 同语义)
         let joined = match &content {
@@ -2131,13 +2950,21 @@ pub(crate) mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
         // 无缓存 → null/undefined
-        load_script(r#"globalThis.__b = helix.buffers(); globalThis.__c = helix.current_buffer();"#).unwrap();
+        load_script(
+            r#"globalThis.__b = helix.buffers(); globalThis.__c = helix.current_buffer();"#,
+        )
+        .unwrap();
         crate::state::with_engine(|engine| {
-            let v = engine.global_object().get(JsString::from("__b"), engine).unwrap();
+            let v = engine
+                .global_object()
+                .get(JsString::from("__b"), engine)
+                .unwrap();
             assert!(v.is_null(), "无缓存 buffers → null");
         });
         // 缓存写入 → buffers 数组 / current id
-        crate::state::cache_buffers(r#"{"current":3,"buffers":[{"id":3,"path":"/a.rs","name":"a.rs","dirty":false,"language":"rust"},{"id":7,"path":null,"name":"[scratch]","dirty":true,"language":null}]}"#);
+        crate::state::cache_buffers(
+            r#"{"current":3,"buffers":[{"id":3,"path":"/a.rs","name":"a.rs","dirty":false,"language":"rust"},{"id":7,"path":null,"name":"[scratch]","dirty":true,"language":null}]}"#,
+        );
         load_script(
             r#"
             globalThis.__bs = helix.buffers();
@@ -2147,18 +2974,25 @@ pub(crate) mod tests {
         )
         .unwrap();
         crate::state::with_engine(|engine| {
-            let arr = engine.global_object().get(JsString::from("__bs"), engine).unwrap();
+            let arr = engine
+                .global_object()
+                .get(JsString::from("__bs"), engine)
+                .unwrap();
             let arr_obj = arr.as_object().unwrap();
             let arr = boa_engine::object::builtins::JsArray::from_object(arr_obj.clone()).unwrap();
             let len: usize = arr.length(engine).unwrap() as usize;
             assert_eq!(len, 2, "buffers 数组长度");
-            let cur = engine.global_object().get(JsString::from("__cur"), engine).unwrap();
+            let cur = engine
+                .global_object()
+                .get(JsString::from("__cur"), engine)
+                .unwrap();
             assert_eq!(cur.as_number().unwrap() as u64, 3, "current_buffer id");
         });
         // focus_buffer 入队 FocusBuffer
         let reqs = take_ui_requests();
         assert!(
-            reqs.iter().any(|r| matches!(r, UiRequest::FocusBuffer { id: 7 })),
+            reqs.iter()
+                .any(|r| matches!(r, UiRequest::FocusBuffer { id: 7 })),
             "focus_buffer 入队 FocusBuffer"
         );
     }
@@ -2171,14 +3005,22 @@ pub(crate) mod tests {
         // 未注册 → null
         load_script(r#"globalThis.__cs = helix.get_component_state(7);"#).unwrap();
         crate::state::with_engine(|engine| {
-            let v = engine.global_object().get(JsString::from("__cs"), engine).unwrap();
+            let v = engine
+                .global_object()
+                .get(JsString::from("__cs"), engine)
+                .unwrap();
             assert!(v.is_null(), "未注册 → null");
         });
         // 注册 JSON 提供者 → 对象
-        crate::state::register_component_state(7, |_| r#"{"mode":"insert","title":"bash"}"#.to_string());
+        crate::state::register_component_state(7, |_| {
+            r#"{"mode":"insert","title":"bash"}"#.to_string()
+        });
         load_script(r#"globalThis.__cs2 = helix.get_component_state(7);"#).unwrap();
         crate::state::with_engine(|engine| {
-            let v = engine.global_object().get(JsString::from("__cs2"), engine).unwrap();
+            let v = engine
+                .global_object()
+                .get(JsString::from("__cs2"), engine)
+                .unwrap();
             let obj = v.as_object().unwrap();
             let mode = obj.get(JsString::from("mode"), engine).unwrap();
             assert_eq!(mode.as_string().unwrap().to_std_string_escaped(), "insert");
@@ -2223,12 +3065,26 @@ pub(crate) mod tests {
         load_script(r#"helix.register_command("noop", () => {});"#).unwrap();
 
         // 1. 未开启事务:编辑入队后可取走
-        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "a".into() }));
+        crate::state::with_edits(|e| {
+            e.push(crate::types::Edit {
+                doc: None,
+                start: (0, 0),
+                end: (0, 0),
+                insert: "a".into(),
+            })
+        });
         assert_eq!(take_edits().len(), 1);
 
         // 2. begin 后编辑入队,take_edits 返回空(积压)
         load_script("helix.begin_edit();").unwrap();
-        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "b".into() }));
+        crate::state::with_edits(|e| {
+            e.push(crate::types::Edit {
+                doc: None,
+                start: (0, 0),
+                end: (0, 0),
+                insert: "b".into(),
+            })
+        });
         assert!(take_edits().is_empty(), "txn open should hold edits");
 
         // 3. end 后 take_edits 取到积压
@@ -2248,7 +3104,13 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = crate::CommandContext { docs: vec![], path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)) };
+        let ctx = crate::CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
         assert!(run_command("be", &ctx).unwrap());
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "begin/end 包住的编辑合并取走");
@@ -2256,7 +3118,14 @@ pub(crate) mod tests {
 
         // 5. 嵌套 begin/end:深度计数,内层 end 不释放外层
         load_script("helix.begin_edit(); helix.begin_edit();").unwrap();
-        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "d".into() }));
+        crate::state::with_edits(|e| {
+            e.push(crate::types::Edit {
+                doc: None,
+                start: (0, 0),
+                end: (0, 0),
+                insert: "d".into(),
+            })
+        });
         assert!(take_edits().is_empty(), "嵌套:深度 2 仍积压");
         load_script("helix.end_edit();").unwrap(); // 深度 2→1
         assert!(take_edits().is_empty(), "嵌套:外层事务仍开启");
@@ -2267,7 +3136,14 @@ pub(crate) mod tests {
 
         // 6. 多余 end:深度 0 饱和,不吞后续编辑
         load_script("helix.end_edit(); helix.end_edit(); helix.end_edit();").unwrap();
-        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "e".into() }));
+        crate::state::with_edits(|e| {
+            e.push(crate::types::Edit {
+                doc: None,
+                start: (0, 0),
+                end: (0, 0),
+                insert: "e".into(),
+            })
+        });
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "多余 end 后编辑正常取走");
         assert_eq!(edits[0].insert, "e");
@@ -2286,8 +3162,19 @@ pub(crate) mod tests {
         assert!(take_edits().is_empty(), "未配对事务:编辑积压");
         // 下一命令入口应复位 txn 深度并清队列(丢弃积压编辑)
         assert!(run_command("noop", &ctx).unwrap());
-        assert_eq!(crate::state::with_txn_depth(|d| *d), 0, "命令入口应复位 txn 深度");
-        crate::state::with_edits(|e| e.push(crate::types::Edit { doc: None, start: (0, 0), end: (0, 0), insert: "g".into() }));
+        assert_eq!(
+            crate::state::with_txn_depth(|d| *d),
+            0,
+            "命令入口应复位 txn 深度"
+        );
+        crate::state::with_edits(|e| {
+            e.push(crate::types::Edit {
+                doc: None,
+                start: (0, 0),
+                end: (0, 0),
+                insert: "g".into(),
+            })
+        });
         let edits = take_edits();
         assert_eq!(edits.len(), 1, "复位后编辑正常取走");
         assert_eq!(edits[0].insert, "g");
@@ -2309,14 +3196,25 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)), docs: vec![] };
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
         run_command("dec1", &ctx).unwrap();
         let reqs = take_decorations();
         assert_eq!(reqs.len(), 3);
         // 路径已 canonicalize(相对→绝对:用绝对路径输入,断言原样)
         assert_eq!(reqs[0].doc.as_deref(), Some("/tmp/a.rs"));
         match &reqs[0].kind {
-            crate::types::DecorationKind::VirtualText { row, col, text, style } => {
+            crate::types::DecorationKind::VirtualText {
+                row,
+                col,
+                text,
+                style,
+            } => {
                 assert_eq!((*row, *col), (0, 0));
                 assert_eq!(text, "hi");
                 assert_eq!(style.as_deref(), Some("ui.help"));
@@ -2324,7 +3222,13 @@ pub(crate) mod tests {
             other => panic!("expected VirtualText, got {other:?}"),
         }
         match &reqs[1].kind {
-            crate::types::DecorationKind::Highlight { sr, sc, er, ec, style } => {
+            crate::types::DecorationKind::Highlight {
+                sr,
+                sc,
+                er,
+                ec,
+                style,
+            } => {
                 assert_eq!((*sr, *sc, *er, *ec), (0, 0, 1, 2));
                 assert_eq!(style.as_deref(), Some("ui.selection"));
             }
@@ -2351,7 +3255,13 @@ pub(crate) mod tests {
     "#,
         )
         .unwrap();
-        let ctx = CommandContext { path: None, text: String::new(), cursor: (0, 0), selection: ((0, 0), (0, 0)), docs: vec![] };
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
         // 命令内 begin/end 包住:命令返回后取到(证明 end 后放行)
         run_command("dec-txn", &ctx).unwrap();
         assert_eq!(take_decorations().len(), 1);
@@ -2375,5 +3285,4 @@ pub(crate) mod tests {
         assert_eq!(reqs[0].doc, None);
         assert!(matches!(reqs[0].kind, crate::types::DecorationKind::Clear));
     }
-
 }

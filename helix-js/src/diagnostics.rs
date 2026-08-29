@@ -14,7 +14,10 @@ pub(crate) fn js_diagnostics(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = DIAGNOSTICS.get().map(|m| m.lock().unwrap().clone()).unwrap_or_default();
+    let json = DIAGNOSTICS
+        .get()
+        .map(|m| m.lock().unwrap().clone())
+        .unwrap_or_default();
     if json.is_empty() {
         return Ok(JsValue::null());
     }
@@ -32,7 +35,9 @@ pub fn emit_lsp_diagnostics(doc_id: u64, diags_json: &str) {
         return;
     }
     with_engine(|engine| {
-        let Ok(diags) = crate::layout::js_json_parse(diags_json.to_string(), engine, "lsp-diagnostics") else {
+        let Ok(diags) =
+            crate::layout::js_json_parse(diags_json.to_string(), engine, "lsp-diagnostics")
+        else {
             return;
         };
         let args = [JsValue::from(doc_id), diags];
@@ -68,7 +73,9 @@ mod tests {
             r#"[{"line":1,"message":"oops","severity":"error","code":1,"source":"rust-analyzer"}]"#,
         );
         let v = js_diagnostics(&JsValue::undefined(), &[], &mut ctx).unwrap();
-        let arr = boa_engine::object::builtins::JsArray::from_object(v.as_object().unwrap().clone()).unwrap();
+        let arr =
+            boa_engine::object::builtins::JsArray::from_object(v.as_object().unwrap().clone())
+                .unwrap();
         let len: usize = arr.length(&mut ctx).unwrap() as usize;
         assert_eq!(len, 1, "诊断数组长度");
         let first = arr.get(0, &mut ctx).unwrap();
@@ -100,15 +107,31 @@ mod tests {
             r#"[{"line":2,"message":"type mismatch","severity":"warning","code":null,"source":null}]"#,
         );
         crate::state::with_engine(|engine| {
-            let got = engine.global_object().get(JsString::from("__lsp"), engine).unwrap();
-            let arr = boa_engine::object::builtins::JsArray::from_object(got.as_object().unwrap().clone()).unwrap();
+            let got = engine
+                .global_object()
+                .get(JsString::from("__lsp"), engine)
+                .unwrap();
+            let arr = boa_engine::object::builtins::JsArray::from_object(
+                got.as_object().unwrap().clone(),
+            )
+            .unwrap();
             let doc_id: u64 = arr.get(0, engine).unwrap().as_number().unwrap() as u64;
             assert_eq!(doc_id, 5, "docId 透传");
             let len: usize = arr.get(1, engine).unwrap().as_number().unwrap() as usize;
             assert_eq!(len, 1, "diags 数组长度");
-            let msg = arr.get(2, engine).unwrap().as_string().unwrap().to_std_string_escaped();
+            let msg = arr
+                .get(2, engine)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string_escaped();
             assert_eq!(msg, "type mismatch");
-            let sev = arr.get(3, engine).unwrap().as_string().unwrap().to_std_string_escaped();
+            let sev = arr
+                .get(3, engine)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string_escaped();
             assert_eq!(sev, "warning");
         });
         // 无 handler 时零开销返回（不 panic）

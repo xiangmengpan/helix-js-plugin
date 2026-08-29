@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::{JsObject, ObjectInitializer};
@@ -9,16 +8,19 @@ use crate::pty;
 use crate::shell::spawn_pty_worker;
 
 use crate::state::{
-    with_buffer_icon_hook, with_keymap_hint_hook,
-    with_popups, with_statusline_hook, with_terms, UI_REQUESTS,
+    with_buffer_icon_hook, with_keymap_hint_hook, with_popups, with_statusline_hook, with_terms,
+    UI_REQUESTS,
 };
-
 
 use crate::commands::doc_to_js;
 use crate::input::InputState;
 use crate::types::*;
 
-pub(crate) fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<u16>> {
+pub(crate) fn opt_u16(
+    v: &JsValue,
+    ctx: &mut Context,
+    name: &str,
+) -> boa_engine::JsResult<Option<u16>> {
     if v.is_null_or_undefined() {
         return Ok(None);
     }
@@ -28,18 +30,27 @@ pub(crate) fn opt_u16(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine:
         ))))
     })?;
     if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "'{name}' must be an integer in [0, {}]",
-            u16::MAX
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("'{name}' must be an integer in [0, {}]", u16::MAX),
+        ))));
     }
     Ok(Some(n as u16))
 }
 
-pub(crate) fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_popup: options object required")))
-    })?;
+pub(crate) fn js_open_popup(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let opts = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_popup: options object required",
+            )))
+        })?;
     let render = opts.get(JsString::from("render"), ctx)?;
     if render.as_callable().is_none() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
@@ -80,8 +91,27 @@ pub(crate) fn js_open_popup(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     };
 
     let id = crate::state::next_popup_id();
-    with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPopup { id, width, height, position });
+    with_popups(|p| {
+        p.insert(
+            id,
+            PopupCallbacks {
+                render,
+                on_key,
+                on_close,
+            },
+        )
+    });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::OpenPopup {
+            id,
+            width,
+            height,
+            position,
+        });
     Ok(JsValue::from(id))
 }
 
@@ -96,14 +126,20 @@ pub fn unregister_component_render(id: u64) {
 /// 组件视图回调注册:helix.set_component_render(id, fn)。
 /// 不创建弹窗/面板——只把 render 回调挂到共享注册表;
 /// Rust 组件(如终端)渲染时经 render_component 调用,JS 视图层画其外观。
-pub(crate) fn js_set_component_render(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_component_render(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let id: u64 = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
-            "set_component_render: id must be a number",
-        ))))?;
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "set_component_render: id must be a number",
+            )))
+        })?;
     let render = match args.get(1) {
         Some(v) => v,
         None => &JsValue::undefined(),
@@ -113,7 +149,16 @@ pub(crate) fn js_set_component_render(_this: &JsValue, args: &[JsValue], ctx: &m
             "set_component_render: render must be a function",
         ))));
     }
-    with_popups(|p| p.insert(id, PopupCallbacks { render: render.clone(), on_key: None, on_close: None }));
+    with_popups(|p| {
+        p.insert(
+            id,
+            PopupCallbacks {
+                render: render.clone(),
+                on_key: None,
+                on_close: None,
+            },
+        )
+    });
     Ok(JsValue::undefined())
 }
 
@@ -122,17 +167,32 @@ const PANEL_SIDES: [&str; 3] = ["right", "left", "bottom"];
 
 /// 侧边面板：校验 side 白名单 / size / render 后注册回调（onKey 可选，同 open_popup），
 /// 入队 OpenPanel。id 与弹窗共用 NEXT_POPUP_ID 空间，面板渲染复用 render_popup 同一注册表。
-pub(crate) fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_panel: options object required")))
-    })?;
-    let side: String = opts.get(JsString::from("side"), ctx)?.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_panel: 'side' must be a string")))
-    })?;
+pub(crate) fn js_open_panel(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let opts = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_panel: options object required",
+            )))
+        })?;
+    let side: String = opts
+        .get(JsString::from("side"), ctx)?
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_panel: 'side' must be a string",
+            )))
+        })?;
     if !PANEL_SIDES.contains(&side.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "open_panel: unknown side '{side}' (expected right|left|bottom)"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("open_panel: unknown side '{side}' (expected right|left|bottom)"),
+        ))));
     }
     let render = opts.get(JsString::from("render"), ctx)?;
     if render.as_callable().is_none() {
@@ -147,13 +207,14 @@ pub(crate) fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     let size = {
         let v = opts.get(JsString::from("size"), ctx)?;
         let n: f64 = v.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("open_panel: 'size' must be a number")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_panel: 'size' must be a number",
+            )))
         })?;
         if !n.is_finite() || n < 1.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "open_panel: 'size' must be an integer in [1, {}]",
-                u16::MAX
-            )))));
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                format!("open_panel: 'size' must be an integer in [1, {}]", u16::MAX),
+            ))));
         }
         n as u16
     };
@@ -161,19 +222,50 @@ pub(crate) fn js_open_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context
     let id = crate::state::next_popup_id();
     crate::state::set_last_panel_id(Some(id));
     crate::state::with_open_panels(|p| p.push(id));
-    with_popups(|p| p.insert(id, PopupCallbacks { render, on_key, on_close }));
-        UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenPanel { id, side, size });
+    with_popups(|p| {
+        p.insert(
+            id,
+            PopupCallbacks {
+                render,
+                on_key,
+                on_close,
+            },
+        )
+    });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::OpenPanel { id, side, size });
     Ok(JsValue::from(id))
 }
 
 /// 入队 ClosePanel（id 校验）；JS 侧与 :panel-close 共用
-pub(crate) fn js_close_panel(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(_ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("close_panel: id must be a number")))
-    })?;
-    if crate::state::last_panel_id() == Some(id) { crate::state::set_last_panel_id(None); };
+pub(crate) fn js_close_panel(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(_ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "close_panel: id must be a number",
+            )))
+        })?;
+    if crate::state::last_panel_id() == Some(id) {
+        crate::state::set_last_panel_id(None);
+    };
     crate::state::with_open_panels(|p| p.retain(|x| *x != id));
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::ClosePanel { id });
     Ok(JsValue::undefined())
 }
 
@@ -182,36 +274,60 @@ pub(crate) fn js_close_panel(_this: &JsValue, args: &[JsValue], _ctx: &mut Conte
 /// onChunk 是 eval 工厂构造的桥接闭包 → helix.term_feed(view_id, chunk)（经 UiRequest 路由）；
 /// onExit 透传用户回调。入队 OpenTerminal 后返回 view_id（= 面板 id，可 move_panel/term_feed）。
 /// pty spawn 仅 Unix（与 js_spawn 的 pty 路径同约束）。
-pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let opts = args.first().unwrap_or(&JsValue::undefined()).as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_terminal: options object required")))
-    })?;
-    let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_terminal: 'cmd' must be a string")))
-    })?;
+pub(crate) fn js_open_terminal(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let opts = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_terminal: options object required",
+            )))
+        })?;
+    let cmd: String = opts
+        .get(JsString::from("cmd"), ctx)?
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_terminal: 'cmd' must be a string",
+            )))
+        })?;
     if cmd.is_empty() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "open_terminal: 'cmd' must not be empty",
         ))));
     }
-    let side: String = opts.get(JsString::from("side"), ctx)?.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_terminal: 'side' must be a string")))
-    })?;
+    let side: String = opts
+        .get(JsString::from("side"), ctx)?
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_terminal: 'side' must be a string",
+            )))
+        })?;
     if !PANEL_SIDES.contains(&side.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "open_terminal: unknown side '{side}' (expected right|left|bottom)"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("open_terminal: unknown side '{side}' (expected right|left|bottom)"),
+        ))));
     }
     let size = {
         let v = opts.get(JsString::from("size"), ctx)?;
         let n: f64 = v.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("open_terminal: 'size' must be a number")))
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_terminal: 'size' must be a number",
+            )))
         })?;
         if !n.is_finite() || n < 1.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "open_terminal: 'size' must be an integer in [1, {}]",
-                u16::MAX
-            )))));
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                format!(
+                    "open_terminal: 'size' must be an integer in [1, {}]",
+                    u16::MAX
+                ),
+            ))));
         }
         n as u16
     };
@@ -231,37 +347,58 @@ pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
                     "open_terminal: bridge factory: {e}"
                 ))))
             })?;
-        let factory = factory.as_callable().and_then(JsFunction::from_object).ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from("open_terminal: internal bridge error")))
-        })?;
+        let factory = factory
+            .as_callable()
+            .and_then(JsFunction::from_object)
+            .ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "open_terminal: internal bridge error",
+                )))
+            })?;
         let undefined = JsValue::undefined();
         let bridge = factory
             .call(&undefined, &[JsValue::from(view_id)], ctx)
             .map_err(|e| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!("open_terminal: bridge: {e}"))))
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "open_terminal: bridge: {e}"
+                ))))
             })?;
         // spawn pty（与 js_spawn 的 pty 路径同款）：注册回调/worker/master → 起 worker
         let pty_id = crate::state::next_term_id();
         // 注册表键用 pty_id（term_kill 按 pty_id 清理）；view_id 是 UI 层/JS 侧句柄
         crate::state::register_term(pty_id, view_id, cmd.clone());
         with_terms(|m| {
-            m.insert(pty_id, TermCallbacks { on_chunk: bridge, on_exit })
+            m.insert(
+                pty_id,
+                TermCallbacks {
+                    on_chunk: bridge,
+                    on_exit,
+                },
+            )
         });
         let (tx, rx) = std::sync::mpsc::channel();
         crate::state::with_term_workers(|m| m.insert(pty_id, tx));
-        let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
+        let term_tx =
+            crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
         let (master, slave) = pty::open_pty().map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!("open_terminal: pty: {e}"))))
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "open_terminal: pty: {e}"
+            ))))
         })?;
         crate::state::with_term_masters(|m| m.insert(pty_id, master.fd()));
         spawn_pty_worker(pty_id, &cmd, term_tx, rx, master, slave);
-        UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::OpenTerminal {
-            view_id,
-            pty_id,
-            cmd,
-            side,
-            size,
-        });
+        UI_REQUESTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .push(UiRequest::OpenTerminal {
+                view_id,
+                pty_id,
+                cmd,
+                side,
+                size,
+            });
         Ok(JsValue::from(view_id))
     }
     #[cfg(not(unix))]
@@ -275,57 +412,148 @@ pub(crate) fn js_open_terminal(_this: &JsValue, args: &[JsValue], ctx: &mut Cont
 
 /// helix.term_feed(view_id, chunk)：把 PTY 输出块入队 TermFeed，由 helix-term 按 view_id
 /// 找终端层喂进 vte 网格。层不存在时 helix-term 侧丢弃（feed 早于层 push 的竞态）。
-pub(crate) fn js_term_feed(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("term_feed: view_id must be a number")))
-    })?;
-    let chunk: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("term_feed: chunk must be a string")))
-    })?;
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermFeed { view_id, chunk });
+pub(crate) fn js_term_feed(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "term_feed: view_id must be a number",
+            )))
+        })?;
+    let chunk: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "term_feed: chunk must be a string",
+            )))
+        })?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::TermFeed { view_id, chunk });
     Ok(JsValue::undefined())
 }
-pub(crate) fn js_set_terminal_mode(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let mode: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
+pub(crate) fn js_set_terminal_mode(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let mode: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
     if !["dock", "fullscreen", "floating", "minimized"].contains(&mode.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.set_terminal_mode: unknown mode '{mode}'"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("helix.set_terminal_mode: unknown mode '{mode}'"),
+        ))));
     }
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermMode { view_id, mode });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::TermMode { view_id, mode });
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_term_clear(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermClear { view_id });
+pub(crate) fn js_term_clear(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::TermClear { view_id });
     Ok(JsValue::undefined())
 }
 
 /// helix.term_save(view_id, path?)：把终端全部内容（scrollback + 屏幕）导出到文件。
 /// path 省略/空 → 默认 ~/.cache/helix/term-<view_id>.log（Rust 侧补全）。
-pub(crate) fn js_term_save(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx)?;
-    let path: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).unwrap_or_default();
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermSave { view_id, path });
+pub(crate) fn js_term_save(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    let path: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .unwrap_or_default();
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::TermSave { view_id, path });
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_resize_term(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let view_id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    let size: u16 = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(context)?;
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::TermResize { view_id, size });
+pub(crate) fn js_resize_term(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let view_id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    let size: u16 = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::TermResize { view_id, size });
     Ok(JsValue::undefined())
 }
 /// 布局树 API：split(dir, {terminal:{cmd}} | {panel:{render,onKey}}) -> leaf_id（预分配）
-pub(crate) fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("read_dir: path must be a string")))
-    })?;
+pub(crate) fn js_read_dir(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "read_dir: path must be a string",
+            )))
+        })?;
     let mut entries: Vec<(String, bool, String)> = std::fs::read_dir(&path)
         .map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!("read_dir('{path}'): {e}"))))
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "read_dir('{path}'): {e}"
+            ))))
         })?
         .filter_map(|entry| {
             let entry = entry.ok()?;
@@ -339,9 +567,21 @@ pub(crate) fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) 
     let arr = JsArray::new(ctx);
     for (name, is_dir, path) in entries {
         let obj = ObjectInitializer::new(ctx)
-            .property(JsString::from("name"), JsValue::from(JsString::from(name)), Attribute::all())
-            .property(JsString::from("is_dir"), JsValue::from(is_dir), Attribute::all())
-            .property(JsString::from("path"), JsValue::from(JsString::from(path)), Attribute::all())
+            .property(
+                JsString::from("name"),
+                JsValue::from(JsString::from(name)),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("is_dir"),
+                JsValue::from(is_dir),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("path"),
+                JsValue::from(JsString::from(path)),
+                Attribute::all(),
+            )
             .build();
         arr.push(JsValue::from(obj), ctx)?;
     }
@@ -349,10 +589,20 @@ pub(crate) fn js_read_dir(_this: &JsValue, args: &[JsValue], ctx: &mut Context) 
 }
 
 /// 入队 OpenFile（path 字符串校验；第二参数可选 { row, col } 字符坐标定位）
-pub(crate) fn js_open_file(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let path: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("open_file: path must be a string")))
-    })?;
+pub(crate) fn js_open_file(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_file: path must be a string",
+            )))
+        })?;
     let (row, col) = match args.get(1) {
         Some(obj) if obj.is_object() => {
             let o = obj.as_object().unwrap();
@@ -372,23 +622,48 @@ pub(crate) fn js_open_file(_this: &JsValue, args: &[JsValue], ctx: &mut Context)
 }
 
 /// 入队 MovePanel（id 数字 + side 白名单校验）
-pub(crate) fn js_move_panel(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
-    let id: u64 = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("move_panel: id must be a number")))
-    })?;
-    let side: String = args.get(1).unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from("move_panel: side must be a string")))
-    })?;
+pub(crate) fn js_move_panel(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "move_panel: id must be a number",
+            )))
+        })?;
+    let side: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "move_panel: side must be a string",
+            )))
+        })?;
     if !PANEL_SIDES.contains(&side.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "move_panel: unknown side '{side}' (expected right|left|bottom)"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("move_panel: unknown side '{side}' (expected right|left|bottom)"),
+        ))));
     }
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::MovePanel { id, side });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::MovePanel { id, side });
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_buffer_icon(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let undefined = JsValue::undefined();
     let hook = args.first().unwrap_or(&undefined);
     if !hook.is_callable() {
@@ -400,7 +675,11 @@ pub(crate) fn js_set_buffer_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut C
     Ok(JsValue::undefined())
 }
 
-pub(crate) fn js_set_completion_icon(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_completion_icon(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let undefined = JsValue::undefined();
     let hook = args.first().unwrap_or(&undefined);
     if !hook.is_callable() {
@@ -413,7 +692,12 @@ pub(crate) fn js_set_completion_icon(_this: &JsValue, args: &[JsValue], _ctx: &m
 }
 
 /// 读对象可选字符串字段：null/undefined → None；非字符串 → Err
-pub(crate) fn obj_opt_str(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<String>> {
+pub(crate) fn obj_opt_str(
+    obj: &JsObject,
+    key: &str,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Option<String>> {
     let v = obj.get(JsString::from(key), ctx)?;
     if v.is_null_or_undefined() {
         return Ok(None);
@@ -427,7 +711,12 @@ pub(crate) fn obj_opt_str(obj: &JsObject, key: &str, ctx: &mut Context, api: &st
 }
 
 /// 读对象可选 u16 字段：null/undefined → None；必须是 [0, u16::MAX] 整数
-pub(crate) fn obj_opt_u16(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<u16>> {
+pub(crate) fn obj_opt_u16(
+    obj: &JsObject,
+    key: &str,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Option<u16>> {
     let v = obj.get(JsString::from(key), ctx)?;
     if v.is_null_or_undefined() {
         return Ok(None);
@@ -438,16 +727,20 @@ pub(crate) fn obj_opt_u16(obj: &JsObject, key: &str, ctx: &mut Context, api: &st
         ))))
     })?;
     if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: '{key}' must be an integer in [0, {}]",
-            u16::MAX
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("{api}: '{key}' must be an integer in [0, {}]", u16::MAX),
+        ))));
     }
     Ok(Some(n as u16))
 }
 
 /// 读对象可选布尔字段：null/undefined → None；非布尔 → Err
-pub(crate) fn obj_opt_bool(obj: &JsObject, key: &str, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Option<bool>> {
+pub(crate) fn obj_opt_bool(
+    obj: &JsObject,
+    key: &str,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Option<bool>> {
     let v = obj.get(JsString::from(key), ctx)?;
     if v.is_null_or_undefined() {
         return Ok(None);
@@ -463,17 +756,26 @@ pub(crate) fn obj_opt_bool(obj: &JsObject, key: &str, ctx: &mut Context, api: &s
 /// helix.el(type, arg, opts)：构造组件节点数据对象 {type, ...}，实际解析在 render 时递归进行。
 /// type 白名单：text（arg=文本字符串，opts={style,width}）/ row、col（arg=子节点数组，opts={gap}）
 /// / scroll（arg=子节点数组，opts={height}）。只做浅层校验（子节点对象合法性由 parse_node 递归检查）。
-pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_el(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let api = "helix.el";
-    let type_: String = args.first().unwrap_or(&JsValue::undefined()).try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: 'type' must be a string"
-        ))))
-    })?;
+    let type_: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: 'type' must be a string"
+            ))))
+        })?;
     // 先收集字段再一次性建对象：builder 持有 &mut ctx，中途再借 ctx 会冲突
     let arg = args.get(1).cloned().unwrap_or(JsValue::undefined());
     let opts = args.get(2).filter(|o| !o.is_null_or_undefined());
-    let mut props: Vec<(String, JsValue)> = vec![("type".into(), JsString::from(type_.clone()).into())];
+    let mut props: Vec<(String, JsValue)> =
+        vec![("type".into(), JsString::from(type_.clone()).into())];
     match type_.as_str() {
         "text" => {
             // text 可为字符串或富文本段数组（[{text, style}, ...]）
@@ -485,9 +787,9 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
             {
                 // 数组直通（parse_node 解析）
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: 'text' expects a string or an array of segments"
-                )))));
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                    format!("{api}: 'text' expects a string or an array of segments"),
+                ))));
             }
             props.push(("text".into(), arg));
             if let Some(opts) = opts {
@@ -521,9 +823,9 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
                 })?;
                 let id_val = obj.get(JsString::from("id"), ctx)?;
                 if id_val.try_js_into::<String>(ctx).is_err() {
-                    return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: 'button' requires an 'id' string"
-                    )))));
+                    return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                        format!("{api}: 'button' requires an 'id' string"),
+                    ))));
                 }
                 props.push(("id".into(), id_val));
                 for key in ["onPress", "onKey", "style", "width", "flex"] {
@@ -533,9 +835,9 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
                     }
                 }
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: 'button' requires options with 'id'"
-                )))));
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                    format!("{api}: 'button' requires options with 'id'"),
+                ))));
             }
         }
         "input" => {
@@ -547,9 +849,9 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
             })?;
             let id_val = obj.get(JsString::from("id"), ctx)?;
             if id_val.try_js_into::<String>(ctx).is_err() {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: 'input' requires an 'id' string"
-                )))));
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                    format!("{api}: 'input' requires an 'id' string"),
+                ))));
             }
             props.push(("id".into(), id_val));
             props.push(("value".into(), obj.get(JsString::from("value"), ctx)?));
@@ -574,7 +876,9 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
                     ))))
                 })?;
                 let is_scroll = type_ == "scroll";
-                if let Some(v) = obj_opt_u16(&obj, if is_scroll { "height" } else { "gap" }, ctx, api)? {
+                if let Some(v) =
+                    obj_opt_u16(&obj, if is_scroll { "height" } else { "gap" }, ctx, api)?
+                {
                     let key: &str = if is_scroll { "height" } else { "gap" };
                     props.push((key.into(), JsValue::from(v)));
                 }
@@ -588,9 +892,9 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
             }
         }
         other => {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "{api}: unknown type '{other}' (expected text|row|col|scroll)"
-            )))));
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                format!("{api}: unknown type '{other}' (expected text|row|col|scroll)"),
+            ))));
         }
     }
     let mut builder = ObjectInitializer::new(ctx);
@@ -602,13 +906,21 @@ pub(crate) fn js_el(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa
 
 /// 取走并清空 UI 请求队列
 /// 解析 render 返回数组的一个元素：对象（含 text 属性）→ StyledLine{text, style}；字符串 → (text, None)；否则 Err
-fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_engine::JsResult<StyledLine> {
+fn parse_line_item(
+    item: &JsValue,
+    ctx: &mut Context,
+    id: u64,
+    i: usize,
+) -> boa_engine::JsResult<StyledLine> {
     if let Some(obj) = item.as_object() {
-        let text: String = obj.get(JsString::from("text"), ctx)?.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "popup {id} render line {i}: object must have a string 'text' property"
-            ))))
-        })?;
+        let text: String = obj
+            .get(JsString::from("text"), ctx)?
+            .try_js_into(ctx)
+            .map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "popup {id} render line {i}: object must have a string 'text' property"
+                ))))
+            })?;
         let style = obj.get(JsString::from("style"), ctx)?;
         let style = if style.is_null_or_undefined() {
             None
@@ -626,9 +938,9 @@ fn parse_line_item(item: &JsValue, ctx: &mut Context, id: u64, i: usize) -> boa_
     } else if let Ok(text) = item.try_js_into::<String>(ctx) {
         Ok(StyledLine::plain(text))
     } else {
-        Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "popup {id} render line {i} must be a string or an object with 'text'"
-        )))))
+        Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("popup {id} render line {i} must be a string or an object with 'text'"),
+        ))))
     }
 }
 
@@ -649,7 +961,9 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
             .property(JsString::from("width"), width, Attribute::all())
             .property(JsString::from("height"), height, Attribute::all())
             .build();
-        let func = render.as_callable().and_then(JsFunction::from_object)
+        let func = render
+            .as_callable()
+            .and_then(JsFunction::from_object)
             .ok_or_else(|| anyhow!("popup {id} render is not a function"))?;
         let undefined = JsValue::undefined();
         // render(focus, ctx)：focus 为当前焦点节点 id（JS 侧据此渲染焦点样式）
@@ -672,8 +986,10 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
                 let item = arr
                     .get(i, engine)
                     .map_err(|e| anyhow!("popup {id} render line {i} read failed: {e}"))?;
-                lines.push(parse_line_item(&item, engine, id, i)
-                    .map_err(|e| anyhow!("popup {id} render failed: {e}"))?);
+                lines.push(
+                    parse_line_item(&item, engine, id, i)
+                        .map_err(|e| anyhow!("popup {id} render failed: {e}"))?,
+                );
             }
             Ok(Content::Lines(lines))
         } else if let Some(obj) = value.as_object() {
@@ -720,7 +1036,10 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             let node_style = obj_opt_str(&obj, "style", ctx, &api)?;
             // text 支持字符串或富文本段数组 [{text, style}, ...]
             let spans = if let Ok(s) = text_val.try_js_into::<String>(ctx) {
-                vec![TextSpan { text: s, style: node_style }]
+                vec![TextSpan {
+                    text: s,
+                    style: node_style,
+                }]
             } else if let Ok(arr) =
                 text_val.try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
             {
@@ -746,32 +1065,50 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
                 }
                 spans
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: text node 'text' must be a string or an array of segments"
-                )))));
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                    format!("{api}: text node 'text' must be a string or an array of segments"),
+                ))));
             };
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             let node_id = obj_opt_str(&obj, "id", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, node_id.as_deref())?;
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
             let wrap = obj_opt_bool(&obj, "wrap", ctx, &api)?.unwrap_or(false);
-            Ok(CompNode::Text { spans, width, id: node_id, flex, wrap })
+            Ok(CompNode::Text {
+                spans,
+                width,
+                id: node_id,
+                flex,
+                wrap,
+            })
         }
         "row" | "col" => {
             let children = parse_children(&obj, ctx, id)?;
             let gap = obj_opt_u16(&obj, "gap", ctx, &api)?.unwrap_or(0);
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
             Ok(if type_ == "row" {
-                CompNode::Row { children, gap, flex }
+                CompNode::Row {
+                    children,
+                    gap,
+                    flex,
+                }
             } else {
-                CompNode::Col { children, gap, flex }
+                CompNode::Col {
+                    children,
+                    gap,
+                    flex,
+                }
             })
         }
         "scroll" => {
             let children = parse_children(&obj, ctx, id)?;
             let height = obj_opt_u16(&obj, "height", ctx, &api)?.unwrap_or(0);
             let offset = obj_opt_u16(&obj, "offset", ctx, &api)?;
-            Ok(CompNode::Scroll { children, height, offset })
+            Ok(CompNode::Scroll {
+                children,
+                height,
+                offset,
+            })
         }
         "button" => {
             let node_id: String = obj
@@ -786,7 +1123,12 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
-            Ok(CompNode::Button { label, width, id: node_id, flex })
+            Ok(CompNode::Button {
+                label,
+                width,
+                id: node_id,
+                flex,
+            })
         }
         "input" => {
             let node_id: String = obj
@@ -805,33 +1147,50 @@ fn parse_node(value: &JsValue, ctx: &mut Context, id: u64) -> boa_engine::JsResu
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
             // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值
-            let (value, cursor) = crate::input::with_input_states(|m| {
-                match m.entry((id, node_id.clone())) {
+            let (value, cursor) =
+                crate::input::with_input_states(|m| match m.entry((id, node_id.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => {
                         let s = e.get();
                         (s.value.clone(), s.cursor)
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         let c = js_value.chars().count();
-                        e.insert(InputState { value: js_value.clone(), cursor: c });
+                        e.insert(InputState {
+                            value: js_value.clone(),
+                            cursor: c,
+                        });
                         (js_value.clone(), c)
                     }
-                }
-            });
-            Ok(CompNode::Input { value, cursor, width, id: node_id, flex })
+                });
+            Ok(CompNode::Input {
+                value,
+                cursor,
+                width,
+                id: node_id,
+                flex,
+            })
         }
-        other => Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
-        ))))),
+        other => Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!(
+                "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
+            ),
+        )))),
     }
 }
 
 /// 解析富文本段数组 [{text, style}, ...] 或字符串 → Vec<TextSpan>
-fn parse_text_spans(obj: &boa_engine::JsObject, ctx: &mut Context, api: &str) -> boa_engine::JsResult<Vec<TextSpan>> {
+fn parse_text_spans(
+    obj: &boa_engine::JsObject,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Vec<TextSpan>> {
     let text_val = obj.get(JsString::from("text"), ctx)?;
     let node_style = obj_opt_str(obj, "style", ctx, api)?;
     if let Ok(s) = text_val.try_js_into::<String>(ctx) {
-        Ok(vec![TextSpan { text: s, style: node_style }])
+        Ok(vec![TextSpan {
+            text: s,
+            style: node_style,
+        }])
     } else if let Ok(arr) = text_val.try_js_into::<boa_engine::object::builtins::JsArray>(ctx) {
         let mut spans = Vec::new();
         let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
@@ -855,9 +1214,9 @@ fn parse_text_spans(obj: &boa_engine::JsObject, ctx: &mut Context, api: &str) ->
         }
         Ok(spans)
     } else {
-        Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: 'text' must be a string or an array of segments"
-        )))))
+        Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("{api}: 'text' must be a string or an array of segments"),
+        ))))
     }
 }
 
@@ -868,7 +1227,9 @@ fn register_node_handlers(
     view_id: u64,
     node_id: Option<&str>,
 ) -> boa_engine::JsResult<()> {
-    let Some(node_id) = node_id else { return Ok(()) };
+    let Some(node_id) = node_id else {
+        return Ok(());
+    };
     let on_press = obj.get(JsString::from("onPress"), ctx)?;
     let on_key = obj.get(JsString::from("onKey"), ctx)?;
     let on_change = obj.get(JsString::from("onChange"), ctx)?;
@@ -892,7 +1253,11 @@ fn register_node_handlers(
 }
 
 /// 解析容器节点的 children 数组：每项必须是节点对象（递归 parse_node）
-fn parse_children(obj: &JsObject, ctx: &mut Context, id: u64) -> boa_engine::JsResult<Vec<CompNode>> {
+fn parse_children(
+    obj: &JsObject,
+    ctx: &mut Context,
+    id: u64,
+) -> boa_engine::JsResult<Vec<CompNode>> {
     let api = format!("popup {id} render");
     let v = obj.get(JsString::from("children"), ctx)?;
     let arr: JsArray = v.try_js_into(ctx).map_err(|_| {
@@ -900,11 +1265,14 @@ fn parse_children(obj: &JsObject, ctx: &mut Context, id: u64) -> boa_engine::JsR
             "{api}: container node must have an array 'children'"
         ))))
     })?;
-    let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: children length invalid"
-        ))))
-    })?;
+    let len: usize = arr
+        .get(JsString::from("length"), ctx)?
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "{api}: children length invalid"
+            ))))
+        })?;
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
         let item = arr.get(i, ctx).map_err(|_| {
@@ -922,22 +1290,33 @@ fn parse_children(obj: &JsObject, ctx: &mut Context, id: u64) -> boa_engine::JsR
 pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<PopupKeyResult> {
     crate::init();
     crate::state::with_engine(|engine| {
-        let callbacks = with_popups(|p| p.get(&id).cloned())
-            .ok_or_else(|| anyhow!("popup {id} not open"))?;
+        let callbacks =
+            with_popups(|p| p.get(&id).cloned()).ok_or_else(|| anyhow!("popup {id} not open"))?;
         let Some(on_key) = callbacks.on_key else {
-            return Ok(if key.name == "Esc" { PopupKeyResult::Close } else { PopupKeyResult::Ignored });
+            return Ok(if key.name == "Esc" {
+                PopupKeyResult::Close
+            } else {
+                PopupKeyResult::Ignored
+            });
         };
-        let func = on_key.as_callable().and_then(JsFunction::from_object)
+        let func = on_key
+            .as_callable()
+            .and_then(JsFunction::from_object)
             .ok_or_else(|| anyhow!("popup {id} onKey is not a function"))?;
         let key_obj = ObjectInitializer::new(engine)
-            .property(JsString::from("name"), JsString::from(key.name.clone()), Attribute::all())
+            .property(
+                JsString::from("name"),
+                JsString::from(key.name.clone()),
+                Attribute::all(),
+            )
             .property(JsString::from("shift"), key.shift, Attribute::all())
             .property(JsString::from("ctrl"), key.ctrl, Attribute::all())
             .property(JsString::from("alt"), key.alt, Attribute::all())
             .build();
         let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build popup doc: {e}"))?;
         let undefined = JsValue::undefined();
-        let value: JsValue = func.call(&undefined, &[JsValue::from(key_obj), doc], engine)
+        let value: JsValue = func
+            .call(&undefined, &[JsValue::from(key_obj), doc], engine)
             .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
         let s: Option<String> = value.try_js_into(engine).ok();
         Ok(match s.as_deref() {
@@ -968,12 +1347,17 @@ pub fn close_popup(id: u64) -> Result<()> {
     crate::input::clear_popup_inputs(id);
     crate::state::with_engine(|engine| {
         let callbacks = with_popups(|p| p.remove(&id));
-        let Some(callbacks) = callbacks else { return Ok(()) };
+        let Some(callbacks) = callbacks else {
+            return Ok(());
+        };
         if let Some(on_close) = callbacks.on_close {
-            let func = on_close.as_callable().and_then(JsFunction::from_object)
+            let func = on_close
+                .as_callable()
+                .and_then(JsFunction::from_object)
                 .ok_or_else(|| anyhow!("popup {id} onClose is not a function"))?;
             let undefined = JsValue::undefined();
-            let _: JsValue = func.call(&undefined, &[], engine)
+            let _: JsValue = func
+                .call(&undefined, &[], engine)
                 .map_err(|e| anyhow!("popup {id} onClose failed: {e}"))?;
         }
         Ok(())
@@ -994,11 +1378,20 @@ pub fn close_last_panel() -> Result<()> {
     crate::init();
     let id = crate::state::last_panel_id().ok_or_else(|| anyhow!("no panel open"))?;
     crate::state::set_last_panel_id(None);
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::ClosePanel { id });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::ClosePanel { id });
     Ok(())
 }
 
-pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_statusline(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::null());
     // 第二参 { replace: true }：整个状态栏由 JS 控制（left/right 分栏）
     let mut replace = false;
@@ -1052,7 +1445,11 @@ pub(crate) fn js_set_statusline(_this: &JsValue, args: &[JsValue], context: &mut
 /// keymap 前缀提示注册:helix.set_keymap_hint(fn) / 清除:set_keymap_hint(null)。
 /// 回调 fn(ctx) → 多行文本(显示提示)| null(不显示);ctx = {title, entries:[{keys, doc}]}。
 /// 未注册回调 → Rust 内置 Info 兜底。
-pub(crate) fn js_set_keymap_hint(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_set_keymap_hint(
+    _this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::null());
     with_keymap_hint_hook(|h| *h = if arg.is_null() { None } else { Some(arg) });
     Ok(JsValue::undefined())
@@ -1069,14 +1466,30 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
         let entries_arr = JsArray::new(engine);
         for (keys, doc) in entries {
             let item = ObjectInitializer::new(engine)
-                .property(JsString::from("keys"), JsValue::from(JsString::from(keys.as_str())), Attribute::all())
-                .property(JsString::from("doc"), JsValue::from(JsString::from(doc.as_str())), Attribute::all())
+                .property(
+                    JsString::from("keys"),
+                    JsValue::from(JsString::from(keys.as_str())),
+                    Attribute::all(),
+                )
+                .property(
+                    JsString::from("doc"),
+                    JsValue::from(JsString::from(doc.as_str())),
+                    Attribute::all(),
+                )
                 .build();
             let _ = entries_arr.push(item, engine);
         }
         let ctx_obj = ObjectInitializer::new(engine)
-            .property(JsString::from("title"), JsValue::from(JsString::from(title)), Attribute::all())
-            .property(JsString::from("entries"), JsValue::from(entries_arr), Attribute::all())
+            .property(
+                JsString::from("title"),
+                JsValue::from(JsString::from(title)),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("entries"),
+                JsValue::from(entries_arr),
+                Attribute::all(),
+            )
             .build();
         let Ok(ret) = func.call(&undefined, &[JsValue::from(ctx_obj)], engine) else {
             return None;
@@ -1110,8 +1523,16 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
     crate::state::with_engine(|engine| {
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let cursor = ObjectInitializer::new(engine)
-            .property(JsString::from("row"), JsValue::from(ctx.cursor.0 as f64), Attribute::all())
-            .property(JsString::from("col"), JsValue::from(ctx.cursor.1 as f64), Attribute::all())
+            .property(
+                JsString::from("row"),
+                JsValue::from(ctx.cursor.0 as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("col"),
+                JsValue::from(ctx.cursor.1 as f64),
+                Attribute::all(),
+            )
             .build();
         let ctx_obj = ObjectInitializer::new(engine)
             .property(
@@ -1122,12 +1543,36 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 },
                 Attribute::all(),
             )
-            .property(JsString::from("mode"), JsValue::from(JsString::from(ctx.mode.clone())), Attribute::all())
-            .property(JsString::from("cursor"), JsValue::from(cursor), Attribute::all())
-            .property(JsString::from("total_lines"), JsValue::from(ctx.total_lines as f64), Attribute::all())
-            .property(JsString::from("diagnostics_error"), JsValue::from(ctx.diagnostics_error as f64), Attribute::all())
-            .property(JsString::from("diagnostics_warning"), JsValue::from(ctx.diagnostics_warning as f64), Attribute::all())
-            .property(JsString::from("window_mode"), JsValue::from(ctx.window_mode), Attribute::all())
+            .property(
+                JsString::from("mode"),
+                JsValue::from(JsString::from(ctx.mode.clone())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("cursor"),
+                JsValue::from(cursor),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("total_lines"),
+                JsValue::from(ctx.total_lines as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("diagnostics_error"),
+                JsValue::from(ctx.diagnostics_error as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("diagnostics_warning"),
+                JsValue::from(ctx.diagnostics_warning as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("window_mode"),
+                JsValue::from(ctx.window_mode),
+                Attribute::all(),
+            )
             .property(
                 JsString::from("active_leaf_type"),
                 JsValue::from(JsString::from(ctx.active_leaf_type.clone())),
@@ -1143,7 +1588,9 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
             )
             .build();
         let undefined = JsValue::undefined();
-        let value: JsValue = func.call(&undefined, &[JsValue::from(ctx_obj)], engine).ok()?;
+        let value: JsValue = func
+            .call(&undefined, &[JsValue::from(ctx_obj)], engine)
+            .ok()?;
         if value.is_null_or_undefined() {
             return None;
         }
@@ -1155,7 +1602,11 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 for i in 0..len {
                     if let Ok(item) = arr.get(i, engine) {
                         if let Ok(text) = item.try_js_into::<String>(engine) {
-                            parts.push(StatuslinePart { text, style: None, zone: None });
+                            parts.push(StatuslinePart {
+                                text,
+                                style: None,
+                                zone: None,
+                            });
                         } else if let Some(seg) = item.as_object() {
                             if let Ok(text) = seg
                                 .get(JsString::from("text"), engine)
@@ -1191,19 +1642,35 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
         }
         // 字符串 → 单段
         match value.try_js_into::<String>(engine) {
-            Ok(text) => Some(vec![StatuslinePart { text, style: None, zone: None }]),
+            Ok(text) => Some(vec![StatuslinePart {
+                text,
+                style: None,
+                zone: None,
+            }]),
             Err(_) => None,
         }
     })
 }
 
 /// 当前打开的终端列表：[{ view_id, cmd }]（注册表在 Rust 侧，reload 后仍准确）
-pub(crate) fn js_term_list(_this: &JsValue, _args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_term_list(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let arr = boa_engine::object::builtins::JsArray::new(ctx);
     for (view_id, cmd) in crate::state::list_terms() {
         let item = ObjectInitializer::new(ctx)
-            .property(JsString::from("view_id"), JsValue::from(view_id), Attribute::all())
-            .property(JsString::from("cmd"), JsValue::from(JsString::from(cmd)), Attribute::all())
+            .property(
+                JsString::from("view_id"),
+                JsValue::from(view_id),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("cmd"),
+                JsValue::from(JsString::from(cmd)),
+                Attribute::all(),
+            )
             .build();
         arr.push(item, ctx).map_err(|_| {
             JsError::from_opaque(JsValue::from(JsString::from("helix.term_list: push")))
@@ -1213,7 +1680,11 @@ pub(crate) fn js_term_list(_this: &JsValue, _args: &[JsValue], ctx: &mut Context
 }
 
 /// 按 view_id 关闭指定终端（UI 请求：helix-term 移除对应叶子并杀 pty）
-pub(crate) fn js_term_close(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+pub(crate) fn js_term_close(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
     let Some(v) = args.first() else {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.term_close: expected view_id",
@@ -1234,7 +1705,9 @@ pub(crate) fn js_term_close(_this: &JsValue, args: &[JsValue], _ctx: &mut Contex
         .expect("UI_REQUESTS initialized")
         .lock()
         .expect("ui requests lock")
-        .push(crate::types::UiRequest::TermClose { view_id: view_id as u64 });
+        .push(crate::types::UiRequest::TermClose {
+            view_id: view_id as u64,
+        });
     Ok(JsValue::undefined())
 }
 
@@ -1245,7 +1718,10 @@ pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
         let hook = with_buffer_icon_hook(|h| h.clone());
         let hook = hook?;
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
-        let arg = match path { Some(p) => JsValue::from(JsString::from(p)), None => JsValue::null() };
+        let arg = match path {
+            Some(p) => JsValue::from(JsString::from(p)),
+            None => JsValue::null(),
+        };
         let undefined = JsValue::undefined();
         let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
         value.try_js_into::<String>(engine).ok()
@@ -1266,7 +1742,11 @@ pub fn completion_kind_icon(kind: u8) -> Option<String> {
         let undefined = JsValue::undefined();
         let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
         let s: String = value.try_js_into(engine).ok()?;
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     })
 }
 
@@ -1311,4 +1791,3 @@ mod tests {
         crate::load_script(r#"helix.set_completion_icon((kind) => "");"#).unwrap();
     }
 }
-

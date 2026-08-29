@@ -54,7 +54,13 @@ fn next_watch_id() -> u64 {
 pub fn push_watch_event(id: u64, kind: &str, path: String) {
     let ch = WATCH_CHANNEL.get_or_init(|| Mutex::new(std::sync::mpsc::channel()));
     let (tx, _rx) = &mut *ch.lock().unwrap();
-    let _ = tx.send(WatchEvent::Changed(id, vec![WatchChange { kind: kind.to_string(), path }]));
+    let _ = tx.send(WatchEvent::Changed(
+        id,
+        vec![WatchChange {
+            kind: kind.to_string(),
+            path,
+        }],
+    ));
 }
 
 /// 取走全部待处理 watcher 事件（主线程轮询用；幂等）
@@ -122,9 +128,11 @@ pub(crate) fn js_watch(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.watch: path must be a string",
-        ))))?;
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.watch: path must be a string",
+            )))
+        })?;
     if path.is_empty() {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.watch: path must not be empty",
@@ -140,7 +148,12 @@ pub(crate) fn js_watch(
     with_watch_callbacks(|m| {
         m.insert(id, cb);
     });
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::Watch { id, path });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::Watch { id, path });
     Ok(JsValue::from(id))
 }
 
@@ -154,13 +167,20 @@ pub(crate) fn js_unwatch(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.unwatch: id must be a number",
-        ))))?;
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.unwatch: id must be a number",
+            )))
+        })?;
     with_watch_callbacks(|m| {
         m.remove(&id);
     });
-    UI_REQUESTS.get().unwrap().lock().unwrap().push(UiRequest::Unwatch { id });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::Unwatch { id });
     Ok(JsValue::undefined())
 }
 
@@ -189,15 +209,30 @@ mod tests {
             "路径非字符串 → Err"
         );
         assert!(
-            js_watch(&JsValue::undefined(), &[JsValue::from(JsString::from(""))], &mut c).is_err(),
+            js_watch(
+                &JsValue::undefined(),
+                &[JsValue::from(JsString::from(""))],
+                &mut c
+            )
+            .is_err(),
             "空路径 → Err"
         );
         assert!(
-            js_watch(&JsValue::undefined(), &[JsValue::from(JsString::from("/tmp/hx")), JsValue::from(7)], &mut c).is_err(),
+            js_watch(
+                &JsValue::undefined(),
+                &[JsValue::from(JsString::from("/tmp/hx")), JsValue::from(7)],
+                &mut c
+            )
+            .is_err(),
             "回调非函数 → Err"
         );
         assert!(
-            js_unwatch(&JsValue::undefined(), &[JsValue::from(JsString::from("x"))], &mut c).is_err(),
+            js_unwatch(
+                &JsValue::undefined(),
+                &[JsValue::from(JsString::from("x"))],
+                &mut c
+            )
+            .is_err(),
             "unwatch 非数字 → Err"
         );
     }
@@ -242,7 +277,10 @@ mod tests {
         push_watch_event(1, "create", "/tmp/hx/b.txt".to_string());
         assert!(resolve_watch_events().is_ok());
         with_engine(|engine| {
-            let got = engine.global_object().get(JsString::from("__got"), engine).unwrap();
+            let got = engine
+                .global_object()
+                .get(JsString::from("__got"), engine)
+                .unwrap();
             assert_eq!(
                 got.as_string().unwrap().to_std_string_escaped(),
                 "1:modify:/tmp/hx/a.txt;1:create:/tmp/hx/b.txt;",

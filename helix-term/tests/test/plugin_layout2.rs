@@ -76,7 +76,13 @@ async fn tree_panel_diff_reset() -> anyhow::Result<()> {
     }
     // 重置 diff 后再渲染一次到新 buffer：面板内容必须完整出现（tree 叶子）
     let rows = render_rows(&mut app, area);
-    let left: String = rows.iter().map(|r| r.chars().take(32).collect::<String>()).collect();
-    assert!(left.contains("hello-panel"), "tree 面板 diff 重置后重绘: {left:?}");
+    let left: String = rows
+        .iter()
+        .map(|r| r.chars().take(32).collect::<String>())
+        .collect();
+    assert!(
+        left.contains("hello-panel"),
+        "tree 面板 diff 重置后重绘: {left:?}"
+    );
     Ok(())
 }

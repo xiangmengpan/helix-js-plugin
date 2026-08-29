@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use helix_loader::workspace_trust::WorkspaceTrust;
 use helix_term::application::Application;
 use helix_term::args::Args;
 use helix_term::config::Config;
@@ -18,7 +19,6 @@ use helix_view::editor::{
 };
 use helix_view::input::parse_macro;
 use helix_view::theme::{Color, Loader};
-use helix_loader::workspace_trust::WorkspaceTrust;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
@@ -117,7 +117,11 @@ async fn plugin_theme_set_and_reset_over_inheriting_theme() -> anyhow::Result<()
     pump(&mut app, ":theme ashokai_brahn<ret>").await?;
     assert_eq!(app.editor.theme.name(), "ashokai_brahn");
 
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     // 断言 1：set_theme 覆盖生效 + 父主题样式保留（v10-② #1/#2）
     pump(&mut app, ":theme_set<ret>").await?;
@@ -176,7 +180,11 @@ async fn plugin_theme_js_apis() -> anyhow::Result<()> {
 
     let mut app = test_app();
     pump(&mut app, ":theme ashokai_brahn<ret>").await?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     // 对象覆盖：fg + bg + modifiers 全部生效
     pump(&mut app, ":t_style<ret>").await?;
@@ -184,7 +192,8 @@ async fn plugin_theme_js_apis() -> anyhow::Result<()> {
     assert_eq!(sel.fg, Some(Color::Rgb(0x11, 0x11, 0x11)), "fg override");
     assert_eq!(sel.bg, Some(Color::Rgb(0xff, 0, 0)), "bg override");
     assert!(
-        sel.add_modifier.contains(helix_view::graphics::Modifier::ITALIC),
+        sel.add_modifier
+            .contains(helix_view::graphics::Modifier::ITALIC),
         "modifiers override"
     );
 
@@ -208,7 +217,11 @@ async fn plugin_theme_js_apis() -> anyhow::Result<()> {
 
     // set_theme_name：切基准主题 + 清覆盖（t_style 的 ui.selection 覆盖应消失）
     pump(&mut app, ":t_switch<ret>").await?;
-    assert_eq!(app.editor.theme.name(), "base16_default", "set_theme_name 切换");
+    assert_eq!(
+        app.editor.theme.name(),
+        "base16_default",
+        "set_theme_name 切换"
+    );
     assert_ne!(
         app.editor.theme.get("ui.selection").fg,
         Some(Color::Rgb(0x11, 0x11, 0x11)),
@@ -218,7 +231,10 @@ async fn plugin_theme_js_apis() -> anyhow::Result<()> {
     // theme-change 事件：再次 set_theme 触发
     pump(&mut app, ":t_again<ret>").await?;
     let (status, _) = app.editor.get_status().expect("status");
-    assert!(status.contains("theme-changed"), "theme-change event: {status}");
+    assert!(
+        status.contains("theme-changed"),
+        "theme-change event: {status}"
+    );
     // 事件后覆盖已应用
     assert_eq!(
         app.editor.theme.get("ui.selection").fg,

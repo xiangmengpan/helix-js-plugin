@@ -68,8 +68,12 @@ pub(crate) fn js_get_config(
         return Ok(JsValue::null());
     }
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
-    let Some(obj) = parsed.as_object() else { return Ok(JsValue::null()) };
-    let Some(cfg) = obj.get(&name) else { return Ok(JsValue::null()) };
+    let Some(obj) = parsed.as_object() else {
+        return Ok(JsValue::null());
+    };
+    let Some(cfg) = obj.get(&name) else {
+        return Ok(JsValue::null());
+    };
     // serde_json Value → JsValue(经 JSON.parse)
     let cfg_json = serde_json::to_string(cfg).unwrap_or_else(|_| "null".to_string());
     // JSON 对象字面量直接 eval 会被当语句块;用 JSON.parse 包裹(Rust {:?} 转义与 JS 字符串兼容)
@@ -95,12 +99,19 @@ pub(crate) fn js_get_config_docs(
             )))
         })?;
     let schema = with_config_schemas(|m| m.get(&name).cloned());
-    let Some(schema) = schema else { return Ok(JsValue::null()) };
-    let parsed: serde_json::Value = serde_json::from_str(&schema).unwrap_or(serde_json::Value::Null);
-    let Some(obj) = parsed.as_object() else { return Ok(JsValue::null()) };
+    let Some(schema) = schema else {
+        return Ok(JsValue::null());
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&schema).unwrap_or(serde_json::Value::Null);
+    let Some(obj) = parsed.as_object() else {
+        return Ok(JsValue::null());
+    };
     let arr = boa_engine::object::builtins::JsArray::new(ctx);
     for (key, field) in obj {
-        let Some(fo) = field.as_object() else { continue };
+        let Some(fo) = field.as_object() else {
+            continue;
+        };
         let to_js = |v: &serde_json::Value| match v {
             serde_json::Value::String(s) => JsValue::from(JsString::from(s.as_str())),
             serde_json::Value::Bool(b) => JsValue::from(*b),
@@ -109,7 +120,11 @@ pub(crate) fn js_get_config_docs(
         };
         let get = |k: &str| fo.get(k).map(&to_js).unwrap_or(JsValue::undefined());
         let item = ObjectInitializer::new(ctx)
-            .property(JsString::from("key"), JsValue::from(JsString::from(key.as_str())), Attribute::all())
+            .property(
+                JsString::from("key"),
+                JsValue::from(JsString::from(key.as_str())),
+                Attribute::all(),
+            )
             .property(JsString::from("type"), get("type"), Attribute::all())
             .property(JsString::from("default"), get("default"), Attribute::all())
             .property(JsString::from("doc"), get("doc"), Attribute::all())
@@ -141,29 +156,45 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 声明
-        load_script(r#"helix.define_config("ft", {show_hidden: {type: "boolean", default: false, doc: "显示隐藏"}});"#);
+        load_script(
+            r#"helix.define_config("ft", {show_hidden: {type: "boolean", default: false, doc: "显示隐藏"}});"#,
+        );
         // 未合并(缓存空)→ get_config null
         load_script(r#"globalThis.__g = helix.get_config("ft");"#);
         with_engine(|engine| {
-            let v = engine.global_object().get(JsString::from("__g"), engine).unwrap();
+            let v = engine
+                .global_object()
+                .get(JsString::from("__g"), engine)
+                .unwrap();
             assert!(v.is_null() || v.is_undefined(), "未合并 → null/undefined");
         });
         // 合并缓存 → get_config 返回对象
         crate::state::cache_configs(r#"{"ft":{"show_hidden":true}}"#);
         load_script(r#"globalThis.__g2 = helix.get_config("ft");"#);
         with_engine(|engine| {
-            let v = engine.global_object().get(JsString::from("__g2"), engine).unwrap();
+            let v = engine
+                .global_object()
+                .get(JsString::from("__g2"), engine)
+                .unwrap();
             let o = v.as_object().unwrap();
-            assert!(
-                o.get(JsString::from("show_hidden"), engine).unwrap().as_boolean().unwrap()
-            );
+            assert!(o
+                .get(JsString::from("show_hidden"), engine)
+                .unwrap()
+                .as_boolean()
+                .unwrap());
         });
         // docs
         load_script(r#"globalThis.__d = helix.get_config_docs("ft");"#);
         with_engine(|engine| {
-            let v = engine.global_object().get(JsString::from("__d"), engine).unwrap();
+            let v = engine
+                .global_object()
+                .get(JsString::from("__d"), engine)
+                .unwrap();
             let arr = v.as_object().unwrap();
-            let len = boa_engine::object::builtins::JsArray::from_object(arr.clone()).unwrap().length(engine).unwrap();
+            let len = boa_engine::object::builtins::JsArray::from_object(arr.clone())
+                .unwrap()
+                .length(engine)
+                .unwrap();
             assert_eq!(len, 1, "docs 一项");
         });
         let _ = take_ui_requests();

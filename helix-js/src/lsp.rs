@@ -381,13 +381,11 @@ mod tests {
         inject_location_paths(&mut v);
         assert_eq!(v[0]["path"], "/a/b.rs");
         // LocationLink 形态（真实序列化键 targetUri，camelCase）
-        let mut v2 =
-            serde_json::json!([{"targetUri": "file:///c/d.rs", "targetRange": {}, "origin_selection_range": {}}]);
+        let mut v2 = serde_json::json!([{"targetUri": "file:///c/d.rs", "targetRange": {}, "origin_selection_range": {}}]);
         inject_location_paths(&mut v2);
         assert_eq!(v2[0]["path"], "/c/d.rs");
         // snake_case 旧键不命中（防回归：真实 JSON 是 camelCase）
-        let mut v2b =
-            serde_json::json!([{"target_uri": "file:///c/d.rs"}]);
+        let mut v2b = serde_json::json!([{"target_uri": "file:///c/d.rs"}]);
         inject_location_paths(&mut v2b);
         assert!(v2b[0].get("path").is_none());
         // 单对象形态
