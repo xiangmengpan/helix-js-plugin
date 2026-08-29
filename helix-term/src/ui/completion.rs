@@ -1,4 +1,4 @@
-use crate::handlers::completion::LspCompletionItem;
+use crate::handlers::completion::{LspCompletionItem, SnippetCompletionItem};
 use crate::ui::{menu, Markdown, Menu, Popup, PromptEvent};
 use crate::{
     compositor::{Component, Context, Event, EventResult},
@@ -37,11 +37,13 @@ impl menu::Item for CompletionItem {
                         .as_ref()
                         .is_some_and(|tags| tags.contains(&lsp::CompletionItemTag::DEPRECATED))
             }
+            CompletionItem::Snippet(_) => false,
             CompletionItem::Other(_) => false,
         };
 
         let label = match self {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.label.as_str(),
+            CompletionItem::Snippet(SnippetCompletionItem { label, .. }) => label,
             CompletionItem::Other(core::CompletionItem { label, .. }) => label,
         };
 
@@ -101,6 +103,7 @@ impl menu::Item for CompletionItem {
                 }
                 None => ("".into(), 0),
             },
+            CompletionItem::Snippet(_) => ("snippet".into(), 15),
             CompletionItem::Other(core::CompletionItem { kind, .. }) => (kind.as_ref().into(), 0),
         };
 
@@ -202,6 +205,7 @@ impl Completion {
                             );
                             doc.apply_temporary(&transaction, view.id)
                         }
+                        CompletionItem::Snippet(_) => false,
                         CompletionItem::Other(core::CompletionItem { transaction, .. }) => {
                             doc.apply_temporary(transaction, view.id)
                         }
@@ -253,6 +257,10 @@ impl Completion {
                                 add_edits.map(|edits| (edits, encoding)),
                                 snippet,
                             )
+                        }
+                        CompletionItem::Snippet(_) => {
+                            // 占位:任务 3 实现 snippet 展开(前缀替换 + ActiveSnippet)
+                            (Transaction::new(doc.text()), None, None)
                         }
                         CompletionItem::Other(core::CompletionItem { transaction, .. }) => {
                             (transaction, None, None)
@@ -531,6 +539,12 @@ impl Component for Completion {
                 }
                 None => return,
             },
+            CompletionItem::Snippet(SnippetCompletionItem { description, .. }) => {
+                let Some(doc) = description.as_deref() else {
+                    return;
+                };
+                markdowned(language, None, Some(doc))
+            }
             CompletionItem::Other(option) => {
                 let Some(doc) = option.documentation.as_deref() else {
                     return;
@@ -692,6 +706,23 @@ mod tests {
 
     fn cells(row: &menu::Row<'_>) -> Vec<String> {
         row.cell_text().collect()
+    }
+
+    #[test]
+    fn snippet_item_kind_and_priority() {
+        use crate::handlers::completion::{CompletionItem, SnippetCompletionItem};
+        use helix_core::completion::CompletionProvider;
+        let item = CompletionItem::Snippet(SnippetCompletionItem {
+            label: "fn".into(),
+            body: "function ${1:name}(${2:params}) {\n\t${0}\n}".into(),
+            description: Some("Function declaration".into()),
+            provider_priority: 0,
+        });
+        assert_eq!(item.provider(), CompletionProvider::Snippet);
+        assert_eq!(item.provider_priority(), 0);
+        // format:kind 文本 "snippet"、kind_num 15
+        let row = CompletionItem::format(&item, &Style::default());
+        assert_eq!(cells(&row), vec!["fn".to_string(), "snippet".to_string()]);
     }
 
     #[test]

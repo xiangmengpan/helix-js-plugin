@@ -1,5 +1,7 @@
 use std::mem;
 
+use std::borrow::Cow;
+
 use helix_core::completion::CompletionProvider;
 use helix_lsp::{lsp, LanguageServerId};
 use helix_view::handlers::completion::ResponseContext;
@@ -67,10 +69,19 @@ impl LspCompletionItem {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct SnippetCompletionItem {
+    pub label: Cow<'static, str>,
+    pub body: String,
+    pub description: Option<String>,
+    pub provider_priority: i8,
+}
+
 #[allow(clippy::large_enum_variant)] // TODO: In a separate PR attempt the `Box<LspCompletionItem>` pattern.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CompletionItem {
     Lsp(LspCompletionItem),
+    Snippet(SnippetCompletionItem),
     Other(helix_core::CompletionItem),
 }
 
@@ -79,6 +90,7 @@ impl CompletionItem {
     pub fn filter_text(&self) -> &str {
         match self {
             CompletionItem::Lsp(item) => item.filter_text(),
+            CompletionItem::Snippet(item) => &item.label,
             CompletionItem::Other(item) => &item.label,
         }
     }
@@ -108,12 +120,15 @@ impl CompletionItem {
             CompletionItem::Lsp(item) => item.provider_priority,
             // sorting path completions after LSP for now
             CompletionItem::Other(_) => 1,
+            // snippets sort after LSP, before word/path
+            CompletionItem::Snippet(_) => 0,
         }
     }
 
     pub fn provider(&self) -> CompletionProvider {
         match self {
             CompletionItem::Lsp(item) => CompletionProvider::Lsp(item.provider),
+            CompletionItem::Snippet(_) => CompletionProvider::Snippet,
             CompletionItem::Other(item) => item.provider,
         }
     }
@@ -121,6 +136,7 @@ impl CompletionItem {
     pub fn preselect(&self) -> bool {
         match self {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.preselect.unwrap_or(false),
+            CompletionItem::Snippet(_) => false,
             CompletionItem::Other(_) => false,
         }
     }
