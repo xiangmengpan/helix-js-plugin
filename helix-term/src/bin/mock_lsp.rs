@@ -103,9 +103,18 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
             }
             json!({ "documentChanges": edits })
         }
-        "textDocument/codeAction" if scenario == "code_actions_basic" => json!([
-            { "title": "mock-fix", "kind": "quickfix", "edit": { "changes": { "uri": [ { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "ONE" } ] } } }
-        ]),
+        "textDocument/codeAction" if scenario == "code_actions_basic" => {
+            // changes map 的键必须是实际文件 uri(json! 不支持动态键,手动建 Map)
+            let uri = msg["params"]["textDocument"]["uri"].clone();
+            let mut changes = serde_json::Map::new();
+            changes.insert(
+                uri.as_str().unwrap_or("").to_string(),
+                json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "ONE" }]),
+            );
+            json!([
+                { "title": "mock-fix", "kind": "quickfix", "edit": { "changes": changes } }
+            ])
+        }
         _ => return Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })),
     };
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))

@@ -229,16 +229,13 @@ async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
                     assert_eq!(status.as_ref(), "ca:mock-fix|quickfix");
                 }),
             ),
+            // 无害键 pump:exec 的 apply+resolve 在下一帧(段 A 先应用再 resolve);
+            // 不重跑命令(新运行的 ca echo 会覆盖 exec echo)
             (
-                Some(":mock-ca<ret>"),
+                Some("j"),
                 Some(&|app| {
                     let (status, _) = app.editor.get_status().unwrap();
                     assert_eq!(status.as_ref(), r#"exec:{"applied":true}"#);
-                }),
-            ),
-            (
-                Some(":mock-ca<ret>"),
-                Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
                     assert_eq!(
                         doc.text().to_string(),
