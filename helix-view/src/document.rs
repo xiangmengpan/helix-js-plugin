@@ -12,6 +12,7 @@ use helix_core::encoding::Encoding;
 use helix_core::snippets::{ActiveSnippet, SnippetRenderCtx};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::text_annotations::{InlineAnnotation, Overlay};
+use helix_core::Tendril;
 use helix_event::TaskController;
 use helix_lsp::util::lsp_pos_to_pos;
 use helix_stdx::faccess::{copy_metadata, readonly};
@@ -138,6 +139,27 @@ pub enum DocumentOpenError {
     IoError(#[from] io::Error),
 }
 
+/// 插件装饰(per-doc,所有 view 共享);坐标 = char 索引(应用时换算),不随事务重映射
+#[derive(Debug, Clone, Default)]
+pub struct PluginDecorations {
+    pub virtual_text: Vec<PluginInlineAnnotation>,
+    pub highlights: Vec<PluginHighlight>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginInlineAnnotation {
+    pub char_idx: usize,
+    pub text: Tendril,
+    pub style: Option<String>, // 主题 scope;None/解析失败 = 不渲染
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginHighlight {
+    pub start: usize,
+    pub end: usize,
+    pub style: Option<String>,
+}
+
 pub struct Document {
     pub(crate) id: DocumentId,
     text: Rope,
@@ -222,6 +244,8 @@ pub struct Document {
 
     /// Annotations for LSP document color swatches
     pub color_swatches: Option<DocumentColorSwatches>,
+    /// 插件装饰(所有 view 共享);坐标 = char 索引,不随事务重映射
+    pub plugin_decorations: PluginDecorations,
     /// Cached LSP document links for navigation (e.g. goto_file).
     pub document_links: Vec<DocumentLink>,
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
@@ -773,6 +797,7 @@ impl Document {
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
+            plugin_decorations: PluginDecorations::default(),
             document_links: Vec::new(),
             color_swatch_controller: TaskController::new(),
             document_highlight_controllers: HashMap::new(),

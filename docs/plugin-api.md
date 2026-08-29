@@ -157,6 +157,20 @@ const other = helix.by_path("src/main.rs");
 - 目标 buffer 在命令期间被关闭 → 编辑应用时报错入状态栏(不崩)
 - 同一命令内同时用 `ctx.doc` 与 `by_path(当前文件路径)` 改同一 buffer → 视为两个目标,撤销两次
 
+### `helix.set_virtual_text(path, row, col, text, style)` / `helix.set_highlight(path, sr, sc, er, ec, style)`(装饰/标记)
+
+给已打开 buffer 加装饰(不修改文本;命令/事件期间累积,应用时**整体替换**该 buffer 的插件装饰):
+
+```js
+helix.set_virtual_text("src/main.rs", 1, 4, " // TODO", "ui.help");
+helix.set_highlight("src/main.rs", 0, 0, 5, 0, "ui.selection");   // [start, end) 半开区间
+helix.set_virtual_text("src/main.rs");                            // 清除该 buffer 全部装饰
+```
+
+- `style`: 主题 scope 字符串或 null(解析失败/省略 = 不渲染)
+- 路径规则与 `by_path` 一致(规范化匹配,未打开静默忽略);坐标基于命令开始时的快照,不随文档变更重映射——监听 `doc-change` 重推
+- 装饰按 buffer 存储,所有窗口共享;buffer 关闭或脚本重载时清空
+
 ### `helix.set_cursor(row, col)` / `helix.set_selection(ar, ac, hr, hc)` / `helix.set_selection([...])`
 
 ```js

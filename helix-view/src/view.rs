@@ -491,6 +491,22 @@ impl View {
                 .add_inline_annotations(other_inlay_hints, other_style)
                 .add_inline_annotations(padding_after_inlay_hints, None);
         };
+        // 插件 virtual text:按 style 分组注入(同组共享一个 style 是 TextAnnotations 的形态)
+        if !doc.plugin_decorations.virtual_text.is_empty() {
+            let mut groups: Vec<(Option<String>, Vec<helix_core::text_annotations::InlineAnnotation>)> = Vec::new();
+            for a in &doc.plugin_decorations.virtual_text {
+                let ann = helix_core::text_annotations::InlineAnnotation::new(a.char_idx, a.text.clone());
+                if let Some(g) = groups.iter_mut().find(|(s, _)| s == &a.style) {
+                    g.1.push(ann);
+                } else {
+                    groups.push((a.style.clone(), vec![ann]));
+                }
+            }
+            for (scope, anns) in groups {
+                let style = scope.as_deref().and_then(|s| theme.and_then(|t| t.find_highlight(s)));
+                text_annotations.add_inline_annotations(anns, style);
+            }
+        }
         let config = doc.config.load();
 
         if config.lsp.display_color_swatches {

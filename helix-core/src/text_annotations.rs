@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::ops::Range;
+use std::ops::{Deref, Range};
 use std::ptr::NonNull;
 
 use crate::doc_formatter::FormattedGrapheme;
@@ -173,17 +173,57 @@ pub trait LineAnnotation {
     ) -> Position;
 }
 
+/// 注解数据来源:借用 doc 的切片(既有调用点,零拷贝)或渲染期构造的 owned Vec
+/// (插件装饰按 style 分组后注入,数据随 TextAnnotations 一起存活)
+#[derive(Debug)]
+enum AnnotationSource<'a, A> {
+    Borrowed(&'a [A]),
+    Owned(Vec<A>),
+}
+
+impl<A> Deref for AnnotationSource<'_, A> {
+    type Target = [A];
+
+    fn deref(&self) -> &[A] {
+        match self {
+            AnnotationSource::Borrowed(s) => s,
+            AnnotationSource::Owned(v) => v,
+        }
+    }
+}
+
+impl<'a, A> From<&'a [A]> for AnnotationSource<'a, A> {
+    fn from(s: &'a [A]) -> Self {
+        AnnotationSource::Borrowed(s)
+    }
+}
+
+impl<'a, A> From<&'a Vec<A>> for AnnotationSource<'a, A> {
+    fn from(v: &'a Vec<A>) -> Self {
+        AnnotationSource::Borrowed(v)
+    }
+}
+
+impl<A> From<Vec<A>> for AnnotationSource<'_, A> {
+    fn from(v: Vec<A>) -> Self {
+        AnnotationSource::Owned(v)
+    }
+}
+
 #[derive(Debug)]
 struct Layer<'a, A, M> {
-    annotations: &'a [A],
+    annotations: AnnotationSource<'a, A>,
     current_index: Cell<usize>,
     metadata: M,
 }
 
-impl<A, M: Clone> Clone for Layer<'_, A, M> {
+impl<A: Clone, M: Clone> Clone for Layer<'_, A, M> {
     fn clone(&self) -> Self {
         Layer {
-            annotations: self.annotations,
+            annotations: match &self.annotations {
+                AnnotationSource::Borrowed(s) => AnnotationSource::Borrowed(s),
+                AnnotationSource::Owned(v) => AnnotationSource::Owned(v.clone()),
+            },
             current_index: self.current_index.clone(),
             metadata: self.metadata.clone(),
         }
@@ -212,6 +252,16 @@ impl<A, M> Layer<'_, A, M> {
 
 impl<'a, A, M> From<(&'a [A], M)> for Layer<'a, A, M> {
     fn from((annotations, metadata): (&'a [A], M)) -> Layer<'a, A, M> {
+        Layer {
+            annotations: AnnotationSource::Borrowed(annotations),
+            current_index: Cell::new(0),
+            metadata,
+        }
+    }
+}
+
+impl<'a, A, M> From<(AnnotationSource<'a, A>, M)> for Layer<'a, A, M> {
+    fn from((annotations, metadata): (AnnotationSource<'a, A>, M)) -> Layer<'a, A, M> {
         Layer {
             annotations,
             current_index: Cell::new(0),
@@ -328,9 +378,10 @@ impl<'a> TextAnnotations<'a> {
     /// the annotations that belong to the layers added first will be shown first.
     pub fn add_inline_annotations(
         &mut self,
-        layer: &'a [InlineAnnotation],
+        layer: impl Into<AnnotationSource<'a, InlineAnnotation>>,
         highlight: Option<Highlight>,
     ) -> &mut Self {
+        let layer = layer.into();
         if !layer.is_empty() {
             self.inline_annotations.push((layer, highlight).into());
         }

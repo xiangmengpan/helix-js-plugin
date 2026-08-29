@@ -415,6 +415,14 @@ impl Application {
                 error = error.or(Some(err));
             }
         }
+        let decorations = helix_js::take_decorations();
+        if !decorations.is_empty() {
+            if let Err(err) =
+                crate::commands::typed::apply_plugin_decorations(&mut self.editor, &decorations)
+            {
+                error = error.or(Some(err));
+            }
+        }
         let msgs = helix_js::take_messages();
         match error {
             Some(err) => self.editor.set_error(err.to_string()),

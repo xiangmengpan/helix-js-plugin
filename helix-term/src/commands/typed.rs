@@ -4396,6 +4396,13 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
                     cx.editor.set_error(format!("plugin edit failed: {err}"));
                 }
             }
+            // 应用插件装饰（编辑之后：坐标按应用时文本换算）。
+            let decorations = helix_js::take_decorations();
+            if !decorations.is_empty() {
+                if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
+                    cx.editor.set_error(format!("plugin decorations failed: {err}"));
+                }
+            }
             Ok(true)
         }
         Ok(false) => Ok(false),
@@ -4493,6 +4500,13 @@ fn emit_plugin_event_impl(
         if let Err(err) = apply_plugin_edits(editor, &edits) {
             editor.set_error(format!("plugin event '{name}' edits failed: {err}"));
             return;
+        }
+    }
+    // 装饰也在编辑之后应用（坐标按应用时文本换算）；失败不阻断消息回显
+    let decorations = helix_js::take_decorations();
+    if !decorations.is_empty() {
+        if let Err(err) = apply_plugin_decorations(editor, &decorations) {
+            editor.set_error(format!("plugin event '{name}' decorations failed: {err}"));
         }
     }
     // 编辑成功应用后才显示 echo 消息，避免失败时状态栏信息误导
@@ -4618,6 +4632,71 @@ pub(crate) fn apply_plugin_edits(
                 doc.apply(&txn, view_id);
             }
         }
+    }
+    Ok(())
+}
+
+/// 把插件装饰请求按 doc 应用:Clear → 清空;VirtualText/Highlight → 追加(整体替换)。
+/// doc: None(仅脚本重载产生)→ 清空所有 doc。未打开 path → 静默忽略(尽力而为层)。
+pub(crate) fn apply_plugin_decorations(
+    editor: &mut Editor,
+    reqs: &[helix_js::DecorationRequest],
+) -> anyhow::Result<()> {
+    use helix_view::document::{PluginDecorations, PluginHighlight, PluginInlineAnnotation};
+
+    // 全局清空(脚本重载):先独立处理,避免与 per-doc 借用交错
+    let has_global_clear = reqs.iter().any(|r| r.doc.is_none());
+    if has_global_clear {
+        for doc in editor.documents.values_mut() {
+            doc.plugin_decorations = PluginDecorations::default();
+        }
+    }
+    let per_doc = reqs.iter().filter(|r| r.doc.is_some());
+    let mut by_doc: Vec<(&String, Vec<&helix_js::DecorationRequest>)> = Vec::new();
+    for req in per_doc {
+        let path = req.doc.as_ref().unwrap();
+        if let Some(g) = by_doc.iter_mut().find(|(p, _)| p == &path) {
+            g.1.push(req);
+        } else {
+            by_doc.push((path, vec![req]));
+        }
+    }
+    for (path, group) in by_doc {
+        let Some(id) = editor
+            .documents
+            .iter()
+            .find(|(_, d)| d.path().is_some_and(|p| p.to_string_lossy() == path.as_str()))
+            .map(|(id, _)| *id)
+        else {
+            continue; // 未打开 → 忽略
+        };
+        let doc = editor.document_mut(id).expect("found above");
+        let text = doc.text().clone();
+        let mut virtual_text = Vec::new();
+        let mut highlights = Vec::new();
+        for req in group {
+            match &req.kind {
+                helix_js::DecorationKind::Clear => {
+                    virtual_text.clear();
+                    highlights.clear();
+                }
+                helix_js::DecorationKind::VirtualText { row, col, text: t, style } => {
+                    virtual_text.push(PluginInlineAnnotation {
+                        char_idx: pos_to_char(&text, *row, *col),
+                        text: t.clone().into(),
+                        style: style.clone(),
+                    });
+                }
+                helix_js::DecorationKind::Highlight { sr, sc, er, ec, style } => {
+                    highlights.push(PluginHighlight {
+                        start: pos_to_char(&text, *sr, *sc),
+                        end: pos_to_char(&text, *er, *ec),
+                        style: style.clone(),
+                    });
+                }
+            }
+        }
+        doc.plugin_decorations = PluginDecorations { virtual_text, highlights };
     }
     Ok(())
 }

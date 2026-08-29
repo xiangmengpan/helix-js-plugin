@@ -164,6 +164,36 @@ impl EditorView {
             if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
                 overlays.push(overlay);
             }
+            // 插件区域高亮:按 style 分组,组内排序合并重叠(OverlayHighlights 假设组内不重叠)
+            let plugin_hl = &doc.plugin_decorations.highlights;
+            if !plugin_hl.is_empty() {
+                use std::ops::Range;
+                let mut groups: Vec<(Option<String>, Vec<Range<usize>>)> = Vec::new();
+                for h in plugin_hl {
+                    let r = h.start..h.end;
+                    if let Some(g) = groups.iter_mut().find(|(s, _)| s == &h.style) {
+                        g.1.push(r);
+                    } else {
+                        groups.push((h.style.clone(), vec![r]));
+                    }
+                }
+                for (scope, mut ranges) in groups {
+                    ranges.sort_unstable_by_key(|r| r.start);
+                    let mut merged: Vec<Range<usize>> = Vec::new();
+                    for r in ranges {
+                        if let Some(last) = merged.last_mut() {
+                            if r.start <= last.end {
+                                last.end = last.end.max(r.end);
+                                continue;
+                            }
+                        }
+                        merged.push(r);
+                    }
+                    if let Some(style) = scope.as_deref().and_then(|s| theme.find_highlight(s)) {
+                        overlays.push(syntax::OverlayHighlights::Homogeneous { highlight: style, ranges: merged });
+                    }
+                }
+            }
         }
 
         let gutter_overflow = view.gutter_offset(doc) == 0;

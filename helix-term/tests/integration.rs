@@ -24,6 +24,7 @@ mod test {
     mod plugin_doc;
     mod plugin_docchange;
     mod plugin_cross_buffer;
+    mod plugin_decorations;
     mod plugin_reload;
     mod plugin_selection;
     mod plugin_run;

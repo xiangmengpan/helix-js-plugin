@@ -1,4 +1,4 @@
-use crate::commands::typed::{apply_cursor_requests, apply_plugin_edits};
+use crate::commands::typed::{apply_cursor_requests, apply_plugin_decorations, apply_plugin_edits};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 use crate::ui::comp_layout;
 use helix_js::{CommandContext, PluginKey, PopupKeyResult, StyledLine};
@@ -175,6 +175,12 @@ impl Component for PluginPopup {
         if !edits.is_empty() {
             if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
                 cx.editor.set_error(format!("plugin popup edit failed: {err}"));
+            }
+        }
+        let decorations = helix_js::take_decorations();
+        if !decorations.is_empty() {
+            if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
+                cx.editor.set_error(format!("plugin popup decorations failed: {err}"));
             }
         }
         let msgs = helix_js::take_messages();
