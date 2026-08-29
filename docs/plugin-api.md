@@ -843,7 +843,7 @@ await helix.lsp.execute_code_action(actions[0]); // → { applied: true } 或 nu
 ```
 
 - 自动应用编辑（一次撤销/文件）；rename 可跨 buffer（自动打开未打开文件）；code_actions 两阶段无状态（execute 原样传回列表项）
-- 无 server / 能力不支持 → resolve null（与查询类 4 方法一致）；请求失败/协议错误同样 resolve null 而非 reject（与查询类不同）；无超时（可能悬挂，与其它 lsp 方法一致）
+- 无 server / 能力不支持 → resolve null（与查询类 4 方法一致）；请求失败/协议错误同样 resolve null 而非 reject（与查询类不同）；超时 = 该语言服务器的 `timeout` 配置（默认 20s），到时 reject `Error`
 - 响应到达即应用；format 不校验文档版本（插件用 await 时序自行控制），rename 经 apply_workspace_edit 校验版本（过期 → null，不落地陈旧编辑）；format 仅全文档
 
 ### 空 / 错语义
@@ -854,7 +854,7 @@ await helix.lsp.execute_code_action(actions[0]); // → { applied: true } 或 nu
 | server 不支持该功能 | `resolve(null)` |
 | server 返回 LSP 协议 error | `reject(Error(message))` |
 | 连接断开等异常 | `reject(Error(message))` |
-| 请求挂起不返回 | 请求可能悬挂：无超时机制，server 不响应时 Promise 不兑现 |
+| 请求挂起不返回 | 超时 = 语言服务器 `timeout` 配置（默认 20s，per-server 可配），到时 `reject(Error("Timeout..."))`——promise 不悬挂 |
 
 “没结果”是插件常态（文件类型不匹配、功能未启用），只 resolve `null` 不抛错；只有真正出错的调用才 reject，插件只需为“发请求”兜底。
 
