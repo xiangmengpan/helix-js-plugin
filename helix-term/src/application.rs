@@ -1791,12 +1791,15 @@ fn handle_lsp_format(editor: &Editor, req: helix_js::LspRequest) {
     };
     let id = req.id;
     let doc_id = doc.id().as_u64();
+    // 请求侧捕获 offset_encoding,随载荷带回——应用侧不再重查(避免 server 集变化导致错位换算)
+    let offset_encoding = client.offset_encoding() as u8;
     let tx = helix_js::lsp_result_tx();
     tokio::spawn(async move {
         // result 传 Ok(None) 占位：应用成功时段 A 覆写为摘要 JSON；失败保留 null
         let payload = match future.await {
             Ok(Some(edits)) => Some(helix_js::LspApply::Format {
                 doc_id,
+                offset_encoding,
                 edits: serde_json::to_value(&edits).unwrap_or(serde_json::Value::Null),
             }),
             _ => None,
@@ -1951,7 +1954,11 @@ fn handle_lsp_execute_code_action(editor: &Editor, req: helix_js::LspRequest) {
 fn apply_lsp_edits(editor: &mut Editor, apply: helix_js::LspApply) -> anyhow::Result<String> {
     use helix_core::syntax::config::LanguageServerFeature;
     match apply {
-        helix_js::LspApply::Format { doc_id, edits } => {
+        helix_js::LspApply::Format {
+            doc_id,
+            offset_encoding,
+            edits,
+        } => {
             let Some(did) = editor
                 .documents
                 .keys()
@@ -1964,12 +1971,12 @@ fn apply_lsp_edits(editor: &mut Editor, apply: helix_js::LspApply) -> anyhow::Re
             // 后台 doc 需同步视图（批次 2 教训，防 panic）；doc 不存在已在上方拦截
             let view_id = editor.get_synced_view_id(did);
             let doc = editor.documents.get_mut(&did).unwrap();
-            // 与请求侧同源选择（Format server 第一个）；多 server 极少见，简化取默认 Utf16
-            let offset_encoding = doc
-                .language_servers_with_feature(LanguageServerFeature::Format)
-                .next()
-                .map(|ls| ls.offset_encoding())
-                .unwrap_or_default();
+            // 请求侧捕获的编码,不回查(OffsetEncoding 判别值:0=Utf8,1=Utf32,2=Utf16)
+            let offset_encoding = match offset_encoding {
+                0 => helix_lsp::OffsetEncoding::Utf8,
+                1 => helix_lsp::OffsetEncoding::Utf32,
+                _ => helix_lsp::OffsetEncoding::Utf16,
+            };
             let txn = lsp_text_edits_to_transaction(doc.text(), &edits, offset_encoding)?;
             doc.apply(&txn, view_id);
             let view = editor.tree.get_mut(view_id);
@@ -2080,5 +2087,68 @@ mod tests {
             },
         ];
         assert!(lsp_text_edits_to_transaction(&text, &edits, OffsetEncoding::Utf16).is_err());
+    }
+
+    /// workspace_edit_file_count 三分支计数(差一高发区)
+    #[test]
+    fn workspace_edit_file_count_branches() {
+        use helix_lsp::lsp;
+        // None(document_changes)→ changes map
+        let edit = lsp::WorkspaceEdit {
+            changes: Some(
+                vec![
+                    (lsp::Url::parse("file:///a.rs").unwrap(), vec![]),
+                    (lsp::Url::parse("file:///b.rs").unwrap(), vec![]),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            document_changes: None,
+            change_annotations: None,
+        };
+        assert_eq!(workspace_edit_file_count(&edit), 2);
+        // Edits 形态按条目数
+        let edit2 = lsp::WorkspaceEdit {
+            changes: None,
+            document_changes: Some(lsp::DocumentChanges::Edits(vec![
+                lsp::TextDocumentEdit {
+                    text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                        uri: lsp::Url::parse("file:///a.rs").unwrap(),
+                        version: Some(1),
+                    },
+                    edits: vec![lsp::OneOf::Left(lsp::TextEdit {
+                        range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 1)),
+                        new_text: "x".into(),
+                    })],
+                },
+                lsp::TextDocumentEdit {
+                    text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                        uri: lsp::Url::parse("file:///b.rs").unwrap(),
+                        version: Some(1),
+                    },
+                    edits: vec![],
+                },
+            ])),
+            change_annotations: None,
+        };
+        assert_eq!(workspace_edit_file_count(&edit2), 2);
+        // Operations 按 Edit 操作数(资源操作不计)
+        let edit3 = lsp::WorkspaceEdit {
+            changes: None,
+            document_changes: Some(lsp::DocumentChanges::Operations(vec![
+                lsp::DocumentChangeOperation::Edit(lsp::TextDocumentEdit {
+                    text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                        uri: lsp::Url::parse("file:///c.rs").unwrap(),
+                        version: Some(1),
+                    },
+                    edits: vec![lsp::OneOf::Left(lsp::TextEdit {
+                        range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 1)),
+                        new_text: "x".into(),
+                    })],
+                }),
+            ])),
+            change_annotations: None,
+        };
+        assert_eq!(workspace_edit_file_count(&edit3), 1);
     }
 }

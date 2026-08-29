@@ -843,7 +843,7 @@ await helix.lsp.execute_code_action(actions[0]); // → { applied: true } 或 nu
 ```
 
 - 自动应用编辑（一次撤销/文件）；rename 可跨 buffer（自动打开未打开文件）；code_actions 两阶段无状态（execute 原样传回列表项）
-- 无 server / 能力不支持 / 请求失败 → null（与查询类方法不同，不 reject）；无超时（可能悬挂，与其它 lsp 方法一致）
+- 无 server / 能力不支持 / 请求失败 → resolve null（与查询类 4 方法一致；协议错误同样走 null 而非 reject）；无超时（可能悬挂，与其它 lsp 方法一致）
 - 响应到达即应用；format 不校验文档版本（插件用 await 时序自行控制），rename 经 apply_workspace_edit 校验版本（过期 → null，不落地陈旧编辑）；format 仅全文档
 
 ### 空 / 错语义

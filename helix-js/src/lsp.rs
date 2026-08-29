@@ -192,6 +192,8 @@ pub enum LspApply {
     /// format:TextEdit 列表应用到指定 doc(doc_id 为 DocumentId 的 u64 透传)
     Format {
         doc_id: u64,
+        /// 请求侧捕获的 OffsetEncoding 判别值,应用侧不回查(防 server 集变化错位换算)
+        offset_encoding: u8,
         edits: serde_json::Value,
     },
     /// rename:WorkspaceEdit(URI 自含,apply_workspace_edit 处理跨 doc/打开)
