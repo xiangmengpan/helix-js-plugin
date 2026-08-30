@@ -3057,6 +3057,28 @@ fn yank_diagnostic(
     Ok(())
 }
 
+fn yank_error(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let reg = match args.first() {
+        Some(s) => {
+            ensure!(s.chars().count() == 1, format!("Invalid register {s}"));
+            s.chars().next().unwrap()
+        }
+        None => '+',
+    };
+
+    let Some(err) = cx.editor.last_error.clone() else {
+        bail!("No error to yank");
+    };
+    cx.editor.registers.write(reg, vec![err.to_string()])?;
+    cx.editor
+        .set_status(format!("Yanked error to register {reg}"));
+    Ok(())
+}
+
 fn read(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4193,6 +4215,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Yank diagnostic(s) under primary cursor to register, or clipboard by default",
         fun: yank_diagnostic,
+        completer: CommandCompleter::all(completers::register),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "yank-error",
+        aliases: &[],
+        doc: "Copy the most recent error message to a register, or clipboard by default",
+        fun: yank_error,
         completer: CommandCompleter::all(completers::register),
         signature: Signature {
             positionals: (0, Some(1)),
