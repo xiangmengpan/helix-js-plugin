@@ -1178,22 +1178,23 @@ fn parse_node(
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
             // multiline 开关：Enter 换行 + 行感知光标 + 多行渲染（缺省 false，单行行为不变）
-            let multiline = obj_opt_bool(&obj, "multiline", ctx, &api)?.unwrap_or(false);
-            // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值
-            let (value, cursor) =
+            let multiline_param = obj_opt_bool(&obj, "multiline", ctx, &api)?.unwrap_or(false);
+            // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值。
+            // multiline 同取 state(引擎权威)——渲染回调动态改参不与编辑语义分叉。
+            let (value, cursor, multiline) =
                 crate::input::with_input_states(|m| match m.entry((id, node_id.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => {
                         let s = e.get();
-                        (s.value.clone(), s.cursor)
+                        (s.value.clone(), s.cursor, s.multiline)
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         let c = js_value.chars().count();
                         e.insert(InputState {
                             value: js_value.clone(),
                             cursor: c,
-                            multiline,
+                            multiline: multiline_param,
                         });
-                        (js_value.clone(), c)
+                        (js_value.clone(), c, multiline_param)
                     }
                 });
             Ok(CompNode::Input {
