@@ -1189,6 +1189,7 @@ fn parse_node(
                         e.insert(InputState {
                             value: js_value.clone(),
                             cursor: c,
+                            multiline: false, // 任务 2 接线：从节点参数解析
                         });
                         (js_value.clone(), c)
                     }
