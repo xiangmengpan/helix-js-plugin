@@ -7,7 +7,12 @@ use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use helix_view::{editor::SmartTabConfig, graphics::{Rect, UnderlineStyle}, theme::Style, Editor};
+use helix_view::{
+    editor::SmartTabConfig,
+    graphics::{Rect, UnderlineStyle},
+    theme::Style,
+    Editor,
+};
 use tui::layout::Constraint;
 use tui::text::Span;
 
