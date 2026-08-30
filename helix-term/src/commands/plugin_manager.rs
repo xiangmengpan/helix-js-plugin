@@ -75,6 +75,8 @@ pub fn install_copy(src: &Path, dst: &Path) -> anyhow::Result<Vec<String>> {
                 ));
             }
         } else {
+            // 全新配置首次安装:父目录可能不存在
+            fs::create_dir_all(dst.parent().unwrap())?;
             fs::copy(src, dst)?;
             copied.push(format!(
                 "features/{}",
@@ -84,10 +86,13 @@ pub fn install_copy(src: &Path, dst: &Path) -> anyhow::Result<Vec<String>> {
         Ok(())
     })();
     if result.is_err() {
-        // 回滚:删已复制的
-        for c in &copied {
-            let _ = fs::remove_file(helix_loader::config_dir().join("plugins").join(c));
-        }
+        // 回滚:dst 是独占安装目标,整个删掉(不依赖 config_dir,保持纯函数契约)
+        // ponytail: remove_dir_all 对单文件会 ENOTDIR,故按类型分派
+        let _ = if dst.is_dir() {
+            fs::remove_dir_all(dst)
+        } else {
+            fs::remove_file(dst)
+        };
     }
     result?;
     Ok(copied)
@@ -175,5 +180,32 @@ mod tests {
         remove_files_from(&plugins, &files);
         assert!(!dst.join("main.js").exists());
         assert!(!dst.join("sub").exists());
+    }
+
+    #[test]
+    fn install_copy_single_file_creates_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("plug.js");
+        fs::write(&src, "x").unwrap();
+        // 全新配置首次单文件安装:dst 父目录不存在
+        let dst = dir.path().join("plugins").join("features").join("plug.js");
+        let files = install_copy(&src, &dst).unwrap();
+        assert_eq!(files, vec!["features/plug.js"]);
+        assert!(dst.exists());
+    }
+
+    #[test]
+    fn install_copy_failure_rolls_back_dst() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("plug");
+        fs::create_dir_all(src.join("bad")).unwrap();
+        fs::write(src.join("main.js"), "x").unwrap();
+        fs::write(src.join("bad").join("a.js"), "y").unwrap();
+        // 注入失败:dst/bad 预置为文件 → 复制时 create_dir_all(dst/bad) 必失败
+        let dst = dir.path().join("plugins").join("features").join("plug");
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(dst.join("bad"), "poison").unwrap();
+        assert!(install_copy(&src, &dst).is_err());
+        assert!(!dst.exists());
     }
 }
