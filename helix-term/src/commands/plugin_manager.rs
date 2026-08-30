@@ -107,7 +107,14 @@ pub fn remove_files(files: &[String]) {
 /// 返回是否删到了东西(两处都没有 → false,调用方报 not found)。
 /// 裸名校验防目录逃逸(features/ 孤儿可能是目录名如 filetree,不强制 .js 后缀)。
 pub fn remove_orphan(plugins_dir: &Path, name: &str) -> anyhow::Result<bool> {
-    if name.is_empty() || name.contains('/') || name.starts_with("..") {
+    // 裸名校验防目录逃逸 + 拒绝 "." / "features":两者会命中 plugins/ 或 features/ 本身,
+    // remove_dir_all 会把全部插件删光——features/ 孤儿可能是目录名如 filetree,不强制 .js 后缀
+    if name.is_empty()
+        || name.contains('/')
+        || name.starts_with("..")
+        || name == "."
+        || name == "features"
+    {
         return Err(anyhow!("invalid plugin name: '{name}'"));
     }
     let mut removed = false;
@@ -256,5 +263,10 @@ mod tests {
         // 目录逃逸拒绝
         assert!(remove_orphan(&plugins, "../evil.js").is_err());
         assert!(remove_orphan(&plugins, "a/b.js").is_err());
+        // 容器目录名拒绝:命中 plugins/ 或 features/ 本身会 remove_dir_all 删光全部插件
+        assert!(remove_orphan(&plugins, ".").is_err());
+        assert!(plugins.exists(), ". 不应删掉 plugins 目录");
+        assert!(remove_orphan(&plugins, "features").is_err());
+        assert!(plugins.join("features").exists(), "features 不应被删");
     }
 }
