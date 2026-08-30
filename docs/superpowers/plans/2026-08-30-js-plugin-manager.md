@@ -187,66 +187,71 @@ git commit -m "feat(term): 插件管理器纯函数层——manifest 读写容�
 
 ---
 
-### 任务 2:三命令接线 + integration
+### 任务 2:增强 :plugin 子命令(install/remove + status 后缀)+ integration
 
 **文件:**
-- 修改:`helix-term/src/commands/typed.rs`(三命令 + 注册)
+- 修改:`helix-term/src/commands/typed.rs`(plugin() 函数 5339 的 install/remove 分支 + status)
 - 创建:`helix-term/tests/test/plugin_manager.rs`
 - 修改:`helix-term/tests/integration.rs`
 
-- [ ] **步骤 1:写失败测试(integration)**
+- [ ] **步骤 1:写失败测试(integration,无副作用路径)**
 
-plugin_manager.rs(照 plugin_lsp.rs 模式;用 tempdir 里的插件文件,装到测试隔离的 plugins 目录——**注意:integration 的 config_dir 是真实 ~/.config/helix!安装会污染用户环境。处理:integration 里把 manifest/复制路径参数化?或测试只跑"已存在时报错"等无副作用路径?**——**决策:integration 用 `:plugin-installed`(无副作用)和"同名已装报错"(读真实 manifest,不写)路径;install/remove 的写入逻辑靠单测覆盖,integration 跳过真实写入以免污染**)
+plugin_manager.rs(照 plugin_lsp.rs 模式;config_dir 是真实 ~/.config,写入类路径会污染——**只测无副作用路径**:`plugin list` 输出、`plugin status` 含 manifest 计数后缀;install/remove 写入逻辑靠单测覆盖)**:
 
 ```rust
 #[tokio::test(flavor = "multi_thread")]
-async fn plugin_installed_no_plugins() -> anyhow::Result<()> {
+async fn plugin_list_and_status() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
-            (Some(":plugin-installed<ret>"), Some(&|app| {
-                // 无 manifest 或空 → 提示
+            (Some(":plugin list<ret>"), None),
+            (Some(":plugin status<ret>"), Some(&|app| {
                 let (status, _) = app.editor.get_status().unwrap();
-                let s = status.as_ref();
-                assert!(s.contains("No plugins") || s.contains("installed"));
+                // status 含 manifest 计数后缀("installed in manifest")
+                assert!(status.as_ref().contains("installed"));
             })),
         ],
         false,
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 ```
 
-若 config_dir 可控(测试 helper 有覆盖 config dir 的机制就做全链路 install 测试;没有就按上面决策只测无副作用路径)。
+预期:FAIL(status 无 manifest 后缀)。
 
 - [ ] **步骤 2:运行测试确认失败**
 
 运行:`cargo test -p helix-term --features integration --test integration plugin_manager 2>&1 | tail -15`
-预期:FAIL(命令未注册)。
+预期:FAIL(断言不满足)。
 
-- [ ] **步骤 3:实现命令**
+- [ ] **步骤 3:实现增强**
 
-typed.rs 加三个 fn + TypableCommand 注册(plugin-load 4293 旁):
+typed.rs 的 `plugin()` 函数(5339):
+
+**install 分支**(替换现有 5351 单文件 copy):
 
 ```rust
-fn plugin_install(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate { return Ok(()); }
-    let Some(path) = args.first() else { return Err(anyhow!("usage: plugin-install <path>")); };
+"install" => {
+    let Some(path) = args.get(1) else {
+        return Err(anyhow!("usage: plugin install <path>"));
+    };
     let src = std::path::Path::new(path);
-    if !src.exists() { return Err(anyhow!("plugin-install: '{path}' not found")); }
+    if !src.exists() {
+        return Err(anyhow!("plugin install: '{path}' not found"));
+    }
     let (name, target) = plugin_manager::install_target(src)?;
     if target.exists() {
-        return Err(anyhow!("plugin-install: '{name}' already installed, use :plugin-remove first"));
+        return Err(anyhow!("plugin install: '{name}' already installed, use :plugin remove first"));
     }
     let files = plugin_manager::install_copy(src, &target)?;
     let mut manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
     manifest.insert(name.clone(), plugin_manager::ManifestEntry {
         source: path.to_string(),
         kind: "local".into(),
-        // 时间戳:std::time epoch 秒(无 chrono 依赖)
         installed_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
@@ -256,40 +261,51 @@ fn plugin_install(cx: &mut compositor::Context, args: Args, event: PromptEvent) 
     plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
     cx.editor.set_status(format!("installed '{name}', reloading..."));
     reload_plugins(cx)?;
-    Ok(())
-}
-
-fn plugin_installed(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate { return Ok(()); }
-    let manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
-    if manifest.is_empty() {
-        cx.editor.set_status("No plugins installed");
-        return Ok(());
-    }
-    let lines: Vec<String> = manifest.iter().map(|(n, e)| format!("{n} {e.source} {e.kind} {e.installed_at}")).collect();
-    // 状态栏单行(多行不折腾):join ", "
-    cx.editor.set_status(lines.join(", "));
-    Ok(())
-}
-
-fn plugin_remove(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate { return Ok(()); }
-    let Some(name) = args.first() else { return Err(anyhow!("usage: plugin-remove <name>")); };
-    let path = plugin_manager::manifest_path();
-    let mut manifest = plugin_manager::read_manifest(&path)?;
-    let Some(entry) = manifest.remove(name) else {
-        return Err(anyhow!("plugin-remove: '{name}' not installed"));
-    };
-    plugin_manager::remove_files(&entry.files);
-    plugin_manager::write_manifest(&path, &manifest)?;
-    cx.editor.set_status(format!("removed '{name}'; update init.js if it loads it"));
-    Ok(())
 }
 ```
 
-**时间戳**:无 chrono 依赖,用 `std::time::SystemTime` epoch 秒字符串。
+**remove 分支**(替换现有 5367 直接删文件):
 
-**状态栏输出**:单行 join ", "(多行状态栏不折腾)。
+```rust
+"remove" => {
+    let Some(name) = args.get(1) else {
+        return Err(anyhow!("usage: plugin remove <name>"));
+    };
+    let path = plugin_manager::manifest_path();
+    let mut manifest = plugin_manager::read_manifest(&path)?;
+    match manifest.remove(name) {
+        Some(entry) => {
+            plugin_manager::remove_files(&entry.files);
+            plugin_manager::write_manifest(&path, &manifest)?;
+            cx.editor.set_status(format!("removed '{name}'; update init.js if it loads it"));
+        }
+        // 兼容无 manifest 的旧安装:直接删文件
+        None => {
+            let plugin_dir = helix_loader::config_dir().join("plugins");
+            std::fs::remove_file(plugin_dir.join(name))
+                .map_err(|e| anyhow!("failed to remove '{name}': {e}"))?;
+            cx.editor.set_status(format!("removed '{name}'; update init.js if it loads it"));
+        }
+    }
+}
+```
+
+**status 分支**(加 manifest 计数后缀):
+
+```rust
+"status" => {
+    let plugin_dir = helix_loader::config_dir().join("plugins");
+    let installed = plugin_manager::read_manifest(&plugin_manager::manifest_path())?.len();
+    cx.editor.set_status(format!(
+        "{} plugins loaded from {}, {} installed in manifest",
+        helix_js::loaded_scripts().len(),
+        plugin_dir.display(),
+        installed
+    ));
+}
+```
+
+(plugin_manager:: 模块 use 或全路径;install 分支旧的 `plugin_name_from_path`/copy/load_script_named 替换为增强版;`validate_plugin_name` 在 remove 分支保留或并入 manifest 查名)
 
 - [ ] **步骤 4:测试转绿**
 
@@ -300,7 +316,7 @@ fn plugin_remove(cx: &mut compositor::Context, args: Args, event: PromptEvent) -
 
 ```bash
 git add helix-term/src/commands/typed.rs helix-term/tests/test/plugin_manager.rs helix-term/tests/integration.rs
-git commit -m "feat(term): :plugin-install/:plugin-installed/:plugin-remove(manifest 追踪,同名报错,装后 reload)+ integration"
+git commit -m "feat(term): :plugin install/remove 增强(manifest 追踪/目录/回滚/同名报错)+ status 计数后缀"
 ```
 
 ---
