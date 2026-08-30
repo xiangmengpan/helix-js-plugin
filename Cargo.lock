@@ -1920,6 +1920,7 @@ dependencies = [
  "globset",
  "helix-stdx",
  "libc",
+ "serde",
  "serde_json",
  "tempfile",
 ]

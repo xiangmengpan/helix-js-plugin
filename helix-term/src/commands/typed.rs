@@ -4915,6 +4915,10 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             | helix_js::UiRequest::Unwatch { .. }) => {
                 crate::plugins_watch::apply_watch(request)?;
             }
+            // 任务 3 接入：term 侧 PickerRow 构建 + action/preview 桥
+            helix_js::UiRequest::OpenPicker { source, rows } => {
+                log::warn!("OpenPicker 待任务 3 接入: source={source}, rows={}", rows.len());
+            }
             helix_js::UiRequest::FocusBuffer { id } => {
                 job::dispatch_blocking(move |editor, _compositor| {
                     if let Some((doc_id, _)) =
