@@ -18,14 +18,21 @@ helix.picker.define("files", {
 });
 
 // grep：rg 全文搜索（排除 target/.git；payload = [path, 行号 0-based]）
+// rg 无匹配 = exit 1（常规退出，非错误）→ 返回空列表；未安装/参数错等真实错误仍抛
 helix.picker.define("grep", {
   columns: ["file:line", "text"],
-  items: () => helix.run_async("rg -n --no-heading -g '!target' -g '!.git' .").then((out) =>
-    out.split("\n").filter(Boolean).map((line) => {
-      const [path, ln, ...text] = line.split(":");
-      const p = path.replace(/^\.\//, "");
-      return { cells: [p + ":" + ln, text.join(":")], payload: [p, String(Number(ln) - 1)] };
-    })),
+  items: () =>
+    helix.run_async("rg -n --no-heading -g '!target' -g '!.git' .")
+      .then((out) =>
+        out.split("\n").filter(Boolean).map((line) => {
+          const [path, ln, ...text] = line.split(":");
+          const p = path.replace(/^\.\//, "");
+          return { cells: [p + ":" + ln, text.join(":")], payload: [p, String(Number(ln) - 1)] };
+        }))
+      .catch((e) => {
+        if (e && /^exit 1/.test(e.message)) return [];
+        throw e;
+      }),
   preview: (row) => ({ path: row[0], line: Number(row[1]) }),
   action: (row) => helix.open_file(row[0], { row: Number(row[1]), col: 0 }),
 });
