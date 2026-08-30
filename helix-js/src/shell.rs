@@ -533,6 +533,42 @@ pub(crate) fn glob_matches(pattern: &str) -> std::result::Result<Vec<String>, St
     Ok(out)
 }
 
+/// 递归列出目录树(先序):目录先行、同级按名排序、depth 限制(Some(n) = 最多 n 层子目录)。
+/// 返回 (name, is_dir, path);失败返回 Err 字符串。
+fn tree_matches(
+    root: &str,
+    depth: Option<usize>,
+) -> Result<Vec<(String, bool, String)>, String> {
+    fn walk(
+        dir: &std::path::Path,
+        cur_depth: usize,
+        depth: Option<usize>,
+        out: &mut Vec<(String, bool, String)>,
+    ) -> Result<(), String> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("read_dir('{}'): {e}", dir.display()))?
+            .filter_map(|e| e.ok())
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let path = e.path().to_string_lossy().into_owned();
+                (name, is_dir, path)
+            })
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))); // 目录先行,同级按名
+        for (name, is_dir, path) in entries {
+            out.push((name, is_dir, path.clone()));
+            if is_dir && depth.is_none_or(|d| cur_depth < d) {
+                walk(std::path::Path::new(&path), cur_depth + 1, depth, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(std::path::Path::new(root), 0, depth, &mut out)?;
+    Ok(out)
+}
+
 /// 递归 walk 目录树，匹配完整路径字符串（含目录本身——glob 常规语义）
 fn walk_glob(
     dir: &std::path::Path,
@@ -698,6 +734,37 @@ pub(crate) fn js_glob_async(
         m.insert(id, resolving);
     });
     spawn_async_op(id, move || glob_matches(&pattern), AsyncEvent::FsGlob);
+    Ok(promise.into())
+}
+
+/// helix.read_tree:异步递归文件列表(path, {depth?}) → Promise<[{name,is_dir,path}]>
+pub(crate) fn js_read_tree(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
+            "read_tree: path must be a string",
+        ))))?;
+    let depth = match args.get(1).and_then(|v| v.as_object()) {
+        Some(o) => o
+            .get(JsString::from("depth"), context)?
+            .as_number()
+            .map(|n| n as usize),
+        None => None,
+    };
+    let (promise, resolving) = JsPromise::new_pending(context);
+    let id = crate::state::next_async_id();
+    crate::state::with_async_promises(|m| m.insert(id, resolving));
+    spawn_async_op(
+        id,
+        move || tree_matches(&path, depth),
+        AsyncEvent::FsTree,
+    );
     Ok(promise.into())
 }
 
@@ -897,6 +964,37 @@ pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
                     .map(|_| ())
             }
             AsyncEvent::FsGlob(_, Err(e)) => reject_msg(&resolving, &e, engine),
+            AsyncEvent::FsTree(_, Ok(entries)) => {
+                let arr = entries
+                    .into_iter()
+                    .map(|(name, is_dir, path)| {
+                        let obj = ObjectInitializer::new(engine)
+                            .property(
+                                JsString::from("name"),
+                                JsValue::from(JsString::from(name)),
+                                Attribute::all(),
+                            )
+                            .property(
+                                JsString::from("is_dir"),
+                                JsValue::from(is_dir),
+                                Attribute::all(),
+                            )
+                            .property(
+                                JsString::from("path"),
+                                JsValue::from(JsString::from(path)),
+                                Attribute::all(),
+                            )
+                            .build();
+                        JsValue::from(obj)
+                    })
+                    .collect::<Vec<_>>();
+                let js_arr = JsArray::from_iter(arr, engine);
+                resolving
+                    .resolve
+                    .call(&undefined, &[js_arr.into()], engine)
+                    .map(|_| ())
+            }
+            AsyncEvent::FsTree(_, Err(e)) => reject_msg(&resolving, &e, engine),
         };
         result.map_err(|e| anyhow!("async fs {id} settle failed: {e}"))
     })
@@ -916,3 +1014,37 @@ fn reject_msg(
         .call(&JsValue::undefined(), &[err.into()], engine)
         .map(|_| ())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tree_matches_recursive_sorted() {
+        let dir = std::env::temp_dir().join(format!("hx_tree_test_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+        std::fs::write(dir.join("sub/b.txt"), "").unwrap();
+        let entries = super::tree_matches(dir.to_str().unwrap(), None).unwrap();
+        // 目录先行、同级按名排序:sub 在 a.txt 前,且 sub 的子树在 sub 之后
+        let names: Vec<String> = entries.iter().map(|e| e.0.clone()).collect();
+        assert_eq!(names[0], "sub");
+        assert!(names.contains(&"a.txt".to_string()));
+        assert!(names.contains(&"b.txt".to_string()));
+        // b.txt 在 a.txt 之前(sub 子树先序,紧跟在 sub 之后)
+        let ia = names.iter().position(|n| n == "a.txt").unwrap();
+        let ib = names.iter().position(|n| n == "b.txt").unwrap();
+        assert!(ib < ia);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tree_matches_depth_limit() {
+        let dir = std::env::temp_dir().join(format!("hx_tree_depth_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("s1/s2")).unwrap();
+        std::fs::write(dir.join("s1/s2/c.txt"), "").unwrap();
+        let entries = super::tree_matches(dir.to_str().unwrap(), Some(1)).unwrap();
+        // depth=1 只到 s1 一层,c.txt 不可见
+        assert!(!entries.iter().any(|e| e.0 == "c.txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+

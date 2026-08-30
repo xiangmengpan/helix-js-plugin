@@ -316,6 +316,11 @@ pub fn init() {
                     1,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(shell::js_read_tree),
+                    JsString::from("read_tree"),
+                    2,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(popup::js_open_terminal),
                     JsString::from("open_terminal"),
                     1,
@@ -2140,7 +2145,8 @@ pub(crate) mod tests {
                 AsyncEvent::FsRead(id, _)
                 | AsyncEvent::FsWrite(id, _)
                 | AsyncEvent::FsStat(id, _)
-                | AsyncEvent::FsGlob(id, _) => *id,
+                | AsyncEvent::FsGlob(id, _)
+                | AsyncEvent::FsTree(id, _) => *id,
             };
             resolve_async_event(id, ev).unwrap();
         }
@@ -2181,7 +2187,8 @@ pub(crate) mod tests {
                 AsyncEvent::FsRead(id, _)
                 | AsyncEvent::FsWrite(id, _)
                 | AsyncEvent::FsStat(id, _)
-                | AsyncEvent::FsGlob(id, _) => *id,
+                | AsyncEvent::FsGlob(id, _)
+                | AsyncEvent::FsTree(id, _) => *id,
             };
             resolve_async_event(id, ev).unwrap();
         }
@@ -2213,7 +2220,8 @@ pub(crate) mod tests {
                 AsyncEvent::FsRead(id, _)
                 | AsyncEvent::FsWrite(id, _)
                 | AsyncEvent::FsStat(id, _)
-                | AsyncEvent::FsGlob(id, _) => *id,
+                | AsyncEvent::FsGlob(id, _)
+                | AsyncEvent::FsTree(id, _) => *id,
             };
             resolve_async_event(id, ev).unwrap();
         }
