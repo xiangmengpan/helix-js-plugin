@@ -126,3 +126,62 @@ async fn plugin_picker_run_unknown_source_errors() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// 内置插件冒烟：加载仓库 plugins/features/picker.js（4 源 define 全部执行，捕获 API 拼写/形状错误），
+// 经 helper 命令跑 buffers 源（唯一不依赖 cwd 的源——files/grep 走 read_tree(".")/rg，测 cwd 扫仓库不可控）：
+// items → OpenPicker 推层 → Enter → action focus_buffer → 层关闭；全程无 Error 状态。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_picker_builtin_plugin_buffers_source() -> anyhow::Result<()> {
+    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let helper = dir.path().join("picker_builtin_helper.js");
+    std::fs::write(
+        &helper,
+        r#"helix.register_command("pick-buffers", () => helix.picker.run("buffers"));"#,
+    )?;
+    let picker_js =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/features/picker.js");
+    let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            // 加载内置插件：4 个 define 全部执行（columns 数组 + items 可调用校验）
+            (
+                Some(&format!(":plugin-load {}<ret>", picker_js.display())),
+                Some(&|app| {
+                    assert_status_not_error(&app.editor);
+                }),
+            ),
+            (
+                Some(&format!(":plugin-load {}<ret>", helper.display())),
+                None,
+            ),
+            // 跑 buffers 源：items 返回行 → OpenPicker 经 job 队列推层
+            (
+                Some(":pick-buffers<ret>"),
+                Some(&|app| {
+                    assert!(
+                        app.compositor.has_component(picker_type),
+                        "picker layer should be open"
+                    );
+                }),
+            ),
+            // Enter：action focus_buffer(payload id) → 层关闭
+            (
+                Some("<ret>"),
+                Some(&|app| {
+                    assert!(
+                        !app.compositor.has_component(picker_type),
+                        "picker layer should close on Enter"
+                    );
+                    assert_status_not_error(&app.editor);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

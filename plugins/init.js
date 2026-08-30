@@ -14,3 +14,8 @@ helix.load("features/filetree/index.js");
 
 // 可选键位绑定（默认不绑，避免与既有键位冲突）
 // helix.map("normal", "C-e", "filetree");
+
+// 可选：picker.js 内置选择器源（files/grep/buffers/symbols）——默认不加载，需要时取消注释：
+// helix.load("features/picker.js");
+// helix.map("normal", "space-f", () => helix.picker.run("files"));  // 文件选择
+// helix.map("normal", "space-g", () => helix.picker.run("grep"));   // 全文搜索

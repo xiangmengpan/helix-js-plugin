@@ -14,17 +14,18 @@
 - [7. 事件钩子](#7-事件钩子)
 - [8. 键位绑定](#8-键位绑定)
 - [9. 弹窗](#9-弹窗)
-- [10. 组件树（el）](#10-组件树el)
-- [11. 侧边面板](#11-侧边面板)
-- [12. 终端](#12-终端)
-- [13. 布局树](#13-布局树)
-- [14. 界面定制](#14-界面定制)
-- [15. 主题](#15-主题)
-- [16. 插件管理](#16-插件管理)
-- [17. 综合示例：文件树面板](#17-综合示例文件树面板)
-- [18. 已知限制](#18-已知限制)
-- [19. API 速查索引](#19-api-速查索引)
-- [20. LSP 请求](#20-lsp-请求)
+- [10. Picker 选择器（helix.picker）](#10-picker-选择器helixpicker)
+- [11. 组件树（el）](#11-组件树el)
+- [12. 侧边面板](#12-侧边面板)
+- [13. 终端](#13-终端)
+- [14. 布局树](#14-布局树)
+- [15. 界面定制](#15-界面定制)
+- [16. 主题](#16-主题)
+- [17. 插件管理](#17-插件管理)
+- [18. 综合示例：文件树面板](#18-综合示例文件树面板)
+- [19. 已知限制](#19-已知限制)
+- [20. API 速查索引](#20-api-速查索引)
+- [21. LSP 请求](#21-lsp-请求)
 
 ---
 
@@ -48,7 +49,7 @@
 - **JS 永远只在主线程跑**（boa 的 `Context` 是 `!Send`），所以 JS 侧无并发问题。
 - **耗时操作必须用异步 API**（`run_async` / `spawn` / `*_async`），它们在 worker 线程执行，promise 恢复（`.then`/`.catch`）回到主线程事件循环。
 - **`helix.run`（同步）会阻塞编辑器主线程**——只用于短命令。
-- 弹窗/面板/终端现在是**布局树叶子**（见 §11/§12/§13）：面板和终端会真实收缩编辑器布局，不再只是覆盖层。
+- 弹窗/面板/终端现在是**布局树叶子**（见 §12/§13/§14）：面板和终端会真实收缩编辑器布局，不再只是覆盖层。
 - 渲染模型：JS `render` 回调每次重绘全量返回内容 → 布局引擎拍平成 `StyledLine`（多 span）→ 脏格 diff 只写变化的格。
 
 ---
@@ -259,6 +260,7 @@ helix.read_file_async(path)                       // Promise → 文件内容（
 helix.write_file_async(path, content)             // Promise → undefined
 helix.stat_async(path)                            // Promise → {is_dir, size, mtime}（mtime 为 Unix 秒）
 helix.glob_async(pattern)                         // Promise → paths[]（* / ** / ?，相对 CWD；** 跨目录）
+helix.read_tree(path, { depth? })                 // Promise → [{name, is_dir, path}]（递归；目录先行同级按名排序；depth 限深度，默认全递归）
 ```
 
 ```js
@@ -341,7 +343,7 @@ JS 渲染的覆盖层弹窗（模态层，重复 `open_popup` 替换前一个）
 helix.open_popup({
   width: 40, height: 10,                     // 可选：尺寸上限（clamp）
   position: { row: 5, col: 10 },             // 可选：屏幕锚点
-  render: (focus, ctx) => [                  // focus = 焦点节点 id 或 null（见 §10）
+  render: (focus, ctx) => [                  // focus = 焦点节点 id 或 null（见 §11）
     { text: "Error: ", style: "error" },     // 样式行：style = 主题 scope 名
     "普通行",                                // 或纯字符串
   ],
@@ -354,16 +356,38 @@ helix.open_popup({
 });
 ```
 
-- **render 返回两种形式**：字符串/`{text, style}` 数组（行 API），或 `helix.el` 组件树（§10）。
+- **render 返回两种形式**：字符串/`{text, style}` 数组（行 API），或 `helix.el` 组件树（§11）。
 - **onKey 返回值**：`"close"`（关闭弹窗并触发 onClose）\| `"handled"`（消费按键）\| `"ignore"`（穿透）。未识别返回值 → `"handled"`（安全默认）。
 - 未提供 `onKey` 时：Esc 关闭，其余穿透。
-- `key` 对象：`{ name, shift, ctrl, alt }`；name 取值：字符键、`"Enter"`、`"Esc"`、`"Tab"`、`"Backspace"`、`"Delete"`、`"Insert"`、`"Up"`/`"Down"`/`"Left"`/`"Right"`、`"Home"`/`"End"`、`"PageUp"`/`"PageDown"`、`"F1"`..`"F12"`（Shift-Tab 不可表示，见 §18）。
+- `key` 对象：`{ name, shift, ctrl, alt }`；name 取值：字符键、`"Enter"`、`"Esc"`、`"Tab"`、`"Backspace"`、`"Delete"`、`"Insert"`、`"Up"`/`"Down"`/`"Left"`/`"Right"`、`"Home"`/`"End"`、`"PageUp"`/`"PageDown"`、`"F1"`..`"F12"`（Shift-Tab 不可表示，见 §19）。
 - onKey 的 `doc` 参数：同命令 ctx.doc（编辑 = 一次按键一个事务）。
 - onKey 返回后：编辑/光标请求/消息/UI 请求都会在本次按键内同步应用。
 
 ---
 
-## 10. 组件树（el）
+## 10. Picker 选择器（helix.picker）
+
+`helix.picker.define/run` 让插件定义数据源并调起**原生 Picker**（过滤/滚动/预览/Enter 全部由核心实现，与 `:files`/`:grep` 同款 UI）。
+
+```js
+helix.picker.define(name, {
+  columns: ["名称", "..."],  // 列名数组；第一列参与过滤，其余列仅展示
+  items: () => rows,          // 返回行数组（同步数组或 Promise/async）
+  preview: (row) => ({ path, line }) | null,  // 可选；选中行预览（line 为 0-based 行号）
+  action: (row) => { ... },                   // 可选；Enter 触发
+});
+helix.picker.run(name);      // 取源调 items → 打开原生 Picker
+```
+
+**行格式**：数组 `[c1, c2, ...]`（cells = payload = 元素字符串）或对象 `{ cells: [...], payload: [...] }`（cells 用于展示；payload 原样传给 preview/action——如 buffers 源用 payload 藏 buffer id）。
+
+**回退语义**：源未定义 → `picker.run` 抛错（:plugin-load 报 Error）；items 返回非数组或 Promise reject → 状态栏报错（不静默）；action/preview 未定义或抛错 → 忽略（Enter 只关层）；preview 返回 null → 无预览。
+
+内置插件 `plugins/features/picker.js` 提供四源（files/grep/buffers/symbols），复制该文件即可自定义源。
+
+---
+
+## 11. 组件树（el）
 
 `render` 可返回嵌套组件树（旧行数组仍兼容）。组件树节点由 `helix.el(type, arg, opts)` 构造：
 
@@ -412,7 +436,7 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), st
 
 - 强制改值（候选回填/清空）：`helix.set_input_value(popup_id, node_id, value)`——写入引擎状态，光标置末尾，下次渲染生效；弹窗关闭时引擎自动清理该弹窗全部 input 状态。
 - 焦点节点按键不经过弹窗级 `onKey`；弹窗级 `onKey` 只在焦点系统未消费时收到按键。
-- 面板的 render 目前固定收到 `focus = null`（面板无节点焦点，见 §18）。
+- 面板的 render 目前固定收到 `focus = null`（面板无节点焦点，见 §19）。
 
 ### 布局语义
 
@@ -428,7 +452,7 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), st
 
 ---
 
-## 11. 侧边面板
+## 12. 侧边面板
 
 ### `helix.open_panel({ side, size, render, onKey?, onClose?, focusable? })`
 
@@ -455,7 +479,7 @@ helix.move_panel(id, "left");     // 移动面板到另一侧
 
 ---
 
-## 12. 终端
+## 13. 终端
 
 ### `helix.open_terminal({ cmd, side, size, onExit? })`
 
@@ -504,7 +528,7 @@ helix.term_feed(view, chunk);    // 内部桥接（open_terminal 内部使用，
 
 ---
 
-## 13. 布局树
+## 14. 布局树
 
 弹窗之外，面板/终端/编辑器都挂在**布局树**上：编辑器是 id=0 的叶子，面板和终端通过切分活动叶子挂载。JS 可以直接操作布局树：
 
@@ -528,14 +552,14 @@ helix.focus(id);                   // 聚焦叶子
 
 ```js
 const layout = helix.get_layout();     // { tree: {...}, active: id, zoomed: id|null } | null
-helix.restore_layout(layout);          // 目前只写入缓存（树重建未接线，见 §18）
+helix.restore_layout(layout);          // 目前只写入缓存（树重建未接线，见 §19）
 ```
 
 `tree` 为嵌套 JSON：`{ "type": "leaf", "id": N }` 或 `{ "type": "split", "dir": "h"|"v", "ratio": 0.5, "first": ..., "second": ... }`。
 
 ---
 
-## 14. 界面定制
+## 15. 界面定制
 
 ### `helix.set_statusline(fn)`
 
@@ -597,7 +621,7 @@ helix.set_diagnostic_icons({ error: "✗", warning: "!", info: "ℹ", hint: "?" 
 
 ---
 
-## 15. 主题
+## 16. 主题
 
 ### `helix.set_theme({ scope: color | { fg?, bg?, modifiers? } })`
 
@@ -650,7 +674,7 @@ helix.set_theme_name("base16_default");
 
 ---
 
-## 16. 插件管理
+## 17. 插件管理
 
 内置命令（编辑器内）：
 
@@ -669,9 +693,9 @@ helix.set_theme_name("base16_default");
 
 ---
 
-## 17. 综合示例：文件树面板
+## 18. 综合示例：文件树面板
 
-组合 §6 fs + §10 组件树 + §11 面板 + §4 文档打开，写一个最小文件树：
+组合 §6 fs + §11 组件树 + §12 面板 + §4 文档打开，写一个最小文件树：
 
 ```js
 // filetree.js
@@ -700,7 +724,7 @@ helix.register_command("filetree", () => {
     },
     onKey: (key, doc) => {
       if (key.name === "Enter") {              // 打开/进入
-        const hit = entries[key._row ?? 0];    // 简化：JS 需自行维护行命中（见 §18）
+        const hit = entries[key._row ?? 0];    // 简化：JS 需自行维护行命中（见 §19）
         if (hit.is_dir) loadDir(hit.path);
         else helix.open_file(hit.path);
         return "handled";
@@ -715,7 +739,7 @@ helix.register_command("filetree", () => {
 
 ---
 
-## 18. 已知限制
+## 19. 已知限制
 
 | 限制 | 说明 |
 |------|------|
@@ -736,7 +760,7 @@ helix.register_command("filetree", () => {
 
 ---
 
-## 19. API 速查索引
+## 20. API 速查索引
 
 ### 全局对象
 
@@ -762,6 +786,8 @@ helix.open_panel({ side, size, render, onKey?, onClose?, focusable? }) -> id
 helix.close_panel(id)
 helix.move_panel(id, side)
 helix.open_file(path, { row?, col? })
+helix.picker.define(name, { columns, items, preview?, action? })
+helix.picker.run(name)
 helix.lsp.hover([{ row, col }]) -> Promise       // → Hover | null
 helix.lsp.completion([{ row, col }]) -> Promise  // → CompletionItem[] | {isIncomplete, items} | null
 helix.lsp.goto_definition([{ row, col }]) -> Promise // → Location | Location[] | LocationLink[] | null（含 path）
@@ -787,6 +813,7 @@ helix.read_file_async(path)                     // Promise → 内容（UTF-8 lo
 helix.write_file_async(path, content)           // Promise
 helix.stat_async(path)                          // Promise → {is_dir, size, mtime}
 helix.glob_async(pattern)                       // Promise → paths[]
+helix.read_tree(path, { depth? })               // Promise → [{name, is_dir, path}]（递归）
 helix.set_statusline(fn)                        // fn({path, mode, cursor}) -> string|null
 helix.set_buffer_icon(fn)                       // fn(path) -> string|null
 helix.set_completion_render(fn)                 // fn(ctx) -> 行内容数组|组件树（补全菜单行钩子）
@@ -809,7 +836,8 @@ doc：{ path, text, cursor, insert(sr,sc,text), replace(sr,sc,er,ec,text), delet
 按键对象：{ name, shift, ctrl, alt }     // name: 字符 | Enter|Esc|Tab|Backspace|Delete|Insert|方向键|Home|End|PageUp|PageDown|F1..F12
 onKey 返回值："close" | "handled" | "ignore"
 render 返回值：数组（string|{text,style}）或 el 组件树；签名 render(focus, {width, height})
-组件树节点：text|row|col|scroll|button|input（见 §10）
+组件树节点：text|row|col|scroll|button|input（见 §11）
+picker 行：数组 [c1, c2, ...] 或 { cells: [...], payload: [...] }；preview/action 收到 payload 数组（见 §10）
 终端模式：dock | fullscreen | floating | minimized
 面板方向：right | left | bottom
 split 方向：right | left | top | bottom
@@ -819,7 +847,7 @@ split 方向：right | left | top | bottom
 
 ---
 
-## 20. LSP 请求
+## 21. LSP 请求
 
 插件可主动向当前 buffer 的语言服务器发请求。八个方法都挂在 `helix.lsp` 命名空间下，全部返回 Promise；响应为 LSP 协议原始 JSON（`serde_json` 序列化后 `JSON.parse` 透传），字段名与 LSP 协议一致。请求在**调用时**快照当前光标位置，之后移动光标不影响已发出的请求。
 
