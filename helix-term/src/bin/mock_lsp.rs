@@ -2,6 +2,17 @@
 //! 场景经 argv[1] 选择（per-server 配置，无并行竞争）；argv[2..] 为场景附加参数（如第二文件路径）。
 //! 不支持的方法 → null；shutdown → null；exit 通知 → 退出；stdin EOF → 退出。
 //! 注：file:// URI 拼接为 Unix 直接拼接（本仓测试环境为 Unix）；Windows 需按 lsp::Url::from_file_path 语义。
+//!
+//! 场景表（场景 × 能力 × 响应）：
+//! - initialize_only（默认）：无能力；仅 initialize，其余方法 → null
+//! - hover_basic：hoverProvider；textDocument/hover → markdown "mock hover"
+//! - completion_basic：completionProvider；textDocument/completion → ["mock-item"]
+//! - goto_definition_basic：definitionProvider；textDocument/definition → 自身 uri + range
+//! - symbols_basic：documentSymbolProvider；textDocument/documentSymbol → [MockSymbol]
+//! - format_basic：documentFormattingProvider；textDocument/formatting → "one"→"ONE"
+//! - rename_cross_file / rename_stale：renameProvider；textDocument/rename → documentChanges（cross_file 双文件；stale 当前文件 version=1 恒过期）
+//! - code_actions_basic：codeActionProvider；textDocument/codeAction → quickfix changes
+//! - no_response：hoverProvider；仅 initialize 正常响应，其余方法挂起不响应 → 客户端 per-server timeout 触发
 
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -56,6 +67,11 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
     if method == "shutdown" {
         return Some(json!({ "jsonrpc": "2.0", "id": id, "result": null }));
     }
+    // no_response：仅 initialize 响应，其余方法（含 shutdown 已在上方处理）挂起不响应——
+    // 进程保持活着，请求挂起直至客户端 timeout 触发 reject
+    if scenario == "no_response" && method != "initialize" {
+        return None;
+    }
     if id.is_none() && method != "initialized" {
         return None; // 未知通知 → 忽略
     }
@@ -80,7 +96,7 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
         "textDocument/formatting" if scenario == "format_basic" => json!([
             { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "ONE" }
         ]),
-        "textDocument/rename" if scenario.starts_with("rename_") => {
+        "textDocument/rename" if matches!(scenario, "rename_cross_file" | "rename_stale") => {
             let uri = msg["params"]["textDocument"]["uri"].clone();
             // 请求的 textDocument 是 TextDocumentIdentifier(无 version)——响应里的 version 由 mock 定：
             // 正常场景 null(不校验版本,恒可应用)；rename_stale 场景 1(测试 buffer 初始 version=0，
@@ -95,7 +111,7 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
                 "edits": [ { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "new" } ],
             })];
             if let Some(second) = args.get(1) {
-                let second_uri = format!("file://{}", second);
+                let second_uri = file_uri(second);
                 edits.push(json!({
                     "textDocument": { "uri": second_uri, "version": null },
                     "edits": [ { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "new" } ],
@@ -120,6 +136,11 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
+/// file:// URI：Unix 语义直接拼接（本仓测试环境为 Unix）；Windows 需按 lsp::Url::from_file_path 语义。
+fn file_uri(path: &str) -> String {
+    format!("file://{}", path)
+}
+
 fn capabilities(scenario: &str) -> serde_json::Value {
     let mut caps = serde_json::Map::new();
     let set =
@@ -127,7 +148,9 @@ fn capabilities(scenario: &str) -> serde_json::Value {
             caps.insert(key.to_string(), v);
         };
     match scenario {
-        "hover_basic" => set(&mut caps, "hoverProvider", json!(true)),
+        // no_response 也声明 hoverProvider：客户端按能力门控请求（无能力 → 不发请求直接 resolve null），
+        // 声明后请求才会发出并挂起 → 触发客户端 per-server timeout
+        "hover_basic" | "no_response" => set(&mut caps, "hoverProvider", json!(true)),
         "completion_basic" => set(
             &mut caps,
             "completionProvider",

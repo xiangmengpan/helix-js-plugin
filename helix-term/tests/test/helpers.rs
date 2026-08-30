@@ -275,6 +275,34 @@ args = {args}
     test_syntax_loader(Some(toml))
 }
 
+/// mock_lsp_loader + 显式 timeout（秒）；超时测试用短值（如 1s）触发客户端 per-server timeout。
+pub fn mock_lsp_loader_with_timeout(
+    scenario: &str,
+    extra_args: &[&str],
+    timeout_secs: u64,
+) -> helix_core::syntax::Loader {
+    let mut args = vec![scenario.to_string()];
+    args.extend(extra_args.iter().map(|s| s.to_string()));
+    let toml = format!(
+        r#"
+[[language]]
+name = "mock"
+scope = "source.mock"
+file-types = ["mock"]
+language-servers = ["mock-lsp"]
+
+[language-server.mock-lsp]
+command = "{bin}"
+args = {args}
+timeout = {timeout}
+"#,
+        bin = env!("CARGO_BIN_EXE_mock_lsp"),
+        args = serde_json::to_string(&args).unwrap(),
+        timeout = timeout_secs,
+    );
+    test_syntax_loader(Some(toml))
+}
+
 /// Use this for very simple test cases where there is one input
 /// document, selection, and sequence of key presses, and you just
 /// want to verify the resulting document and selection.
