@@ -895,6 +895,7 @@ await helix.lsp.execute_code_action(actions[0]); // → { applied: true } 或 nu
 ```
 
 - 自动应用编辑（一次撤销/文件）；rename 可跨 buffer（自动打开未打开文件）；code_actions 两阶段无状态（execute 原样传回列表项）
+- code_actions 列表项带内部字段 `_serverId`（execute 按它路由到对应 server 执行）；手动构造的 action 无此字段 → 用当前 buffer 第一个 CodeAction server（单 server 项目可忽略）
 - 无 server / 能力不支持 → resolve null（与查询类 4 方法一致）；请求失败/协议错误同样 resolve null 而非 reject（与查询类不同）；超时 = 该语言服务器的 `timeout` 配置（默认 20s），到时 reject `Error`
 - 响应到达即应用；format 不校验文档版本（插件用 await 时序自行控制），rename 经 apply_workspace_edit 校验版本（过期 → null，不落地陈旧编辑）；format 仅全文档
 

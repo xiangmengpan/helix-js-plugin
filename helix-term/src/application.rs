@@ -1905,10 +1905,10 @@ fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
     let id = req.id;
     let tx = helix_js::lsp_result_tx();
     tokio::spawn(async move {
-        let mut actions = Vec::new();
-        for (future, _ls_id) in futures {
+        let mut actions: Vec<serde_json::Value> = Vec::new();
+        for (future, ls_id) in futures {
             if let Ok(Some(list)) = future.await {
-                // 过滤 disabled（与 code-action 菜单同规则）
+                // 过滤 disabled（与 code-action 菜单同规则）；注入 _serverId（execute 按它路由回对应 server）
                 actions.extend(list.into_iter().filter(|action| {
                     matches!(
                         action,
@@ -1918,6 +1918,10 @@ fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
                                 ..
                             })
                     )
+                }).map(|action| {
+                    let mut v = serde_json::to_value(&action).unwrap_or(serde_json::Value::Null);
+                    v["_serverId"] = serde_json::json!(ls_id.as_u64());
+                    v
                 }));
             }
         }
@@ -1938,22 +1942,12 @@ fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
 }
 
 /// execute_code_action：无 server 请求——action JSON（插件从列表回传）直接走 apply 载荷，
-/// 主线程段 A 应用后 resolve。与 code_actions 同 server 选择：无 CodeAction server → null。
-fn handle_lsp_execute_code_action(editor: &Editor, req: helix_js::LspRequest) {
-    use helix_core::syntax::config::LanguageServerFeature;
-    let (_, doc) = current_ref!(editor);
-    let server_exists = doc
-        .language_servers_with_feature(LanguageServerFeature::CodeAction)
-        .next()
-        .is_some();
+/// 主线程段 A 解析 _serverId 路由对应 server 后应用。无 CodeAction server → 段 A 报错 resolve null。
+fn handle_lsp_execute_code_action(_editor: &Editor, req: helix_js::LspRequest) {
     let Some(params) = req.params else {
         let _ = helix_js::resolve_lsp(req.id, Ok(None));
         return;
     };
-    if !server_exists {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
-        return;
-    }
     let tx = helix_js::lsp_result_tx();
     // result 占位：段 A 应用成功后覆写为摘要；失败 resolve null
     let _ = tx.send(helix_js::LspResult {
@@ -2012,13 +2006,26 @@ fn apply_lsp_edits(editor: &mut Editor, apply: helix_js::LspApply) -> anyhow::Re
             Ok(format!(r#"{{"applied":true,"files":{files}}}"#))
         }
         helix_js::LspApply::ExecuteAction(v) => {
+            let mut v = v;
+            // _serverId：code_actions 列表注入的内部字段（execute 按它路由对应 server）；
+            // 手动构造的 action 无此字段 → 回退当前 buffer 第一个 CodeAction server（兼容单 server）
+            let server_id = v
+                .get("_serverId")
+                .and_then(|s| s.as_u64())
+                .map(LanguageServerId::from_u64);
+            if let Some(obj) = v.as_object_mut() {
+                obj.remove("_serverId");
+            }
             let action: lsp::CodeActionOrCommand = serde_json::from_value(v)?;
             let (_, doc) = current_ref!(editor);
-            // 与 code_actions 列表同 server 选择（多 server 简化：取第一个）
-            let Some(server) = doc
-                .language_servers_with_feature(LanguageServerFeature::CodeAction)
-                .next()
-            else {
+            let server = match server_id.and_then(|id| editor.language_server_by_id(id)) {
+                // 有 _serverId 且存在 → 用对应 server；缺失/查不到 → 回退第一个（兼容手动构造/已消失 server）
+                Some(s) => Some(s),
+                None => doc
+                    .language_servers_with_feature(LanguageServerFeature::CodeAction)
+                    .next(),
+            };
+            let Some(server) = server else {
                 anyhow::bail!("execute code action: no code action server");
             };
             let server_id = server.id();

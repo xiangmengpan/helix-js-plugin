@@ -90,6 +90,18 @@ impl fmt::Display for LanguageServerId {
     }
 }
 
+impl LanguageServerId {
+    /// 数值表示（JS 插件 code_actions 列表项的 `_serverId`；会话内有效，server 关闭后失效）
+    pub fn as_u64(&self) -> u64 {
+        slotmap::Key::data(self).as_ffi()
+    }
+
+    /// 由 [`as_u64`](LanguageServerId::as_u64) 的数值重建；非本会话产生的数值查不到 server，由调用方回退处理
+    pub fn from_u64(id: u64) -> Self {
+        slotmap::KeyData::from_ffi(id).into()
+    }
+}
+
 impl Diagnostic {
     #[inline]
     pub fn severity(&self) -> Severity {
