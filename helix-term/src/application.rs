@@ -2009,9 +2009,10 @@ fn apply_lsp_edits(editor: &mut Editor, apply: helix_js::LspApply) -> anyhow::Re
             let mut v = v;
             // _serverId：code_actions 列表注入的内部字段（execute 按它路由对应 server）；
             // 手动构造的 action 无此字段 → 回退当前 buffer 第一个 CodeAction server（兼容单 server）
+            // _serverId 经 JS 往返后是 f64(JS 数字无 u64);slotmap key 实际值域 < 2^53,f64 无损
             let server_id = v
                 .get("_serverId")
-                .and_then(|s| s.as_u64())
+                .and_then(|s| s.as_u64().or_else(|| s.as_f64().map(|f| f as u64)))
                 .map(LanguageServerId::from_u64);
             if let Some(obj) = v.as_object_mut() {
                 obj.remove("_serverId");
