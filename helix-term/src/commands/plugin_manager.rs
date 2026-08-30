@@ -103,6 +103,29 @@ pub fn remove_files(files: &[String]) {
     remove_files_from(&helix_loader::config_dir().join("plugins"), files);
 }
 
+/// 删除无 manifest 的残留:旧版单文件 plugins/<name> 或 features/<name> 孤儿(文件/目录都删);
+/// 返回是否删到了东西(两处都没有 → false,调用方报 not found)。
+/// 裸名校验防目录逃逸(features/ 孤儿可能是目录名如 filetree,不强制 .js 后缀)。
+pub fn remove_orphan(plugins_dir: &Path, name: &str) -> anyhow::Result<bool> {
+    if name.is_empty() || name.contains('/') || name.starts_with("..") {
+        return Err(anyhow!("invalid plugin name: '{name}'"));
+    }
+    let mut removed = false;
+    for p in [
+        plugins_dir.join(name),
+        plugins_dir.join("features").join(name),
+    ] {
+        if p.is_dir() {
+            std::fs::remove_dir_all(&p)?;
+            removed = true;
+        } else if p.exists() {
+            std::fs::remove_file(&p)?;
+            removed = true;
+        }
+    }
+    Ok(removed)
+}
+
 fn remove_files_from(base: &Path, files: &[String]) {
     for f in files {
         let p = base.join(f);
@@ -207,5 +230,31 @@ mod tests {
         fs::write(dst.join("bad"), "poison").unwrap();
         assert!(install_copy(&src, &dst).is_err());
         assert!(!dst.exists());
+    }
+
+    #[test]
+    fn remove_orphan_deletes_legacy_file_and_features_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        // 旧版单文件安装:plugins/<name>
+        fs::write(plugins.join("pt.js"), "x").unwrap();
+        // features/ 孤儿目录(无 manifest,如 write_manifest 失败残留)
+        fs::create_dir_all(plugins.join("features").join("filetree")).unwrap();
+        fs::write(
+            plugins.join("features").join("filetree").join("index.js"),
+            "x",
+        )
+        .unwrap();
+
+        assert!(remove_orphan(&plugins, "filetree").unwrap());
+        assert!(!plugins.join("features").join("filetree").exists());
+        assert!(remove_orphan(&plugins, "pt.js").unwrap());
+        assert!(!plugins.join("pt.js").exists());
+        // 两处都没有 → false(调用方报 not found)
+        assert!(!remove_orphan(&plugins, "nope.js").unwrap());
+        // 目录逃逸拒绝
+        assert!(remove_orphan(&plugins, "../evil.js").is_err());
+        assert!(remove_orphan(&plugins, "a/b.js").is_err());
     }
 }

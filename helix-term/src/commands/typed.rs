@@ -5306,16 +5306,6 @@ fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
     }
 }
 
-/// 插件名校验：非空、拒绝含 / 的路径（防目录逃逸）、拒绝 .. 前缀、强制 .js 后缀
-fn validate_plugin_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty() || name.contains('/') || name.starts_with("..") || !name.ends_with(".js") {
-        return Err(anyhow!(
-            "invalid plugin name: '{name}' (expected a bare name ending in .js)"
-        ));
-    }
-    Ok(())
-}
-
 /// :plugin 家族：list / install <path> / remove <name> / reload / status
 fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
@@ -5366,6 +5356,34 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             cx.editor
                 .set_status(format!("installed '{name}', reloading..."));
             reload_plugins(cx)?;
+            // reload_all 清空插件状态再重跑已注册脚本——新插件必须在 reload 之后再加载,否则被 reset 清掉。
+            // 入口:单文件 → features/<name>;目录 → features/<name>/index.js(无入口可能是纯 lib,跳过)
+            let entry = if src.is_dir() {
+                target.join("index.js")
+            } else {
+                target.clone()
+            };
+            if entry.is_file() {
+                let src = std::fs::read_to_string(&entry)
+                    .map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
+                // 相对 plugins/ 的名字:后续 :plugin reload 能按名从磁盘重读
+                let rel = entry
+                    .strip_prefix(helix_loader::config_dir().join("plugins"))
+                    .unwrap_or(&entry)
+                    .to_string_lossy()
+                    .into_owned();
+                if let Err(e) = helix_js::load_script_named(&rel, &src) {
+                    cx.editor
+                        .set_error(format!("installed '{name}' but failed to load: {e}"));
+                } else {
+                    // 新脚本 eval 也会入队消息/UI 请求(照 plugin_load 模式 drain)
+                    let msgs = helix_js::take_messages();
+                    if !msgs.is_empty() {
+                        cx.editor.set_status(msgs.join(" "));
+                    }
+                    apply_ui_requests(helix_js::take_ui_requests())?;
+                }
+            }
         }
         "remove" => {
             let Some(name) = args.get(1) else {
@@ -5380,13 +5398,13 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                     cx.editor
                         .set_status(format!("removed '{name}'; update init.js if it loads it"));
                 }
-                // 兼容无 manifest 的旧安装：直接删文件（校验名防目录逃逸——
-                // manifest 条目名可是目录名如 filetree，不能整段校验）
+                // 兼容无 manifest 的旧安装 + features/ 孤儿(manifest 无但文件在,如 write_manifest
+                // 失败残留):plugins/<name> 与 features/<name> 两处都删(文件或目录)
                 None => {
-                    validate_plugin_name(name)?;
                     let plugin_dir = helix_loader::config_dir().join("plugins");
-                    std::fs::remove_file(plugin_dir.join(name))
-                        .map_err(|e| anyhow!("failed to remove '{name}': {e}"))?;
+                    if !plugin_manager::remove_orphan(&plugin_dir, name)? {
+                        return Err(anyhow!("failed to remove '{name}': not found"));
+                    }
                     cx.editor
                         .set_status(format!("removed '{name}'; update init.js if it loads it"));
                 }
@@ -6104,22 +6122,6 @@ fn exclude_workspace(
     cx.editor.workspace_trust.exclude(&workspace);
     cx.editor.config_events.0.send(ConfigEvent::Refresh)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod plugin_manager_tests {
-    use super::validate_plugin_name;
-
-    #[test]
-    fn validate_plugin_name_rejects_bad_names() {
-        assert!(validate_plugin_name("foo.js").is_ok());
-        assert!(validate_plugin_name("a/b.js").is_err()); // 含 / 的路径
-        assert!(validate_plugin_name("..js").is_err()); // 以 .. 开头
-        assert!(validate_plugin_name("../x.js").is_err());
-        assert!(validate_plugin_name("").is_err()); // 空
-        assert!(validate_plugin_name("foo.txt").is_err()); // 非 .js
-        assert!(validate_plugin_name("foo").is_err());
-    }
 }
 
 #[cfg(test)]
