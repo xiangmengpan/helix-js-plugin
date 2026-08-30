@@ -5306,25 +5306,6 @@ fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
     }
 }
 
-/// 从安装路径提取插件名：basename + 强制 .js 后缀 + 拒绝目录（目录 file_name() 为 None）
-fn plugin_name_from_path(path: &str) -> anyhow::Result<String> {
-    let path = std::path::Path::new(path);
-    // 显式拒绝目录（尾斜杠目录的 file_name() 也会返回名字，不能依赖它）
-    if path.is_dir() {
-        return Err(anyhow!(
-            "invalid plugin path: '{}' (is a directory)",
-            path.display()
-        ));
-    }
-    let name = path
-        .file_name()
-        .ok_or_else(|| anyhow!("invalid plugin path: '{}'", path.display()))?
-        .to_str()
-        .ok_or_else(|| anyhow!("plugin path is not valid UTF-8: '{}'", path.display()))?;
-    validate_plugin_name(name)?;
-    Ok(name.to_string())
-}
-
 /// 插件名校验：非空、拒绝含 / 的路径（防目录逃逸）、拒绝 .. 前缀、强制 .js 后缀
 fn validate_plugin_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.contains('/') || name.starts_with("..") || !name.ends_with(".js") {
@@ -5357,45 +5338,69 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             let Some(path) = args.get(1) else {
                 return Err(anyhow!("usage: plugin install <path>"));
             };
-            let name = plugin_name_from_path(path)?;
-            let plugin_dir = helix_loader::config_dir().join("plugins");
-            std::fs::create_dir_all(&plugin_dir).map_err(|e| {
-                anyhow!(
-                    "failed to create plugin dir '{}': {e}",
-                    plugin_dir.display()
-                )
-            })?;
-            std::fs::copy(path, plugin_dir.join(&name))
-                .map_err(|e| anyhow!("failed to copy '{path}': {e}"))?;
-            let src = std::fs::read_to_string(path)
-                .map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
-            helix_js::load_script_named(&name, &src).map_err(|e| anyhow!("plugin install: {e}"))?;
-            let msgs = helix_js::take_messages();
-            if !msgs.is_empty() {
-                cx.editor.set_status(msgs.join(" "));
+            let src = std::path::Path::new(path);
+            if !src.exists() {
+                return Err(anyhow!("plugin install: '{path}' not found"));
             }
-            apply_ui_requests(helix_js::take_ui_requests())?;
+            let (name, target) = plugin_manager::install_target(src)?;
+            if target.exists() {
+                return Err(anyhow!(
+                    "plugin install: '{name}' already installed, use :plugin remove first"
+                ));
+            }
+            let files = plugin_manager::install_copy(src, &target)?;
+            let mut manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
+            manifest.insert(
+                name.clone(),
+                plugin_manager::ManifestEntry {
+                    source: path.to_string(),
+                    kind: "local".into(),
+                    installed_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs().to_string())
+                        .unwrap_or_default(),
+                    files,
+                },
+            );
+            plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
             cx.editor
-                .set_status(format!("installed and loaded '{name}'"));
+                .set_status(format!("installed '{name}', reloading..."));
+            reload_plugins(cx)?;
         }
         "remove" => {
             let Some(name) = args.get(1) else {
                 return Err(anyhow!("usage: plugin remove <name>"));
             };
-            validate_plugin_name(name)?;
-            let plugin_dir = helix_loader::config_dir().join("plugins");
-            std::fs::remove_file(plugin_dir.join(name))
-                .map_err(|e| anyhow!("failed to remove '{name}': {e}"))?;
-            cx.editor
-                .set_status("removed; run :plugin reload if it was loaded");
+            let path = plugin_manager::manifest_path();
+            let mut manifest = plugin_manager::read_manifest(&path)?;
+            match manifest.remove(name) {
+                Some(entry) => {
+                    plugin_manager::remove_files(&entry.files);
+                    plugin_manager::write_manifest(&path, &manifest)?;
+                    cx.editor
+                        .set_status(format!("removed '{name}'; update init.js if it loads it"));
+                }
+                // 兼容无 manifest 的旧安装：直接删文件（校验名防目录逃逸——
+                // manifest 条目名可是目录名如 filetree，不能整段校验）
+                None => {
+                    validate_plugin_name(name)?;
+                    let plugin_dir = helix_loader::config_dir().join("plugins");
+                    std::fs::remove_file(plugin_dir.join(name))
+                        .map_err(|e| anyhow!("failed to remove '{name}': {e}"))?;
+                    cx.editor
+                        .set_status(format!("removed '{name}'; update init.js if it loads it"));
+                }
+            }
         }
         "reload" => reload_plugins(cx)?,
         "status" => {
             let plugin_dir = helix_loader::config_dir().join("plugins");
+            let installed = plugin_manager::read_manifest(&plugin_manager::manifest_path())?.len();
             cx.editor.set_status(format!(
-                "{} plugins loaded from {}",
+                "{} plugins loaded from {}, {} installed in manifest",
                 helix_js::loaded_scripts().len(),
-                plugin_dir.display()
+                plugin_dir.display(),
+                installed
             ));
         }
         other => return Err(anyhow!("unknown plugin subcommand '{other}'")),
@@ -6103,19 +6108,7 @@ fn exclude_workspace(
 
 #[cfg(test)]
 mod plugin_manager_tests {
-    use super::{plugin_name_from_path, validate_plugin_name};
-
-    #[test]
-    fn plugin_name_from_path_basename_and_js_suffix() {
-        // basename：目录部分剥离
-        assert_eq!(plugin_name_from_path("/a/b/foo.js").unwrap(), "foo.js");
-        // 强制 .js 后缀
-        assert!(plugin_name_from_path("/a/b/foo.txt").is_err());
-        assert!(plugin_name_from_path("/a/b/foo").is_err());
-        // 拒绝目录
-        assert!(plugin_name_from_path("/a/b/").is_err());
-        assert!(plugin_name_from_path(".").is_err());
-    }
+    use super::validate_plugin_name;
 
     #[test]
     fn validate_plugin_name_rejects_bad_names() {

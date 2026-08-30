@@ -1,7 +1,7 @@
 use super::*;
 
 // :plugin 命令族——list/status 集成验证（不碰真实 plugins 目录：install/remove 有单测覆盖路径校验）。
-// 本文件保留；integration.rs 的 mod 声明由控制器合并时统一添加。
+// config_dir 是真实 ~/.config，只测无副作用路径。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_manager_list_status() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
@@ -45,5 +45,33 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+// status 的 manifest 计数后缀（"N installed in manifest"）：无 manifest 时也应显示 0 计数。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_list_and_status() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(":plugin list<ret>"), None),
+            (
+                Some(":plugin status<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    // status 含 manifest 计数后缀("installed in manifest")
+                    assert!(
+                        status.as_ref().contains("installed"),
+                        ":plugin status should carry manifest count, got: {status}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
     Ok(())
 }
