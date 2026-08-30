@@ -487,8 +487,15 @@ async fn plugin_lsp_mock_timeout_rejects() -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some((status, _)) = app.editor.get_status() {
-            assert!(status.as_ref().contains("timed out"), "status: {status}");
-            break;
+            // 只对终态断言:echo 的 "err:...timed out" → 通过;"resolved" → 超时未触发(行为错误);
+            // 其它瞬态状态(非插件 echo)继续轮询,避免急切断言误报
+            if status.as_ref().contains("timed out") {
+                break;
+            }
+            assert!(
+                !status.as_ref().contains("resolved"),
+                "LSP 超时未触发,请求 resolve 了: {status}"
+            );
         }
         assert!(
             std::time::Instant::now() < deadline,
