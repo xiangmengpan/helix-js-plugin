@@ -275,6 +275,30 @@ args = {args}
     test_syntax_loader(Some(toml))
 }
 
+/// 双 server mock LSP loader：.mock2 语言挂两个 mock server（tag A/B，均 code_actions_basic）——
+/// 多 server code_actions 路由测试用。命令行为 argv[1]=场景、argv[2]=tag（与 mock_lsp_loader 的 extra_args 同槽）。
+pub fn dual_mock_lsp_loader() -> helix_core::syntax::Loader {
+    let toml = format!(
+        r#"
+[[language]]
+name = "mock2"
+scope = "source.mock2"
+file-types = ["mock2"]
+language-servers = ["mock-lsp-a", "mock-lsp-b"]
+
+[language-server.mock-lsp-a]
+command = "{bin}"
+args = ["code_actions_basic", "A"]
+
+[language-server.mock-lsp-b]
+command = "{bin}"
+args = ["code_actions_basic", "B"]
+"#,
+        bin = env!("CARGO_BIN_EXE_mock_lsp"),
+    );
+    test_syntax_loader(Some(toml))
+}
+
 /// mock_lsp_loader + 显式 timeout（秒）；超时测试用短值（如 1s）触发客户端 per-server timeout。
 pub fn mock_lsp_loader_with_timeout(
     scenario: &str,
@@ -473,11 +497,15 @@ impl AppBuilder {
 
     pub fn build(self) -> anyhow::Result<Application> {
         if let Some(path) = &self.args.working_directory {
-            bail!("Changing the working directory to {path:?} is not yet supported for integration tests");
+            bail!(
+                "Changing the working directory to {path:?} is not yet supported for integration tests"
+            );
         }
 
         if let Some((path, _)) = self.args.files.first().filter(|p| p.0.is_dir()) {
-            bail!("Having the directory {path:?} in args.files[0] is not yet supported for integration tests");
+            bail!(
+                "Having the directory {path:?} in args.files[0] is not yet supported for integration tests"
+            );
         }
 
         let mut app = Application::new(

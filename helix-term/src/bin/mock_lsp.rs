@@ -11,7 +11,9 @@
 //! - symbols_basic：documentSymbolProvider；textDocument/documentSymbol → [MockSymbol]
 //! - format_basic：documentFormattingProvider；textDocument/formatting → "one"→"ONE"
 //! - rename_cross_file / rename_stale：renameProvider；textDocument/rename → documentChanges（cross_file 双文件；stale 当前文件 version=1 恒过期）
-//! - code_actions_basic：codeActionProvider；textDocument/codeAction → quickfix changes
+//! - code_actions_basic：codeActionProvider(resolveProvider)；textDocument/codeAction → quickfix changes
+//!   (argv[2] 来源标识 tag：title "mock-fix-{tag}" + edit "one"→"ONE-{tag}"，缺省 "A"；codeAction/resolve 返回本 server 的 edit——
+//!   多 server execute 路由判别器)
 //! - no_response：hoverProvider；仅 initialize 正常响应，其余方法挂起不响应 → 客户端 per-server timeout 触发
 
 use serde_json::json;
@@ -120,16 +122,39 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
             json!({ "documentChanges": edits })
         }
         "textDocument/codeAction" if scenario == "code_actions_basic" => {
-            // changes map 的键必须是实际文件 uri(json! 不支持动态键,手动建 Map)
+            // changes map 的键必须是实际文件 uri(json! 不支持动态键,手动建 Map);
+            // argv[2] 来源标识(缺省 "A")：双 server 测试用 A/B 区分 title/edit
+            let tag = args.get(1).map(String::as_str).unwrap_or("A");
             let uri = msg["params"]["textDocument"]["uri"].clone();
             let mut changes = serde_json::Map::new();
             changes.insert(
                 uri.as_str().unwrap_or("").to_string(),
-                json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "ONE" }]),
+                json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": format!("ONE-{tag}") }]),
             );
             json!([
-                { "title": "mock-fix", "kind": "quickfix", "edit": { "changes": changes } }
+                { "title": format!("mock-fix-{tag}"), "kind": "quickfix", "edit": { "changes": changes } }
             ])
+        }
+        // codeAction/resolve：返回本 server 的 edit——execute 路由到哪个 server，哪个 tag 生效。
+        // (多 server 判别器：修复前 execute 固定第一个 server → resolve 返回 A 的 edit "ONE-A"；
+        // 修复后 execute 按 _serverId 路由 → B 的 edit "ONE-B"。客户端 apply 的是 resolve 结果而非列表项载荷)
+        "codeAction/resolve" if scenario == "code_actions_basic" => {
+            let tag = args.get(1).map(String::as_str).unwrap_or("A");
+            // resolve 请求参数 = 列表项 action(edit.changes 的键含文档 uri)
+            let uri = msg["params"]["edit"]["changes"]
+                .as_object()
+                .and_then(|m| m.keys().next())
+                .cloned()
+                .unwrap_or_default();
+            let mut changes = serde_json::Map::new();
+            changes.insert(
+                uri,
+                json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": format!("ONE-{tag}") }]),
+            );
+            // 回显完整 action + 覆写 edit(title 必填,不能只回 { edit })
+            let mut action = msg["params"].clone();
+            action["edit"] = json!({ "changes": changes });
+            action
         }
         _ => return Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })),
     };
@@ -160,7 +185,10 @@ fn capabilities(scenario: &str) -> serde_json::Value {
         "symbols_basic" => set(&mut caps, "documentSymbolProvider", json!(true)),
         "format_basic" => set(&mut caps, "documentFormattingProvider", json!(true)),
         "rename_cross_file" | "rename_stale" => set(&mut caps, "renameProvider", json!(true)),
-        "code_actions_basic" => set(&mut caps, "codeActionProvider", json!(true)),
+        // resolveProvider:execute 时客户端发 codeAction/resolve(判别器依赖此路径返回本 server 的 edit)
+        "code_actions_basic" => {
+            set(&mut caps, "codeActionProvider", json!({ "resolveProvider": true }))
+        }
         _ => {}
     }
     json!(caps)

@@ -201,7 +201,7 @@ async fn plugin_lsp_mock_no_capability_resolves_null() -> anyhow::Result<()> {
     Ok(())
 }
 
-// code_actions 两阶段：列表 JSON 可读 → execute 应用 edit
+// code_actions 两阶段：列表 JSON 可读 → execute 应用 edit（mock 缺省 tag "A" → title "mock-fix-A"/edit "ONE-A"）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
@@ -236,7 +236,7 @@ async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
                 Some(":mock-ca<ret>"),
                 Some(&|app| {
                     let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "ca:mock-fix|quickfix");
+                    assert_eq!(status.as_ref(), "ca:mock-fix-A|quickfix");
                 }),
             ),
             // 无害键 pump:exec 的 apply+resolve 在下一帧(段 A 先应用再 resolve);
@@ -249,8 +249,74 @@ async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
                     let (_, doc) = current_ref!(app.editor);
                     assert_eq!(
                         doc.text().to_string(),
-                        "ONE\n",
+                        "ONE-A\n",
                         "code action 的 edit 已应用"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// 双 server code_actions：列表项带 _serverId（可区分来源），execute 按 _serverId 路由到对应 server。
+// 判别器：execute 第二个 action——修复前 execute 固定第一个 server → resolve 返回 A 的 edit "ONE-A"（错）；
+// 修复后按 _serverId 路由到 B → "ONE-B"（对）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_lsp_mock_multiserver_execute_routes_to_owner() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.mock2");
+    std::fs::write(&file, "one\n")?;
+    let plugin_path = dir.path().join("ca2.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("mock-ca2", async () => {
+            const actions = await helix.lsp.code_actions();
+            if (actions === null || actions.length !== 2) { helix.echo("ca2:bad:" + (actions === null ? "null" : actions.length)); return; }
+            if (actions[0]._serverId === actions[1]._serverId) { helix.echo("ca2:sameserver"); return; }
+            helix.echo("ca2:" + actions.map(a => a.title).join("|") + "|" + actions[0]._serverId + "|" + actions[1]._serverId);
+            const r = await helix.lsp.execute_code_action(actions[1]);
+            helix.echo("exec2:" + JSON.stringify(r));
+        });
+        "#,
+    )?;
+    test_key_sequences(
+        &mut AppBuilder::new()
+            .with_file(file, None)
+            .with_config(test_config_with_lsp())
+            .with_lang_loader(dual_mock_lsp_loader())
+            .build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (
+                Some(":mock-ca2<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    // 两个 server 的 action 都在：title 带 tag 可区分、_serverId 不同
+                    // （只断言前缀，具体 _serverId 数值不钉死）
+                    assert!(
+                        status.as_ref().starts_with("ca2:mock-fix-A|mock-fix-B|"),
+                        "list should carry both servers' actions with distinct _serverId, got {status:?}"
+                    );
+                }),
+            ),
+            // 无害键 pump：exec 的 apply+resolve 在下一帧（段 A 先应用再 resolve）
+            (
+                Some("j"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), r#"exec2:{"applied":true}"#);
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "ONE-B\n",
+                        "execute 第二个 action 应路由到 B server"
                     );
                 }),
             ),
