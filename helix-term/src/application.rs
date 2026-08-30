@@ -377,7 +377,8 @@ impl Application {
                 helix_js::AsyncEvent::FsRead(id, _)
                 | helix_js::AsyncEvent::FsWrite(id, _)
                 | helix_js::AsyncEvent::FsStat(id, _)
-                | helix_js::AsyncEvent::FsGlob(id, _) => *id,
+                | helix_js::AsyncEvent::FsGlob(id, _)
+                | helix_js::AsyncEvent::FsTree(id, _) => *id,
             };
             if let Err(err) = helix_js::resolve_async_event(id, event) {
                 error = Some(err);

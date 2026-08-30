@@ -222,13 +222,11 @@ pub(crate) fn js_open_panel(
     // 节点焦点路由开关（缺省 false）：启用后 Tab 移动焦点/Esc 取消/节点按键直达
     let focusable = match opts.get(JsString::from("focusable"), ctx)? {
         v if v.is_undefined() => false,
-        v => v
-            .try_js_into::<bool>(ctx)
-            .map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "open_panel: 'focusable' must be a boolean",
-                )))
-            })?,
+        v => v.try_js_into::<bool>(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_panel: 'focusable' must be a boolean",
+            )))
+        })?,
     };
 
     let id = crate::state::next_popup_id();
