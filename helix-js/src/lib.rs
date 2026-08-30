@@ -5,6 +5,7 @@ mod icons;
 mod input;
 mod layout;
 mod lsp;
+mod picker;
 mod popup;
 mod pty;
 mod shell;
@@ -110,6 +111,22 @@ pub fn init() {
                         1,
                     );
                 lsp_builder.build()
+            };
+            // helix.picker 命名空间：同 helix.lsp，独立构建后挂到 helix 对象上
+            let picker_obj = {
+                let mut picker_builder = ObjectInitializer::new(engine);
+                picker_builder
+                    .function(
+                        NativeFunction::from_fn_ptr(picker::js_picker_define),
+                        JsString::from("define"),
+                        2,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(picker::js_picker_run),
+                        JsString::from("run"),
+                        1,
+                    );
+                picker_builder.build()
             };
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
@@ -529,6 +546,11 @@ pub fn init() {
             builder.property(
                 JsString::from("lsp"),
                 lsp_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
+                JsString::from("picker"),
+                picker_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             let helix = builder.build();

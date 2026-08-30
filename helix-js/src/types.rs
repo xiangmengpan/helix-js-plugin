@@ -1,5 +1,7 @@
 use boa_engine::JsValue;
 
+use crate::picker::RowSpec;
+
 /// 一次文档变更的 (旧文本坐标, 新文本坐标)，均为 char 索引；doc-change 事件窗口内合并后序列化。
 pub type DocChange = ((usize, usize), (usize, usize));
 /// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
@@ -151,6 +153,11 @@ pub enum UiRequest {
     /// 停止 watcher：按 id 移除 notify watcher（JS 侧回调注册表同步移除）
     Unwatch {
         id: u64,
+    },
+    /// 打开插件 picker：source = 源名；rows = define 后 run 取到的候选行（同步 items 或 Promise 续体）
+    OpenPicker {
+        source: String,
+        rows: Vec<RowSpec>,
     },
 }
 

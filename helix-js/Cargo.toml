@@ -9,6 +9,7 @@ boa_engine = { workspace = true }
 anyhow = "1"
 libc = "0.2.186"
 globset = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 helix-stdx = { path = "../helix-stdx" }
 
