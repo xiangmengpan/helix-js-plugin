@@ -381,7 +381,7 @@ helix.picker.run(name);      // 取源调 items → 打开原生 Picker
 
 **行格式**：数组 `[c1, c2, ...]`（cells = payload = 元素字符串）或对象 `{ cells: [...], payload: [...] }`（cells 用于展示；payload 原样传给 preview/action——如 buffers 源用 payload 藏 buffer id）。
 
-**回退语义**：源未定义 → `picker.run` 抛错（:plugin-load 报 Error）；items 返回非数组或 Promise reject → 状态栏报错（不静默）；action/preview 未定义或抛错 → 忽略（Enter 只关层）；preview 返回 null → 无预览。
+**回退语义**：源未定义 → `picker.run` 抛错（:plugin-load 报 Error）；items 返回非数组或 Promise reject → 状态栏报错（不静默）；行宽不匹配（行 cells 数 ≠ columns 数）→ 状态栏报错且不打开；items 返回空数组 → 打开空列表 Picker（正常展示）；action/preview 未定义或抛错 → 忽略（Enter 只关层）；preview 返回 null → 无预览。
 
 内置插件 `plugins/features/picker.js` 提供四源（files/grep/buffers/symbols），复制该文件即可自定义源。
 
