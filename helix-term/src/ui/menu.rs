@@ -7,7 +7,7 @@ use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use helix_view::{editor::SmartTabConfig, graphics::Rect, theme::Style, Editor};
+use helix_view::{editor::SmartTabConfig, graphics::{Rect, UnderlineStyle}, theme::Style, Editor};
 use tui::layout::Constraint;
 use tui::text::Span;
 
@@ -400,7 +400,10 @@ impl<T: Item + 'static> Component for Menu<T> {
                 let mut row = option.format(&self.editor_data);
                 if let Some(indices) = option.match_indices() {
                     if !indices.is_empty() {
-                        let style = theme.try_get("ui.completion.match").unwrap_or_default();
+                        // 主题缺 key(非 base16 主题)时回退 underline——高亮是功能,不依赖主题文件
+                        let style = theme.try_get("ui.completion.match").unwrap_or_else(|| {
+                            Style::default().underline_style(UnderlineStyle::Line)
+                        });
                         highlight_row(&mut row, indices, style);
                     }
                 }
