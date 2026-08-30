@@ -1909,20 +1909,25 @@ fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
         for (future, ls_id) in futures {
             if let Ok(Some(list)) = future.await {
                 // 过滤 disabled（与 code-action 菜单同规则）；注入 _serverId（execute 按它路由回对应 server）
-                actions.extend(list.into_iter().filter(|action| {
-                    matches!(
-                        action,
-                        lsp::CodeActionOrCommand::Command(_)
-                            | lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
-                                disabled: None,
-                                ..
-                            })
-                    )
-                }).map(|action| {
-                    let mut v = serde_json::to_value(&action).unwrap_or(serde_json::Value::Null);
-                    v["_serverId"] = serde_json::json!(ls_id.as_u64());
-                    v
-                }));
+                actions.extend(
+                    list.into_iter()
+                        .filter(|action| {
+                            matches!(
+                                action,
+                                lsp::CodeActionOrCommand::Command(_)
+                                    | lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                                        disabled: None,
+                                        ..
+                                    })
+                            )
+                        })
+                        .map(|action| {
+                            let mut v =
+                                serde_json::to_value(&action).unwrap_or(serde_json::Value::Null);
+                            v["_serverId"] = serde_json::json!(ls_id.as_u64());
+                            v
+                        }),
+                );
             }
         }
         // 无可用 action（含全部请求失败）→ null

@@ -186,9 +186,11 @@ fn capabilities(scenario: &str) -> serde_json::Value {
         "format_basic" => set(&mut caps, "documentFormattingProvider", json!(true)),
         "rename_cross_file" | "rename_stale" => set(&mut caps, "renameProvider", json!(true)),
         // resolveProvider:execute 时客户端发 codeAction/resolve(判别器依赖此路径返回本 server 的 edit)
-        "code_actions_basic" => {
-            set(&mut caps, "codeActionProvider", json!({ "resolveProvider": true }))
-        }
+        "code_actions_basic" => set(
+            &mut caps,
+            "codeActionProvider",
+            json!({ "resolveProvider": true }),
+        ),
         _ => {}
     }
     json!(caps)
