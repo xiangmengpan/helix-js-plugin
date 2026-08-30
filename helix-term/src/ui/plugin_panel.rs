@@ -95,6 +95,95 @@ impl Component for PluginPanel {
         let Event::Key(key_event) = event else {
             return EventResult::Ignored(None);
         };
+        let key = key_to_plugin_key(key_event);
+        // 节点焦点路由（focusable 面板启用）：Tab 移动焦点；焦点在节点时按键直达；
+        // Esc 取消焦点回 onKey；无焦点时走 onKey（现状）。未启用 → 走下方既有逻辑。
+        if self.focusable && !self.focusables.is_empty() {
+            let Some(key) = &key else {
+                return EventResult::Ignored(None);
+            };
+            if key.name == "Tab" {
+                let idx = self
+                    .focusables
+                    .iter()
+                    .position(|f| Some(f) == self.focus.as_ref());
+                let next = idx.map(|i| (i + 1) % self.focusables.len()).unwrap_or(0);
+                self.focus = Some(self.focusables[next].clone());
+                return EventResult::Consumed(None);
+            }
+            if let Some(fid) = self.focus.as_ref() {
+                // 复用弹窗的节点事件分发与 drain（消息 + UI 请求；编辑/光标与弹窗焦点分支
+                // 一致不在此应用——弹窗是权威参照）
+                let drain_msgs = |cx: &mut Context| {
+                    let msgs = helix_js::take_messages();
+                    if !msgs.is_empty() {
+                        cx.editor.set_status(msgs.join(" "));
+                    }
+                    // 节点事件（button onPress 等）里发起的 UI 请求同样即时应用
+                    if let Err(err) =
+                        crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
+                    {
+                        cx.editor.set_error(err.to_string());
+                    }
+                };
+                match key.name.as_str() {
+                    // Esc：取消焦点回 onKey（面板非模态，不关闭——与弹窗 Esc 关闭语义不同）
+                    "Esc" => {
+                        self.focus = None;
+                        return EventResult::Consumed(None);
+                    }
+                    // Enter：input 有状态 → onKey("Enter")；否则（button）→ onPress
+                    "Enter" => {
+                        let event = if helix_js::input_has_state(self.id, fid) {
+                            Some(key.name.as_str())
+                        } else {
+                            None
+                        };
+                        if helix_js::dispatch_node_event(self.id, fid, event).is_ok() {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    // 水平方向键/Home/End：input 光标移动（input_edit 对这些键返回 None，不触发 onChange）
+                    "Left" | "Right" | "Home" | "End" => {
+                        if helix_js::input_has_state(self.id, fid)
+                            && helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok()
+                        {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    // Up/Down：候选导航（走 onKey）
+                    "Up" | "Down" => {
+                        if helix_js::input_has_state(self.id, fid)
+                            && helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok()
+                        {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    // 编辑键：input → dispatch_input_key（改值 + onChange）；否则（button）→ onKey
+                    key_name
+                        if key_name.chars().count() == 1
+                            || key_name == "Backspace"
+                            || key_name == "Delete" =>
+                    {
+                        if helix_js::input_has_state(self.id, fid) {
+                            if helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok() {
+                                drain_msgs(cx);
+                                return EventResult::Consumed(None);
+                            }
+                        } else if helix_js::dispatch_node_event(self.id, fid, Some(&key.name))
+                            .is_ok()
+                        {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         // 无 onKey 的面板：缺省全 Ignore，不调 popup_key（其缺省 Esc→Close 语义只适用于弹窗）。
         // 面板在 JS 注册表已丢失（reload/状态丢失的僵尸）：自动移除自愈
         if !helix_js::panel_has_onkey(self.id) {
@@ -103,7 +192,7 @@ impl Component for PluginPanel {
             }
             return EventResult::Ignored(None);
         }
-        let Some(key) = key_to_plugin_key(key_event) else {
+        let Some(key) = key else {
             return EventResult::Ignored(None);
         };
         // 构建当前文档快照（面板非模态，文档可编辑；每次按键重新序列化，同 PluginPopup）
@@ -199,6 +288,14 @@ impl Component for PluginPanel {
                     self.focusables.clear();
                     if let helix_js::Content::Tree(node) = &content {
                         helix_js::focusable_node_ids(node, &mut self.focusables);
+                    }
+                    // 焦点失效重置（规格 2.2 + 任务 1 审查遗留）：焦点节点不在新列表 → 清空。
+                    // content 非 Tree（Lines/空）时 focusables 为空 → 同样清空。
+                    // render 先传旧 focus 供 JS 样式，提取后再重置。
+                    if let Some(f) = &self.focus {
+                        if !self.focusables.contains(f) {
+                            self.focus = None;
+                        }
                     }
                 }
                 self.lines = comp_layout::render(content, (area.width, area.height))

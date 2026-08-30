@@ -430,7 +430,7 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), st
 
 ## 11. 侧边面板
 
-### `helix.open_panel({ side, size, render, onKey?, onClose? })`
+### `helix.open_panel({ side, size, render, onKey?, onClose?, focusable? })`
 
 返回面板 id。面板是**布局树叶子**：真实收缩编辑器布局（切分活动叶子，推挤而非覆盖）。
 
@@ -441,6 +441,7 @@ const id = helix.open_panel({
   render: () => [...],  // 同弹窗 render（行 API 或 el 组件树）
   onKey: (key) => "handled" | "ignore" | "close",
   onClose: () => {},
+  focusable: false,     // 可选，默认 false；true 时启用节点焦点路由（见下）
 });
 helix.close_panel(id);            // 按 id 精确关闭
 helix.move_panel(id, "left");     // 移动面板到另一侧
@@ -448,6 +449,7 @@ helix.move_panel(id, "left");     // 移动面板到另一侧
 
 - **多面板并存**：每个面板都是独立叶子，可同侧叠加。
 - 无 `onKey` 时面板完全事件穿透（编辑器照常编辑）；有 `onKey` 时 `"handled"` 消费、`"ignore"` 穿透。
+- **`focusable: true` 启用节点焦点路由**（与弹窗同机制，仅影响启用面板）：`Tab` 在可聚焦节点（`button`/`input` 的 `id`）间循环移动焦点；焦点在节点时按键直达节点（`Enter` → `button` 的 `onPress` / `input` 的 `onKey("Enter")`，字符 → `input` 插入触发 `onChange`，方向键 → `input` 光标移动/候选导航）；`Esc` 取消焦点回 `onKey`（面板非模态，不关闭）；焦点节点从树中消失（render 后）自动重置焦点。未启用（默认）时按键一律走 `onKey`，完全保持现状。
 - 面板内容可被异步回调更新（`onChunk` 里改模块状态 → 面板重绘）。
 - `:panel-close` 关闭最近打开的面板。
 
@@ -756,7 +758,7 @@ helix.set_cursor(row, col)
 helix.set_selection(ar, ac, hr, hc)
 helix.set_input_value(popup_id, node_id, value)   // 强制改 input 值（光标置末尾）
 helix.open_popup({ render, onKey?, onClose?, width?, height?, position? }) -> id
-helix.open_panel({ side, size, render, onKey?, onClose? }) -> id
+helix.open_panel({ side, size, render, onKey?, onClose?, focusable? }) -> id
 helix.close_panel(id)
 helix.move_panel(id, side)
 helix.open_file(path, { row?, col? })

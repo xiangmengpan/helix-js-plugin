@@ -38,6 +38,8 @@ mod test {
     mod plugin_multipanel;
     mod plugin_palette;
     mod plugin_panel;
+    mod plugin_panel_focus;
+    mod plugin_picker;
     mod plugin_popup_edit;
     mod plugin_reload;
     mod plugin_run;
