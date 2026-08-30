@@ -201,7 +201,10 @@ pub enum AsyncEvent {
     FsStat(u64, std::result::Result<FsStat, String>),
     FsGlob(u64, std::result::Result<Vec<String>, String>),
     /// read_tree 递归列表结果:(name, is_dir, path) 树序
-    FsTree(u64, std::result::Result<Vec<(String, bool, String)>, String>),
+    FsTree(
+        u64,
+        std::result::Result<Vec<(String, bool, String)>, String>,
+    ),
 }
 
 /// 主线程 → worker 线程的控制指令（stdin 写入 / 杀进程）

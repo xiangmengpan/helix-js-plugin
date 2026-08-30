@@ -535,10 +535,7 @@ pub(crate) fn glob_matches(pattern: &str) -> std::result::Result<Vec<String>, St
 
 /// 递归列出目录树(先序):目录先行、同级按名排序、depth 限制(Some(n) = 最多 n 层子目录)。
 /// 返回 (name, is_dir, path);失败返回 Err 字符串。
-fn tree_matches(
-    root: &str,
-    depth: Option<usize>,
-) -> Result<Vec<(String, bool, String)>, String> {
+fn tree_matches(root: &str, depth: Option<usize>) -> Result<Vec<(String, bool, String)>, String> {
     fn walk(
         dir: &std::path::Path,
         cur_depth: usize,
@@ -747,9 +744,11 @@ pub(crate) fn js_read_tree(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from(
-            "read_tree: path must be a string",
-        ))))?;
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "read_tree: path must be a string",
+            )))
+        })?;
     let depth = match args.get(1).and_then(|v| v.as_object()) {
         Some(o) => o
             .get(JsString::from("depth"), context)?
@@ -760,11 +759,7 @@ pub(crate) fn js_read_tree(
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     crate::state::with_async_promises(|m| m.insert(id, resolving));
-    spawn_async_op(
-        id,
-        move || tree_matches(&path, depth),
-        AsyncEvent::FsTree,
-    );
+    spawn_async_op(id, move || tree_matches(&path, depth), AsyncEvent::FsTree);
     Ok(promise.into())
 }
 
@@ -1047,4 +1042,3 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
-
