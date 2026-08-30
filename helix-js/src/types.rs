@@ -154,9 +154,11 @@ pub enum UiRequest {
     Unwatch {
         id: u64,
     },
-    /// 打开插件 picker：source = 源名；rows = define 后 run 取到的候选行（同步 items 或 Promise 续体）
+    /// 打开插件 picker：source = 源名；columns = define 声明的列名（term 侧建表头/行宽校验）；
+    /// rows = define 后 run 取到的候选行（同步 items 或 Promise 续体）
     OpenPicker {
         source: String,
+        columns: Vec<String>,
         rows: Vec<RowSpec>,
     },
 }

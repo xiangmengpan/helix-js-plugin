@@ -185,3 +185,96 @@ async fn plugin_picker_builtin_plugin_buffers_source() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// 审查 I1：items 返回空列表（如 grep 无匹配）→ 仍打开 picker（空列表展示），不静默跳过。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_picker_empty_rows_still_opens() -> anyhow::Result<()> {
+    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin = dir.path().join("picker_empty.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.picker.define("t", {
+            columns: ["name"],
+            items: () => [],
+            action: (row) => { helix.echo("picked:" + row[0]); },
+        });
+        helix.register_command("pick", () => helix.picker.run("t"));
+        "#,
+    )?;
+    let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            (
+                Some(":pick<ret>"),
+                Some(&|app| {
+                    // 空 rows + 非空 columns → 仍建 picker（空列表）
+                    assert!(
+                        app.compositor.has_component(picker_type),
+                        "picker layer should open even with empty rows"
+                    );
+                    assert_status_not_error(&app.editor);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// 审查 I2：行宽与列数不匹配 → 状态栏报错（push_message），picker 不打开。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_picker_width_mismatch_reports_error() -> anyhow::Result<()> {
+    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin = dir.path().join("picker_wide.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.picker.define("t", {
+            columns: ["name"],
+            items: () => [["one", "too-wide"]],
+            action: (row) => { helix.echo("picked:" + row[0]); },
+        });
+        helix.register_command("pick", () => helix.picker.run("t"));
+        "#,
+    )?;
+    let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            (
+                Some(":pick<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        status.as_ref().contains("不匹配"),
+                        "expected width mismatch status, got {status}"
+                    );
+                    assert!(
+                        !app.compositor.has_component(picker_type),
+                        "picker should not open on width mismatch"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

@@ -4915,17 +4915,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             | helix_js::UiRequest::Unwatch { .. }) => {
                 crate::plugins_watch::apply_watch(request)?;
             }
-            // 任务 3 接入：term 侧 PickerRow 构建 + action/preview 桥
-            helix_js::UiRequest::OpenPicker { source, rows } => {
-                // columns 名：源配置在 JS 侧，term 侧用 c0/c1... 占位（列宽由核心按内容算）
-                let columns = rows
-                    .first()
-                    .map(|r| {
-                        (0..r.cells.len())
-                            .map(|i| format!("c{i}"))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+            // 任务 3 接入：term 侧 PickerRow 构建 + action/preview 桥；
+            // columns 由 JS 侧 define 下发（真实列名 → 表头），空 rows 也建 picker（空列表展示）
+            helix_js::UiRequest::OpenPicker {
+                source,
+                columns,
+                rows,
+            } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     ui::js_picker::open_picker(compositor, &source, rows, columns);
                 });
