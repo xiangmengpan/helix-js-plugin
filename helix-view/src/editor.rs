@@ -1310,6 +1310,9 @@ pub struct Editor {
     pub last_selection: Option<Selection>,
 
     pub status_msg: Option<(Cow<'static, str>, Severity)>,
+    /// The most recent error set via [`Editor::set_error`], for `:yank-error` to copy.
+    /// Only errors are recorded (not warnings); each new error overwrites the previous one.
+    pub last_error: Option<Cow<'static, str>>,
     pub autoinfo: Option<Info>,
 
     pub config: Arc<dyn DynAccess<Config>>,
@@ -1452,6 +1455,7 @@ impl Editor {
                 |config: &Config| &config.clipboard_provider,
             ))),
             status_msg: None,
+            last_error: None,
             autoinfo: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             redraw_timer: Box::pin(sleep(Duration::MAX)),
@@ -1546,6 +1550,7 @@ impl Editor {
     pub fn set_error<T: Into<Cow<'static, str>>>(&mut self, error: T) {
         let error = error.into();
         log::debug!("editor error: {}", error);
+        self.last_error = Some(error.clone());
         self.status_msg = Some((error, Severity::Error));
     }
 
@@ -2696,5 +2701,61 @@ impl CursorCache {
 
     pub fn reset(&self) {
         self.0.set(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        graphics::Rect,
+        handlers::{completion::CompletionHandler, word_index},
+    };
+    use arc_swap::{access::Map, ArcSwap};
+    use tokio::sync::mpsc;
+
+    fn test_editor() -> Editor {
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let syn_loader = Arc::new(ArcSwap::from_pointee(
+            helix_core::config::default_lang_loader(),
+        ));
+        let config = Arc::new(ArcSwap::from_pointee(Config::default()));
+        let (completions_tx, _) = mpsc::channel(32);
+        let (signature_hints, _) = mpsc::channel(32);
+        let (auto_save, _) = mpsc::channel(32);
+        let (document_colors, _) = mpsc::channel(32);
+        let (document_links, _) = mpsc::channel(32);
+        let (pull_diagnostics, _) = mpsc::channel(32);
+        let (pull_all_diagnostics, _) = mpsc::channel(32);
+        let (code_action_hint, _) = mpsc::channel(32);
+        let handlers = Handlers {
+            completions: CompletionHandler::new(completions_tx),
+            signature_hints,
+            auto_save,
+            document_colors,
+            document_links,
+            word_index: word_index::Handler::spawn(),
+            pull_diagnostics,
+            pull_all_documents_diagnostics: pull_all_diagnostics,
+            code_action_hint,
+        };
+        Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syn_loader,
+            Arc::new(Map::new(config, |c: &Config| c)),
+            handlers,
+            helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_error_records_last_error() {
+        let mut editor = test_editor();
+        assert!(editor.last_error.is_none());
+        editor.set_error("boom");
+        assert_eq!(editor.last_error.as_deref(), Some("boom"));
+        editor.set_error("boom2");
+        assert_eq!(editor.last_error.as_deref(), Some("boom2"));
     }
 }
