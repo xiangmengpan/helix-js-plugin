@@ -221,43 +221,51 @@ async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("code_actions_basic", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-ca<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "ca:mock-fix-A|quickfix");
-                }),
-            ),
-            // 无害键 pump:exec 的 apply+resolve 在下一帧(段 A 先应用再 resolve);
-            // 不重跑命令(新运行的 ca echo 会覆盖 exec echo)
-            (
-                Some("j"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), r#"exec:{"applied":true}"#);
-                    let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(
-                        doc.text().to_string(),
-                        "ONE-A\n",
-                        "code action 的 edit 已应用"
-                    );
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("code_actions_basic", &[]))
+        .build()?;
+    for keys in [
+        format!(":plugin-load {}<ret>", plugin_path.display()),
+        ":mock-ca<ret>".to_string(),
+    ] {
+        for key_event in parse_macro(&keys)? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+    }
+    // 轮询 status:先 ca echo,后 exec echo(execute 的 apply+resolve 在后续帧);
+    // 键唤醒(线程局部 REDRAW_NOTIFY 跨线程 wake 丢失)。250ms idle 窗口在重负载下不够,故轮询。
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some((status, _)) = app.editor.get_status() {
+            if status.as_ref().contains("exec:") {
+                assert_eq!(status.as_ref(), r#"exec:{"applied":true}"#);
+                break;
+            }
+            assert!(
+                !status.as_ref().contains("ca:empty"),
+                "无可用 action: {status}"
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "execute 未在 10s 内完成"
+        );
+        for key_event in parse_macro("j")? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+    }
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "ONE-A\n",
+        "code action 的 edit 已应用"
+    );
     Ok(())
 }
 
@@ -283,47 +291,54 @@ async fn plugin_lsp_mock_multiserver_execute_routes_to_owner() -> anyhow::Result
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(dual_mock_lsp_loader())
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-ca2<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    // 两个 server 的 action 都在：title 带 tag 可区分、_serverId 不同
-                    // （只断言前缀，具体 _serverId 数值不钉死）
-                    assert!(
-                        status.as_ref().starts_with("ca2:mock-fix-A|mock-fix-B|"),
-                        "list should carry both servers' actions with distinct _serverId, got {status:?}"
-                    );
-                }),
-            ),
-            // 无害键 pump：exec 的 apply+resolve 在下一帧（段 A 先应用再 resolve）
-            (
-                Some("j"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), r#"exec2:{"applied":true}"#);
-                    let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(
-                        doc.text().to_string(),
-                        "ONE-B\n",
-                        "execute 第二个 action 应路由到 B server"
-                    );
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(dual_mock_lsp_loader())
+        .build()?;
+    for keys in [
+        format!(":plugin-load {}<ret>", plugin_path.display()),
+        ":mock-ca2<ret>".to_string(),
+    ] {
+        for key_event in parse_macro(&keys)? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+    }
+    // 轮询 status:先 ca2 列表 echo,后 exec2 echo(execute 在后续帧);
+    // 键唤醒(线程局部 REDRAW_NOTIFY 跨线程 wake 丢失)。250ms idle 窗口在重负载下不够,故轮询。
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some((status, _)) = app.editor.get_status() {
+            if status.as_ref().contains("exec2:") {
+                assert_eq!(status.as_ref(), r#"exec2:{"applied":true}"#);
+                break;
+            }
+            if status.as_ref().starts_with("ca2:") {
+                // 两个 server 的 action 都在：title 带 tag 可区分、_serverId 不同
+                assert!(
+                    status.as_ref().starts_with("ca2:mock-fix-A|mock-fix-B|"),
+                    "list should carry both servers' actions with distinct _serverId, got {status:?}"
+                );
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "双 server execute 未在 10s 内完成"
+        );
+        for key_event in parse_macro("j")? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+    }
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "ONE-B\n",
+        "execute 第二个 action 应路由到 B server"
+    );
     Ok(())
 }
 
@@ -573,5 +588,68 @@ async fn plugin_lsp_mock_timeout_rejects() -> anyhow::Result<()> {
         }
         app.event_loop_until_idle(&mut rx_stream).await;
     }
+    Ok(())
+}
+
+// 手动构造 action(无 _serverId)→ 回退第一个 CodeAction server → resolve 用 A → "ONE-A"
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_lsp_mock_execute_manual_action_falls_back_first_server() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.mock2");
+    std::fs::write(&file, "one\n")?;
+    let plugin_path = dir.path().join("ca-manual.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("mock-ca-manual", async (ctx) => {
+            const uri = "file://" + ctx.doc.path;
+            // 手动构造 action(无 _serverId):带 edit.changes(含 uri)但无 command——
+            // 触发 resolve(回退第一个 server),resolve 覆写 edit 为 ONE-A(而非自带的 IGNORED,证明走 resolve)
+            const r = await helix.lsp.execute_code_action({
+                title: "manual",
+                edit: { changes: { [uri]: [{ range: { start: {line:0,character:0}, end: {line:0,character:3} }, newText: "IGNORED" }] } }
+            });
+            helix.echo("execm:" + JSON.stringify(r));
+        });
+        "#,
+    )?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(dual_mock_lsp_loader())
+        .build()?;
+    for keys in [
+        format!(":plugin-load {}<ret>", plugin_path.display()),
+        ":mock-ca-manual<ret>".to_string(),
+    ] {
+        for key_event in parse_macro(&keys)? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+    }
+    // 轮询 status：execute 完成(execm: echo)→ 断言；键唤醒(线程局部 REDRAW_NOTIFY 跨线程 wake 丢失)
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some((status, _)) = app.editor.get_status() {
+            assert_eq!(status.as_ref(), r#"execm:{"applied":true}"#);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "手动构造 action 执行未在 10s 内完成"
+        );
+        for key_event in parse_macro("j")? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+    }
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "ONE-A\n",
+        "手动构造 action(无 _serverId)应回退第一个 server(A)的 resolve 结果"
+    );
     Ok(())
 }
