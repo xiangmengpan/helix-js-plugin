@@ -5,7 +5,7 @@ mod icons;
 mod input;
 mod layout;
 mod lsp;
-mod picker;
+pub mod picker;
 mod popup;
 mod pty;
 mod shell;

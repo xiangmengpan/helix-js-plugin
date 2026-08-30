@@ -184,7 +184,8 @@ impl<T, D> Injector<T, D> {
     }
 }
 
-type ColumnFormatFn<T, D> = for<'a> fn(&'a T, &'a D) -> Cell<'a>;
+// 列格式 fn 指针别名（crate 内共享:js_picker 的列格式同型）
+pub(crate) type ColumnFormatFn<T, D> = for<'a> fn(&'a T, &'a D) -> Cell<'a>;
 
 pub struct Column<T, D> {
     name: Arc<str>,
@@ -223,8 +224,15 @@ impl<T, D> Column<T, D> {
         self
     }
 
-    fn format<'a>(&self, item: &'a T, data: &'a D) -> Cell<'a> {
+    // pub(crate)：js_picker 测试断言列内容用（crate 内共享）
+    pub(crate) fn format<'a>(&self, item: &'a T, data: &'a D) -> Cell<'a> {
         (self.format)(item, data)
+    }
+
+    /// 该列是否参与过滤（js_picker 测试断言用）
+    #[cfg(test)]
+    pub(crate) fn filter_enabled(&self) -> bool {
+        self.filter
     }
 
     fn format_text<'a>(&self, item: &'a T, data: &'a D) -> Cow<'a, str> {

@@ -4,6 +4,7 @@ mod completion;
 mod document;
 pub(crate) mod editor;
 mod info;
+pub mod js_picker;
 pub mod layout;
 pub mod lsp;
 mod markdown;

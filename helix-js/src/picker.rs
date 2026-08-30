@@ -2,11 +2,11 @@
 //! define 注册 {columns, items, ...} 到源表；run 取源调 items（同步数组或 Promise 续体），
 //! 把候选行经 UiRequest::OpenPicker 交给 helix-term 渲染。
 
-use boa_engine::object::builtins::JsFunction;
+use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::FunctionObjectBuilder;
 use boa_engine::{Context, JsError, JsObject, JsString, JsValue, NativeFunction};
 
-use crate::state::with_picker_sources;
+use crate::state::{with_engine, with_picker_sources};
 use crate::types::UiRequest;
 
 /// picker 候选行（纯数据，跨线程）：cells = 各列文本；payload = 原样数据（action/preview 用）
@@ -95,6 +95,82 @@ pub(crate) fn js_picker_run(
     Ok(JsValue::undefined())
 }
 
+/// 把一条消息推入 MESSAGES（term 侧 drain 后 set_status）——异步错误反馈通道（任务 2 审查 I1）
+fn push_message(msg: String) {
+    let _ = crate::state::MESSAGES.get_or_init(Default::default);
+    crate::state::MESSAGES
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(msg);
+}
+
+/// 字符串切片 → JS 数组（action/preview 的 payload 传参）
+fn js_array_from_strings(items: &[String], ctx: &mut Context) -> JsValue {
+    let arr = JsArray::new(ctx);
+    for s in items {
+        let _ = arr.push(JsValue::from(JsString::from(s.as_str())), ctx);
+    }
+    JsValue::from(arr)
+}
+
+/// Enter：调 JS action(payload 数组)；源未定义/action 未定义/抛错 → 忽略（不崩）
+pub fn invoke_action(source: &str, payload: &[String]) {
+    crate::init();
+    with_engine(|engine| {
+        let Some(config) = with_picker_sources(|m| m.get(source).cloned()) else {
+            return;
+        };
+        let Some(config) = config.as_object() else {
+            return;
+        };
+        let Ok(action) = config.get(JsString::from("action"), engine) else {
+            return;
+        };
+        if !action.is_callable() {
+            return;
+        }
+        let Some(func) = action.as_callable().and_then(JsFunction::from_object) else {
+            return;
+        };
+        let arr = js_array_from_strings(payload, engine);
+        let _ = func.call(&JsValue::undefined(), &[arr], engine);
+    });
+}
+
+/// 选中：调 JS preview(payload) → {path, line}；源未定义/preview 未定义/返回 null/缺 path/抛错 → None（无预览）
+pub fn invoke_preview(source: &str, payload: &[String]) -> Option<(String, usize)> {
+    crate::init();
+    with_engine(|engine| {
+        let config = with_picker_sources(|m| m.get(source).cloned())?;
+        let config = config.as_object()?;
+        let preview = config.get(JsString::from("preview"), engine).ok()?;
+        if !preview.is_callable() {
+            return None;
+        }
+        let func = preview.as_callable().and_then(JsFunction::from_object)?;
+        let arr = js_array_from_strings(payload, engine);
+        let value = func.call(&JsValue::undefined(), &[arr], engine).ok()?;
+        if value.is_null_or_undefined() {
+            return None;
+        }
+        let obj = value.as_object()?;
+        let path: String = obj
+            .get(JsString::from("path"), engine)
+            .ok()?
+            .try_js_into(engine)
+            .ok()?;
+        let line = obj
+            .get(JsString::from("line"), engine)
+            .ok()
+            .and_then(|v| v.as_number())
+            .map(|n| n as usize)
+            .unwrap_or(0);
+        Some((path, line))
+    })
+}
+
 /// 把 items 结果（同步数组或 Promise）转成 OpenPicker 请求 push 出去
 fn push_open_picker(
     name: &str,
@@ -102,20 +178,44 @@ fn push_open_picker(
     context: &mut Context,
 ) -> boa_engine::JsResult<()> {
     if let Some(promise) = items_result.as_promise() {
-        // async items：注册 .then 续体，resolve 后 push（含行数据）
+        // async items：注册 .then 续体，resolve 后 push（含行数据）；
+        // reject / 行解析失败 → push_message 反馈到状态栏（不静默，任务 2 审查 I1）
         let name = JsString::from(name);
         let resolve = NativeFunction::from_copy_closure_with_captures(
             |_, args, name: &JsString, ctx| {
                 let name = name.to_std_string_escaped();
                 let value = args.first().cloned().unwrap_or_default();
-                let rows = parse_rows(value, ctx)?;
-                push_request(UiRequest::OpenPicker { source: name, rows });
+                match parse_rows(value, ctx) {
+                    Ok(rows) => {
+                        push_request(UiRequest::OpenPicker { source: name, rows });
+                        Ok(JsValue::undefined())
+                    }
+                    Err(e) => {
+                        push_message(format!("picker.run('{name}'): {e}"));
+                        Ok(JsValue::undefined())
+                    }
+                }
+            },
+            name.clone(),
+        );
+        let reject = NativeFunction::from_copy_closure_with_captures(
+            |_, args, name: &JsString, ctx| {
+                let name = name.to_std_string_escaped();
+                let err = args
+                    .first()
+                    .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
+                    .transpose()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "unknown error".to_string());
+                push_message(format!("picker.run('{name}') rejected: {err}"));
                 Ok(JsValue::undefined())
             },
             name,
         );
         let f = FunctionObjectBuilder::new(context.realm(), resolve).build();
-        promise.then(Some(f), None, context);
+        let g = FunctionObjectBuilder::new(context.realm(), reject).build();
+        promise.then(Some(f), Some(g), context);
         Ok(())
     } else {
         let rows = parse_rows(items_result, context)?;
@@ -141,14 +241,11 @@ fn push_request(req: UiRequest) {
 
 /// items 行 → Vec<RowSpec>；行 = 数组 [c1,c2] 或对象 {cells, payload}
 fn parse_rows(value: JsValue, context: &mut Context) -> boa_engine::JsResult<Vec<RowSpec>> {
-    let rows_arr = value
-        .as_object()
-        .filter(|o| o.is_array())
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "picker: items must return an array of rows",
-            )))
-        })?;
+    let rows_arr = value.as_object().filter(|o| o.is_array()).ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "picker: items must return an array of rows",
+        )))
+    })?;
     let length = rows_arr
         .get(JsString::from("length"), context)?
         .as_number()
@@ -162,11 +259,8 @@ fn parse_rows(value: JsValue, context: &mut Context) -> boa_engine::JsResult<Vec
 }
 
 fn parse_row(value: JsValue, context: &mut Context) -> boa_engine::JsResult<RowSpec> {
-    let err = |msg: &str| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "picker: {msg}"
-        ))))
-    };
+    let err =
+        |msg: &str| JsError::from_opaque(JsValue::from(JsString::from(format!("picker: {msg}"))));
     let Some(obj) = value.as_object() else {
         return Err(err("each row must be an array or object"));
     };
@@ -187,7 +281,8 @@ fn parse_row(value: JsValue, context: &mut Context) -> boa_engine::JsResult<RowS
     let payload = match obj.get(JsString::from("payload"), context)? {
         v if v.is_undefined() => cells.clone(),
         v => read_cells(
-            &v.as_object().ok_or_else(|| err("row.payload must be an array"))?,
+            &v.as_object()
+                .ok_or_else(|| err("row.payload must be an array"))?,
             context,
         )?,
     };
@@ -211,7 +306,7 @@ fn read_cells(arr: &JsObject, context: &mut Context) -> boa_engine::JsResult<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{load_script, pump_jobs, take_ui_requests};
+    use crate::{load_script, pump_jobs, take_messages, take_ui_requests};
     use std::sync::Mutex;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -293,5 +388,76 @@ mod tests {
             }
             other => panic!("expected OpenPicker, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn picker_run_async_items_rejection_feedback() {
+        // 任务 2 审查 I1：Promise reject → push_message 反馈（不静默），且不 push OpenPicker
+        let _guard = TEST_LOCK.lock().unwrap();
+        crate::init();
+        load_script(
+            r#"helix.picker.define("f", { columns: ["name"], items: async () => { throw new Error("boom"); } });"#,
+        )
+        .unwrap();
+        load_script(r#"helix.picker.run("f");"#).unwrap();
+        assert!(take_ui_requests().is_empty());
+        pump_jobs().unwrap();
+        assert!(take_ui_requests().is_empty());
+        let msgs = take_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("boom")),
+            "expected rejection feedback, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn picker_run_async_items_bad_rows_feedback() {
+        // I1：resolve 但行解析失败（非数组）→ 同样反馈，不 push
+        let _guard = TEST_LOCK.lock().unwrap();
+        crate::init();
+        load_script(r#"helix.picker.define("f", { columns: ["name"], items: async () => 42 });"#)
+            .unwrap();
+        load_script(r#"helix.picker.run("f");"#).unwrap();
+        pump_jobs().unwrap();
+        assert!(take_ui_requests().is_empty());
+        let msgs = take_messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("picker")),
+            "expected bad-rows feedback, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn picker_invoke_action_and_preview() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 带 action/preview 的源：action 经 helix.echo 可观察（走 MESSAGES）
+        load_script(
+            r#"helix.picker.define("f", {
+                columns: ["name"],
+                items: () => [],
+                action: (payload) => { helix.echo("action:" + payload.join(",")); },
+                preview: (payload) => ({ path: "/tmp/" + payload[0], line: 3 }),
+            });"#,
+        )
+        .unwrap();
+        // preview → {path, line}；line 缺省 0
+        assert_eq!(
+            invoke_preview("f", &["a.rs".to_string()]),
+            Some(("/tmp/a.rs".to_string(), 3))
+        );
+        // action 收到 payload 数组
+        invoke_action("f", &["a.rs".to_string(), "x".to_string()]);
+        let msgs = take_messages();
+        assert!(
+            msgs.iter().any(|m| m == "action:a.rs,x"),
+            "expected action echo, got {msgs:?}"
+        );
+        // 未定义 preview/action → None / 不崩；未知源 → 不崩
+        load_script(r#"helix.picker.define("g", { columns: ["n"], items: () => [] });"#).unwrap();
+        assert_eq!(invoke_preview("g", &["x".to_string()]), None);
+        invoke_action("g", &["x".to_string()]);
+        invoke_action("nope", &["x".to_string()]);
+        assert_eq!(invoke_preview("nope", &["x".to_string()]), None);
     }
 }
