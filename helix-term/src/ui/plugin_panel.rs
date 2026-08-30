@@ -132,8 +132,16 @@ impl Component for PluginPanel {
                         self.focus = None;
                         return EventResult::Consumed(None);
                     }
-                    // Enter：input 有状态 → onKey("Enter")；否则（button）→ onPress
+                    // Enter：multiline input → 插入换行（dispatch_input_key 消费,不触发 onKey/提交）；
+                    // 否则 input → onKey("Enter")；button → onPress
                     "Enter" => {
+                        if helix_js::input_has_state(self.id, fid)
+                            && helix_js::input_is_multiline(self.id, fid)
+                            && helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok()
+                        {
+                            drain_msgs(cx);
+                            return EventResult::Consumed(None);
+                        }
                         let event = if helix_js::input_has_state(self.id, fid) {
                             Some(key.name.as_str())
                         } else {
@@ -153,9 +161,16 @@ impl Component for PluginPanel {
                             return EventResult::Consumed(None);
                         }
                     }
-                    // Up/Down：候选导航（走 onKey）
+                    // Up/Down：multiline input → 光标行间移动（dispatch_input_key）；否则候选导航（走 onKey）
                     "Up" | "Down" => {
                         if helix_js::input_has_state(self.id, fid)
+                            && helix_js::input_is_multiline(self.id, fid)
+                        {
+                            if helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok() {
+                                drain_msgs(cx);
+                                return EventResult::Consumed(None);
+                            }
+                        } else if helix_js::input_has_state(self.id, fid)
                             && helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok()
                         {
                             drain_msgs(cx);

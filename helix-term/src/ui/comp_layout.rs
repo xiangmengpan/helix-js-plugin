@@ -312,15 +312,37 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
             value,
             cursor,
             width,
+            multiline,
             ..
         } => {
             let limit = width.unwrap_or(u16::MAX).min(viewport.0) as usize;
-            // 光标处插入 "|"（char 索引；越界 clamp 末尾）
-            let mut chars: Vec<char> = value.chars().collect();
-            let c = (*cursor).min(chars.len());
-            chars.insert(c, '|');
-            let text: String = chars.into_iter().take(limit).collect();
-            vec![StyledLine::plain(text)]
+            if *multiline {
+                // 多行渲染：按 \n 分行，光标所在行插 "|"（行模型同 input_edit：
+                // 光标落在 \n 位置属上一行行尾），每行截断到 limit
+                let mut lines: Vec<String> = value.split('\n').map(str::to_string).collect();
+                let mut remaining = (*cursor).min(value.chars().count());
+                for line in lines.iter_mut() {
+                    let llen = line.chars().count();
+                    if remaining <= llen {
+                        let mut chars: Vec<char> = line.chars().collect();
+                        chars.insert(remaining, '|');
+                        *line = chars.into_iter().collect();
+                        break;
+                    }
+                    remaining = remaining.saturating_sub(llen + 1); // +1 跳过 \n
+                }
+                lines
+                    .into_iter()
+                    .map(|l| StyledLine::plain(l.chars().take(limit).collect::<String>()))
+                    .collect()
+            } else {
+                // 光标处插入 "|"（char 索引；越界 clamp 末尾）
+                let mut chars: Vec<char> = value.chars().collect();
+                let c = (*cursor).min(chars.len());
+                chars.insert(c, '|');
+                let text: String = chars.into_iter().take(limit).collect();
+                vec![StyledLine::plain(text)]
+            }
         }
         CompNode::Scroll {
             children,
@@ -381,7 +403,8 @@ pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
 fn is_single_line(node: &CompNode) -> bool {
     match node {
         CompNode::Text { wrap, .. } => !*wrap,
-        CompNode::Button { .. } | CompNode::Input { .. } => true,
+        CompNode::Button { .. } => true,
+        CompNode::Input { multiline, .. } => !*multiline,
         CompNode::Row { children, .. } => {
             !children.is_empty() && children.iter().all(is_single_line)
         }
@@ -626,6 +649,7 @@ mod tests {
             width: None,
             id: "q".into(),
             flex: None,
+            multiline: false,
         }
     }
 
@@ -655,6 +679,7 @@ mod tests {
             width: Some(3),
             id: "q".into(),
             flex: None,
+            multiline: false,
         };
         assert_eq!(layout(&node, (40, 10)), vec![line("|ab")]);
         // viewport 宽度优先于 width
@@ -664,8 +689,51 @@ mod tests {
             width: Some(10),
             id: "q".into(),
             flex: None,
+            multiline: false,
         };
         assert_eq!(layout(&node, (2, 10)), vec![line("a|")]);
+    }
+
+    #[test]
+    fn input_multiline_renders_lines_with_cursor() {
+        // 多行：按 \n 分行渲染，光标所在行插 "|"，其余行原样
+        assert_eq!(
+            layout(&input_node_ml("ab\ncd", 4), (40, 10)),
+            vec![line("ab"), line("c|d")]
+        );
+        // 光标落在 \n 位置（上一行行尾）→ 光标在上一行末尾
+        assert_eq!(
+            layout(&input_node_ml("ab\ncd", 2), (40, 10)),
+            vec![line("ab|"), line("cd")]
+        );
+        // 末行末尾光标
+        assert_eq!(
+            layout(&input_node_ml("ab\ncd", 5), (40, 10)),
+            vec![line("ab"), line("cd|")]
+        );
+        // 空值 → 单行光标（退化）
+        assert_eq!(layout(&input_node_ml("", 0), (40, 10)), vec![line("|")]);
+        // 宽度截断每行（先插 "|" 再截断）
+        let node = CompNode::Input {
+            value: "abc\ndef".into(),
+            cursor: 1,
+            width: Some(2),
+            id: "q".into(),
+            flex: None,
+            multiline: true,
+        };
+        assert_eq!(layout(&node, (40, 10)), vec![line("a|"), line("de")]);
+    }
+
+    fn input_node_ml(value: &str, cursor: usize) -> CompNode {
+        CompNode::Input {
+            value: value.into(),
+            cursor,
+            width: None,
+            id: "q".into(),
+            flex: None,
+            multiline: true,
+        }
     }
 
     #[test]

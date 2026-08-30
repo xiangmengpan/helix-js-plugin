@@ -323,12 +323,14 @@ pub enum CompNode {
         flex: Option<u16>,
     },
     /// 可聚焦输入框：按键路由到 onKey（id 必填，value/cursor 由引擎状态渲染）
+    /// multiline：true 时 Enter 换行、Up/Down 行间移动、Home/End 行级、多行渲染（单行不变）
     Input {
         value: String,
         cursor: usize,
         width: Option<u16>,
         id: String,
         flex: Option<u16>,
+        multiline: bool,
     },
 }
 

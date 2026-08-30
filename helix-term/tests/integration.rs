@@ -30,6 +30,7 @@ mod test {
     mod plugin_entry;
     mod plugin_fsasync;
     mod plugin_input;
+    mod plugin_input_multiline;
     mod plugin_layout;
     mod plugin_layout2;
     mod plugin_lsp;

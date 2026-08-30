@@ -235,6 +235,16 @@ pub fn input_has_state(popup_id: u64, node_id: &str) -> bool {
     with_input_states(|m| m.contains_key(&(popup_id, node_id.to_string())))
 }
 
+/// 该 input 是否多行（按键路由用）：multiline 时 Enter/Up/Down 是编辑键
+/// （换行/行间移动,走 dispatch_input_key）；单行时 Enter/Up/Down 走 onKey（提交/候选导航）。
+pub fn input_is_multiline(popup_id: u64, node_id: &str) -> bool {
+    with_input_states(|m| {
+        m.get(&(popup_id, node_id.to_string()))
+            .map(|s| s.multiline)
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

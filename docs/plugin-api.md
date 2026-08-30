@@ -410,8 +410,11 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), st
 
 // input：可聚焦输入框。value 由**引擎权威**维护（JS 传值仅初始化），渲染带光标 "|"；
 // 编辑键（字符/Backspace/Delete）自动改值并触发 onChange(新值)；导航键（↑↓/Enter）走 onKey。
+// multiline: true（默认 false）→ 多行输入：Enter 光标处插换行（input 内消费，不触发 onKey/提交）、
+// Up/Down 行间移动（保持列，短行 clamp 行尾）、Home/End 行首/行尾、Left/Right/Backspace/Delete 跨行，
+// 渲染按 \n 分行多行显示；提交用外部 button + onPress 或 onKey 自定义键。单行行为逐字节不变。
 // 注意：onChange 需用原始对象形式（helix.el 暂不透传 onChange）
-{ type: "input", id: "q", value: "abc", width: 20,
+{ type: "input", id: "q", value: "abc", width: 20, multiline: false,
   onChange: (v) => { /* v = 编辑后的新值（光标移动不触发） */ },
   onKey: (k) => { /* k = "Up" | "Down" | "Enter" | ...（见下） */ } }
 ```
@@ -428,9 +431,9 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed"), st
   | 按键 | 行为 |
   |------|------|
   | 单字符 / Backspace / Delete | 编辑（引擎改值 + 光标）→ 触发 `onChange(新值)` |
-  | Left / Right / Home / End | 仅移动光标，**不**触发 onChange |
-  | Up / Down | → 节点 `onKey("Up"/"Down")`（候选导航） |
-  | Enter | → 节点 `onKey("Enter")`（空格键是单字符编辑键，命中首行插入输入框） |
+  | Left / Right / Home / End | 仅移动光标，**不**触发 onChange（multiline：Home/End 行级，Left/Right 跨行边界） |
+  | Up / Down | 单行 → 节点 `onKey("Up"/"Down")`（候选导航）；multiline → 光标行间移动（保持列，短行 clamp） |
+  | Enter | 单行 → 节点 `onKey("Enter")`；multiline → 光标处插入换行（不触发 onKey/提交；空格键是单字符编辑键，命中首行插入输入框） |
   | Tab | 焦点移到下一个可聚焦节点 |
   | Esc | 关闭弹窗（弹窗级缺省；焦点在 input 上同样生效） |
 
@@ -473,7 +476,7 @@ helix.move_panel(id, "left");     // 移动面板到另一侧
 
 - **多面板并存**：每个面板都是独立叶子，可同侧叠加。
 - 无 `onKey` 时面板完全事件穿透（编辑器照常编辑）；有 `onKey` 时 `"handled"` 消费、`"ignore"` 穿透。
-- **`focusable: true` 启用节点焦点路由**（与弹窗同机制，仅影响启用面板）：`Tab` 在可聚焦节点（`button`/`input` 的 `id`）间循环移动焦点；焦点在节点时按键直达节点（`Enter` → `button` 的 `onPress` / `input` 的 `onKey("Enter")`，字符 → `input` 插入触发 `onChange`，方向键 → `input` 光标移动/候选导航）；`Esc` 取消焦点回 `onKey`（面板非模态，不关闭）；焦点节点从树中消失（render 后）自动重置焦点。未启用（默认）时按键一律走 `onKey`，完全保持现状。
+- **`focusable: true` 启用节点焦点路由**（与弹窗同机制，仅影响启用面板）：`Tab` 在可聚焦节点（`button`/`input` 的 `id`）间循环移动焦点；焦点在节点时按键直达节点（`Enter` → `button` 的 `onPress` / `input` 的 `onKey("Enter")`（multiline input 则插入换行），字符 → `input` 插入触发 `onChange`，方向键 → `input` 光标移动/候选导航（multiline input 的 ↑↓ 为行间移动））；`Esc` 取消焦点回 `onKey`（面板非模态，不关闭）；焦点节点从树中消失（render 后）自动重置焦点。未启用（默认）时按键一律走 `onKey`，完全保持现状。
 - 面板内容可被异步回调更新（`onChunk` 里改模块状态 → 面板重绘）。
 - `:panel-close` 关闭最近打开的面板。
 

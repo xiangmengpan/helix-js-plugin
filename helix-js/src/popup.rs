@@ -1177,6 +1177,8 @@ fn parse_node(
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             register_node_handlers(&obj, ctx, id, Some(&node_id))?;
             let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
+            // multiline 开关：Enter 换行 + 行感知光标 + 多行渲染（缺省 false，单行行为不变）
+            let multiline = obj_opt_bool(&obj, "multiline", ctx, &api)?.unwrap_or(false);
             // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值
             let (value, cursor) =
                 crate::input::with_input_states(|m| match m.entry((id, node_id.clone())) {
@@ -1189,7 +1191,7 @@ fn parse_node(
                         e.insert(InputState {
                             value: js_value.clone(),
                             cursor: c,
-                            multiline: false, // 任务 2 接线：从节点参数解析
+                            multiline,
                         });
                         (js_value.clone(), c)
                     }
@@ -1200,6 +1202,7 @@ fn parse_node(
                 width,
                 id: node_id,
                 flex,
+                multiline,
             })
         }
         other => Err(JsError::from_opaque(JsValue::from(JsString::from(
