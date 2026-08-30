@@ -4768,7 +4768,12 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.replace_or_push("plugin-popup", popup);
                 });
             }
-            helix_js::UiRequest::OpenPanel { id, side, size } => {
+            helix_js::UiRequest::OpenPanel {
+                id,
+                side,
+                size,
+                focusable,
+            } => {
                 // side 已在 JS 侧白名单校验，此处仅防御性映射
                 let side = match side.as_str() {
                     "right" => ui::PanelSide::Right,
@@ -4776,7 +4781,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     "bottom" => ui::PanelSide::Bottom,
                     other => bail!("open_panel: unknown side '{other}'"),
                 };
-                let panel = ui::PluginPanel::new(id, side);
+                let panel = ui::PluginPanel::new(id, side, focusable);
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 布局树：切分活动叶子，面板成为新叶子（side 决定方向/新叶子位置）
                     use crate::ui::layout::SplitDir;
@@ -5024,6 +5029,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         _ => Box::new(crate::ui::PluginPanel::new(
                             id,
                             crate::ui::plugin_panel::PanelSide::Right,
+                            false,
                         )),
                     };
                     // 用预分配 id 直接建叶子（split 的 id 由 JS 分配，回调已注册）

@@ -21,16 +21,25 @@ pub enum PanelSide {
 pub struct PluginPanel {
     id: u64,
     side: PanelSide,
+    /// 节点焦点路由开关（open_panel focusable;未启用零行为变化）
+    focusable: bool,
+    /// 当前焦点节点 id（Tab 在可聚焦节点间移动;None = 无节点焦点,仿 PluginPopup）
+    focus: Option<String>,
+    /// 可聚焦节点 id 列表（树序,渲染时刷新）
+    focusables: Vec<String>,
     lines: Vec<StyledLine>,
     /// 脏格 diff 渲染器（只重绘变化格）
     diff: crate::ui::comp_layout::DiffRenderer,
 }
 
 impl PluginPanel {
-    pub fn new(id: u64, side: PanelSide) -> Self {
+    pub fn new(id: u64, side: PanelSide, focusable: bool) -> Self {
         Self {
             id,
             side,
+            focusable,
+            focus: None,
+            focusables: Vec::new(),
             lines: Vec::new(),
             diff: Default::default(),
         }
@@ -177,8 +186,23 @@ impl Component for PluginPanel {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        match helix_js::render_popup(self.id, area.width, area.height, None) {
-            Ok(content) => self.lines = comp_layout::render(content, (area.width, area.height)),
+        // focusable 面板:render 传焦点 + 提取可聚焦节点(仿 PluginPopup::refresh);
+        // 未启用保持现状(传 None 不提取,零行为变化)
+        let focus = if self.focusable {
+            self.focus.as_deref()
+        } else {
+            None
+        };
+        match helix_js::render_popup(self.id, area.width, area.height, focus) {
+            Ok(content) => {
+                if self.focusable {
+                    self.focusables.clear();
+                    if let helix_js::Content::Tree(node) = &content {
+                        helix_js::focusable_node_ids(node, &mut self.focusables);
+                    }
+                }
+                self.lines = comp_layout::render(content, (area.width, area.height))
+            }
             Err(err) => {
                 self.lines = vec![StyledLine::plain(format!("<plugin panel error: {err}>"))]
             }

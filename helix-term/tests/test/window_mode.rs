@@ -67,7 +67,7 @@ async fn window_mode_directional_focus() -> anyhow::Result<()> {
         SplitDir::H,
         false,
         40,
-        Box::new(PluginPanel::new(1, PanelSide::Right)),
+        Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     let active = app.compositor.layout_tree().active();
     assert_eq!(active, 1, "面板打开后活动叶子=面板");
@@ -91,7 +91,7 @@ async fn window_mode_close_minimize_zoom() -> anyhow::Result<()> {
         SplitDir::H,
         false,
         40,
-        Box::new(PluginPanel::new(1, PanelSide::Right)),
+        Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     // 最小化往返
     pump(&mut app, "<C-w>z<esc>").await?;
@@ -125,7 +125,7 @@ async fn window_mode_swap_and_resize() -> anyhow::Result<()> {
         SplitDir::H,
         false,
         40,
-        Box::new(PluginPanel::new(1, PanelSide::Right)),
+        Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     // 活动=面板(1),H + h 与左邻居(编辑器)交换内容;焦点仍在 id=1
     pump(&mut app, "<C-w>H<esc>").await?;
@@ -191,7 +191,7 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
         SplitDir::H,
         false,
         40,
-        Box::new(PluginPanel::new(1, PanelSide::Right)),
+        Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     // 面板(id=1)设为固定
     let dump = app.compositor.layout_tree().dump();
@@ -295,7 +295,7 @@ async fn zoom_unzoom_restores_tree_render() -> anyhow::Result<()> {
         SplitDir::H,
         false,
         40,
-        Box::new(PluginPanel::new(1, PanelSide::Right)),
+        Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     pump(&mut app, "<C-w>f<esc>").await?;
     assert_eq!(app.compositor.layout_tree().zoomed(), Some(1));

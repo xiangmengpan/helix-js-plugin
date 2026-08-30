@@ -15,6 +15,8 @@ pub enum UiRequest {
         id: u64,
         side: String,
         size: u16,
+        /// 节点焦点路由开关（Tab 移动焦点/Esc 取消/节点按键直达，复用弹窗机制）
+        focusable: bool,
     },
     ClosePanel {
         id: u64,

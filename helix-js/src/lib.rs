@@ -923,7 +923,7 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         // 编译器建议：matches! 守卫未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
         assert!(
-            matches!(&reqs[0], UiRequest::OpenPanel { id: _, side, size } if side == "right" && *size == 30)
+            matches!(&reqs[0], UiRequest::OpenPanel { id: _, side, size, .. } if side == "right" && *size == 30)
         );
         assert!(matches!(&reqs[1], UiRequest::ClosePanel { id: _ }));
         assert!(take_messages()[0].starts_with("id:"));

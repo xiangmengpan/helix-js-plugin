@@ -17,6 +17,7 @@ async fn panel_shrinks_editor() -> anyhow::Result<()> {
         Box::new(helix_term::ui::PluginPanel::new(
             1,
             helix_term::ui::PanelSide::Right,
+            false,
         )),
     );
 
