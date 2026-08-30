@@ -356,6 +356,18 @@ impl Application {
             if let Err(err) = helix_js::pump_jobs() {
                 log::error!("promise job pump: {err}");
             }
+            // 早退路径也须 drain 消息/UI 请求：picker action 等经 compositor 回调的 JS
+            // echo/OpenPicker 不经过命令或事件边界，此前滞留到下次全量泵（无事件时永不
+            // 发生 → 状态栏不回显、请求不生效）。pump_jobs 的续体可能 push 二者。
+            let msgs = helix_js::take_messages();
+            if !msgs.is_empty() {
+                self.editor.set_status(msgs.join(" "));
+            }
+            if let Err(err) =
+                crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
+            {
+                self.editor.set_error(err.to_string());
+            }
             return theme_changed;
         }
         let mut error = None;
