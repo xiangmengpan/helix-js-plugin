@@ -37,6 +37,7 @@ mod test {
     mod plugin_lsp_mock;
     mod plugin_manager;
     mod plugin_multipanel;
+    mod plugin_paste;
     mod plugin_palette;
     mod plugin_panel;
     mod plugin_panel_focus;

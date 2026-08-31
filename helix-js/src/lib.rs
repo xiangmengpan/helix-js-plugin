@@ -21,8 +21,8 @@ pub mod watch;
 pub use commands::*;
 pub use icons::*;
 pub use input::{
-    clear_popup_inputs, dispatch_input_key, input_edit, input_has_state, input_is_multiline,
-    js_set_input_value, with_input_states, InputState,
+    clear_popup_inputs, dispatch_input_key, dispatch_input_paste, input_edit, input_has_state,
+    input_is_multiline, js_set_input_value, with_input_states, InputState,
 };
 pub use lsp::*;
 pub use popup::*;

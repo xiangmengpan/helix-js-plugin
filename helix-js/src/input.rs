@@ -173,6 +173,56 @@ pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Re
     })
 }
 
+/// 光标处插入整段文本（粘贴用）：返回新值（单次状态变更，调用方触发一次 onChange）。
+pub fn input_insert_batch(state: &mut InputState, text: &str) -> String {
+    let mut chars: Vec<char> = state.value.chars().collect();
+    let mut ins: Vec<char> = text.chars().collect();
+    let rest: Vec<char> = chars.split_off(state.cursor);
+    let ins_len = ins.len();
+    state.value = chars.into_iter().chain(ins).chain(rest).collect();
+    state.cursor += ins_len;
+    state.value.clone()
+}
+
+/// 粘贴处理：整段插入 + 一次 onChange（与 dispatch_input_key 同 onChange 机制）。
+pub fn dispatch_input_paste(popup_id: u64, node_id: &str, text: &str) -> anyhow::Result<()> {
+    use anyhow::anyhow;
+    use boa_engine::object::builtins::JsFunction;
+
+    crate::init();
+    let new_value = with_input_states(|m| {
+        let entry = m
+            .entry((popup_id, node_id.to_string()))
+            .or_insert_with(|| InputState {
+                value: String::new(),
+                cursor: 0,
+                multiline: false,
+            });
+        input_insert_batch(entry, text)
+    });
+    // 调 onChange(若有)：与 dispatch_input_key 同机制
+    crate::state::with_engine(|engine| {
+        let on_change = crate::state::with_node_handlers(|h| {
+            h.get(&(popup_id, node_id.to_string()))
+                .and_then(|hd| hd.on_change.clone())
+        });
+        let Some(f) = on_change else { return Ok(()) };
+        let func = f
+            .as_callable()
+            .and_then(JsFunction::from_object)
+            .ok_or_else(|| anyhow!("node {node_id} onChange not callable"))?;
+        let undefined = JsValue::undefined();
+        let _: JsValue = func
+            .call(
+                &undefined,
+                &[JsValue::from(JsString::from(new_value))],
+                engine,
+            )
+            .map_err(|e| anyhow!("node {node_id} onChange failed: {e}"))?;
+        Ok(())
+    })
+}
+
 /// JS 强制改值（候选回填/清空）：`helix.set_input_value(popupId, nodeId, value)`。cursor 置末尾。
 pub fn js_set_input_value(
     _: &JsValue,
