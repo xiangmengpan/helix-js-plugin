@@ -25,11 +25,16 @@ function sort_entries(entries) {
 
 // 可见节点扁平化（深度优先；折叠目录的子节点不展开；隐藏文件按 show_hidden 过滤）
 // 返回 [{ node, depth }]，root 的 children 在 depth 0
-function visible_rows(node, show_hidden, depth, out) {
+function visible_rows(node, show_hidden, depth, out, seen) {
+  // seen:按 path 去重,防符号链接循环目录(指向祖先的链接)导致无限递归栈溢出
+  seen = seen || new Set([node.path]);
   for (const c of node.children) {
     if (!show_hidden && c.name.startsWith(".")) continue;
     out.push({ node: c, depth });
-    if (c.is_dir && c.expanded) visible_rows(c, show_hidden, depth + 1, out);
+    if (c.is_dir && c.expanded && !seen.has(c.path)) {
+      seen.add(c.path);
+      visible_rows(c, show_hidden, depth + 1, out, seen);
+    }
   }
   return out;
 }
