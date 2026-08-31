@@ -1814,6 +1814,228 @@ pub(crate) mod tests {
         assert_eq!(take_messages(), vec!["ft-ok"]);
         let _ = take_ui_requests();
     }
+    #[test]
+    fn reload_after_init_midway_failure_keeps_dependent_plugins() {
+        // 模拟用户场景:init.js 第一个插件(terminal)reload 失败 → init.js eval 中断,
+        // 但循环继续单独 eval 后续 features/*——它们依赖 icons(缓存被 reset 清空),
+        // 重新 eval icons = 嵌套 eval,可能污染后续闭包。验证命令回调完好。
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::create_dir_all(d.join("features")).unwrap();
+        std::fs::write(
+            d.join("lib/icons.js"),
+            r#"helix.plugin("icons", { deps: [] }); helix.export({ src: "icons" });"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("features/bad.js"),
+            r#"helix.register_command("bad", () => {});"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("features/plugin_a.js"),
+            r#"helix.plugin("plugin_a", { deps: ["lib/icons.js"] });
+               const IC = helix.load("lib/icons.js");
+               helix.register_command("pa", () => helix.echo("pa:" + (IC && IC.src)));"#,
+        )
+        .unwrap();
+        let bad_abs = d.join("features/bad.js").to_string_lossy().into_owned();
+        let a_abs = d
+            .join("features/plugin_a.js")
+            .to_string_lossy()
+            .into_owned();
+        // PLUGINS_DIR 若已被其他测试占用,plugin_a 内部相对名 load 会失败——改写为绝对路径
+        let icons_abs = d.join("lib/icons.js").to_string_lossy().into_owned();
+        let a = std::fs::read_to_string(d.join("features/plugin_a.js")).unwrap();
+        std::fs::write(
+            d.join("features/plugin_a.js"),
+            a.replace("\"lib/icons.js\"", &format!("\"{icons_abs}\"")),
+        )
+        .unwrap();
+        let init_path = d.join("init.js");
+        let init_src = format!(
+            r#"helix.load({bad:?}); helix.load({a:?});"#,
+            bad = bad_abs,
+            a = a_abs
+        );
+        load_script_named(&init_path.display().to_string(), &init_src).unwrap();
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(run_command("pa", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["pa:icons"]);
+        let _ = take_ui_requests();
+        // 磁盘 bad 改坏版 → reload:init.js 在 bad 处失败,plugin_a 单独 eval
+        std::fs::write(
+            d.join("features/bad.js"),
+            r#"helix.register_command("bad", () => { BAD SYNTAX"#,
+        )
+        .unwrap();
+        let err = reload_all().unwrap_err();
+        assert!(err.to_string().contains("failed"), "应有失败汇总: {err}");
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        assert!(
+            run_command("pa", &ctx).is_ok(),
+            "plugin_a 命令 reload 后应可调用"
+        );
+        let msgs = take_messages();
+        assert_eq!(
+            msgs.first().map(|s| s.as_str()),
+            Some("pa:icons"),
+            "回调结果应正确(未被污染),got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn reload_users_real_plugins_dir() {
+        // 复制用户真实 ~/.config/helix/plugins 到 tempdir,用用户 init.js 序列 reload。
+        // 用户 filetree 是改版(offset scroll)+ 有 test.js——最接近真实环境。
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // PLUGINS_DIR 被占则相对名解析失效——跳过(核心行为由其他 reload 测试覆盖)
+        if crate::state::PLUGINS_DIR.get().is_some() {
+            return;
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let user_plugins = std::path::PathBuf::from(&home).join(".config/helix/plugins");
+        if !user_plugins.join("features/filetree/index.js").is_file() {
+            return; // 无用户环境(CI)跳过
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+            for e in std::fs::read_dir(src).unwrap() {
+                let e = e.unwrap();
+                let to = dst.join(e.file_name());
+                if e.file_type().unwrap().is_dir() {
+                    std::fs::create_dir_all(&to).unwrap();
+                    copy_dir(&e.path(), &to);
+                } else {
+                    std::fs::copy(e.path(), to).unwrap();
+                }
+            }
+        }
+        copy_dir(&user_plugins, &d);
+        set_plugins_dir(d.clone());
+        // 用户 init.js(无 terminal——用户已禁用)
+        let init_path = d.join("init.js");
+        let init_src = r#"helix.load("features/statusline.js");
+helix.load("features/filetree/index.js");
+helix.load("features/which-key.js");
+helix.load("features/picker.js")
+helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
+        let r = load_script_named(&init_path.display().to_string(), init_src);
+        if let Err(e) = &r {
+            panic!("init load failed: {e}");
+        }
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        if let Err(e) = reload_all() {
+            panic!("reload_all failed: {e}");
+        }
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(
+            run_command("filetree", &ctx).is_ok(),
+            "用户 filetree 命令 reload 后应可调用"
+        );
+    }
+
+    #[test]
+    fn reload_missing_relative_load_then_dependent_pollution() {
+        // 用户场景:init.js 里 load 一个不存在的相对名文件(如"禁用"后仍留 load 行的 terminal.js)
+        // → init.js eval 失败 → 循环单独 eval 后续 features/* → 它们相对名 load icons(重新 eval=嵌套)
+        // → 后续注册的闭包可能被 boa 嵌套 eval 污染。验证命令回调结果。
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        if crate::state::PLUGINS_DIR.get().is_some() {
+            return; // 需要独占 PLUGINS_DIR(相对名解析)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::create_dir_all(d.join("features")).unwrap();
+        std::fs::write(
+            d.join("lib/icons.js"),
+            r#"helix.plugin("icons", { deps: [] }); helix.export({ src: "icons" });"#,
+        )
+        .unwrap();
+        // plugin_a:相对名依赖 icons,注册命令回调读 ICONS
+        std::fs::write(
+            d.join("features/plugin_a.js"),
+            r#"helix.plugin("plugin_a", { deps: ["lib/icons.js"] });
+               const IC = helix.load("lib/icons.js");
+               helix.register_command("pa", () => helix.echo("pa:" + (IC && IC.src)));"#,
+        )
+        .unwrap();
+        // init.js:load 不存在的 terminal.js(用户"禁用"方式)+ plugin_a
+        let init_path = d.join("init.js");
+        std::fs::write(
+            &init_path,
+            r#"helix.load("features/terminal.js"); helix.load("features/plugin_a.js");"#,
+        )
+        .unwrap();
+        // 启动模拟:load_script_named 绝对路径 init.js —— 但 init.js 内部 load 相对名,
+        // 依赖 PLUGINS_DIR(独占,有效)
+        let init_abs = init_path.display().to_string();
+        // 启动时 terminal.js 不存在 → load 失败 → init.js 加载失败(用户启动时 terminal 存在,reload 时删了?)
+        // 更贴近:先让 terminal 存在(启动 OK),reload 前删掉 → reload 时 init.js 重跑失败
+        std::fs::write(
+            d.join("features/terminal.js"),
+            r#"helix.register_command("term", () => {});"#,
+        )
+        .unwrap();
+        let init_src = std::fs::read_to_string(&init_path).unwrap();
+        load_script_named(&init_abs, &init_src).unwrap();
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(run_command("pa", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["pa:icons"]);
+        let _ = take_ui_requests();
+        // reload 前删 terminal.js(用户"禁用"= 删文件但 init.js 留着 load)→ reload 重跑 init.js 失败
+        std::fs::remove_file(d.join("features/terminal.js")).unwrap();
+        let err = reload_all().unwrap_err();
+        assert!(
+            err.to_string().contains("terminal.js"),
+            "应报 terminal.js 缺失: {err}"
+        );
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        // plugin_a 单独 eval(init.js 中断后)命令回调应完好
+        assert!(run_command("pa", &ctx).is_ok());
+        let msgs = take_messages();
+        assert_eq!(
+            msgs.first().map(|s| s.as_str()),
+            Some("pa:icons"),
+            "回调未被污染, got {msgs:?}"
+        );
+    }
+
     fn reload_failed_script_does_not_block_others() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
@@ -1941,6 +2163,69 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     }
 
     #[test]
+    #[test]
+    fn reload_real_statusline_render_ok() {
+        // 用户场景:statusline.js 依赖 icons,reload 后 render(状态栏渲染)不应抛错/返回空
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        if crate::state::PLUGINS_DIR.get().is_some() {
+            return; // 需要独占 PLUGINS_DIR(相对名 icons)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::create_dir_all(d.join("features")).unwrap();
+        // 复制仓库 statusline.js + icons.js
+        let repo = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins"));
+        std::fs::copy(
+            repo.join("features/statusline.js"),
+            d.join("features/statusline.js"),
+        )
+        .unwrap();
+        std::fs::copy(repo.join("lib/icons.js"), d.join("lib/icons.js")).unwrap();
+        let src = std::fs::read_to_string(d.join("features/statusline.js")).unwrap();
+        let r = load_script_named("features/statusline.js", &src);
+        eprintln!("load statusline result: {r:?}");
+        r.unwrap();
+        let _ = take_messages();
+        let hook_set = crate::state::with_statusline_hook(|h| h.is_some());
+        eprintln!("statusline hook registered: {hook_set}");
+        crate::state::with_engine(|e| {
+            let callable = crate::state::with_statusline_hook(|h| {
+                h.as_ref().map(|v| v.as_callable().is_some())
+            });
+            eprintln!("hook callable: {callable:?}");
+        });
+        let ctx = StatuslineCtx {
+            path: Some("/tmp/a.rs".into()),
+            mode: "insert".into(),
+            cursor: (3, 7),
+            total_lines: 100,
+            diagnostics_error: 2,
+            diagnostics_warning: 1,
+            window_mode: false,
+            active_leaf_type: "editor".into(),
+            active_leaf_path: None,
+        };
+        // reload 前 render 正常
+        let before = statusline_parts(&ctx);
+        eprintln!("reload 前 statusline_parts: {before:?}");
+        assert!(
+            before.is_some() && !before.unwrap().is_empty(),
+            "reload 前 statusline 应有内容"
+        );
+        // reload
+        reload_all().unwrap();
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        // reload 后 render 应正常(非空,不抛错)
+        let after = statusline_parts(&ctx);
+        assert!(after.is_some(), "reload 后 statusline render 不应抛错");
+        assert!(!after.unwrap().is_empty(), "reload 后 statusline 应有内容");
+    }
+
     fn reload_closes_open_panel_layer() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();

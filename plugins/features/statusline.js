@@ -41,7 +41,15 @@ function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 
 // 三段分栏：zone 默认 left；诊断走 center；位置/百分比/行数走 right。
 function render(ctx) {
-  if (!ICONS) ICONS = helix.load("lib/icons.js") || null;
+  ctx = ctx || {};
+  // ICONS 懒加载;加载失败/缺失 → null(后续全部有 ?: 保护)
+  if (!ICONS) {
+    try {
+      ICONS = helix.load("lib/icons.js") || null;
+    } catch (e) {
+      ICONS = null;
+    }
+  }
   const mode = ctx.mode || "normal";
   const parts = [];
 
@@ -64,16 +72,17 @@ function render(ctx) {
   }
 
   // ── 中区：诊断计数（error 红 / warning 黄；0 不显示）──
-  if (cfg.show_diagnostics && ctx.diagnostics_error > 0) {
+  if (cfg.show_diagnostics && (ctx.diagnostics_error || 0) > 0) {
     parts.push({ text: (ICONS ? ICONS.getDiagnosticIcon("error") : "✗") + " " + ctx.diagnostics_error, style: "error", zone: "center" });
   }
-  if (cfg.show_diagnostics && ctx.diagnostics_warning > 0) {
+  if (cfg.show_diagnostics && (ctx.diagnostics_warning || 0) > 0) {
     parts.push({ text: (ICONS ? ICONS.getDiagnosticIcon("warning") : "!") + " " + ctx.diagnostics_warning, style: "warning", zone: "center" });
   }
 
   // ── 右区：位置 + 百分比 + 总行数（右对齐贴最右）──
-  const row = (ctx.cursor.row || 0) + 1;
-  const col = (ctx.cursor.col || 0) + 1;
+  const cur = ctx.cursor || {};
+  const row = (cur.row || 0) + 1;
+  const col = (cur.col || 0) + 1;
   const total = ctx.total_lines || 1;
   const pct = Math.round((row / total) * 100) + "%";
   parts.push({ text: row + ":" + col, style: null, zone: "right" });

@@ -37,13 +37,14 @@ mod test {
     mod plugin_lsp_mock;
     mod plugin_manager;
     mod plugin_multipanel;
-    mod plugin_paste;
     mod plugin_palette;
     mod plugin_panel;
     mod plugin_panel_focus;
+    mod plugin_paste;
     mod plugin_picker;
     mod plugin_popup_edit;
     mod plugin_reload;
+    mod plugin_reload_real;
     mod plugin_run;
     mod plugin_selection;
     mod plugin_statusline;

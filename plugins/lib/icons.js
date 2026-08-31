@@ -193,34 +193,38 @@ const ICONS = {
 function getFileIcon(path) {
   const name = (path || "").split("/").pop() || "";
   const lower = name.toLowerCase();
-  if (ICONS.special[lower]) return ICONS.special[lower];
+  // ponytail: 嵌套 eval 污染(boa bug)下 ICONS 表可能损坏——防御性 || {} 保证不抛
+  const special = ICONS.special || {};
+  const file = ICONS.file || {};
+  if (special[lower]) return special[lower];
   const ext = lower.includes(".") ? lower.split(".").pop() : "";
-  return ICONS.file[ext] ?? ICONS.file[""];
+  return file[ext] ?? file[""];
 }
 
 /// 目录图标
 function getDirIcon(expanded) {
-  return expanded ? ICONS.dir.open : ICONS.dir.closed;
+  const dir = ICONS.dir || {};
+  return expanded ? dir.open : dir.closed;
 }
 
 /// 状态栏模式图标
 function getModeIcon(mode) {
-  return ICONS.mode[mode] ?? "";
+  return (ICONS.mode || {})[mode] ?? "";
 }
 
 /// 诊断级别图标
 function getDiagnosticIcon(severity) {
-  return ICONS.diagnostic[severity] ?? "";
+  return (ICONS.diagnostic || {})[severity] ?? "";
 }
 
 /// git 状态码 → 图标
 function getGitIcon(status) {
-  return ICONS.git[status] ?? "";
+  return (ICONS.git || {})[status] ?? "";
 }
 
 /// LSP kind 数字 → 补全图标;未知/缺省 → ""(无图标)
 function getCompletionKindIcon(kind) {
-  return ICONS.completion[kind] ?? "";
+  return (ICONS.completion || {})[kind] ?? "";
 }
 
 // ============================ 注册 ============================
