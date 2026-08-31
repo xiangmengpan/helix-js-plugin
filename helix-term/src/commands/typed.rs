@@ -5363,9 +5363,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 let name = plugin_manager::name_from_url(arg);
                 let plugins_dir = helix_loader::config_dir().join("plugins");
                 let mut manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
-                if manifest.contains_key(&name)
-                    || plugins_dir.join("vendor").join(&name).exists()
-                {
+                if manifest.contains_key(&name) || plugins_dir.join("vendor").join(&name).exists() {
                     return Err(anyhow!(
                         "plugin install: '{name}' already installed, use :plugin remove first"
                     ));

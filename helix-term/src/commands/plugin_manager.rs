@@ -611,10 +611,8 @@ mod tests {
     #[test]
     fn parse_plugin_json_deps() {
         // 合法:deps 提取
-        let deps = parse_plugin_json(
-            r#"{"deps": [{"name": "a", "git": "https://g/a.git"}]}"#,
-        )
-        .unwrap();
+        let deps =
+            parse_plugin_json(r#"{"deps": [{"name": "a", "git": "https://g/a.git"}]}"#).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "a");
         // 无 deps 字段 → 空
