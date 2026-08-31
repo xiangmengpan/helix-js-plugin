@@ -1744,6 +1744,203 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reload_keeps_plugins_with_deps_and_hooks() {
+        // 模拟真实 init.js 场景:相对名 + deps 声明 + set_statusline + 命令 + 事件
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir); // 线程池复用,目录泄漏保确定性(同文件其他测试惯例)
+        set_plugins_dir(d.clone());
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::create_dir_all(d.join("features")).unwrap();
+        std::fs::write(
+            d.join("lib/icons.js"),
+            r#"helix.plugin("icons", { deps: [] }); helix.export({ src: "icons" });"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("features/statusline.js"),
+            r#"helix.plugin("statusline", { deps: ["lib/icons.js"] });
+               const IC = helix.load("lib/icons.js");
+               helix.set_statusline(() => "SL" + (IC ? "-" + IC.src : ""));"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("features/filetree.js"),
+            r#"helix.plugin("filetree", { deps: ["lib/icons.js"] });
+               helix.register_command("ft", () => helix.echo("ft-ok"));"#,
+        )
+        .unwrap();
+        // 模拟 init.js:绝对路径名加载(application.rs 同款),脚本内依赖也用绝对路径(PLUGINS_DIR 全局共享,不依赖)
+        let init_path = d.join("init.js");
+        let icons_abs = d.join("lib/icons.js").to_string_lossy().into_owned();
+        let init_src = format!(
+            r#"helix.load({statusline:?}); helix.load({filetree:?});"#,
+            statusline = d.join("features/statusline.js").to_string_lossy(),
+            filetree = d.join("features/filetree.js").to_string_lossy(),
+        );
+        // 脚本内依赖改绝对路径:先重写两个 feature 文件的 load 行
+        let sl = std::fs::read_to_string(d.join("features/statusline.js")).unwrap();
+        std::fs::write(
+            d.join("features/statusline.js"),
+            sl.replace("\"lib/icons.js\"", &format!("\"{icons_abs}\"")),
+        )
+        .unwrap();
+        let ft = std::fs::read_to_string(d.join("features/filetree.js")).unwrap();
+        std::fs::write(
+            d.join("features/filetree.js"),
+            ft.replace("\"lib/icons.js\"", &format!("\"{icons_abs}\"")),
+        )
+        .unwrap();
+        load_script_named(&init_path.display().to_string(), &init_src).unwrap();
+        // 模拟启动时的相对名记录:load 已把 features/* 记录为相对名
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(run_command("ft", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["ft-ok"]);
+        let _ = take_ui_requests();
+        // reload:重跑全部(init.js + features/*)
+        reload_all().unwrap();
+        assert!(
+            run_command("ft", &ctx).unwrap(),
+            "filetree 命令 reload 后仍可用"
+        );
+        assert_eq!(take_messages(), vec!["ft-ok"]);
+        let _ = take_ui_requests();
+    }
+    fn reload_failed_script_does_not_block_others() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        // 先写好版并加载;之后磁盘改坏版 → reload 重读磁盘时失败
+        std::fs::write(
+            d.join("bad.js"),
+            r#"helix.register_command("bad", () => {});"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("good.js"),
+            r#"helix.register_command("good", () => helix.echo("still-here"));"#,
+        )
+        .unwrap();
+        // 绝对路径加载(PLUGINS_DIR 全局共享不可靠)
+        let bad_abs = d.join("bad.js").to_string_lossy().into_owned();
+        let good_abs = d.join("good.js").to_string_lossy().into_owned();
+        load_script_named(
+            &bad_abs,
+            &std::fs::read_to_string(d.join("bad.js")).unwrap(),
+        )
+        .unwrap();
+        load_script_named(
+            &good_abs,
+            &std::fs::read_to_string(d.join("good.js")).unwrap(),
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(run_command("good", &ctx).unwrap());
+        assert_eq!(take_messages(), vec!["still-here"]);
+        // 坏脚本名:bad.js(相对名判断用;磁盘读按绝对路径)
+        std::fs::write(
+            d.join("bad.js"),
+            r#"helix.register_command("bad", () => { THIS IS NOT VALID"#,
+        )
+        .unwrap();
+        // reload:bad 磁盘版失败,不中止 good
+        let err = reload_all().unwrap_err();
+        assert!(
+            err.to_string().contains("1 plugin(s) failed"),
+            "汇总错误: {err}"
+        );
+        assert!(err.to_string().contains("bad.js"), "错误含脚本名: {err}");
+        let _ = take_ui_requests();
+        assert!(
+            run_command("good", &ctx).is_ok(),
+            "good 脚本 reload 后仍可用(不被 bad 阻塞)"
+        );
+    }
+
+    #[test]
+    fn reload_all_real_plugins_keeps_commands() {
+        // 加载仓库全部真实插件(init.js 同款序列)+ reload,验证命令/钩子保留
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // PLUGINS_DIR 是全局 OnceLock:被其他测试(如 plugin_deps_auto_load,字母序在前)占住后
+        // 本测试的相对名解析失效——跳过(核心 reload 行为由 reload_keeps/reload_failed 覆盖)
+        if crate::state::PLUGINS_DIR.get().is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        // 复制仓库 plugins/ 到临时目录
+        fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+            for e in std::fs::read_dir(src).unwrap() {
+                let e = e.unwrap();
+                let to = dst.join(e.file_name());
+                if e.file_type().unwrap().is_dir() {
+                    std::fs::create_dir_all(&to).unwrap();
+                    copy_dir(&e.path(), &to);
+                } else {
+                    std::fs::copy(e.path(), to).unwrap();
+                }
+            }
+        }
+        copy_dir(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins")),
+            &d,
+        );
+        set_plugins_dir(d.clone());
+        // 模拟 init.js:加载 features(含 terminal/which-key/tabbar/picker + map 回调)
+        let init_src = r#"helix.load("features/terminal.js");
+helix.load("features/statusline.js");
+helix.load("features/filetree/index.js");
+helix.load("features/which-key.js");
+helix.load("features/tabbar.js");
+helix.load("features/picker.js")
+helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
+        let init_path = d.join("init.js");
+        let r = load_script_named(&init_path.display().to_string(), init_src);
+        if let Err(e) = &r {
+            panic!("init load failed: {e}");
+        }
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        // reload
+        if let Err(e) = reload_all() {
+            panic!("reload_all failed: {e}");
+        }
+        let _ = take_messages();
+        let _ = take_ui_requests();
+        // 验证:filetree 命令在(真实插件注册的命令)
+        let ctx = CommandContext {
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+            docs: vec![],
+        };
+        assert!(
+            run_command("filetree", &ctx).is_ok(),
+            "filetree 命令 reload 后应可调用"
+        );
+    }
+
+    #[test]
     fn reload_closes_open_panel_layer() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();

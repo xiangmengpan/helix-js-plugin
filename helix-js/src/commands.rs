@@ -1758,6 +1758,9 @@ pub fn reload_all() -> Result<()> {
             kind: DecorationKind::Clear,
         })
     });
+    // 逐个重跑,单脚本失败不中止后续(否则一个插件挂→ init.js 断 → 其余全部失效)。
+    // 错误汇总返回;成功脚本照常注册(命令/钩子/状态栏/键位都恢复)。
+    let mut errors: Vec<String> = Vec::new();
     for (name, src) in &scripts {
         // 按名重读磁盘：js_load 记录的模块文件更新生效（相对名解析 PLUGINS_DIR，
         // 绝对路径直接用）；读不到（load_script_named 的字符串脚本/目录已删）用记录 src 兜底
@@ -1771,12 +1774,23 @@ pub fn reload_all() -> Result<()> {
                 .and_then(|p| std::fs::read_to_string(p).ok())
         };
         let src = disk_src.as_deref().unwrap_or(src);
-        crate::state::with_engine(|engine| -> Result<()> {
+        let result = crate::state::with_engine(|engine| -> Result<()> {
             eval_wrapped(engine, src)
                 .map(|_| ())
                 .map_err(|e| anyhow!("plugin reload '{name}' failed: {e}"))?;
             Ok(())
-        })?;
+        });
+        if let Err(e) = result {
+            errors.push(format!("{e}"));
+        }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "{} plugin(s) failed: {}",
+            errors.len(),
+            errors.join("; ")
+        ))
+    }
 }
