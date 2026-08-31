@@ -5370,6 +5370,12 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 let commit = plugin_manager::git_head_commit(&target);
                 let mut manifest =
                     plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
+                // 跨源同名:本地 features/<name> 已装或 manifest 已有该键 → 拒绝(防键覆盖 + files 孤儿)
+                if manifest.contains_key(&name) {
+                    return Err(anyhow!(
+                        "plugin install: '{name}' already installed (manifest), use :plugin remove first"
+                    ));
+                }
                 manifest.insert(
                     name.clone(),
                     plugin_manager::ManifestEntry {
