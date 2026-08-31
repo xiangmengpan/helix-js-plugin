@@ -37,12 +37,13 @@ async fn plugin_paste_inserts_batch_into_focused_input() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    let send_keys = |tx: &tokio::sync::mpsc::UnboundedSender<_>, keys: &str| -> anyhow::Result<()> {
-        for key_event in parse_macro(keys)? {
-            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-        }
-        Ok(())
-    };
+    let send_keys =
+        |tx: &tokio::sync::mpsc::UnboundedSender<_>, keys: &str| -> anyhow::Result<()> {
+            for key_event in parse_macro(keys)? {
+                tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+            }
+            Ok(())
+        };
     send_keys(&tx, &format!(":plugin-load {}<ret>", plugin_path.display()))?;
     app.event_loop_until_idle(&mut rx_stream).await;
     send_keys(&tx, ":ps-open<ret>")?;
@@ -89,25 +90,27 @@ async fn plugin_paste_unfocused_bubbles_to_editor() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    let send_keys = |tx: &tokio::sync::mpsc::UnboundedSender<_>, keys: &str| -> anyhow::Result<()> {
-        for key_event in parse_macro(keys)? {
-            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-        }
-        Ok(())
-    };
+    let send_keys =
+        |tx: &tokio::sync::mpsc::UnboundedSender<_>, keys: &str| -> anyhow::Result<()> {
+            for key_event in parse_macro(keys)? {
+                tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+            }
+            Ok(())
+        };
     send_keys(&tx, &format!(":plugin-load {}<ret>", plugin_path.display()))?;
     app.event_loop_until_idle(&mut rx_stream).await;
     send_keys(&tx, ":ps-open2<ret>")?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    // 未聚焦(无 Tab):Paste 冒泡 → 编辑器 insert 模式?不——未聚焦时 Paste 事件被组件忽略,
-    // 冒泡到编辑器层,但编辑器粘贴需要 insert 模式/选区。此测试改为:未聚焦时 Paste 被忽略,
-    // 事件最终由编辑器消费(正文插入)。需要编辑器在 insert 模式?简化:断言 Paste 未被 input 消费
-    // (input 值不变)——通过后续 onKey 仍工作 + input state 未变验证。
+    // 未聚焦(无 Tab):Paste 被组件忽略 → 冒泡给编辑器:paste_bracketed_value 直接插入光标处(不依赖 insert 模式)
     tx.send(Ok(Event::Paste("paste-here".to_string())))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    // 断言:未聚焦时 input 未被修改(事件忽略);编辑器正文未变(未在 insert 模式,粘贴可能被丢弃)
+    // 断言:正文被插入(光标 0,0 → 前插),input 未被修改(事件未消费)
     let (_, doc) = current_ref!(app.editor);
-    assert_eq!(doc.text().to_string(), "x\n", "未聚焦时 Paste 不应改正文(未进入 insert 模式)");
+    assert_eq!(
+        doc.text().to_string(),
+        "paste-herex\n",
+        "未聚焦时 Paste 冒泡给编辑器正文插入"
+    );
     // input 值仍为空(未被 Paste 修改)
     let val = helix_js::with_input_states(|m| {
         m.iter()
