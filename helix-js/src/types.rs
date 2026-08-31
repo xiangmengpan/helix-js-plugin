@@ -161,6 +161,11 @@ pub enum UiRequest {
         columns: Vec<String>,
         rows: Vec<RowSpec>,
     },
+    /// 插件管理操作(JS API helix.plugin.install/update/remove 镜像命令)
+    PluginOp {
+        op: String,
+        arg: Option<String>,
+    },
 }
 
 /// 文件系统 watcher 变更条目（JS 回调收到 [{kind, path}] 数组）

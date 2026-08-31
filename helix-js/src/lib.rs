@@ -128,6 +128,31 @@ pub fn init() {
                     );
                 picker_builder.build()
             };
+            // helix.plugin 命名空间:plugin(name, deps) 声明函数 + install/update/remove 管理方法
+            let plugin_obj = {
+                let mut pb = ObjectInitializer::new(engine);
+                pb.function(
+                    NativeFunction::from_fn_ptr(commands::js_plugin),
+                    JsString::from("plugin"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_plugin_install),
+                    JsString::from("install"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_plugin_update),
+                    JsString::from("update"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_plugin_remove),
+                    JsString::from("remove"),
+                    1,
+                );
+                pb.build()
+            };
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
             let mut builder = ObjectInitializer::new(engine);
@@ -266,11 +291,6 @@ pub fn init() {
                     NativeFunction::from_fn_ptr(commands::js_load),
                     JsString::from("load"),
                     1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(commands::js_plugin),
-                    JsString::from("plugin"),
-                    2,
                 )
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_export),
@@ -551,6 +571,11 @@ pub fn init() {
             builder.property(
                 JsString::from("picker"),
                 picker_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
+                JsString::from("plugin"),
+                plugin_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             let helix = builder.build();
@@ -2611,6 +2636,28 @@ pub(crate) mod tests {
             take_messages()[0].contains("circular dependency"),
             "循环依赖应报错"
         );
+    }
+
+    #[test]
+    fn plugin_api_arg_validation() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // install/remove 缺 arg → 报错
+        assert!(load_script(r#"helix.plugin.install();"#).is_err());
+        assert!(load_script(r#"helix.plugin.remove();"#).is_err());
+        // 合法调用 → push PluginOp 请求
+        crate::state::take_ui_requests(); // 清空
+        load_script(r#"helix.plugin.remove("nope");"#).unwrap();
+        load_script(r#"helix.plugin.update();"#).unwrap(); // arg 可选
+        let reqs = crate::state::take_ui_requests();
+        assert!(reqs.iter().any(|r| matches!(
+            r,
+            crate::types::UiRequest::PluginOp { op, arg }
+                if op == "remove" && arg.as_deref() == Some("nope")
+        )));
+        assert!(reqs
+            .iter()
+            .any(|r| matches!(r, crate::types::UiRequest::PluginOp { op, arg } if op == "update" && arg.is_none())));
     }
 
     /// 统一入口：load/export 往返 + 缓存、lazy 桩、run_command 带 ctx、未知文件报错。
