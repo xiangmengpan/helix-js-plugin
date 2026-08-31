@@ -75,3 +75,30 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// git-url 安装走真实 git clone(需要网络+git,手动验证);无副作用路径:
+// 无法识别的参数(非路径非 url)→ 报错不崩。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(":plugin install plain-name<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        status.as_ref().contains("invalid"),
+                        "expected invalid arg error, got: {status}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

@@ -5306,6 +5306,33 @@ fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
     }
 }
 
+/// 加载新装插件的入口脚本(install 分支共用,本地/git 源)。
+/// 无入口文件(纯 lib)→ 跳过;load 失败 set_error;成功 drain 消息/UI 请求。
+fn load_installed_entry(
+    cx: &mut compositor::Context,
+    name: &str,
+    entry: &std::path::Path,
+    rel: &str,
+) -> anyhow::Result<()> {
+    if !entry.is_file() {
+        return Ok(());
+    }
+    let src = std::fs::read_to_string(entry)
+        .map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
+    if let Err(e) = helix_js::load_script_named(rel, &src) {
+        cx.editor
+            .set_error(format!("installed '{name}' but failed to load: {e}"));
+    } else {
+        // 新脚本 eval 也会入队消息/UI 请求(照 plugin_load 模式 drain)
+        let msgs = helix_js::take_messages();
+        if !msgs.is_empty() {
+            cx.editor.set_status(msgs.join(" "));
+        }
+        apply_ui_requests(helix_js::take_ui_requests())?;
+    }
+    Ok(())
+}
+
 /// :plugin 家族：list / install <path> / remove <name> / reload / status
 fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
@@ -5325,12 +5352,48 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             }
         }
         "install" => {
-            let Some(path) = args.get(1) else {
-                return Err(anyhow!("usage: plugin install <path>"));
+            let Some(arg) = args.get(1) else {
+                return Err(anyhow!("usage: plugin install <path|git-url>"));
             };
-            let src = std::path::Path::new(path);
+            // git-url 源:clone 到 plugins/vendor/<name>,manifest 记 commit
+            if plugin_manager::is_git_url(arg) {
+                let name = plugin_manager::name_from_url(arg);
+                let vendor_dir = helix_loader::config_dir().join("plugins").join("vendor");
+                let target = vendor_dir.join(&name);
+                if target.exists() {
+                    return Err(anyhow!(
+                        "plugin install: '{name}' already installed, use :plugin remove first"
+                    ));
+                }
+                std::fs::create_dir_all(&vendor_dir)?;
+                plugin_manager::clone_to_vendor(arg, &target)?;
+                let commit = plugin_manager::git_head_commit(&target);
+                let mut manifest =
+                    plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
+                manifest.insert(
+                    name.clone(),
+                    plugin_manager::ManifestEntry {
+                        source: arg.to_string(),
+                        kind: "git".into(),
+                        installed_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs().to_string())
+                            .unwrap_or_default(),
+                        commit,
+                        pinned: false,
+                        files: vec![format!("vendor/{name}/")],
+                    },
+                );
+                plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
+                cx.editor.set_status(format!("installed '{name}', reloading..."));
+                reload_plugins(cx)?;
+                // 装后加载:仓库根 index.js(无入口可能是纯 lib,跳过)
+                load_installed_entry(cx, &name, &target.join("index.js"), &format!("vendor/{name}/index.js"))?;
+                return Ok(());
+            }
+            let src = std::path::Path::new(arg);
             if !src.exists() {
-                return Err(anyhow!("plugin install: '{path}' not found"));
+                return Err(anyhow!("plugin install: invalid path or git url '{arg}'"));
             }
             let (name, target) = plugin_manager::install_target(src)?;
             if target.exists() {
@@ -5343,7 +5406,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             manifest.insert(
                 name.clone(),
                 plugin_manager::ManifestEntry {
-                    source: path.to_string(),
+                    source: arg.to_string(),
                     kind: "local".into(),
                     installed_at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -5365,27 +5428,13 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             } else {
                 target.clone()
             };
-            if entry.is_file() {
-                let src = std::fs::read_to_string(&entry)
-                    .map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
-                // 相对 plugins/ 的名字:后续 :plugin reload 能按名从磁盘重读
-                let rel = entry
-                    .strip_prefix(helix_loader::config_dir().join("plugins"))
-                    .unwrap_or(&entry)
-                    .to_string_lossy()
-                    .into_owned();
-                if let Err(e) = helix_js::load_script_named(&rel, &src) {
-                    cx.editor
-                        .set_error(format!("installed '{name}' but failed to load: {e}"));
-                } else {
-                    // 新脚本 eval 也会入队消息/UI 请求(照 plugin_load 模式 drain)
-                    let msgs = helix_js::take_messages();
-                    if !msgs.is_empty() {
-                        cx.editor.set_status(msgs.join(" "));
-                    }
-                    apply_ui_requests(helix_js::take_ui_requests())?;
-                }
-            }
+            // 相对 plugins/ 的名字:后续 :plugin reload 能按名从磁盘重读
+            let rel = entry
+                .strip_prefix(helix_loader::config_dir().join("plugins"))
+                .unwrap_or(&entry)
+                .to_string_lossy()
+                .into_owned();
+            load_installed_entry(cx, &name, &entry, &rel)?;
         }
         "remove" => {
             let Some(name) = args.get(1) else {
