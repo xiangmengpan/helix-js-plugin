@@ -740,7 +740,7 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let text_fmt = doc.text_format(view.inner_area(doc).width, None);
-    let mut annotations = view.text_annotations(doc, None);
+    let mut annotations = view.text_annotations(doc, None, None);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         move_fn(
@@ -1966,12 +1966,12 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
         0,
         &text_fmt,
         // &annotations,
-        &view.text_annotations(&*doc, None),
+        &view.text_annotations(&*doc, None, None),
     );
     doc.set_view_offset(view.id, view_offset);
 
     let doc_text = doc.text().slice(..);
-    let mut annotations = view.text_annotations(&*doc, None);
+    let mut annotations = view.text_annotations(&*doc, None, None);
 
     if sync_cursor {
         let movement = match cx.editor.mode {
@@ -6169,7 +6169,7 @@ fn align_view_middle(cx: &mut Context) {
         doc.view_offset(view.id).anchor,
         pos,
         &text_fmt,
-        &view.text_annotations(doc, None),
+        &view.text_annotations(doc, None, None),
     )
     .0;
 

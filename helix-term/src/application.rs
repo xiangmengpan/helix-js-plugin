@@ -2177,4 +2177,36 @@ mod tests {
         };
         assert_eq!(workspace_edit_file_count(&edit3), 1);
     }
+
+    /// 装饰二分 slice_range:排序数组上取 [start, end) 子区间(空/边界/跨区间);结果保持有序
+    #[test]
+    fn slice_range_subset_correctness() {
+        use helix_view::view::slice_range;
+        let items = [2usize, 5, 8, 13, 21];
+
+        // 空数组快速返回
+        let empty: [usize; 0] = [];
+        assert!(slice_range(&empty, |x| *x, 0, 100).is_empty());
+
+        // 全区间
+        assert_eq!(slice_range(&items, |x| *x, 0, usize::MAX), &items[..]);
+
+        // 内部命中(半开 [start, end),不含 end)
+        assert_eq!(slice_range(&items, |x| *x, 5, 14), &[5, 8, 13]);
+        assert_eq!(slice_range(&items, |x| *x, 2, 9), &[2, 5, 8]);
+
+        // 跨区间:起止落在元素之间
+        assert_eq!(slice_range(&items, |x| *x, 6, 22), &[8, 13, 21]);
+
+        // 完全在区间外(前/后)
+        assert!(slice_range(&items, |x| *x, 0, 1).is_empty());
+        assert!(slice_range(&items, |x| *x, 30, 40).is_empty());
+
+        // start == end(空区间)
+        assert!(slice_range(&items, |x| *x, 5, 5).is_empty());
+
+        // 有序断言:二分结果保持输入升序(渲染端分组合并依赖该不变量)
+        let out = slice_range(&items, |x| *x, 0, usize::MAX);
+        assert!(out.windows(2).all(|w| w[0] <= w[1]));
+    }
 }

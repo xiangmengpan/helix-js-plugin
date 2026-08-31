@@ -24,6 +24,17 @@ use std::{
 
 const JUMP_LIST_CAPACITY: usize = 30;
 
+/// 排序数组上取 [start, end) 的子区间(二分;空数组快速返回)。
+/// 前提:items 已按 key 升序——插件装饰应用时排序存储(typed.rs apply_plugin_decorations)。
+pub fn slice_range<T>(items: &[T], key: fn(&T) -> usize, start: usize, end: usize) -> &[T] {
+    if items.is_empty() {
+        return &[];
+    }
+    let lo = items.partition_point(|t| key(t) < start);
+    let hi = items.partition_point(|t| key(t) < end);
+    &items[lo..hi]
+}
+
 type Jump = (DocumentId, Selection);
 
 #[derive(Debug, Clone)]
@@ -256,7 +267,7 @@ impl View {
         let viewport = self.inner_area(doc);
         let vertical_viewport_end = view_offset.vertical_offset + viewport.height as usize;
         let text_fmt = doc.text_format(viewport.width, None);
-        let annotations = self.text_annotations(doc, None);
+        let annotations = self.text_annotations(doc, None, None);
 
         let (scrolloff_top, scrolloff_bottom) = if CENTERING {
             (0, 0)
@@ -389,7 +400,7 @@ impl View {
         let doc_text = doc.text().slice(..);
         let viewport = self.inner_area(doc);
         let text_fmt = doc.text_format(viewport.width, None);
-        let annotations = self.text_annotations(doc, None);
+        let annotations = self.text_annotations(doc, None, None);
         let view_offset = doc.view_offset(self.id);
 
         // last visual line in view is trivial to compute
@@ -430,7 +441,7 @@ impl View {
 
         let viewport = self.inner_area(doc);
         let text_fmt = doc.text_format(viewport.width, None);
-        let annotations = self.text_annotations(doc, None);
+        let annotations = self.text_annotations(doc, None, None);
 
         let mut pos = visual_offset_from_anchor(
             text,
@@ -455,10 +466,12 @@ impl View {
     }
 
     /// Get the text annotations to display in the current view for the given document and theme.
+    /// `visible`: 可见 char 范围 [start, end),Some 时插件装饰按二分取子集(None = 全量)。
     pub fn text_annotations<'a>(
         &self,
         doc: &'a Document,
         theme: Option<&Theme>,
+        visible: Option<(usize, usize)>,
     ) -> TextAnnotations<'a> {
         let mut text_annotations = TextAnnotations::default();
 
@@ -491,13 +504,23 @@ impl View {
                 .add_inline_annotations(other_inlay_hints, other_style)
                 .add_inline_annotations(padding_after_inlay_hints, None);
         };
-        // 插件 virtual text:按 style 分组注入(同组共享一个 style 是 TextAnnotations 的形态)
-        if !doc.plugin_decorations.virtual_text.is_empty() {
+        // 插件 virtual text:先按可见 char 范围二分取子集(visible=None 取全量),
+        // 再按 style 分组注入(同组共享一个 style 是 TextAnnotations 的形态)
+        let plugin_vt = match visible {
+            Some((start, end)) => slice_range(
+                &doc.plugin_decorations.virtual_text,
+                |a| a.char_idx,
+                start,
+                end,
+            ),
+            None => &doc.plugin_decorations.virtual_text[..],
+        };
+        if !plugin_vt.is_empty() {
             let mut groups: Vec<(
                 Option<String>,
                 Vec<helix_core::text_annotations::InlineAnnotation>,
             )> = Vec::new();
-            for a in &doc.plugin_decorations.virtual_text {
+            for a in plugin_vt {
                 let ann =
                     helix_core::text_annotations::InlineAnnotation::new(a.char_idx, a.text.clone());
                 if let Some(g) = groups.iter_mut().find(|(s, _)| s == &a.style) {
@@ -629,7 +652,7 @@ impl View {
             row,
             column,
             doc.text_format(self.inner_width(doc), None),
-            &self.text_annotations(doc, None),
+            &self.text_annotations(doc, None, None),
             ignore_virtual_text,
         )
     }
@@ -646,7 +669,7 @@ impl View {
             row,
             column,
             doc.text_format(self.inner_width(doc), None),
-            &self.text_annotations(doc, None),
+            &self.text_annotations(doc, None, None),
             ignore_virtual_text,
         )
     }

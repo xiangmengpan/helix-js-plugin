@@ -83,7 +83,7 @@ pub fn align_view(doc: &mut Document, view: &View, align: Align) {
         -(relative as isize),
         0,
         &text_fmt,
-        &view.text_annotations(doc, None),
+        &view.text_annotations(doc, None, None),
     );
     doc.set_view_offset(view.id, view_offset);
 }

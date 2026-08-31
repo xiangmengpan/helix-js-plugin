@@ -90,7 +90,23 @@ impl EditorView {
 
         let view_offset = doc.view_offset(view.id);
 
-        let text_annotations = view.text_annotations(doc, Some(theme));
+        // 可见 char 范围(粗算):anchor 行首 → 前过 height 行;二分裁剪“宁可多取不可少取”
+        // (水平滚动/折行都在范围内:行首覆盖左侧,行尾取到下一行行首覆盖整行)
+        let visible = {
+            let text = doc.text();
+            let anchor = view_offset.anchor.min(text.len_chars());
+            let line = text.char_to_line(anchor);
+            let last_line = (line + inner.height as usize)
+                .min(text.len_lines())
+                .saturating_sub(1);
+            let start = text.line_to_char(line);
+            let end = text
+                .line_to_char((last_line + 1).min(text.len_lines()))
+                .min(text.len_chars());
+            (start, end)
+        };
+
+        let text_annotations = view.text_annotations(doc, Some(theme), Some(visible));
         let mut decorations = DecorationManager::default();
 
         if is_focused && config.cursorline {
@@ -164,8 +180,14 @@ impl EditorView {
             if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
                 overlays.push(overlay);
             }
-            // 插件区域高亮:按 style 分组,组内排序合并重叠(OverlayHighlights 假设组内不重叠)
-            let plugin_hl = &doc.plugin_decorations.highlights;
+            // 插件区域高亮:先按可见 char 范围二分取子集,再按 style 分组,组内排序合并重叠
+            // (OverlayHighlights 假设组内不重叠)
+            let plugin_hl = helix_view::view::slice_range(
+                &doc.plugin_decorations.highlights,
+                |h| h.start,
+                visible.0,
+                visible.1,
+            );
             if !plugin_hl.is_empty() {
                 use std::ops::Range;
                 let mut groups: Vec<(Option<String>, Vec<Range<usize>>)> = Vec::new();
