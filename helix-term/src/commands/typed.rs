@@ -5358,40 +5358,29 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             let Some(arg) = args.get(1) else {
                 return Err(anyhow!("usage: plugin install <path|git-url>"));
             };
-            // git-url 源:clone 到 plugins/vendor/<name>,manifest 记 commit
+            // git-url 源:install_with_deps 先装依赖,再 clone 本体到 vendor/<name> + 写 manifest
             if plugin_manager::is_git_url(arg) {
                 let name = plugin_manager::name_from_url(arg);
-                let vendor_dir = helix_loader::config_dir().join("plugins").join("vendor");
-                let target = vendor_dir.join(&name);
-                if target.exists() {
+                let plugins_dir = helix_loader::config_dir().join("plugins");
+                let mut manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
+                if manifest.contains_key(&name)
+                    || plugins_dir.join("vendor").join(&name).exists()
+                {
                     return Err(anyhow!(
                         "plugin install: '{name}' already installed, use :plugin remove first"
                     ));
                 }
-                std::fs::create_dir_all(&vendor_dir)?;
-                plugin_manager::clone_to_vendor(arg, &target)?;
-                let commit = plugin_manager::git_head_commit(&target);
-                let mut manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
-                // 跨源同名:本地 features/<name> 已装或 manifest 已有该键 → 拒绝(防键覆盖 + files 孤儿)
-                if manifest.contains_key(&name) {
-                    return Err(anyhow!(
-                        "plugin install: '{name}' already installed (manifest), use :plugin remove first"
-                    ));
-                }
-                manifest.insert(
-                    name.clone(),
-                    plugin_manager::ManifestEntry {
-                        source: arg.to_string(),
-                        kind: "git".into(),
-                        installed_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs().to_string())
-                            .unwrap_or_default(),
-                        commit,
-                        pinned: false,
-                        files: vec![format!("vendor/{name}/")],
-                    },
-                );
+                let mut visited = Vec::new();
+                let mut stack = Vec::new();
+                plugin_manager::install_with_deps(
+                    &name,
+                    arg,
+                    &plugins_dir,
+                    &mut manifest,
+                    &mut visited,
+                    &mut stack,
+                    0,
+                )?;
                 plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
                 cx.editor
                     .set_status(format!("installed '{name}', reloading..."));
@@ -5400,7 +5389,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 load_installed_entry(
                     cx,
                     &name,
-                    &target.join("index.js"),
+                    &plugins_dir.join("vendor").join(&name).join("index.js"),
                     &format!("vendor/{name}/index.js"),
                 )?;
                 return Ok(());
@@ -5431,6 +5420,25 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                     files,
                 },
             );
+            // 本地源依赖:读复制目标里的 plugin.json(若有),装 git 依赖
+            let plugins_dir = helix_loader::config_dir().join("plugins");
+            let dep_file = plugins_dir.join("features").join(&name).join("plugin.json");
+            if let Ok(raw) = std::fs::read_to_string(&dep_file) {
+                let deps = plugin_manager::parse_plugin_json(&raw)?;
+                let mut visited = vec![name.clone()]; // 防依赖链回到本体
+                let mut stack = Vec::new();
+                for dep in &deps {
+                    plugin_manager::install_with_deps(
+                        &dep.name,
+                        &dep.git,
+                        &plugins_dir,
+                        &mut manifest,
+                        &mut visited,
+                        &mut stack,
+                        0,
+                    )?;
+                }
+            }
             plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
             cx.editor
                 .set_status(format!("installed '{name}', reloading..."));
