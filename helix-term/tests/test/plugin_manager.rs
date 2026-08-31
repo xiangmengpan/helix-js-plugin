@@ -85,18 +85,16 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
-        vec![
-            (
-                Some(":plugin install plain-name<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert!(
-                        status.as_ref().contains("invalid"),
-                        "expected invalid arg error, got: {status}"
-                    );
-                }),
-            ),
-        ],
+        vec![(
+            Some(":plugin install plain-name<ret>"),
+            Some(&|app| {
+                let (status, _) = app.editor.get_status().unwrap();
+                assert!(
+                    status.as_ref().contains("invalid"),
+                    "expected invalid arg error, got: {status}"
+                );
+            }),
+        )],
         false,
     )
     .await?;
