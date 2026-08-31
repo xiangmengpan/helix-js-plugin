@@ -506,7 +506,8 @@ mod tests {
                 files: vec!["vendor/gone/".into()],
             },
         )];
-        let (updated, _up, _skipped, failed) = update_entries(&entries, &dir.path().join("plugins"));
+        let (updated, _up, _skipped, failed) =
+            update_entries(&entries, &dir.path().join("plugins"));
         assert!(updated.is_empty());
         assert_eq!(failed, 1);
     }
