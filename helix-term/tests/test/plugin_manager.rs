@@ -100,3 +100,39 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// pin/unpin 未安装 → 报错(无副作用路径)
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(":plugin pin nope<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        status.as_ref().contains("not installed"),
+                        "expected not installed, got: {status}"
+                    );
+                }),
+            ),
+            (
+                Some(":plugin unpin nope<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        status.as_ref().contains("not installed"),
+                        "expected not installed, got: {status}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

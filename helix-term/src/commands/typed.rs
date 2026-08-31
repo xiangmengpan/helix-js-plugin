@@ -4771,6 +4771,9 @@ pub(crate) fn apply_plugin_decorations(
                 }
             }
         }
+        // 排序存储:渲染端按可见 char 范围二分取子集的前提(virtual_text 按 char_idx / highlights 按 start)
+        virtual_text.sort_unstable_by_key(|a| a.char_idx);
+        highlights.sort_unstable_by_key(|h| h.start);
         doc.plugin_decorations = PluginDecorations {
             virtual_text,
             highlights,
@@ -5475,13 +5478,65 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
         "reload" => reload_plugins(cx)?,
         "status" => {
             let plugin_dir = helix_loader::config_dir().join("plugins");
-            let installed = plugin_manager::read_manifest(&plugin_manager::manifest_path())?.len();
+            let manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
+            let git_count = manifest.values().filter(|e| e.kind == "git").count();
+            let pinned_count = manifest.values().filter(|e| e.pinned).count();
             cx.editor.set_status(format!(
-                "{} plugins loaded from {}, {} installed in manifest",
+                "{} plugins loaded from {}, {} installed ({} git, {} pinned)",
                 helix_js::loaded_scripts().len(),
                 plugin_dir.display(),
-                installed
+                manifest.len(),
+                git_count,
+                pinned_count
             ));
+        }
+        "update" => {
+            let target: Option<String> = args.get(1).map(|s| s.to_string()); // None = all
+            let plugins_dir = helix_loader::config_dir().join("plugins");
+            let path = plugin_manager::manifest_path();
+            let mut manifest = plugin_manager::read_manifest(&path)?;
+            let entries: Vec<(String, plugin_manager::ManifestEntry)> = match &target {
+                Some(name) => manifest
+                    .get(name)
+                    .map(|e| (name.clone(), e.clone()))
+                    .into_iter()
+                    .collect(),
+                None => manifest.clone().into_iter().collect(),
+            };
+            if entries.is_empty() {
+                cx.editor
+                    .set_status("nothing to update (no git plugins installed)");
+                return Ok(());
+            }
+            let (updated_names, up, skipped, failed) =
+                plugin_manager::update_entries(&entries, &plugins_dir);
+            if !updated_names.is_empty() {
+                plugin_manager::refresh_commits(&mut manifest, &plugins_dir, &updated_names);
+                plugin_manager::write_manifest(&path, &manifest)?;
+            }
+            cx.editor.set_status(format!(
+                "updated {}, up to date {}, skipped {}, failed {}",
+                updated_names.len(),
+                up,
+                skipped,
+                failed
+            ));
+        }
+        "pin" | "unpin" => {
+            let Some(name) = args.get(1) else {
+                return Err(anyhow!("usage: plugin {sub} <name>"));
+            };
+            let path = plugin_manager::manifest_path();
+            let mut manifest = plugin_manager::read_manifest(&path)?;
+            let Some(entry) = manifest.get_mut(name) else {
+                return Err(anyhow!("plugin {sub}: '{name}' not installed"));
+            };
+            if entry.kind != "git" {
+                return Err(anyhow!("plugin {sub}: only git plugins can be pinned"));
+            }
+            entry.pinned = sub == "pin";
+            plugin_manager::write_manifest(&path, &manifest)?;
+            cx.editor.set_status(format!("{sub}ned '{name}'"));
         }
         other => return Err(anyhow!("unknown plugin subcommand '{other}'")),
     }
