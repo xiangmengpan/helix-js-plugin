@@ -68,20 +68,28 @@ impl Component for PluginPopup {
         // 粘贴：焦点在 input → 批量插入整段 + 一次 onChange；否则忽略（冒泡给编辑器正文粘贴）
         if let Event::Paste(contents) = event {
             if let Some(fid) = self.focus.as_ref() {
-                if helix_js::input_has_state(self.id, fid)
-                    && helix_js::dispatch_input_paste(self.id, fid, contents).is_ok()
-                {
-                    // drain：消息 + UI 请求（仿节点事件）
-                    let msgs = helix_js::take_messages();
-                    if !msgs.is_empty() {
-                        cx.editor.set_status(msgs.join(" "));
+                if helix_js::input_has_state(self.id, fid) {
+                    // 注意：input 状态已变更后才调 onChange——失败绝不能冒泡(否则编辑器正文再插一份)
+                    match helix_js::dispatch_input_paste(self.id, fid, contents) {
+                        Ok(()) => {
+                            // drain：消息 + UI 请求（仿节点事件）
+                            let msgs = helix_js::take_messages();
+                            if !msgs.is_empty() {
+                                cx.editor.set_status(msgs.join(" "));
+                            }
+                            if let Err(err) = crate::commands::typed::apply_ui_requests(
+                                helix_js::take_ui_requests(),
+                            ) {
+                                cx.editor.set_error(err.to_string());
+                            }
+                            return EventResult::Consumed(None);
+                        }
+                        Err(e) => {
+                            cx.editor
+                                .set_error(format!("plugin input paste failed: {e}"));
+                            return EventResult::Consumed(None);
+                        }
                     }
-                    if let Err(err) =
-                        crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
-                    {
-                        cx.editor.set_error(err.to_string());
-                    }
-                    return EventResult::Consumed(None);
                 }
             }
             return EventResult::Ignored(None);

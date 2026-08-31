@@ -545,4 +545,37 @@ mod tests {
         assert_eq!(input_edit(&mut s, "Delete"), Some("abcd".into()));
         assert_eq!(s.cursor, 2);
     }
+
+    #[test]
+    fn input_insert_batch_basic() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 光标中间插入整段(含 \n)
+        let mut s = InputState {
+            value: "ab".into(),
+            cursor: 1,
+            multiline: true,
+        };
+        assert_eq!(input_insert_batch(&mut s, "x\ny"), "ax\nyb".to_string());
+        assert_eq!(s.cursor, 4);
+        // 光标末尾
+        let mut s = InputState {
+            value: "ab".into(),
+            cursor: 2,
+            multiline: true,
+        };
+        assert_eq!(input_insert_batch(&mut s, "cd"), "abcd".to_string());
+        assert_eq!(s.cursor, 4);
+        // 空值
+        let mut s = InputState {
+            value: String::new(),
+            cursor: 0,
+            multiline: false,
+        };
+        assert_eq!(
+            input_insert_batch(&mut s, "line1\nline2"),
+            "line1\nline2".to_string()
+        );
+        assert_eq!(s.cursor, 11);
+    }
 }

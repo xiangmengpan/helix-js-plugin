@@ -181,13 +181,16 @@ impl EditorView {
                 overlays.push(overlay);
             }
             // 插件区域高亮:先按可见 char 范围二分取子集,再按 style 分组,组内排序合并重叠
-            // (OverlayHighlights 假设组内不重叠)
-            let plugin_hl = helix_view::view::slice_range(
-                &doc.plugin_decorations.highlights,
-                |h| h.start,
-                visible.0,
-                visible.1,
-            );
+            // (OverlayHighlights 假设组内不重叠)。
+            // 区间跨可见区顶边界(start < visible.0 但 end > visible.0)需向前扫描纳入——
+            // 否则可见部分被整体丢弃(区间可任意重叠,扫描到 end <= visible.0 为止)。
+            let hl = &doc.plugin_decorations.highlights;
+            let mut lo = hl.partition_point(|h| h.start < visible.0);
+            while lo > 0 && hl[lo - 1].end > visible.0 {
+                lo -= 1;
+            }
+            let hi = hl.partition_point(|h| h.start < visible.1);
+            let plugin_hl = &hl[lo..hi];
             if !plugin_hl.is_empty() {
                 use std::ops::Range;
                 let mut groups: Vec<(Option<String>, Vec<Range<usize>>)> = Vec::new();
