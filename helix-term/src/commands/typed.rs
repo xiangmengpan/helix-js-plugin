@@ -5317,8 +5317,8 @@ fn load_installed_entry(
     if !entry.is_file() {
         return Ok(());
     }
-    let src = std::fs::read_to_string(entry)
-        .map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
+    let src =
+        std::fs::read_to_string(entry).map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
     if let Err(e) = helix_js::load_script_named(rel, &src) {
         cx.editor
             .set_error(format!("installed '{name}' but failed to load: {e}"));
@@ -5368,8 +5368,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 std::fs::create_dir_all(&vendor_dir)?;
                 plugin_manager::clone_to_vendor(arg, &target)?;
                 let commit = plugin_manager::git_head_commit(&target);
-                let mut manifest =
-                    plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
+                let mut manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
                 // 跨源同名:本地 features/<name> 已装或 manifest 已有该键 → 拒绝(防键覆盖 + files 孤儿)
                 if manifest.contains_key(&name) {
                     return Err(anyhow!(
@@ -5391,10 +5390,16 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                     },
                 );
                 plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
-                cx.editor.set_status(format!("installed '{name}', reloading..."));
+                cx.editor
+                    .set_status(format!("installed '{name}', reloading..."));
                 reload_plugins(cx)?;
                 // 装后加载:仓库根 index.js(无入口可能是纯 lib,跳过)
-                load_installed_entry(cx, &name, &target.join("index.js"), &format!("vendor/{name}/index.js"))?;
+                load_installed_entry(
+                    cx,
+                    &name,
+                    &target.join("index.js"),
+                    &format!("vendor/{name}/index.js"),
+                )?;
                 return Ok(());
             }
             let src = std::path::Path::new(arg);
