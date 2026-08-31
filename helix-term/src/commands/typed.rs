@@ -5224,6 +5224,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::PluginOp { op, arg } => {
+                job::dispatch_blocking(move |editor, _compositor| {
+                    if let Err(e) = plugin_op(editor, &op, arg.as_deref()) {
+                        editor.set_error(format!("plugin: {e}"));
+                    }
+                });
+            }
         }
     }
     Ok(())
@@ -5279,29 +5286,29 @@ fn plugin_reload(
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    reload_plugins(cx)
+    reload_plugins(cx.editor)
 }
 
 /// 热重载共享逻辑：reload_all → drain 消息/主题/UI 请求（:plugin-reload 与 :plugin reload 共用）
-fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
+fn reload_plugins(editor: &mut Editor) -> anyhow::Result<()> {
     match helix_js::reload_all() {
         Ok(()) => {
             let msgs = helix_js::take_messages();
             if !msgs.is_empty() {
-                cx.editor.set_status(msgs.join(" "));
+                editor.set_status(msgs.join(" "));
             }
             // 脚本里的 helix.map 重跑会再入队 MapKey，必须像 plugin_load 一样 drain
             // ponytail: 键位绑定只重应用不撤销——旧脚本移除/改名的绑定残留需重启才能清掉（编辑器侧 Keymaps 无 API）
             if helix_js::take_theme_dirty() {
                 // reload 重置了插件状态（覆盖清空）；若重跑脚本重新 set_theme 则应用新覆盖，否则还原基准
                 let overrides = helix_js::theme_overrides();
-                apply_theme_overrides(cx.editor, Some(&overrides));
+                apply_theme_overrides(editor, Some(&overrides));
             }
             apply_ui_requests(helix_js::take_ui_requests())?;
             Ok(())
         }
         Err(err) => {
-            cx.editor.set_error(format!("plugin-reload: {err}"));
+            editor.set_error(format!("plugin-reload: {err}"));
             // reload_all 入队的 ClosePanel（面板清理）即使重跑失败也要处理，否则僵尸面板残留
             apply_ui_requests(helix_js::take_ui_requests())?;
             Ok(())
@@ -5312,7 +5319,7 @@ fn reload_plugins(cx: &mut compositor::Context) -> anyhow::Result<()> {
 /// 加载新装插件的入口脚本(install 分支共用,本地/git 源)。
 /// 无入口文件(纯 lib)→ 跳过;load 失败 set_error;成功 drain 消息/UI 请求。
 fn load_installed_entry(
-    cx: &mut compositor::Context,
+    editor: &mut Editor,
     name: &str,
     entry: &std::path::Path,
     rel: &str,
@@ -5323,13 +5330,12 @@ fn load_installed_entry(
     let src =
         std::fs::read_to_string(entry).map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
     if let Err(e) = helix_js::load_script_named(rel, &src) {
-        cx.editor
-            .set_error(format!("installed '{name}' but failed to load: {e}"));
+        editor.set_error(format!("installed '{name}' but failed to load: {e}"));
     } else {
         // 新脚本 eval 也会入队消息/UI 请求(照 plugin_load 模式 drain)
         let msgs = helix_js::take_messages();
         if !msgs.is_empty() {
-            cx.editor.set_status(msgs.join(" "));
+            editor.set_status(msgs.join(" "));
         }
         apply_ui_requests(helix_js::take_ui_requests())?;
     }
@@ -5344,18 +5350,22 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     let Some(sub) = args.first() else {
         return Err(anyhow!("usage: plugin <list|install|remove|reload|status>"));
     };
+    plugin_op(cx.editor, sub, args.get(1))
+}
+
+/// plugin 操作核心(:plugin <op> 命令与 JS API helix.plugin.<op> 共用)
+fn plugin_op(editor: &mut Editor, sub: &str, arg: Option<&str>) -> anyhow::Result<()> {
     match sub {
         "list" => {
             let names = helix_js::loaded_scripts();
             if names.is_empty() {
-                cx.editor.set_status("no plugins loaded");
+                editor.set_status("no plugins loaded");
             } else {
-                cx.editor
-                    .set_status(format!("plugins: {}", names.join(", ")));
+                editor.set_status(format!("plugins: {}", names.join(", ")));
             }
         }
         "install" => {
-            let Some(arg) = args.get(1) else {
+            let Some(arg) = arg else {
                 return Err(anyhow!("usage: plugin install <path|git-url>"));
             };
             // git-url 源:install_with_deps 先装依赖,再 clone 本体到 vendor/<name> + 写 manifest
@@ -5380,12 +5390,11 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                     0,
                 )?;
                 plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
-                cx.editor
-                    .set_status(format!("installed '{name}', reloading..."));
-                reload_plugins(cx)?;
+                editor.set_status(format!("installed '{name}', reloading..."));
+                reload_plugins(editor)?;
                 // 装后加载:仓库根 index.js(无入口可能是纯 lib,跳过)
                 load_installed_entry(
-                    cx,
+                    editor,
                     &name,
                     &plugins_dir.join("vendor").join(&name).join("index.js"),
                     &format!("vendor/{name}/index.js"),
@@ -5438,9 +5447,8 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 }
             }
             plugin_manager::write_manifest(&plugin_manager::manifest_path(), &manifest)?;
-            cx.editor
-                .set_status(format!("installed '{name}', reloading..."));
-            reload_plugins(cx)?;
+            editor.set_status(format!("installed '{name}', reloading..."));
+            reload_plugins(editor)?;
             // reload_all 清空插件状态再重跑已注册脚本——新插件必须在 reload 之后再加载,否则被 reset 清掉。
             // 入口:单文件 → features/<name>;目录 → features/<name>/index.js(无入口可能是纯 lib,跳过)
             let entry = if src.is_dir() {
@@ -5454,10 +5462,10 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 .unwrap_or(&entry)
                 .to_string_lossy()
                 .into_owned();
-            load_installed_entry(cx, &name, &entry, &rel)?;
+            load_installed_entry(editor, &name, &entry, &rel)?;
         }
         "remove" => {
-            let Some(name) = args.get(1) else {
+            let Some(name) = arg else {
                 return Err(anyhow!("usage: plugin remove <name>"));
             };
             let path = plugin_manager::manifest_path();
@@ -5466,8 +5474,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 Some(entry) => {
                     plugin_manager::remove_files(&entry.files);
                     plugin_manager::write_manifest(&path, &manifest)?;
-                    cx.editor
-                        .set_status(format!("removed '{name}'; update init.js if it loads it"));
+                    editor.set_status(format!("removed '{name}'; update init.js if it loads it"));
                 }
                 // 兼容无 manifest 的旧安装 + features/ 孤儿(manifest 无但文件在,如 write_manifest
                 // 失败残留):plugins/<name> 与 features/<name> 两处都删(文件或目录)
@@ -5476,18 +5483,17 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                     if !plugin_manager::remove_orphan(&plugin_dir, name)? {
                         return Err(anyhow!("failed to remove '{name}': not found"));
                     }
-                    cx.editor
-                        .set_status(format!("removed '{name}'; update init.js if it loads it"));
+                    editor.set_status(format!("removed '{name}'; update init.js if it loads it"));
                 }
             }
         }
-        "reload" => reload_plugins(cx)?,
+        "reload" => reload_plugins(editor)?,
         "status" => {
             let plugin_dir = helix_loader::config_dir().join("plugins");
             let manifest = plugin_manager::read_manifest(&plugin_manager::manifest_path())?;
             let git_count = manifest.values().filter(|e| e.kind == "git").count();
             let pinned_count = manifest.values().filter(|e| e.pinned).count();
-            cx.editor.set_status(format!(
+            editor.set_status(format!(
                 "{} plugins loaded from {}, {} installed ({} git, {} pinned)",
                 helix_js::loaded_scripts().len(),
                 plugin_dir.display(),
@@ -5497,7 +5503,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             ));
         }
         "update" => {
-            let target: Option<String> = args.get(1).map(|s| s.to_string()); // None = all
+            let target: Option<String> = arg.map(|s| s.to_string()); // None = all
             let plugins_dir = helix_loader::config_dir().join("plugins");
             let path = plugin_manager::manifest_path();
             let mut manifest = plugin_manager::read_manifest(&path)?;
@@ -5510,8 +5516,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 None => manifest.clone().into_iter().collect(),
             };
             if entries.is_empty() {
-                cx.editor
-                    .set_status("nothing to update (no git plugins installed)");
+                editor.set_status("nothing to update (no git plugins installed)");
                 return Ok(());
             }
             let (updated_names, up, skipped, failed) =
@@ -5520,7 +5525,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                 plugin_manager::refresh_commits(&mut manifest, &plugins_dir, &updated_names);
                 plugin_manager::write_manifest(&path, &manifest)?;
             }
-            cx.editor.set_status(format!(
+            editor.set_status(format!(
                 "updated {}, up to date {}, skipped {}, failed {}",
                 updated_names.len(),
                 up,
@@ -5529,7 +5534,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             ));
         }
         "pin" | "unpin" => {
-            let Some(name) = args.get(1) else {
+            let Some(name) = arg else {
                 return Err(anyhow!("usage: plugin {sub} <name>"));
             };
             let path = plugin_manager::manifest_path();
@@ -5542,7 +5547,7 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             }
             entry.pinned = sub == "pin";
             plugin_manager::write_manifest(&path, &manifest)?;
-            cx.editor.set_status(format!("{sub}ned '{name}'"));
+            editor.set_status(format!("{sub}ned '{name}'"));
         }
         other => return Err(anyhow!("unknown plugin subcommand '{other}'")),
     }

@@ -136,3 +136,30 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// JS API:helix.plugin.remove(未安装)→ 报错经 set_error(plugin-load 里调用,drain 执行)
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin = dir.path().join("api.js");
+    std::fs::write(&plugin, r#"helix.plugin.remove("nope-js-api");"#)?;
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![(
+            Some(&format!(":plugin-load {}<ret>", plugin.display())),
+            Some(&|app| {
+                // PluginOp 请求在 load 的 drain 里 dispatch,事件循环 idle 前执行 → set_error
+                let (status, _) = app.editor.get_status().unwrap();
+                assert!(
+                    status.as_ref().contains("failed to remove"),
+                    "expected remove error, got: {status}"
+                );
+            }),
+        )],
+        false,
+    )
+    .await?;
+    Ok(())
+}

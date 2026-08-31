@@ -32,7 +32,7 @@ pub use theme::*;
 pub use types::DocChange;
 pub use types::*;
 
-use boa_engine::object::ObjectInitializer;
+use boa_engine::object::{FunctionObjectBuilder, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsString, JsValue, NativeFunction};
 
@@ -128,31 +128,43 @@ pub fn init() {
                     );
                 picker_builder.build()
             };
-            // helix.plugin 命名空间:plugin(name, deps) 声明函数 + install/update/remove 管理方法
-            let plugin_obj = {
-                let mut pb = ObjectInitializer::new(engine);
-                pb.function(
-                    NativeFunction::from_fn_ptr(commands::js_plugin),
-                    JsString::from("plugin"),
-                    2,
+            // helix.plugin 命名空间:plugin(name, deps) 可调用函数 + install/update/remove 属性
+            let plugin_fn = FunctionObjectBuilder::new(
+                engine.realm(),
+                NativeFunction::from_fn_ptr(commands::js_plugin),
+            )
+            .name("plugin")
+            .length(2)
+            .build(); // JsFunction(可调用)
+                      // 函数对象上加管理方法属性(Deref → JsObject::set;属性值为 JsFunction)
+            for (name, f) in [
+                (
+                    "install",
+                    commands::js_plugin_install
+                        as boa_engine::native_function::NativeFunctionPointer,
+                ),
+                (
+                    "update",
+                    commands::js_plugin_update
+                        as boa_engine::native_function::NativeFunctionPointer,
+                ),
+                (
+                    "remove",
+                    commands::js_plugin_remove
+                        as boa_engine::native_function::NativeFunctionPointer,
+                ),
+            ] {
+                let f = FunctionObjectBuilder::new(
+                    engine.realm(),
+                    boa_engine::NativeFunction::from_fn_ptr(f),
                 )
-                .function(
-                    NativeFunction::from_fn_ptr(commands::js_plugin_install),
-                    JsString::from("install"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(commands::js_plugin_update),
-                    JsString::from("update"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(commands::js_plugin_remove),
-                    JsString::from("remove"),
-                    1,
-                );
-                pb.build()
-            };
+                .name(name)
+                .length(1)
+                .build();
+                plugin_fn
+                    .set(JsString::from(name), f, false, engine)
+                    .expect("set plugin method");
+            }
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
             let mut builder = ObjectInitializer::new(engine);
@@ -575,7 +587,7 @@ pub fn init() {
             );
             builder.property(
                 JsString::from("plugin"),
-                plugin_obj,
+                plugin_fn,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             let helix = builder.build();

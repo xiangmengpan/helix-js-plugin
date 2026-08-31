@@ -367,6 +367,19 @@ helix.open_popup({
 
 ## 10. Picker 选择器（helix.picker）
 
+## 10.5 插件管理（helix.plugin.*）
+
+`helix.plugin(name, {deps})` 声明依赖(加载时);`helix.plugin.install/update/remove` 镜像 `:plugin` 命令:
+
+```js
+helix.plugin.install("./path/to/plugin.js");       // 或 git-url;装 + manifest + 依赖解析 + reload
+helix.plugin.update();                              // 全部更新(可传 name 指定单个)
+helix.plugin.remove("plugin-name");                // 删 manifest 条目 + 文件
+```
+
+- 结果经状态栏显示(fire-and-forget,无 Promise 返回值);错误经 set_error
+- install 缺参数 / remove 缺参数 → 调用即报错
+
 `helix.picker.define/run` 让插件定义数据源并调起**原生 Picker**（过滤/滚动/预览/Enter 全部由核心实现，与 `:files`/`:grep` 同款 UI）。
 
 ```js
