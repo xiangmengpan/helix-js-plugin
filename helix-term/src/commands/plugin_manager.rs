@@ -9,8 +9,12 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ManifestEntry {
     pub source: String,
-    pub kind: String, // "local"(二期 "git")
+    pub kind: String, // "local" / "git"
     pub installed_at: String,
+    #[serde(default)]
+    pub commit: Option<String>, // git 源:clone/update 后的 HEAD hash;local 源 None
+    #[serde(default)]
+    pub pinned: bool, // true = update 跳过(批次 2 用)
     pub files: Vec<String>, // 相对 plugins/ 的复制目标
 }
 
@@ -160,6 +164,46 @@ fn walkdir(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// git url 识别:含 :// 或 git@ 前缀或 .git 后缀
+pub fn is_git_url(arg: &str) -> bool {
+    arg.contains("://") || arg.starts_with("git@") || arg.ends_with(".git")
+}
+
+/// url → 插件名:basename 去 .git 后缀
+pub fn name_from_url(url: &str) -> String {
+    let base = url.rsplit('/').next().unwrap_or(url);
+    base.strip_suffix(".git").unwrap_or(base).to_string()
+}
+
+/// git clone 到 dst;失败清理半成品目录
+pub fn clone_to_vendor(url: &str, dst: &Path) -> anyhow::Result<()> {
+    let status = std::process::Command::new("git")
+        .args(["clone", url])
+        .arg(dst)
+        .status()
+        .map_err(|e| anyhow!("git clone failed (is git installed?): {e}"))?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(dst);
+        return Err(anyhow!("git clone '{url}' failed with {status}"));
+    }
+    Ok(())
+}
+
+/// 当前 commit hash;失败 → None
+pub fn git_head_commit(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +221,8 @@ mod tests {
             source: "./x".into(),
             kind: "local".into(),
             installed_at: "t".into(),
+            commit: None,
+            pinned: false,
             files: vec!["features/x.js".into()],
         };
         write_manifest(&path, &HashMap::from([("x".to_string(), entry.clone())])).unwrap();
@@ -268,5 +314,50 @@ mod tests {
         assert!(plugins.exists(), ". 不应删掉 plugins 目录");
         assert!(remove_orphan(&plugins, "features").is_err());
         assert!(plugins.join("features").exists(), "features 不应被删");
+    }
+
+    #[test]
+    fn url_identification_and_name() {
+        assert!(is_git_url("https://github.com/foo/bar.git"));
+        assert!(is_git_url("git@github.com:foo/bar.git"));
+        assert!(is_git_url("https://github.com/foo/bar")); // 无 .git 也是 url(含 ://)
+        assert!(!is_git_url("./local/plugin.js"));
+        assert!(!is_git_url("/abs/path/plugin"));
+        assert!(!is_git_url("plain-name")); // 非 url 非路径 → 调用方报错
+        assert_eq!(name_from_url("https://github.com/foo/bar.git"), "bar");
+        assert_eq!(name_from_url("git@github.com:foo/bar.git"), "bar");
+        assert_eq!(name_from_url("https://github.com/foo/baz"), "baz");
+    }
+
+    #[test]
+    fn manifest_git_fields_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        let entry = ManifestEntry {
+            source: "https://github.com/foo/bar.git".into(),
+            kind: "git".into(),
+            installed_at: "t".into(),
+            commit: Some("a1b2c3d".into()),
+            pinned: true,
+            files: vec!["vendor/bar/".into()],
+        };
+        write_manifest(&path, &HashMap::from([("bar".to_string(), entry.clone())])).unwrap();
+        let m = read_manifest(&path).unwrap();
+        let got = m.get("bar").unwrap();
+        assert_eq!(got.kind, "git");
+        assert_eq!(got.commit.as_deref(), Some("a1b2c3d"));
+        assert!(got.pinned);
+        // 缺省字段(一期条目):commit/pinned 缺省
+        let m2 = read_manifest(&path).unwrap();
+        let _ = m2;
+    }
+
+    #[test]
+    fn clone_failure_returns_err() {
+        // 假 url(本地端口 1,连接拒绝 → 失败快);失败清理半成品目录
+        let dir = std::env::temp_dir().join(format!("hx_clone_fail_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(clone_to_vendor("https://127.0.0.1:1/nope/nope.git", &dir).is_err());
+        assert!(!dir.exists(), "clone 失败应清理半成品目录");
     }
 }

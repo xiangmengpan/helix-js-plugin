@@ -5349,6 +5349,8 @@ fn plugin(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs().to_string())
                         .unwrap_or_default(),
+                    commit: None,
+                    pinned: false,
                     files,
                 },
             );
