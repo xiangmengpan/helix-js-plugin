@@ -256,15 +256,15 @@ async fn plugin_decorations_unsorted_virtual_text_renders() -> anyhow::Result<()
                 Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
                 None,
             ),
-            // 重复运行:每次渲染都会走排序路径,乱序输入下无 sort 则 debug_assert panic
+            // 重复运行:应用时排序存储(批次 10 优化)——字段已是排序序(0 在前),渲染不再依赖排序
             (
                 Some(":dec-unsorted<ret>"),
                 Some(&|app| {
                     let (_, doc) = current_ref!(app.editor);
                     assert_eq!(doc.plugin_decorations.virtual_text.len(), 2);
-                    // 字段保持 push 顺序;排序发生在渲染层
-                    assert_eq!(doc.plugin_decorations.virtual_text[0].char_idx, 5);
-                    assert_eq!(doc.plugin_decorations.virtual_text[1].char_idx, 0);
+                    // 应用时已按 char_idx 排序:0 在前,5 在后
+                    assert_eq!(doc.plugin_decorations.virtual_text[0].char_idx, 0);
+                    assert_eq!(doc.plugin_decorations.virtual_text[1].char_idx, 5);
                 }),
             ),
         ],
