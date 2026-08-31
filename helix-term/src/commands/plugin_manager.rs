@@ -347,9 +347,11 @@ mod tests {
         assert_eq!(got.kind, "git");
         assert_eq!(got.commit.as_deref(), Some("a1b2c3d"));
         assert!(got.pinned);
-        // 缺省字段(一期条目):commit/pinned 缺省
-        let m2 = read_manifest(&path).unwrap();
-        let _ = m2;
+        // 缺省字段(一期条目无 commit/pinned):反序列化后 None/false
+        let legacy = r#"{"x": {"source": "./x", "kind": "local", "installed_at": "t", "files": ["features/x.js"]}}"#;
+        let m2: Manifest = serde_json::from_str(legacy).unwrap();
+        assert_eq!(m2["x"].commit, None);
+        assert!(!m2["x"].pinned);
     }
 
     #[test]
