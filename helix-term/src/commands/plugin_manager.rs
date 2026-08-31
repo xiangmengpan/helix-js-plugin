@@ -204,6 +204,101 @@ pub fn git_head_commit(dir: &Path) -> Option<String> {
     }
 }
 
+/// git fetch origin;失败 → Err
+pub fn git_fetch(dir: &Path) -> anyhow::Result<()> {
+    let status = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(dir)
+        .args(["fetch", "origin"])
+        .status()
+        .map_err(|e| anyhow!("git fetch failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("git fetch failed with {status}"))
+    }
+}
+
+/// 当前 HEAD(Err 化版本,供 update 用)
+pub fn git_head(dir: &Path) -> anyhow::Result<String> {
+    git_head_commit(dir).ok_or_else(|| anyhow!("git rev-parse HEAD failed"))
+}
+
+/// origin/HEAD;失败 → Err(无远端跟踪等)
+pub fn git_origin_head(dir: &Path) -> anyhow::Result<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(dir)
+        .args(["rev-parse", "origin/HEAD"])
+        .output()
+        .map_err(|e| anyhow!("git rev-parse origin/HEAD failed: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(anyhow!("git rev-parse origin/HEAD failed"))
+    }
+}
+
+/// ff-only pull;失败(冲突/非快进)→ Err,工作树保留旧版
+pub fn git_pull_ff(dir: &Path) -> anyhow::Result<()> {
+    let status = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(dir)
+        .args(["pull", "--ff-only"])
+        .status()
+        .map_err(|e| anyhow!("git pull failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("git pull --ff-only failed with {status}"))
+    }
+}
+
+/// 更新一批条目。返回 (updated_names, up_to_date, skipped, failed)。
+/// local/pinned 跳过;git 目录缺失 failed;fetch/head 读取失败 failed;
+/// head 相同 up_to_date;不同 → ff pull,成功记入 updated_names(调用方更新 manifest commit)。
+/// 本函数不改 manifest。
+pub fn update_entries(
+    entries: &[(String, ManifestEntry)],
+    plugins_dir: &Path,
+) -> (Vec<String>, usize, usize, usize) {
+    let mut updated = Vec::new();
+    let mut up = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+    for (name, e) in entries {
+        if e.kind != "git" || e.pinned {
+            skipped += 1;
+            continue;
+        }
+        let dir = plugins_dir.join("vendor").join(name);
+        if !dir.is_dir() {
+            failed += 1;
+            continue;
+        }
+        match (git_fetch(&dir), git_head(&dir), git_origin_head(&dir)) {
+            (Ok(()), Ok(local), Ok(origin)) if local == origin => up += 1,
+            (Ok(()), Ok(_), Ok(_)) => match git_pull_ff(&dir) {
+                Ok(()) => updated.push(name.clone()),
+                Err(_) => failed += 1,
+            },
+            _ => failed += 1,
+        }
+    }
+    (updated, up, skipped, failed)
+}
+
+/// 更新 manifest 中已更新条目的 commit(update 成功后调用)
+pub fn refresh_commits(manifest: &mut Manifest, plugins_dir: &Path, names: &[String]) {
+    for n in names {
+        if let Some(e) = manifest.get_mut(n) {
+            if let Ok(h) = git_head(&plugins_dir.join("vendor").join(n)) {
+                e.commit = Some(h);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +456,58 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         assert!(clone_to_vendor("https://127.0.0.1:1/nope/nope.git", &dir).is_err());
         assert!(!dir.exists(), "clone 失败应清理半成品目录");
+    }
+
+    #[test]
+    fn update_skips_local_and_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = vec![
+            (
+                "loc".to_string(),
+                ManifestEntry {
+                    source: "./x".into(),
+                    kind: "local".into(),
+                    installed_at: "t".into(),
+                    commit: None,
+                    pinned: false,
+                    files: vec!["features/x.js".into()],
+                },
+            ),
+            (
+                "pin".to_string(),
+                ManifestEntry {
+                    source: "https://g/p.git".into(),
+                    kind: "git".into(),
+                    installed_at: "t".into(),
+                    commit: Some("a".into()),
+                    pinned: true,
+                    files: vec!["vendor/p/".into()],
+                },
+            ),
+        ];
+        let (updated, up, skipped, failed) = update_entries(&entries, &dir.path().join("plugins"));
+        assert!(updated.is_empty());
+        assert_eq!(up, 0);
+        assert_eq!(skipped, 2); // local + pinned
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn update_missing_dir_fails_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = vec![(
+            "gone".to_string(),
+            ManifestEntry {
+                source: "https://g/g.git".into(),
+                kind: "git".into(),
+                installed_at: "t".into(),
+                commit: Some("a".into()),
+                pinned: false,
+                files: vec!["vendor/gone/".into()],
+            },
+        )];
+        let (updated, _up, _skipped, failed) = update_entries(&entries, &dir.path().join("plugins"));
+        assert!(updated.is_empty());
+        assert_eq!(failed, 1);
     }
 }
