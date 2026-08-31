@@ -299,6 +299,102 @@ pub fn refresh_commits(manifest: &mut Manifest, plugins_dir: &Path, names: &[Str
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PluginDep {
+    pub name: String,
+    pub git: String,
+}
+
+/// plugin.json 解析:deps 可选;坏 JSON/缺 name/git 字段 → Err;缺文件由调用方处理
+pub fn parse_plugin_json(raw: &str) -> anyhow::Result<Vec<PluginDep>> {
+    #[derive(serde::Deserialize)]
+    struct PluginJson {
+        #[serde(default)]
+        deps: Vec<PluginDep>,
+    }
+    let parsed: PluginJson = serde_json::from_str(raw)?;
+    Ok(parsed.deps)
+}
+
+/// 循环检测:name 已在栈(任意位置)→ 循环
+pub fn check_cycle(stack: &[String], name: &str) -> bool {
+    stack.iter().any(|s| s == name)
+}
+
+/// 深度限制:depth(当前层数,0 = 根)<= max 放行
+pub fn depth_ok(depth: usize, max: usize) -> bool {
+    depth < max
+}
+
+/// 递归安装依赖(含本体)。先装依赖再装本体;已装(manifest/visited)跳过;
+/// 循环/超深 → Err;任一依赖失败 → Err(已装的保留,不回滚)。
+/// manifest 在本体依赖全部成功后写入。
+#[allow(clippy::too_many_arguments)]
+pub fn install_with_deps(
+    name: &str,
+    git_url: &str,
+    plugins_dir: &Path,
+    manifest: &mut Manifest,
+    visited: &mut Vec<String>,
+    stack: &mut Vec<String>,
+    depth: usize,
+) -> anyhow::Result<()> {
+    if !depth_ok(depth, 10) {
+        return Err(anyhow!("dependency depth exceeds 10 at '{name}'"));
+    }
+    if check_cycle(stack, name) {
+        return Err(anyhow!(
+            "circular dependency: {} -> {name}",
+            stack.join(" -> ")
+        ));
+    }
+    if manifest.contains_key(name) || visited.contains(&name.to_string()) {
+        return Ok(()); // 已装/处理中 → 跳过
+    }
+    // clone 本体(vendor/<name>)
+    let vendor_dir = plugins_dir.join("vendor");
+    let target = vendor_dir.join(name);
+    if !target.exists() {
+        fs::create_dir_all(&vendor_dir)?;
+        clone_to_vendor(git_url, &target)?;
+    }
+    // 读本体的 plugin.json(无文件 = 无依赖)
+    let deps = match fs::read_to_string(target.join("plugin.json")) {
+        Ok(raw) => parse_plugin_json(&raw)?,
+        Err(_) => Vec::new(),
+    };
+    stack.push(name.to_string());
+    for dep in &deps {
+        install_with_deps(
+            &dep.name,
+            &dep.git,
+            plugins_dir,
+            manifest,
+            visited,
+            stack,
+            depth + 1,
+        )?;
+    }
+    stack.pop();
+    // 本体记入 manifest(依赖全部成功后)
+    manifest.insert(
+        name.to_string(),
+        ManifestEntry {
+            source: git_url.to_string(),
+            kind: "git".into(),
+            installed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_default(),
+            commit: git_head_commit(&target),
+            pinned: false,
+            files: vec![format!("vendor/{name}/")],
+        },
+    );
+    visited.push(name.to_string());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +606,36 @@ mod tests {
             update_entries(&entries, &dir.path().join("plugins"));
         assert!(updated.is_empty());
         assert_eq!(failed, 1);
+    }
+
+    #[test]
+    fn parse_plugin_json_deps() {
+        // 合法:deps 提取
+        let deps = parse_plugin_json(
+            r#"{"deps": [{"name": "a", "git": "https://g/a.git"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "a");
+        // 无 deps 字段 → 空
+        assert!(parse_plugin_json(r#"{}"#).unwrap().is_empty());
+        // 坏 JSON → Err
+        assert!(parse_plugin_json("not json").is_err());
+        // 缺 name/git → Err
+        assert!(parse_plugin_json(r#"{"deps": [{"name": "a"}]}"#).is_err());
+        assert!(parse_plugin_json(r#"{"deps": [{"git": "x"}]}"#).is_err());
+    }
+
+    #[test]
+    fn cycle_and_depth_checks() {
+        // 循环:name 已在栈(任意位置)
+        let stack = vec!["A".to_string(), "B".to_string()];
+        assert!(check_cycle(&stack, "A"));
+        assert!(check_cycle(&stack, "B"));
+        assert!(!check_cycle(&stack, "C"));
+        // 深度限制
+        assert!(depth_ok(0, 10));
+        assert!(depth_ok(9, 10));
+        assert!(!depth_ok(10, 10));
     }
 }
