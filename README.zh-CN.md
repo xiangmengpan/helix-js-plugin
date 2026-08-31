@@ -179,23 +179,64 @@ helix.on("cursor-move", (docId, { row, col, mode }) => { ... });
 helix.on("selection-change", (docId, { count, primary }) => { ... });
 ```
 
-### 完整 API 列表
+### API 总览(按域分组,附优缺点)
 
-`echo` `register_command` `run_command` `on` `map` `el` `export` `plugin` `load` `lazy`
-`open_popup` `open_panel` `close_panel` `move_panel` `read_dir` `open_file` `set_buffer_icon` `set_statusline`
-`open_terminal` `term_write` `term_feed` `term_kill` `term_list` `term_close` `term_resize` `term_clear` `term_save` `set_terminal_mode`
-`split` `buffer_open` `close_leaf` `zoom` `unzoom` `resize_leaf` `layout_resize` `layout_swap` `layout_minimize` `layout_focus` `layout_swap_dir` `layout_equalize` `layout_fix` `focus` `get_layout` `restore_layout`
-`buffers` `current_buffer` `focus_buffer`
-`watch` `unwatch`
-`diagnostics`
-`set_cursor` `set_selection` `get_str`
-`set_theme` `reset_theme` `get_style` `theme_info` `set_theme_name` `set_diagnostic_icons`
-`run` `run_async` `spawn` `read_file_async` `write_file_async` `stat_async` `glob_async`
-`set_component_render` `get_component_state` `set_keymap_hint` `term_state`
+**命令与消息**
 
-**事件白名单**:`save` `mode-change` `buffer-open` `buffer-close` `doc-change` `theme-change`
-`term-open` `term-mode-change` `term-exit` `term-close` `term-resize` `term-title` `term-key` `component-event`
-`lsp-diagnostics` `cursor-move` `selection-change`
+| API | 说明 | 优点 | 局限 |
+|---|---|---|---|
+| `register_command(name, fn, doc?)` | 注册 `:name` 命令 | 一个命令 = 一次撤销;UI 请求命令边界自动应用 | 主线程同步执行,重活请用异步 API |
+| `run_command(name, ctx?)` | 程序化调插件命令 | 脚本化/懒加载桩底座 | 只能调已注册的插件命令 |
+| `echo(text)` | 状态栏消息 | 简单直观 | 无历史(覆盖式) |
+
+**文档编辑与选区**
+
+| API | 说明 | 优点 | 局限 |
+|---|---|---|---|
+| `begin_edit()/end_edit()` | 批量编辑事务 | 重构类插件一次撤销 | 需成对调用 |
+| `by_path(path, fn)` | 跨 buffer 访问 | 按路径编辑任意文档 | 只读快照 + 队列式编辑 |
+| `set_virtual_text/set_highlight` | 装饰/标记 | 按 doc 整体替换,热重载清理 | 渲染层,不参与文本操作 |
+| `set_cursor/set_selection` | 光标/选区 | 多选区数组形态 | — |
+
+**进程执行**
+
+| API | 说明 | 优点 | 局限 |
+|---|---|---|---|
+| `run(cmd)` | 同步执行 | 简单,结果即用 | **阻塞主线程**,只用于短命令 |
+| `run_async(cmd)` | 异步执行 | 不阻塞;Promise 恢复回主线程 | 无流式输出 |
+| `spawn({cmd, onChunk, onExit})` | 流式进程 | 逐块输出,pty 支持 | 需自己处理块拼接 |
+
+**异步文件系统**(均返回 Promise,worker 线程执行)
+
+| API | 说明 | 优点 | 局限 |
+|---|---|---|---|
+| `read_dir(path)` | 列目录(同步) | 简单 | 同步阻塞;不递归 |
+| `read_file_async/write_file_async` | 读写文件 | 异步不阻塞 | UTF-8 lossy |
+| `stat_async(path)` | 文件元数据 | `{is_dir, size, mtime}` | — |
+| `glob_async(pattern)` | 通配匹配 | `*`/`**`/`?` | 相对 CWD |
+| `read_tree(path, {depth})` | 递归目录树 | 目录先行按名排序;depth 限深 | 一次性返回,大目录有延迟 |
+
+**事件钩子** `on(event, fn)`:`save` `mode-change` `buffer-open` `buffer-close` `doc-change`(带合并范围)`theme-change` `lsp-diagnostics` `cursor-move` `selection-change` + 终端系(`term-open/mode-change/exit/close/resize/title/key`)`component-event`。优点:同事件多处理器按序;处理器抛错不阻断主流程。局限:doc 是只读快照 + 编辑队列。
+
+**键位绑定** `map(mode, key, command|fn)`:重复绑定即覆盖;支持多键序列与修饰键;回调自动注册隐藏命令。局限:重启失效(插件启动时重新注册)。
+
+**弹窗/面板/组件树**:`open_popup`(覆盖层弹窗,onKey 可 return close/handled/ignore)`open_panel`(侧边面板,布局树叶子)`close_panel` `move_panel` `el`(组件树:row/col/scroll/button/input)。优点:渲染与布局引擎分离,脏格 diff;input 组件引擎权威(onChange 自动回调)。局限:popup 重复打开替换前一个。
+
+**Picker 选择器** `helix.picker.define/run`:定义数据源,调起**原生 Picker**(nucleo 模糊匹配/滚动/预览/键位全核心)。优点:性能原生;插件可定义任意源(files/grep/buffers/symbols);行格式数组或 `{cells, payload}` 分离。局限:候选一次性返回(非流式);行渲染不支持每行组件。
+
+**终端**:`open_terminal` `term_write/feed/kill/list/close/resize/clear/save` `set_terminal_mode` `term_state`(跨会话持久化)+ 终端钩子(`term-key` 返回 normal/pass/consume/minimize/close)。优点:原生 pty 面板,四种显示模式,滚动缓冲。局限:键位直通需手动管理模式。
+
+**布局树**:`split` `buffer_open` `close_leaf` `zoom/unzoom` `resize_leaf` `layout_resize/swap/minimize/focus/swap_dir/equalize/fix` `focus` `get_layout` `restore_layout`。优点:zellij 式窗口管理,任意叶子焦点;layout_fix 免疫交换/关闭。局限:restore_layout 序列化半成品(见 §14)。
+
+**Buffer/诊断/监听**:`buffers` `current_buffer` `focus_buffer` `diagnostics` `watch/unwatch`(notify 支撑 500ms 防抖)。优点:文档快照只读安全。局限:id 会话内有效。
+
+**界面定制**:`set_statusline` `set_buffer_icon` `set_completion_render`(候选行 JS 渲染,回退原生两列)`set_completion_icon`(kind → 图标字符)`set_diagnostic_icons` `set_component_render`(组件外观 JS 绘制)`get_component_state` `set_keymap_hint`(which-key)。优点:渲染层全可定制;未注册/抛错回退默认。局限:completion 行钩子每帧每行调用——不要跑重逻辑。
+
+**主题**:`set_theme`(实时覆盖,scope 级)`reset_theme` `get_style` `theme_info` `set_theme_name`(异步切换)。优点:即时生效,继承主题正确;语法 scope 也覆盖。局限:颜色不支持引用另一 scope。
+
+**插件管理**:`helix.plugin(name, {deps})` 声明加载依赖;`helix.plugin.install(path|git-url)`(manifest 追踪 + 依赖解析 + 装后加载)`update`(git pull,失败保留旧版)`remove`。优点:来源追踪、卸载、更新、依赖递归、循环检测;命令面 `:plugin install/update/pin/unpin/remove/status`。局限:JS API 结果走状态栏(fire-and-forget);pin 仅 git 源。
+
+**LSP**:`helix.lsp.hover/completion/document_symbols/workspace_symbols/format/rename/code_actions/execute_code_action`(见 [api/lsp.md](docs/api/lsp.md))。优点:查询/编辑全链路,失败 resolve null 不悬挂。局限:block_on 冻结主线程(code_action 执行)。
 
 ## 📦 现有插件
 
@@ -228,6 +269,7 @@ cargo build --release
 
 ## 📄 文档
 
+- **插件 API**:[`docs/plugin-api.md`](docs/plugin-api.md)(总览与索引)· [`docs/api/`](docs/api/)(分域详细:说明/示例/优缺点)
 - 本 fork 设计文档:`docs/superpowers/specs/2026-08-15-js-ui-rendering-design.md`(JS 视图层分层)
 - 交接记录:`docs/handoff-2026-08-14.md`(窗口模式/终端/插件演进)
 - 原版 Helix 文档:[官网](https://helix-editor.com) · [文档](https://docs.helix-editor.com/) · [键位表](https://docs.helix-editor.com/keymap.html)

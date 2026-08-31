@@ -179,15 +179,64 @@ helix.on("cursor-move", (docId, { row, col, mode }) => { ... });
 helix.on("selection-change", (docId, { count, primary }) => { ... });
 ```
 
-### Full API list
+### API overview (grouped, with pros & cons)
 
-`echo` `register_command` `run_command` `on` `map` `el` `export` `plugin` `load` `lazy`
-`open_popup` `open_panel` `close_panel` `move_panel` `read_dir` `open_file` `set_buffer_icon` `set_statusline`
-`open_terminal` `term_write` `term_feed` `term_kill` `term_list` `term_close` `term_resize` `term_clear` `term_save` `set_terminal_mode`
-`split` `buffer_open` `close_leaf` `zoom` `unzoom` `resize_leaf` `layout_resize` `layout_swap` `layout_minimize` `layout_focus` `layout_swap_dir` `layout_equalize` `layout_fix` `focus` `get_layout` `restore_layout`
-`buffers` `current_buffer` `focus_buffer`
-`watch` `unwatch`
-`diagnostics`
+**Commands & messaging**
+
+| API | What | Pros | Cons |
+|---|---|---|---|
+| `register_command(name, fn, doc?)` | register `:name` command | one command = one undo; UI requests applied at command boundary | synchronous on main thread; use async for heavy work |
+| `run_command(name, ctx?)` | call plugin command programmatically | scripting / lazy-stub base | only registered plugin commands |
+| `echo(text)` | status bar message | simple | no history (overwrite) |
+
+**Document editing & selection**
+
+| API | What | Pros | Cons |
+|---|---|---|---|
+| `begin_edit()/end_edit()` | batch edit transaction | refactor-style plugins get single undo | must be paired |
+| `by_path(path, fn)` | cross-buffer access | edit any doc by path | read-only snapshot + queued edits |
+| `set_virtual_text/set_highlight` | decorations/markers | per-doc whole replacement, cleared on reload | render layer, not text ops |
+| `set_cursor/set_selection` | cursor/selection | multi-selection array form | — |
+
+**Process execution**
+
+| API | What | Pros | Cons |
+|---|---|---|---|
+| `run(cmd)` | sync execution | simple, immediate result | **blocks main thread**, short commands only |
+| `run_async(cmd)` | async execution | non-blocking; promise resumes on main thread | no streaming output |
+| `spawn({cmd, onChunk, onExit})` | streaming process | chunked output, pty support | caller joins chunks |
+
+**Async filesystem** (all return Promise, worker thread)
+
+| API | What | Pros | Cons |
+|---|---|---|---|
+| `read_dir(path)` | list dir (sync) | simple | sync-blocking; not recursive |
+| `read_file_async/write_file_async` | read/write file | async, non-blocking | UTF-8 lossy |
+| `stat_async(path)` | file metadata | `{is_dir, size, mtime}` | — |
+| `glob_async(pattern)` | glob match | `*`/`**`/`?` | relative to CWD |
+| `read_tree(path, {depth})` | recursive tree | dirs first, sorted; depth limit | one-shot, delay on huge trees |
+
+**Event hooks** `on(event, fn)`: `save` `mode-change` `buffer-open` `buffer-close` `doc-change` (with merged ranges) `theme-change` `lsp-diagnostics` `cursor-move` `selection-change` + terminal family (`term-open/mode-change/exit/close/resize/title/key`) `component-event`. Pros: multiple handlers run in order; a throwing handler doesn't block the flow. Cons: `doc` is a read-only snapshot + edit queue.
+
+**Keybindings** `map(mode, key, command|fn)`: rebinding overwrites; multi-key sequences & modifiers; callbacks auto-register as hidden commands. Cons: lost on restart (re-register at plugin startup).
+
+**Popups/Panels/Component tree**: `open_popup` (overlay modal; onKey returns close/handled/ignore) `open_panel` (side panel, layout-tree leaf) `close_panel` `move_panel` `el` (row/col/scroll/button/input). Pros: render + layout engine separated, dirty-cell diff; input is engine-authoritative (onChange auto callback). Cons: repeated open_popup replaces the previous one.
+
+**Picker** `helix.picker.define/run`: define a data source, open the **native Picker** (nucleo fuzzy match / scroll / preview / keys all core). Pros: native performance; arbitrary sources (files/grep/buffers/symbols); rows as array or `{cells, payload}`. Cons: one-shot candidates (no streaming); no per-row component rendering.
+
+**Terminal**: `open_terminal` `term_write/feed/kill/list/close/resize/clear/save` `set_terminal_mode` `term_state` (session persistence) + terminal hooks (`term-key` returns normal/pass/consume/minimize/close). Pros: native pty panels, four display modes, scrollback. Cons: passthrough key handling is manual.
+
+**Layout tree**: `split` `buffer_open` `close_leaf` `zoom/unzoom` `resize_leaf` `layout_resize/swap/minimize/focus/swap_dir/equalize/fix` `focus` `get_layout` `restore_layout`. Pros: zellij-style window management, any-leaf focus; layout_fix immune to swap/close. Cons: restore_layout serialization is half-baked (see §14).
+
+**Buffers/Diagnostics/Watch**: `buffers` `current_buffer` `focus_buffer` `diagnostics` `watch/unwatch` (notify-backed, 500ms debounce). Pros: read-only doc snapshots. Cons: ids valid within a session.
+
+**UI customization**: `set_statusline` `set_buffer_icon` `set_completion_render` (JS-rendered candidate rows, falls back to native two columns) `set_completion_icon` (kind → icon char) `set_diagnostic_icons` `set_component_render` (JS-drawn component appearance) `get_component_state` `set_keymap_hint` (which-key). Pros: render layer fully customizable; fallback on unregistered/throw. Cons: completion row hook runs per row per frame — no heavy logic inside.
+
+**Theme**: `set_theme` (live override, scope-level) `reset_theme` `get_style` `theme_info` `set_theme_name` (async switch). Pros: instant effect, inheritance handled; syntax scopes also overridable. Cons: colors can't reference another scope.
+
+**Plugin management**: `helix.plugin(name, {deps})` declares load deps; `helix.plugin.install(path|git-url)` (manifest tracking + dep resolution + post-install load) `update` (git pull, keeps old on failure) `remove`. Pros: source tracking, uninstall, update, recursive deps, cycle detection; CLI via `:plugin install/update/pin/unpin/remove/status`. Cons: JS API results via status bar (fire-and-forget); pin is git-only.
+
+**LSP**: `helix.lsp.hover/completion/document_symbols/workspace_symbols/format/rename/code_actions/execute_code_action` (see [api/lsp.md](docs/api/lsp.md)). Pros: full query/edit chain, resolves null on failure instead of hanging. Cons: block_on freezes main thread (execute_code_action).
 `set_cursor` `set_selection` `get_str`
 `set_theme` `reset_theme` `get_style` `theme_info` `set_theme_name` `set_diagnostic_icons`
 `run` `run_async` `spawn` `read_file_async` `write_file_async` `stat_async` `glob_async`
@@ -228,6 +277,7 @@ cargo build --release
 
 ## 📄 Docs
 
+- **Plugin API**: [`docs/plugin-api.md`](docs/plugin-api.md) (overview & index) · [`docs/api/`](docs/api/) (per-domain detail: signatures/examples/pros & cons)
 - JS view-layer design: `docs/superpowers/specs/2026-08-15-js-ui-rendering-design.md`
 - Handoff log: `docs/handoff-2026-08-14.md` (window mode / terminal / plugin evolution)
 - Upstream Helix docs: [Website](https://helix-editor.com) · [Documentation](https://docs.helix-editor.com/) · [Keymap](https://docs.helix-editor.com/keymap.html)
