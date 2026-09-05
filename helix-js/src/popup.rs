@@ -228,6 +228,15 @@ pub(crate) fn js_open_panel(
             )))
         })?,
     };
+    // 侧栏 rail 开关（缺省 false）:true 且 side=left/right → 固定边缘全高(不参与窗口分割)
+    let rail = match opts.get(JsString::from("rail"), ctx)? {
+        v if v.is_undefined() => false,
+        v => v.try_js_into::<bool>(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "open_panel: 'rail' must be a boolean",
+            )))
+        })?,
+    };
 
     let id = crate::state::next_popup_id();
     crate::state::set_last_panel_id(Some(id));
@@ -252,6 +261,7 @@ pub(crate) fn js_open_panel(
             side,
             size,
             focusable,
+            rail,
         });
     Ok(JsValue::from(id))
 }

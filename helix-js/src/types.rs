@@ -19,6 +19,8 @@ pub enum UiRequest {
         size: u16,
         /// 节点焦点路由开关（Tab 移动焦点/Esc 取消/节点按键直达，复用弹窗机制）
         focusable: bool,
+        /// 注册为侧栏 rail(贴边全高,不参与 window mode 分裂;默认 false=普通叶)
+        rail: bool,
     },
     ClosePanel {
         id: u64,

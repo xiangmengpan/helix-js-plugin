@@ -4858,6 +4858,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 side,
                 size,
                 focusable,
+                rail,
             } => {
                 // side 已在 JS 侧白名单校验，此处仅防御性映射
                 let side = match side.as_str() {
@@ -4868,14 +4869,18 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 };
                 let panel = ui::PluginPanel::new(id, side, focusable);
                 job::dispatch_blocking(move |_editor, compositor| {
-                    // 布局树：切分活动叶子，面板成为新叶子（side 决定方向/新叶子位置）
                     use crate::ui::layout::SplitDir;
-                    let (dir, first) = match side {
-                        ui::PanelSide::Right => (SplitDir::H, false),
-                        ui::PanelSide::Left => (SplitDir::H, true),
-                        ui::PanelSide::Bottom => (SplitDir::V, false),
-                    };
-                    let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(panel));
+                    // rail:true + left/right → 注册 rail(贴边全高);否则维持普通叶分裂
+                    if rail && matches!(side, ui::PanelSide::Left | ui::PanelSide::Right) {
+                        compositor.register_panel(panel, side, size);
+                    } else {
+                        let (dir, first) = match side {
+                            ui::PanelSide::Right => (SplitDir::H, false),
+                            ui::PanelSide::Left => (SplitDir::H, true),
+                            ui::PanelSide::Bottom => (SplitDir::V, false),
+                        };
+                        let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(panel));
+                    }
                 });
             }
             helix_js::UiRequest::ClosePanel { id } => {
@@ -4886,7 +4891,9 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         .layout_tree()
                         .find_leaf_id::<PluginPanel>(|p| p.id() == id);
                     if let Some(leaf) = found {
-                        compositor.remove_leaf(leaf);
+                        if !compositor.close_rail(leaf) {
+                            compositor.remove_leaf(leaf);
+                        }
                     }
                     // 先清 render 注册表（幂等），再按实例 id 移除对应层（多面板并存）
                     let _ = helix_js::close_popup(id);

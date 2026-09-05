@@ -817,8 +817,75 @@ impl LayoutTree {
 
     /// 渲染：每个叶子在自己的矩形里渲染组件；缩放时只有被缩放的叶子渲染；
     /// 浮动叶子最后画（最上层，居中浮窗 + 边框），其他叶子照常布局。
+    /// rail 边缘几何:(id, 是否左侧)
+    fn rail_edge(&self) -> Option<(u64, bool)> {
+        let rid = self.rail?;
+        match &self.root {
+            LayoutNode::Split { first, second, .. } => {
+                if matches!(&**first, LayoutNode::Leaf { id } if *id == rid) {
+                    Some((rid, true))
+                } else if matches!(&**second, LayoutNode::Leaf { id } if *id == rid) {
+                    Some((rid, false))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// rail 占宽份额(0<share<1)
+    fn rail_share(&self) -> f32 {
+        match &self.root {
+            LayoutNode::Split {
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                if let Some((rid, _)) = self.rail_edge() {
+                    let first_has_rail = matches!(&**first, LayoutNode::Leaf { id } if *id == rid);
+                    if first_has_rail {
+                        *ratio
+                    } else {
+                        1.0 - *ratio
+                    }
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
     pub fn render(&mut self, area: Rect, surface: &mut tui::buffer::Buffer, cx: &mut Context) {
         if let Some(zoomed) = self.zoomed {
+            // zoom 保留 rail:rail 占边缘窄条,zoomed 占其余 main 区
+            if let Some((rid, left)) = self.rail_edge() {
+                let share = self.rail_share().clamp(0.05, 0.9);
+                let rail_w = ((area.width as f32) * share) as u16;
+                let rail_w = rail_w.clamp(1, area.width.saturating_sub(1).max(1));
+                let (rail_rect, zoom_area) = if left {
+                    (
+                        Rect::new(area.x, area.y, rail_w, area.height),
+                        Rect::new(area.x + rail_w, area.y, area.width - rail_w, area.height),
+                    )
+                } else {
+                    (
+                        Rect::new(area.x + area.width - rail_w, area.y, rail_w, area.height),
+                        Rect::new(area.x, area.y, area.width - rail_w, area.height),
+                    )
+                };
+                let mut comps = std::mem::take(&mut self.components);
+                if let Some(rc) = comps.get_mut(&rid) {
+                    rc.render(rail_rect, surface, cx);
+                }
+                if let Some(zc) = comps.get_mut(&zoomed) {
+                    zc.render(zoom_area, surface, cx);
+                }
+                self.components = comps;
+                return;
+            }
             if let Some(comp) = self.components.get_mut(&zoomed) {
                 comp.render(area, surface, cx);
             }
@@ -925,6 +992,26 @@ impl LayoutTree {
     /// 事件路由：浮动叶子优先，其次活动叶子；Ignored → 编辑器叶子（id=0）兜底
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let target = self.float.unwrap_or_else(|| self.active());
+        // rail 焦点态:组件优先消费(浏览键);未消费的 Esc/'l' → 回 main;其余键吞掉
+        // (不透穿编辑器,避免 rail 聚焦时误编辑)。filetree 自消费 l/h/Esc/C-\ 等,不受影响。
+        if target != 0 && self.rail == Some(target) {
+            let exit_key = matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc)
+                || matches!(event, Event::Key(k)
+                    if k.code == helix_view::input::KeyCode::Char('l')
+                        && !k.modifiers.contains(helix_view::input::KeyModifiers::CONTROL)
+                        && !k.modifiers.contains(helix_view::input::KeyModifiers::ALT));
+            if let Some(comp) = self.components.get_mut(&target) {
+                let r = comp.handle_event(event, cx);
+                if r.is_ignored() {
+                    if exit_key {
+                        self.active = self.operational_target();
+                    }
+                    return EventResult::Consumed(None); // rail 吞键,不落编辑器
+                }
+                return r;
+            }
+            return EventResult::Consumed(None);
+        }
         if let Some(comp) = self.components.get_mut(&target) {
             match comp.handle_event(event, cx) {
                 EventResult::Ignored(cb) if target != 0 => {

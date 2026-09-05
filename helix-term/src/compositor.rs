@@ -708,13 +708,28 @@ impl Compositor {
     }
 
     /// 关闭任意叶(JS close_leaf 等入口):BufferLeaf 须同步清理其在 editor.tree 的 view
-    /// (否则 tree.focus 悬空 → 每帧 serialize 的 tree.get(focus) panic)。
+    /// (否则 tree.focus 悬空 → 每帧 serialize 的 tree.get(focus) panic);rail 走 take_rail。
     pub fn close_leaf_clean(&mut self, editor: &mut Editor, id: u64) {
-        if self.main_tree.view_id_of(id).is_some() {
+        if self.main_tree.is_rail(id) {
+            self.main_tree.take_rail();
+            self.sync_layout_cache();
+            self.sync_editor_focus(editor);
+        } else if self.main_tree.view_id_of(id).is_some() {
             self.remove_buffer_leaf(editor, id);
         } else {
             self.remove_leaf(id);
             self.sync_editor_focus(editor);
+        }
+    }
+
+    /// 关闭 rail(专用:x/ClosePanel 落在 rail 上;LayoutTree.remove 对 rail 免疫)
+    pub fn close_rail(&mut self, id: u64) -> bool {
+        if self.main_tree.is_rail(id) {
+            self.main_tree.take_rail();
+            self.sync_layout_cache();
+            true
+        } else {
+            false
         }
     }
 
@@ -739,6 +754,22 @@ impl Compositor {
             );
         }
         self.sync_editor_focus(editor);
+    }
+
+    /// 把面板注册为 rail(侧栏):side left/right → LayoutTree 边缘全高;bottom 维持普通叶。
+    /// size=面板期望列宽(整数值)。返回新叶 id。
+    pub fn register_panel(
+        &mut self,
+        panel: crate::ui::PluginPanel,
+        side: crate::ui::plugin_panel::PanelSide,
+        size: u16,
+    ) -> Option<u64> {
+        let left = matches!(side, crate::ui::plugin_panel::PanelSide::Left);
+        let width = self.area.width.max(1) as f32;
+        let ratio = (size as f32 / width).clamp(0.05, 0.9);
+        self.main_tree.register_rail(Box::new(panel), left, ratio);
+        self.sync_layout_cache();
+        self.main_tree.rail_leaf()
     }
 
     /// 打开路径到新叶（buffer_open/:vsplit path/gf 共用落点）：editor.open(Load) 建/取 doc
@@ -962,7 +993,10 @@ impl Compositor {
         }
         let a = self.main_tree.active();
         if a != 0 {
-            if self.main_tree.view_id_of(a).is_some() {
+            if self.main_tree.is_rail(a) {
+                self.close_rail(a);
+                self.sync_editor_focus(cx.editor);
+            } else if self.main_tree.view_id_of(a).is_some() {
                 self.remove_buffer_leaf(cx.editor, a);
             } else {
                 self.remove_leaf(a);
