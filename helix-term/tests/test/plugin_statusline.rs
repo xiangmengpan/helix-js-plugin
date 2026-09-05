@@ -15,6 +15,8 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_renders() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("st.txt");
     std::fs::write(&file, "data\n")?;
@@ -70,6 +72,8 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
 /// replace 模式：整个状态栏由 JS 控制（默认组件不渲染），左右分栏（right 段右对齐）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("sl.txt");
     std::fs::write(&file, "x\n")?;
@@ -157,6 +161,8 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
 /// 真实内容 + zones [2,3,1]：右区（位置信息）必须贴屏幕最右
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("rf.txt");
     std::fs::write(&file, "x\n")?;
@@ -212,6 +218,8 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
 /// zones 2:3:1：左区 1/3、中区居中、右区右对齐（宽 90 → 左 30/中 30/右 30）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("zr.txt");
     std::fs::write(&file, "x\n")?;
@@ -265,6 +273,8 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
 /// window_mode 透传给 JS 状态栏钩子（replace 钩子可据此渲染 [WINDOW]）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("sl.js");
     std::fs::write(
@@ -313,6 +323,8 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
 /// 窗口图标链路:active_leaf_type/active_leaf_path 透传给 replace 模式 JS 钩子
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("sl.js");
     std::fs::write(

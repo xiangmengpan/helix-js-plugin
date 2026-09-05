@@ -74,6 +74,8 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
 /// term-key 钩子:Esc → minimize(终端保活,叶子收起)
 #[tokio::test(flavor = "multi_thread")]
 async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("thooks.js");
@@ -113,6 +115,8 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
 /// Esc 切 terminal normal(滚动)模式;q 无操作——关闭统一交给 window 模式 x
 #[tokio::test(flavor = "multi_thread")]
 async fn esc_switches_to_normal_q_noop() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("thooks2.js");
@@ -171,6 +175,8 @@ async fn esc_switches_to_normal_q_noop() -> anyhow::Result<()> {
 /// 通知型钩子:term-open / term-mode-change / term-title / term-exit
 #[tokio::test(flavor = "multi_thread")]
 async fn term_hooks_notify_events() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("thooks3.js");
@@ -244,6 +250,8 @@ async fn term_hooks_notify_events() -> anyhow::Result<()> {
 /// 缺口修复:窗口模式 x 也能关闭覆盖层(layers)中的终端组件(不只布局树叶子)
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_x_closes_layer_terminal() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut app = AppBuilder::new().build()?;
     // 终端组件直接作为覆盖层(不进布局树;id=99 不会误匹配 active=0)
@@ -266,6 +274,8 @@ async fn window_mode_x_closes_layer_terminal() -> anyhow::Result<()> {
 /// 终端状态通道:get_component_state(view_id) → {mode, title, minimized, scroll_offset}
 #[tokio::test(flavor = "multi_thread")]
 async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("tstate.js");
@@ -318,6 +328,8 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
 /// 终端视图 JS 化:set_component_render(tid) 画标题条(顶部 1 行),网格在下方
 #[tokio::test(flavor = "multi_thread")]
 async fn terminal_title_bar_from_js_view() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("tview.js");
@@ -349,6 +361,8 @@ async fn terminal_title_bar_from_js_view() -> anyhow::Result<()> {
 /// 标签条示范:set_component_render(TABBAR_ID) 画顶部 1 行;树区下移
 #[tokio::test(flavor = "multi_thread")]
 async fn tabbar_renders_top_row_from_js_view() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("tabbar.js");
@@ -377,6 +391,8 @@ async fn tabbar_renders_top_row_from_js_view() -> anyhow::Result<()> {
 /// 鼠标命中:点击有视图回调的叶子 → component-event;JS 返回 true → 消费
 #[tokio::test(flavor = "multi_thread")]
 async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("mhit.js");
@@ -423,6 +439,8 @@ async fn mouse_click_hits_js_view_component() -> anyhow::Result<()> {
 /// keymap 前缀提示:set_keymap_hint 回调文本渲染(替代内置 Info)
 #[tokio::test(flavor = "multi_thread")]
 async fn keymap_hint_js_replaces_info() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("kh.js");
@@ -452,6 +470,8 @@ async fn keymap_hint_js_replaces_info() -> anyhow::Result<()> {
 /// 无 set_keymap_hint 时:内置 Info 兜底(前缀 g 仍显示)
 #[tokio::test(flavor = "multi_thread")]
 async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut app = AppBuilder::new().build()?;
     pump(&mut app, "g").await?;
@@ -469,6 +489,8 @@ async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
 /// 完整 which-key.js:按 g 前缀 → 中文说明(未命中映射显示原 doc);C-w 窗口模式中文表
 #[tokio::test(flavor = "multi_thread")]
 async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
     let wk = format!("{home}/.config/helix/plugins/features/which-key.js");
@@ -503,6 +525,8 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
 /// window 模式 Enter:确认当前窗口 → 退出窗口模式(回 normal)
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut app = AppBuilder::new().build()?;
     pump(&mut app, "<C-w>").await?;
@@ -517,9 +541,7 @@ async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
 /// filetree Enter 打开文件 → 聚焦编辑器叶子(active=0)+ 编辑器 buffer 切换
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
-    let _guard = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("z.txt");
     let file_str = file.to_string_lossy().into_owned();
@@ -574,6 +596,8 @@ async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
 /// 提示位置:JS 返回 {position:"bottom-left"} → Info 渲染在左下角(全屏坐标,开面板不漂移)
 #[tokio::test(flavor = "multi_thread")]
 async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("khp.js");
@@ -609,6 +633,8 @@ async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
 /// buffer 遍历:helix.buffers() 列出文档;focus_buffer 切换当前 view
 #[tokio::test(flavor = "multi_thread")]
 async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let f1 = dir.path().join("a.txt");
@@ -667,6 +693,8 @@ async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
 /// cursor-move 事件:移动光标 → JS 回调触发(帧级节流)
 #[tokio::test(flavor = "multi_thread")]
 async fn cursor_move_event_fires() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("c.txt");
@@ -704,6 +732,8 @@ async fn cursor_move_event_fires() -> anyhow::Result<()> {
 /// fs-watcher:watch 目录 → 文件变更 → JS 回调触发
 #[tokio::test(flavor = "multi_thread")]
 async fn fs_watch_event_fires_on_change() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let watch_dir = dir.path().join("wd");
@@ -752,6 +782,8 @@ async fn fs_watch_event_fires_on_change() -> anyhow::Result<()> {
 /// 布局树光标转发:编辑器叶子在 main_tree,compositor.cursor 应转发(不返回 (None, Hidden))
 #[tokio::test(flavor = "multi_thread")]
 async fn layout_tree_cursor_forwarding() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut app = AppBuilder::new().build()?;
     let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
@@ -765,6 +797,8 @@ async fn layout_tree_cursor_forwarding() -> anyhow::Result<()> {
 /// (回归:Position::new(row, col) 曾把 col 偏移当 row → 光标恒在"第 8 行"、回车 x+1)
 #[tokio::test(flavor = "multi_thread")]
 async fn cursor_position_not_swapped() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("p.txt");

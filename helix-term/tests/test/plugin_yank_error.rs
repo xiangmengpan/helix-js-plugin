@@ -3,6 +3,8 @@ use super::*;
 // :plugin-load 失败 → set_error → last_error 记录 → :yank-error 复制最近错误到 + 寄存器
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_load_failure_yankable() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;

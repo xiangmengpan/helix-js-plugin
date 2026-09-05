@@ -3,6 +3,8 @@ use super::*;
 // 真实用户环境渲染复现:加载用户 init.js + :filetree 打开面板 + 渲染,检查 render failed。
 #[tokio::test(flavor = "multi_thread")]
 async fn reload_user_env_filetree_render() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let home = std::env::var("HOME").unwrap_or_default();
     let config_dir = std::path::PathBuf::from(&home).join(".config/helix");
     let init_path = config_dir.join("init.js");
@@ -28,22 +30,20 @@ async fn reload_user_env_filetree_render() -> anyhow::Result<()> {
     // 通过事件循环执行 :filetree(渲染面板)
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
-        vec![
-            (
-                Some(":filetree<ret>"),
-                Some(&|app| {
-                    // 渲染后检查:面板不应显示 render failed
-                    let status = app.editor.get_status();
-                    if let Some((s, _)) = &status {
-                        eprintln!("status: {s}");
-                        assert!(
-                            !s.contains("render failed") && !s.contains("call stack"),
-                            "面板渲染不应失败, got: {s}"
-                        );
-                    }
-                }),
-            ),
-        ],
+        vec![(
+            Some(":filetree<ret>"),
+            Some(&|app| {
+                // 渲染后检查:面板不应显示 render failed
+                let status = app.editor.get_status();
+                if let Some((s, _)) = &status {
+                    eprintln!("status: {s}");
+                    assert!(
+                        !s.contains("render failed") && !s.contains("call stack"),
+                        "面板渲染不应失败, got: {s}"
+                    );
+                }
+            }),
+        )],
         false,
     )
     .await?;

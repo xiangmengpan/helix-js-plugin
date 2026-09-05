@@ -7,9 +7,7 @@ use super::*;
 /// - onChange 回显 JSON.stringify(value)（\n 以 \\n 转义序列出现在状态栏）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_input_multiline_enter_newline_and_line_move() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;

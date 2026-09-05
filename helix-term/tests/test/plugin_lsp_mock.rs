@@ -14,6 +14,8 @@ use termina::event::{Event, KeyEvent};
 // format：mock 返回 TextEdit("one"→"ONE")→ 自动应用 + 摘要 resolve
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_format_applies() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -62,6 +64,8 @@ async fn plugin_lsp_mock_format_applies() -> anyhow::Result<()> {
 // rename 跨 buffer：当前 + 第二文件都变 + files 计数
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_rename_cross_file() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file_a = dir.path().join("a.mock");
     let file_b = dir.path().join("b.mock");
@@ -115,6 +119,8 @@ async fn plugin_lsp_mock_rename_cross_file() -> anyhow::Result<()> {
 // apply_workspace_edit 校验失败 → resolve null
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_rename_stale_version() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "old\n")?;
@@ -163,6 +169,8 @@ async fn plugin_lsp_mock_rename_stale_version() -> anyhow::Result<()> {
 // initialize_only：能力最小 → 查询回 null（顺带验证 capabilities 未声明路径）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_no_capability_resolves_null() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -204,6 +212,8 @@ async fn plugin_lsp_mock_no_capability_resolves_null() -> anyhow::Result<()> {
 // code_actions 两阶段：列表 JSON 可读 → execute 应用 edit（mock 缺省 tag "A" → title "mock-fix-A"/edit "ONE-A"）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -274,6 +284,8 @@ async fn plugin_lsp_mock_code_actions_execute() -> anyhow::Result<()> {
 // 修复后按 _serverId 路由到 B → "ONE-B"（对）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_multiserver_execute_routes_to_owner() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock2");
     std::fs::write(&file, "one\n")?;
@@ -345,6 +357,8 @@ async fn plugin_lsp_mock_multiserver_execute_routes_to_owner() -> anyhow::Result
 // 查询方法真实响应：hover（scenario hover_basic）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_query_real_hover() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -386,6 +400,8 @@ async fn plugin_lsp_mock_query_real_hover() -> anyhow::Result<()> {
 // 查询方法真实响应：completion（scenario completion_basic，读 label）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_query_real_completion() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -427,6 +443,8 @@ async fn plugin_lsp_mock_query_real_completion() -> anyhow::Result<()> {
 // 查询方法真实响应：goto_definition（scenario goto_definition_basic，mock 返回单 Location → 读 range.start.line）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_query_real_goto() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -468,6 +486,8 @@ async fn plugin_lsp_mock_query_real_goto() -> anyhow::Result<()> {
 // 查询方法真实响应：document_symbols（scenario symbols_basic，读 name）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_query_real_symbols() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -511,6 +531,8 @@ async fn plugin_lsp_mock_query_real_symbols() -> anyhow::Result<()> {
 // 的下一个 idle 周期（idle 泵会 drain LSP 结果并兑现 promise）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_timeout_rejects() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock");
     std::fs::write(&file, "one\n")?;
@@ -594,6 +616,8 @@ async fn plugin_lsp_mock_timeout_rejects() -> anyhow::Result<()> {
 // 手动构造 action(无 _serverId)→ 回退第一个 CodeAction server → resolve 用 A → "ONE-A"
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_mock_execute_manual_action_falls_back_first_server() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.mock2");
     std::fs::write(&file, "one\n")?;

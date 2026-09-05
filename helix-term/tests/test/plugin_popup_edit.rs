@@ -4,6 +4,8 @@ use helix_view::current_ref;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_popup_edits_document() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("pe.txt");
     std::fs::write(&file, "hello\n")?;

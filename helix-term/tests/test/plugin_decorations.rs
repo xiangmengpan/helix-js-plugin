@@ -5,6 +5,8 @@ use helix_view::current_ref;
 // 命令里 set_virtual_text/set_highlight 当前 doc → 白盒断言 plugin_decorations 字段与 char 坐标
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_applied_and_replaced() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\ntwo\n")?; // char 索引:line2 起点 = 4
@@ -85,6 +87,8 @@ async fn plugin_decorations_applied_and_replaced() -> anyhow::Result<()> {
 // 未打开 path → 不崩、不写入任何 doc
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_unknown_path_ignored() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\n")?;
@@ -124,6 +128,8 @@ async fn plugin_decorations_unknown_path_ignored() -> anyhow::Result<()> {
 // doc-change 监听重推:替换语义保证无残留(插件在 doc-change 里重推)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_repush_on_doc_change() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
@@ -182,6 +188,8 @@ async fn plugin_decorations_repush_on_doc_change() -> anyhow::Result<()> {
 // async + begin_edit:装饰与编辑同 hold,结束一起应用
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_async_begin_edit() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\n")?;
@@ -234,6 +242,8 @@ async fn plugin_decorations_async_begin_edit() -> anyhow::Result<()> {
 // Layer::consume debug_assert)——无排序时 debug 构建渲染即 panic,本测试驱动渲染兜底
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_unsorted_virtual_text_renders() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\ntwo\n")?;
@@ -277,6 +287,8 @@ async fn plugin_decorations_unsorted_virtual_text_renders() -> anyhow::Result<()
 // 反向高亮区间(sr,sc)>(er,ec):应用时 swap 归一化,产出 start<=end
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_reversed_highlight_normalized() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\ntwo\n")?;

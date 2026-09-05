@@ -6,6 +6,8 @@ use helix_view::current_ref;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_load_and_run_command() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("test_plugin.js");
     std::fs::write(
@@ -39,6 +41,8 @@ async fn plugin_load_and_run_command() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_popup_open_and_close() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("popup_plugin.js");
     std::fs::write(
@@ -93,6 +97,8 @@ async fn plugin_popup_open_and_close() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_popup_size_smoke() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     // 冒烟：open_popup 的 width/height/position 选项不能使弹窗打开失败
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("sz.txt");
@@ -135,6 +141,8 @@ async fn plugin_popup_size_smoke() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_bufferline_icons() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     // 验证 bufferline 图标钩子真的渲染进标签栏
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.rs");
@@ -192,6 +200,8 @@ async fn plugin_bufferline_icons() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_edit_document() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("t.txt");
     std::fs::write(&file, "world\n")?;
@@ -251,6 +261,8 @@ async fn plugin_edit_document() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_events() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("ev.txt");
     std::fs::write(&file, "data\n")?;
@@ -352,6 +364,8 @@ async fn plugin_events() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_keymap() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     // 插件键位注入：helix.map 注册的键在 :plugin-load 后立即可用；
     // 字符串命令走 MappableCommand 回退（execute → run_plugin_command），
     // 回调注册为 __mapped_N 隐藏命令，同一机制。

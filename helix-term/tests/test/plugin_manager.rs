@@ -4,6 +4,8 @@ use super::*;
 // config_dir 是真实 ~/.config，只测无副作用路径。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_manager_list_status() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("r.txt");
     std::fs::write(&file, "x\n")?;
@@ -51,6 +53,8 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
 // status 的 manifest 计数后缀（"N installed in manifest"）：无 manifest 时也应显示 0 计数。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_list_and_status() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -80,6 +84,8 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
 // 无法识别的参数(非路径非 url)→ 报错不崩。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -104,6 +110,8 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
 // pin/unpin 未安装 → 报错(无副作用路径)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -140,6 +148,8 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
 // JS API:helix.plugin.remove(未安装)→ 报错经 set_error(plugin-load 里调用,drain 执行)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;

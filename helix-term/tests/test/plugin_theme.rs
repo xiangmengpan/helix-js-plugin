@@ -5,6 +5,7 @@
 
 #![cfg(feature = "integration")]
 
+use super::helpers::PLUGIN_TEST_LOCK;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -85,6 +86,8 @@ async fn quit_app(mut app: Application) -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_theme_set_and_reset_over_inheriting_theme() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = THEME_LOCK.lock().unwrap();
     // ashokai_brahn 继承 ashokai：ui.popup/ui.background 只定义在父主题里。
     // 若基准用 load_raw（不解析 inherits）捕获，set/reset 都会丢父主题样式。
@@ -151,6 +154,8 @@ async fn plugin_theme_set_and_reset_over_inheriting_theme() -> anyhow::Result<()
 /// JS 主题 API 集成：对象覆盖（fg/bg/modifiers）、get_style、theme_info、set_theme_name、theme-change 事件
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_theme_js_apis() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let _guard = THEME_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("theme2.js");

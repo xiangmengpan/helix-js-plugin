@@ -6,6 +6,8 @@ use helix_view::current_ref;
 // pump_jobs 执行 async 续体 → echo → 状态栏。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_no_server_resolves_null() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt"); // 无 LSP 配置的普通 txt
     std::fs::write(&file, "hello\n")?;
@@ -56,6 +58,8 @@ async fn plugin_lsp_no_server_resolves_null() -> anyhow::Result<()> {
 // format/rename/code_actions 无 server → resolve null；execute_code_action 与列表同 server 选择，无则 null。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_lsp_enhance_no_server_resolves_null() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt"); // 无 LSP
     std::fs::write(&file, "hello\n")?;
@@ -126,6 +130,8 @@ async fn plugin_lsp_enhance_no_server_resolves_null() -> anyhow::Result<()> {
 // open_file 第二参数 {row, col}：打开后光标定位到指定行列（字符坐标 0-based）
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_open_file_with_position() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let src = dir.path().join("src.txt");
     let lines: Vec<String> = (0..10).map(|i| format!("line{i}")).collect();

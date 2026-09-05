@@ -7,6 +7,8 @@ use helix_core::diagnostic::Severity;
 /// 输入命令名过滤 → 回车执行选中项 → 状态栏出现插件 echo 消息。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_command_in_palette() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("pal.txt");
     std::fs::write(&file, "data\n")?;

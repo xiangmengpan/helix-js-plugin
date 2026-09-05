@@ -50,6 +50,8 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
 /// - 某行 scroll 保留最后一行（"s2"，无 "s1"）
 #[tokio::test(flavor = "multi_thread")]
 async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("ct.txt");
     std::fs::write(&file, "x\n")?;
@@ -128,6 +130,8 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
 /// 100 行 + offset=42 + height=5 → 面板显示 row42..row46（无 row0/row99）
 #[tokio::test(flavor = "multi_thread")]
 async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("so.txt");
     std::fs::write(&file, "x\n")?;
@@ -199,6 +203,8 @@ async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_node_focus_events() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("nf.txt");
     std::fs::write(&file, "x\n")?;
@@ -263,6 +269,8 @@ async fn plugin_node_focus_events() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     // 面板 onKey 里调 helix.open_file → 文件必须在 buffer 打开（UI 请求即时应用）
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("pf.txt");
@@ -329,6 +337,8 @@ async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_split_terminal_leaf() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     // 布局树 API：split 终端叶子 → 关闭
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("sl.txt");

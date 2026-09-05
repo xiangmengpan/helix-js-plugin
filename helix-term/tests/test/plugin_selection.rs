@@ -5,6 +5,8 @@ use helix_view::current_ref;
 // 本文件保留；integration.rs 的 mod 声明由控制器合并时统一添加。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_selection_upper() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("sel.txt");
     std::fs::write(&file, "hello world\n")?;
@@ -67,6 +69,8 @@ async fn plugin_selection_upper() -> anyhow::Result<()> {
 // 多选区：set_selection 数组形态 → 多光标；乱序输入 → 引擎排序，primary = 末位。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_selection_multicursor() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("sel.txt");
     std::fs::write(&file, "aaaa\nbbbb\ncccc\n")?;

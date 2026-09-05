@@ -4,6 +4,8 @@ use super::*;
 // 与 plugin_async 同源隐患：multi_thread 下线程本地 ASYNC_EVENTS 通道可能滞留旧线程（已知测试侧问题）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_fsasync_read() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello fs")?;

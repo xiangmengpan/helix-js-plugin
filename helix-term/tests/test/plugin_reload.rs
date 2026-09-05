@@ -6,6 +6,8 @@ use helix_term::ui;
 // 本文件保留；integration.rs 的 mod 声明由控制器合并时统一添加。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_reload_command() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("r.txt");
     std::fs::write(&file, "x\n")?;

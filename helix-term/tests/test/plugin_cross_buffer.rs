@@ -6,6 +6,8 @@ use helix_view::current_ref;
 // by_path 读另一 buffer 文本(:open 打开第二个文件后,命令里 by_path 读取)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_by_path_reads_other_buffer() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -49,6 +51,8 @@ async fn plugin_by_path_reads_other_buffer() -> anyhow::Result<()> {
 // 未打开路径 → null,命令不崩
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_by_path_missing_returns_null() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -84,6 +88,8 @@ async fn plugin_by_path_missing_returns_null() -> anyhow::Result<()> {
 // 改另一 buffer:内容生效,当前 buffer 不受影响;undo 一次回退该 buffer
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_edit_other_buffer_undo_per_doc() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -149,6 +155,8 @@ async fn plugin_edit_other_buffer_undo_per_doc() -> anyhow::Result<()> {
 // 一个命令混合改当前与另一 buffer:各自独立撤销
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_mixed_edits_undo_independent() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -215,6 +223,8 @@ async fn plugin_mixed_edits_undo_independent() -> anyhow::Result<()> {
 // async 命令:begin_edit → by_path 改其它 buffer → await → 再改 → end_edit → 一次撤销
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -283,6 +293,8 @@ async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
 // 修复前 apply_plugin_edits 用预取 current_view_id 编辑后台 doc → selections 缺条目 → panic 崩溃。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_edit_other_buffer_vsplit_no_panic() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file1 = dir.path().join("a.txt");
     std::fs::write(&file1, "one\n")?;
@@ -341,6 +353,8 @@ async fn plugin_edit_other_buffer_vsplit_no_panic() -> anyhow::Result<()> {
 // 相对路径 by_path:cwd-join 端到端(:cd 后 by_path("b.txt") 命中已打开 buffer)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_by_path_relative_resolves_from_cwd() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     // 保存进程 cwd:下面的 :cd 会真 chdir 整个测试进程 + 更新 helix-stdx 缓存,
     // 必须在本测试结束时恢复,否则并行测试(如 filetree 定位)被 cwd 污染
     let prev_cwd = std::env::current_dir()?;

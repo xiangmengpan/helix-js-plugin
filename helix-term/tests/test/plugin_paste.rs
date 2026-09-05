@@ -12,9 +12,7 @@ use termina::event::{Event, KeyEvent};
 // 聚焦的 input 收到 Paste → 批量插入整段 + 一次 onChange(白盒 value/status 断言)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_paste_inserts_batch_into_focused_input() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;
@@ -67,9 +65,7 @@ async fn plugin_paste_inserts_batch_into_focused_input() -> anyhow::Result<()> {
 // 未聚焦 input → Paste 冒泡给编辑器正文粘贴(doc 变)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_paste_unfocused_bubbles_to_editor() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;

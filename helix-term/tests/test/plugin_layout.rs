@@ -4,6 +4,8 @@ use helix_term::job::Jobs;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn panel_shrinks_editor() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("ly.txt");
     std::fs::write(&file, "x\n")?;

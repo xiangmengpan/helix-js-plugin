@@ -5,6 +5,8 @@ use super::*;
 /// 集成测试无法改目录）→ init.js 内容用绝对路径写 mod.js/heavy.js（js_load 支持绝对路径）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_entry_import_and_lazy() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("e.txt");
     std::fs::write(&file, "x\n")?;

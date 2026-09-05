@@ -2,6 +2,8 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_shell_run() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("r.txt");
     std::fs::write(&file, "x\n")?;

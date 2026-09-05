@@ -6,6 +6,8 @@ use super::*;
 /// - Enter → input 有状态时走 onKey("Enter")
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_input_edit_and_nav() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;

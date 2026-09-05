@@ -49,6 +49,8 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
 /// 任何 surface 都完整重画。此测试锁定面板在布局树叶子中也能被渲染出来。
 #[tokio::test(flavor = "multi_thread")]
 async fn tree_panel_diff_reset() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let plugin = dir.path().join("mini.js");
     std::fs::write(

@@ -3,6 +3,8 @@ use super::*;
 /// 多面板并存（用标准 harness：按键可靠处理；布局细节由单测覆盖）
 #[tokio::test(flavor = "multi_thread")]
 async fn two_right_panels_coexist_and_close_by_id() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("mp.txt");
     std::fs::write(&file, "x\n")?;

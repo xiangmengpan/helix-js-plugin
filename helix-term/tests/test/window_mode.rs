@@ -231,6 +231,8 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
 /// buffer_open:JS 打开文件为新 BufferLeaf 叶子(split:h → 原编辑器右侧新叶)
 #[tokio::test(flavor = "multi_thread")]
 async fn buffer_open_creates_leaf_with_content() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     let b = dir.path().join("b.txt");

@@ -15,6 +15,8 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_modes() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("mt.txt");
     std::fs::write(&file, "x\n")?;
@@ -76,6 +78,8 @@ async fn plugin_terminal_modes() -> anyhow::Result<()> {
 /// C-\ 在 insert 切 normal（终端内），再 C-\ 回 helix（焦点编辑器）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_floating_and_mode() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("ft.txt");
     std::fs::write(&file, "x\n")?;
@@ -179,6 +183,8 @@ async fn plugin_terminal_floating_and_mode() -> anyhow::Result<()> {
 /// 回归：dock 分屏（vterm/hterm 路径）后 C-\×2 焦点回编辑器：普通键应进编辑器而非终端。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_dock_focus_back_to_editor() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "abc\n")?;
@@ -238,6 +244,8 @@ async fn plugin_terminal_dock_focus_back_to_editor() -> anyhow::Result<()> {
 /// 浮动终端与 dock 分屏并存时，C-\×2 仍应回编辑器。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_float_plus_dock_focus_editor() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("m.txt");
     std::fs::write(&file, "abc\n")?;
@@ -303,6 +311,8 @@ async fn plugin_terminal_float_plus_dock_focus_editor() -> anyhow::Result<()> {
 /// 回归：term 打开 → 输入 → 关闭 → 再打开（boa 闭包槽位 + 注册表 id 修复）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("r.txt");
     std::fs::write(&file, "abc\n")?;
@@ -389,6 +399,8 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
 /// term-save 导出 + normal 模式 y 复制寄存器。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_save_and_yank() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("s.txt");
     std::fs::write(&file, "x\n")?;
@@ -478,6 +490,8 @@ async fn plugin_terminal_save_and_yank() -> anyhow::Result<()> {
 /// 布局原语 API 全链路：layout_resize / layout_swap / layout_minimize。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_layout_ops_api() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("l.txt");
     std::fs::write(&file, "x\n")?;
@@ -534,6 +548,8 @@ async fn plugin_layout_ops_api() -> anyhow::Result<()> {
 /// term 用 C-\ ×2 回编辑器后同样可编辑。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("fr.txt");
     std::fs::write(&file, "abc\n")?;
@@ -653,6 +669,8 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
 /// 活动叶子高亮边框：焦点在终端时边框在右半区，C-w h 回编辑器后边框移到左半区。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_focus_border() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("fb.txt");
     std::fs::write(&file, "x\n")?;
@@ -737,6 +755,8 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
 /// C-\ 切到 Normal(滚动)后 C-w 进模式并导航邻居。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("wk.txt");
     std::fs::write(&file, "x\n")?;
@@ -815,9 +835,7 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
 /// 回归：filetree 面板热重载后残留（render_popup not open → 显示 error、无法关闭）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("z.txt");
     std::fs::write(&file, "x\n")?;
@@ -894,9 +912,7 @@ async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
 /// 不再"渲染报错 + 无法关闭"。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("zh.txt");
     std::fs::write(&file, "x\n")?;
@@ -954,9 +970,7 @@ async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
 /// 多面板热重载：全部关闭（不只 last_panel_id），不留僵尸。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_multi_panel_reload_all_closed() -> anyhow::Result<()> {
-    let _rl = super::PANEL_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("mp.txt");
     std::fs::write(&file, "x\n")?;
@@ -1019,6 +1033,8 @@ async fn plugin_multi_panel_reload_all_closed() -> anyhow::Result<()> {
 /// 全局状态栏：有 split（editor|term）时，屏幕底部 1 行仍显示状态栏（不只在编辑器底部）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_statusline_global() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("sg.txt");
     std::fs::write(&file, "abc\n")?;
