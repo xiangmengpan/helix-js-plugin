@@ -1516,8 +1516,8 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
         if path.is_dir() {
             let picker = ui::file_picker(cx.editor, path.into());
             cx.push_layer(Box::new(overlaid(picker)));
-        } else if let Err(e) = cx.editor.open(path, action) {
-            cx.editor.set_error(format!("Open file failed: {:?}", e));
+        } else {
+            open_path_leaf_aware(cx, path, action);
         }
     }
 }
@@ -1539,8 +1539,8 @@ fn open_url(cx: &mut Context, url: Url, action: Action) {
     if path.is_dir() {
         let picker = ui::file_picker(cx.editor, path.into());
         cx.push_layer(Box::new(overlaid(picker)));
-    } else if let Err(e) = cx.editor.open(path, action) {
-        cx.editor.set_error(format!("Open file failed: {:?}", e));
+    } else {
+        open_path_leaf_aware(cx, path, action);
     }
 }
 
@@ -1570,6 +1570,13 @@ fn open_url_in_callback(
     if path.is_dir() {
         let picker = ui::file_picker(editor, path.into());
         compositor.push(Box::new(overlaid(picker)));
+    } else if matches!(action, Action::VerticalSplit | Action::HorizontalSplit) {
+        let dir = if matches!(action, Action::VerticalSplit) {
+            crate::ui::layout::SplitDir::H
+        } else {
+            crate::ui::layout::SplitDir::V
+        };
+        compositor.open_doc_in_new_leaf(editor, path.clone(), dir, false);
     } else if let Err(e) = editor.open(path, action) {
         editor.set_error(format!("Open file failed: {:?}", e));
     }
@@ -6029,8 +6036,8 @@ fn hsplit(cx: &mut Context) {
     });
 }
 
-fn hsplit_new(cx: &mut Context) {
-    cx.editor.new_file(Action::HorizontalSplit);
+fn hsplit_new(_cx: &mut Context) {
+    new_scratch_leaf(crate::ui::layout::SplitDir::V);
 }
 
 fn vsplit(cx: &mut Context) {
@@ -6042,8 +6049,38 @@ fn vsplit(cx: &mut Context) {
     });
 }
 
-fn vsplit_new(cx: &mut Context) {
-    cx.editor.new_file(Action::VerticalSplit);
+fn vsplit_new(_cx: &mut Context) {
+    new_scratch_leaf(crate::ui::layout::SplitDir::H);
+}
+
+/// editor.open 的叶模型封装:Replace/Load 走原路径;Split → 开新 BufferLeaf 叶(dispatch)。
+fn open_path_leaf_aware(cx: &mut Context, path: &Path, action: Action) {
+    match action {
+        Action::VerticalSplit | Action::HorizontalSplit => {
+            let path = path.to_path_buf();
+            let dir = if matches!(action, Action::VerticalSplit) {
+                crate::ui::layout::SplitDir::H
+            } else {
+                crate::ui::layout::SplitDir::V
+            };
+            crate::job::dispatch_blocking(move |editor, compositor| {
+                compositor.open_doc_in_new_leaf(editor, path, dir, false);
+            });
+        }
+        _ => {
+            if let Err(e) = cx.editor.open(path, action) {
+                cx.editor.set_error(format!("Open file failed: {:?}", e));
+            }
+        }
+    }
+}
+
+/// 新建空 scratch 文档到新叶(取代 :vsplit-new 的 core 树分裂)。
+fn new_scratch_leaf(dir: crate::ui::layout::SplitDir) {
+    crate::job::dispatch_blocking(move |editor, compositor| {
+        let doc_id = editor.create_scratch_document();
+        compositor.open_buffer_leaf(editor, doc_id, dir, false);
+    });
 }
 
 fn wclose(cx: &mut Context) {

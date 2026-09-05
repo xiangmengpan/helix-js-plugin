@@ -95,3 +95,56 @@ async fn hsplit_creates_same_doc_leaf_below() -> anyhow::Result<()> {
     assert_eq!(app.editor.documents.len(), 1, "同 doc 不新增文档");
     Ok(())
 }
+
+// :vsplit <path> → 新叶打开该文件,可编辑
+#[tokio::test(flavor = "multi_thread")]
+async fn vsplit_path_opens_file_in_new_leaf() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "AAA\n")?;
+    std::fs::write(&b, "BBB\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    pump(&mut app, &format!(":vsplit {}<ret>", b.display())).await?;
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 2, "vsplit path 应 2 叶: {types:?}");
+    assert_eq!(app.editor.documents.len(), 2, "a+b 两个 doc");
+    // 新叶活动且显示 b → 输入命中 b
+    pump(&mut app, "iXXX<esc>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "XXXBBB\n",
+        "vsplit path 后输入命中新叶 doc: {:?}",
+        doc.text().to_string()
+    );
+    Ok(())
+}
+
+// :vsplit-new → 新空 buffer 叶
+#[tokio::test(flavor = "multi_thread")]
+async fn vsplit_new_creates_scratch_leaf() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    pump(&mut app, ":vsplit-new<ret>").await?;
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 2, "vsplit-new 应 2 叶: {types:?}");
+    assert_eq!(app.editor.documents.len(), 2, "scratch doc + a");
+    // scratch 叶活动,空文档可输入
+    pump(&mut app, "ix<esc>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "x\n",
+        "scratch 叶输入(默认含尾换行): {:?}",
+        doc.text().to_string()
+    );
+    assert!(doc.path().is_none(), "scratch 无路径");
+    Ok(())
+}

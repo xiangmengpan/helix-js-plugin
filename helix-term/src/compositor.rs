@@ -682,6 +682,27 @@ impl Compositor {
         }
     }
 
+    /// 打开路径到新叶（buffer_open/:vsplit path/gf 共用落点）：editor.open(Load) 建/取 doc
+    /// → open_buffer_leaf 挂叶。失败 set_error。返回是否成功。
+    pub fn open_doc_in_new_leaf(
+        &mut self,
+        editor: &mut Editor,
+        path: std::path::PathBuf,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+    ) -> bool {
+        use helix_view::editor::Action;
+        let doc_id = match editor.open(&path, Action::Load) {
+            Ok(id) => id,
+            Err(e) => {
+                editor.set_error(format!("open: failed to open {}: {e}", path.display()));
+                return false;
+            }
+        };
+        self.open_buffer_leaf(editor, doc_id, dir, new_first);
+        true
+    }
+
     /// 在活动叶子旁开新 BufferLeaf 叶显示 doc_id（同 doc 双视图/打开文件落点）：
     /// 若当前 view 正显示该 doc 则克隆它（复制光标/滚动，对齐 core switch-Split 语义），
     /// 否则新建 view；register_flat 注册 → split_leaf 挂载 → focus 同步。

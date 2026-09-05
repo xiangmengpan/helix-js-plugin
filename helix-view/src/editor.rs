@@ -2079,6 +2079,14 @@ impl Editor {
         )
     }
 
+    /// 创建空 scratch 文档但不切换任何 view(叶=窗口模型:由调用方挂到新叶)。
+    pub fn create_scratch_document(&mut self) -> DocumentId {
+        self.new_document(Document::default(
+            self.config.clone(),
+            self.syn_loader.clone(),
+        ))
+    }
+
     pub fn new_file_from_stdin(&mut self, action: Action) -> Result<DocumentId, Error> {
         let (stdin, encoding, has_bom) = crate::document::read_to_string(&mut stdin(), None)?;
         let doc = Document::from(

@@ -283,6 +283,37 @@ fn open(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
 }
 
 fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow::Result<()> {
+    // 叶=窗口:分裂动作 → 每个文件开新叶(dispatch 到 compositor);目录仍开 picker(默认 Replace)
+    if matches!(action, Action::VerticalSplit | Action::HorizontalSplit) {
+        for arg in args {
+            let (path, _pos) = crate::args::parse_file(&arg);
+            let path = helix_stdx::path::expand_tilde(path);
+            if let Ok(true) = std::fs::canonicalize(&path).map(|p| p.is_dir()) {
+                let path2 = path.clone();
+                let callback = async move {
+                    let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                        move |editor: &mut Editor, compositor: &mut Compositor| {
+                            let picker = ui::file_picker(editor, path2.into())
+                                .with_default_action(Action::Replace);
+                            compositor.push(Box::new(overlaid(picker)));
+                        },
+                    ));
+                    Ok(call)
+                };
+                cx.jobs.callback(callback);
+            } else {
+                let dir = if matches!(action, Action::VerticalSplit) {
+                    crate::ui::layout::SplitDir::H
+                } else {
+                    crate::ui::layout::SplitDir::V
+                };
+                crate::job::dispatch_blocking(move |editor, compositor| {
+                    compositor.open_doc_in_new_leaf(editor, path.into_owned(), dir, false);
+                });
+            }
+        }
+        return Ok(());
+    }
     for arg in args {
         let (path, pos) = crate::args::parse_file(&arg);
         let path = helix_stdx::path::expand_tilde(path);
@@ -2259,22 +2290,30 @@ fn hsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     Ok(())
 }
 
-fn vsplit_new(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn vsplit_new(
+    _cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
 
-    cx.editor.new_file(Action::VerticalSplit);
+    crate::commands::new_scratch_leaf(crate::ui::layout::SplitDir::H);
 
     Ok(())
 }
 
-fn hsplit_new(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn hsplit_new(
+    _cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
 
-    cx.editor.new_file(Action::HorizontalSplit);
+    crate::commands::new_scratch_leaf(crate::ui::layout::SplitDir::V);
 
     Ok(())
 }
@@ -4985,35 +5024,11 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             }
             helix_js::UiRequest::OpenBufferLeaf { path, split } => {
                 job::dispatch_blocking(move |editor, compositor| {
-                    use helix_view::editor::Action;
-                    // Load 只加载文档不动当前 view（open 的 switch 分支）
-                    let doc_id = match editor.open(&PathBuf::from(&path), Action::Load) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            editor.set_error(format!("buffer_open: open failed: {path}: {e}"));
-                            return;
-                        }
-                    };
-                    // view 经 register_flat 注册进 editor.tree(不参与几何布局、不动焦点):
-                    // core 路由 current! = tree.get(tree.focus) 需要 view 在树内,
-                    // 叶子渲染各自 view.area 赋值;tree.remove 时同步清理。
-                    let view = helix_view::view::View::new(doc_id, editor.config().gutters.clone());
-                    let id = editor.tree.register_flat(view);
-                    let _ = view;
-                    if let Some(doc) = editor.document_mut(doc_id) {
-                        doc.ensure_view_init(id);
-                    }
                     let dir = match split.as_deref() {
                         Some("h") => crate::ui::layout::SplitDir::H,
                         _ => crate::ui::layout::SplitDir::V,
                     };
-                    let _ = compositor.split_leaf(
-                        dir,
-                        false,
-                        Box::new(crate::ui::BufferLeaf { view_id: id }),
-                    );
-                    // 新叶激活 → 输入路由指向新叶 view
-                    compositor.sync_editor_focus(editor);
+                    compositor.open_doc_in_new_leaf(editor, PathBuf::from(&path), dir, false);
                 });
             }
             helix_js::UiRequest::TermClear { view_id } => {
