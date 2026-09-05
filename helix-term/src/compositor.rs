@@ -253,6 +253,18 @@ impl Compositor {
                         cx.editor.autoinfo = None;
                         return true;
                     }
+                    Some('v') => {
+                        self.window_mode_split('v', cx);
+                        return true;
+                    }
+                    Some('s') => {
+                        self.window_mode_split('s', cx);
+                        return true;
+                    }
+                    Some('n') => {
+                        self.window_mode_split('n', cx);
+                        return true;
+                    }
                     Some('h') => {
                         self.window_mode_focus('h', cx);
                         return true;
@@ -861,6 +873,25 @@ impl Compositor {
         let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta);
     }
 
+    /// 窗口模式:创建新窗(v/s 同 doc 分屏,n 新空 buffer)。创建后保持模式可连续操作。
+    fn window_mode_split(&mut self, c: char, cx: &mut Context) {
+        use crate::ui::layout::SplitDir;
+        if c == 'n' {
+            let dir = SplitDir::V;
+            let doc_id = cx.editor.create_scratch_document();
+            self.open_buffer_leaf(cx.editor, doc_id, dir, false);
+        } else {
+            let dir = match c {
+                'v' => SplitDir::H,
+                's' => SplitDir::V,
+                _ => unreachable!(),
+            };
+            if let Some(doc_id) = cx.editor.tree.try_get(cx.editor.tree.focus).map(|v| v.doc) {
+                self.open_buffer_leaf(cx.editor, doc_id, dir, false);
+            }
+        }
+    }
+
     /// 窗口模式:关闭活动窗口。优先关闭覆盖层(layers)中的终端/面板浮层;
     /// 否则关闭布局树活动叶子(编辑器叶子 id=0 不可关)。
     fn window_mode_close(&mut self, cx: &mut Context) {
@@ -898,6 +929,7 @@ impl Compositor {
         use helix_view::info::Info;
         let entries: Vec<(String, String)> = [
             ("h j k l", "聚焦(左/下/上/右)"),
+            ("v / s / n", "创建(右分/下分/新空 buffer)"),
             ("H J K L", "交换"),
             ("C-h C-j C-k C-l", "尺寸 ∓5%"),
             ("x", "关闭窗口"),

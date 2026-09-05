@@ -394,3 +394,36 @@ async fn commandline_yields_bottom_row_to_statusline_when_hidden() -> anyhow::Re
     );
     Ok(())
 }
+
+// window mode 创建键:模式内 v/s 同 doc 分屏、n 新空 buffer
+#[tokio::test(flavor = "multi_thread")]
+async fn window_mode_creates_splits_v_s_n() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    // v:右分同 doc
+    pump(&mut app, "<C-w>v<esc>").await?;
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 2, "C-w v 应 2 叶: {types:?}");
+    assert_eq!(app.editor.documents.len(), 1, "同 doc 不新增");
+    assert!(types.contains(&"BufferLeaf"));
+    // 右叶活动 → 编辑同 doc
+    pump(&mut app, "iX<esc>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "XAAA\n");
+    // s:下分同 doc(3 叶)
+    pump(&mut app, "<C-w>s<esc>").await?;
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 3, "C-w s 后应 3 叶: {types:?}");
+    // n:新空 buffer(4 叶)
+    pump(&mut app, "<C-w>n<esc>").await?;
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 4, "C-w n 后应 4 叶: {types:?}");
+    assert_eq!(app.editor.documents.len(), 2, "scratch + a");
+    let (_, doc) = current_ref!(app.editor);
+    assert!(doc.path().is_none(), "n 创建空 scratch 且活动");
+    Ok(())
+}
