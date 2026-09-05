@@ -6011,21 +6011,6 @@ fn transpose_view(cx: &mut Context) {
 /// Open a new split in the given direction specified by the action.
 ///
 /// Maintain the current view (both the cursor's position and view in document).
-fn split(editor: &mut Editor, action: Action) {
-    let (view, doc) = current!(editor);
-    let id = doc.id();
-    let selection = doc.selection(view.id).clone();
-    let offset = doc.view_offset(view.id);
-
-    editor.switch(id, action);
-
-    // match the selection in the previous view
-    let (view, doc) = current!(editor);
-    doc.set_selection(view.id, selection);
-    // match the view scroll offset (switch doesn't handle this fully
-    // since the selection is only matched after the split)
-    doc.set_view_offset(view.id, offset);
-}
 
 fn hsplit(cx: &mut Context) {
     // 叶=窗口:无参分裂 → 下侧同 doc 新叶
