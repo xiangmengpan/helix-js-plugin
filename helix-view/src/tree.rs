@@ -12,6 +12,9 @@ pub struct Tree {
     area: Rect,
 
     nodes: SlotMap<ViewId, Node>,
+    /// register_flat 注册的 view：可遍历/可见性检查可达,但**不参与几何布局**
+    /// (承载它的叶子渲染时各自赋值 view.area)。recalculate 时按此过滤。
+    flat: std::collections::HashSet<ViewId>,
 
     // used for traversals
     stack: Vec<(ViewId, Rect)>,
@@ -100,6 +103,7 @@ impl Tree {
             area,
             nodes,
             stack: Vec::new(),
+            flat: std::collections::HashSet::new(),
         }
     }
 
@@ -154,6 +158,7 @@ impl Tree {
             _ => unreachable!(),
         };
         root_container.children.push(id);
+        self.flat.insert(id);
         id
     }
 
@@ -264,6 +269,7 @@ impl Tree {
     }
 
     pub fn remove(&mut self, index: ViewId) {
+        self.flat.remove(&index);
         if self.focus == index {
             // focus on something else
             self.focus = self.prev();
@@ -376,6 +382,8 @@ impl Tree {
             return;
         }
 
+        // flat(register_flat) view 不参与几何:先快照集合,布局时过滤。
+        let flat = self.flat.clone();
         self.stack.push((self.root, self.area));
 
         // take the area
@@ -397,13 +405,22 @@ impl Tree {
 
                     match container.layout {
                         Layout::Horizontal => {
-                            let len = container.children.len();
+                            let children: Vec<ViewId> = container
+                                .children
+                                .iter()
+                                .copied()
+                                .filter(|c| !flat.contains(c))
+                                .collect();
+                            let len = children.len();
+                            if len == 0 {
+                                continue; // 全是 flat,无几何子项
+                            }
 
                             let height = area.height / len as u16;
 
                             let mut child_y = area.y;
 
-                            for (i, child) in container.children.iter().enumerate() {
+                            for (i, child) in children.iter().enumerate() {
                                 let mut area = Rect::new(
                                     container.area.x,
                                     child_y,
@@ -422,8 +439,17 @@ impl Tree {
                             }
                         }
                         Layout::Vertical => {
-                            let len = container.children.len();
+                            let children: Vec<ViewId> = container
+                                .children
+                                .iter()
+                                .copied()
+                                .filter(|c| !flat.contains(c))
+                                .collect();
+                            let len = children.len();
                             let len_u16 = len as u16;
+                            if len == 0 {
+                                continue; // 全是 flat,无几何子项
+                            }
 
                             let inner_gap = 1u16;
                             let total_gap = inner_gap * len_u16.saturating_sub(2);
@@ -433,7 +459,7 @@ impl Tree {
 
                             let mut child_x = area.x;
 
-                            for (i, child) in container.children.iter().enumerate() {
+                            for (i, child) in children.iter().enumerate() {
                                 let mut area = Rect::new(
                                     child_x,
                                     container.area.y,
@@ -760,6 +786,32 @@ mod test {
         // 语义与普通 view 一致:可移除
         tree.remove(v2);
         assert!(!tree.traverse().any(|(id, _)| id == v2), "移除后不再可见");
+    }
+
+    #[test]
+    fn register_flat_excluded_from_geometry_layout() {
+        let mut tree = Tree::new(Rect::new(0, 0, 180, 80));
+        let v1 = tree.insert(View::new(DocumentId::default(), GutterConfig::default()));
+        let v2 = tree.register_flat(View::new(DocumentId::default(), GutterConfig::default()));
+        // recalculate 不应把 flat 当成分割:非 flat 的 v1 拿满整个区域
+        tree.resize(Rect::new(0, 0, 180, 80));
+        let area = tree.get(v1).area;
+        assert_eq!(
+            area,
+            Rect::new(0, 0, 180, 80),
+            "非 flat view 拿满区域: {area:?}"
+        );
+        // flat 的 v2 区域不被几何赋值(保持默认/由叶子渲染赋值)
+        let area2 = tree.get(v2).area;
+        assert_eq!(
+            area2,
+            Rect::default(),
+            "flat view 不参与几何布局: {area2:?}"
+        );
+        // remove 后不再 flat 成员(遍历不可见)
+        tree.remove(v2);
+        assert!(!tree.traverse().any(|(id, _)| id == v2), "移除后不可见");
+        tree.remove(v1);
     }
 
     #[test]

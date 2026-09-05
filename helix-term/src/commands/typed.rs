@@ -5111,8 +5111,8 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 });
             }
             helix_js::UiRequest::CloseLeaf { id } => {
-                job::dispatch_blocking(move |_editor, compositor| {
-                    compositor.remove_leaf(id);
+                job::dispatch_blocking(move |editor, compositor| {
+                    compositor.close_leaf_clean(editor, id);
                 });
             }
             helix_js::UiRequest::ZoomLeaf { id } => {
@@ -5742,7 +5742,11 @@ fn v_type(v: &serde_json::Value) -> &'static str {
 }
 
 pub fn serialize_buffers(editor: &helix_view::Editor) -> String {
-    let current = editor.tree.get(editor.tree.focus).doc;
+    let current = editor
+        .tree
+        .try_get(editor.tree.focus)
+        .map(|v| v.doc)
+        .unwrap_or_default();
     let buffers: Vec<_> = editor
         .documents
         .iter()
@@ -5770,7 +5774,9 @@ pub fn serialize_buffers(editor: &helix_view::Editor) -> String {
 /// severity 映射 "error"/"warning"/"info"/"hint"(无显式 severity 时按 Warning)。
 /// 每帧由 application.render 写入 helix-js 缓存(diagnostics 读取)。
 pub fn serialize_diagnostics(editor: &helix_view::Editor) -> String {
-    let doc_id = editor.tree.get(editor.tree.focus).doc;
+    let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) else {
+        return "[]".to_string();
+    };
     let Some(doc) = editor.documents.get(&doc_id) else {
         return "[]".to_string();
     };

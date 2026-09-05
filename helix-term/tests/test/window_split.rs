@@ -191,3 +191,26 @@ async fn orphan_views_adopted_into_leaves() -> anyhow::Result<()> {
     assert_eq!(app.editor.documents.len(), 1, "同一 doc");
     Ok(())
 }
+
+// 压力:反复 分裂→聚焦→关闭→再分裂 (抓 tree.get 317 panic 复现)
+#[tokio::test(flavor = "multi_thread")]
+async fn split_close_stress_no_panic() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "l1\nl2\nl3\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    // 现实节奏:分裂→编辑→切窗→编辑→关闭,反复数次
+    for i in 0..4 {
+        pump(&mut app, ":hsplit<ret>").await?;
+        pump(&mut app, "i<esc>").await?; // BufferLeaf 活动,进/退 insert 保状态干净
+        pump(&mut app, "<C-w>k<esc>").await?; // 聚焦原叶
+        pump(&mut app, "gg").await?;
+        pump(&mut app, "<C-w>j<esc>x<esc>").await?; // 聚焦下叶并关闭
+        let _ = i;
+    }
+    pump(&mut app, "gg<esc>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert!(!doc.text().to_string().is_empty());
+    Ok(())
+}

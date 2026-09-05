@@ -694,6 +694,17 @@ impl Compositor {
         }
     }
 
+    /// 关闭任意叶(JS close_leaf 等入口):BufferLeaf 须同步清理其在 editor.tree 的 view
+    /// (否则 tree.focus 悬空 → 每帧 serialize 的 tree.get(focus) panic)。
+    pub fn close_leaf_clean(&mut self, editor: &mut Editor, id: u64) {
+        if self.main_tree.view_id_of(id).is_some() {
+            self.remove_buffer_leaf(editor, id);
+        } else {
+            self.remove_leaf(id);
+            self.sync_editor_focus(editor);
+        }
+    }
+
     /// 收编孤儿 view(旧 view-tree 分裂遗留/启动多文件等非叶 view)为 BufferLeaf 叶:
     /// 保留首个作为编辑器叶,其余逐个开叶。调用点:Application::new 启动末尾。
     pub fn adopt_orphan_views(&mut self, editor: &mut Editor) {
