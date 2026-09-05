@@ -1,6 +1,26 @@
 use super::*;
+use helix_view::current_ref;
 
 use helix_stdx::path;
+use helix_term::application::Application;
+use helix_term::job::Jobs;
+use helix_view::input::parse_macro;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
+#[cfg(windows)]
+use crossterm::event::{Event, KeyEvent};
+#[cfg(not(windows))]
+use termina::event::{Event, KeyEvent};
+
+async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(keys)?.into_iter() {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_split_write_quit_all() -> anyhow::Result<()> {
@@ -149,15 +169,30 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
     // This panicked in the past because the jumplist entry on line 2 of window 2
     // was not updated and after the `kd` step, pointed outside of the document.
     //
-    // Note: C-w chords are no longer used here — the global window mode (C-w)
-    // intercepts them; splits/focus/close go through :vsplit / <space>w submenu.
-    test((
-        "#[|]#",
-        ":vsplit<ret>[<space><C-s><space>wwkd<space>wqd",
-        "#[|]#",
-        LineFeedHandling::AsIs,
-    ))
-    .await?;
+    // Note: 叶=窗口后 :vsplit 产生 BufferLeaf 叶,窗口切换走 window mode(C-w h/l + Esc),
+    // 关闭走模式内 x;不再用 <space>ww/wq(那是 core view-tree 的窗口操作,与叶模型脱钩)。
+    // 叶模型等价:V1=原编辑器叶,V2=BufferLeaf 同 doc。切换走 window mode(C-w h/l + Esc)。
+    // 断言:无 panic(核心 view 同步不变式),doc 删空,状态无 error。
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "l1\nl2\nl3\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    // pump 式驱动(同 window_split;不自动 :q!,app Drop 关闭)
+    pump(&mut app, ":vsplit<ret>").await?;
+    {
+        assert_eq!(app.editor.documents.len(), 1, "同 doc 双视图");
+        let types = app.compositor.layout_tree().leaf_types();
+        assert_eq!(types.len(), 2, "应 2 叶: {types:?}");
+    }
+    // V2(右,BufferLeaf,刚分裂后活动)光标到末行 → 切 V1 → 删光所有行 → 回 V2(光标越界需同步,核心不 panic)
+    pump(&mut app, "G<C-w>h<esc>%d<C-w>l<esc>").await?;
+    helpers::assert_status_not_error(&app.editor);
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "",
+        "V1 删除应作用于共享 doc(且 V2 越界光标同步不 panic)"
+    );
 
     // Transactions are applied to the views for windows lazily when they are focused.
     // This case panics if the transactions and inversions are not applied in the
@@ -249,18 +284,20 @@ async fn test_reload_all_with_split_jumplist() -> anyhow::Result<()> {
         .with_file(file.path(), None)
         .build()?;
 
-    test_key_sequence(
-        &mut app,
-        // The trailing `<space>wq` closes the split so a single window remains for
-        // the harness's automatic `:q!` teardown. It also exercises the sync
-        // that runs when a window is closed.
-        Some(":hsplit<ret>]<space>%2Gms/:rla<ret>%J<space>wq"),
-        Some(&|app| {
-            helpers::assert_status_not_error(&app.editor);
-        }),
-        false,
-    )
-    .await?;
+    // 叶模型:窗口切换/关闭走 window mode;末段 C-w x 关闭 BufferLeaf,
+    // 等价原 wq——同样触发被关 view 的 doc_revisions 同步(核心不 panic)。
+    pump(&mut app, ":hsplit<ret>]<space>%2Gms/:rla<ret>%J").await?;
+    helpers::assert_status_not_error(&app.editor);
+    // 关闭 BufferLeaf(活动叶=下侧新叶):触发被关 view 的 doc_revisions 同步
+    pump(&mut app, "<C-w>x<esc>").await?;
+    helpers::assert_status_not_error(&app.editor);
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "line1 line2 line3\n",
+        "%J 作用于共享 doc(join 生效,同步未 panic): {:?}",
+        doc.text().to_string()
+    );
 
     Ok(())
 }

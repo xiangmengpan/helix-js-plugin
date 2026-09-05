@@ -6021,7 +6021,12 @@ fn split(editor: &mut Editor, action: Action) {
 }
 
 fn hsplit(cx: &mut Context) {
-    split(cx.editor, Action::HorizontalSplit);
+    // 叶=窗口:无参分裂 → 下侧同 doc 新叶
+    crate::job::dispatch_blocking(move |editor, compositor| {
+        if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
+            compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::V, false);
+        }
+    });
 }
 
 fn hsplit_new(cx: &mut Context) {
@@ -6029,7 +6034,12 @@ fn hsplit_new(cx: &mut Context) {
 }
 
 fn vsplit(cx: &mut Context) {
-    split(cx.editor, Action::VerticalSplit);
+    // 叶=窗口:无参分裂 → 右侧同 doc 新叶
+    crate::job::dispatch_blocking(move |editor, compositor| {
+        if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
+            compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::H, false);
+        }
+    });
 }
 
 fn vsplit_new(cx: &mut Context) {

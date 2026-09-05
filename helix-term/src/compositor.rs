@@ -672,13 +672,45 @@ impl Compositor {
         if let Some(vid) = self.main_tree.view_id_of(id) {
             self.main_tree.remove(id);
             if editor.tree.contains(vid) {
-                editor.tree.remove(vid);
+                // editor.close 清理所有 doc 上该 view 的 selection + 树节点
+                editor.close(vid);
             }
             self.sync_layout_cache();
             self.sync_editor_focus(editor);
         } else {
             self.remove_leaf(id);
         }
+    }
+
+    /// 在活动叶子旁开新 BufferLeaf 叶显示 doc_id（同 doc 双视图/打开文件落点）：
+    /// 若当前 view 正显示该 doc 则克隆它（复制光标/滚动，对齐 core switch-Split 语义），
+    /// 否则新建 view；register_flat 注册 → split_leaf 挂载 → focus 同步。
+    pub fn open_buffer_leaf(
+        &mut self,
+        editor: &mut Editor,
+        doc_id: helix_view::DocumentId,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+    ) -> Option<u64> {
+        let gutters = editor.config().gutters.clone();
+        let cur = editor
+            .tree
+            .try_get(editor.tree.focus)
+            .filter(|v| v.doc == doc_id)
+            .cloned();
+        let view = cur.unwrap_or_else(|| helix_view::view::View::new(doc_id, gutters));
+        let vid = editor.tree.register_flat(view);
+        if let Some(doc) = editor.document_mut(doc_id) {
+            doc.ensure_view_init(vid);
+            doc.mark_as_focused();
+        }
+        let leaf = self.split_leaf(
+            dir,
+            new_first,
+            Box::new(crate::ui::BufferLeaf { view_id: vid }),
+        );
+        self.sync_editor_focus(editor);
+        leaf
     }
 
     pub fn zoom_leaf(&mut self, id: u64) {

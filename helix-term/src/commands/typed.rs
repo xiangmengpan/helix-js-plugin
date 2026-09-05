@@ -2227,7 +2227,12 @@ fn vsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     }
 
     if args.is_empty() {
-        split(cx.editor, Action::VerticalSplit);
+        // 叶=窗口:无参分裂 → 在活动叶旁开同 doc 新叶(不再走 core view-tree 分裂)
+        crate::job::dispatch_blocking(move |editor, compositor| {
+            if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
+                compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::H, false);
+            }
+        });
     } else {
         open_impl(cx, args, Action::VerticalSplit)?;
     }
@@ -2241,7 +2246,12 @@ fn hsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     }
 
     if args.is_empty() {
-        split(cx.editor, Action::HorizontalSplit);
+        // 叶=窗口:无参分裂 → 下侧同 doc 新叶
+        crate::job::dispatch_blocking(move |editor, compositor| {
+            if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
+                compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::V, false);
+            }
+        });
     } else {
         open_impl(cx, args, Action::HorizontalSplit)?;
     }
