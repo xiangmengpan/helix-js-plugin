@@ -79,7 +79,10 @@ impl PluginPanel {
                     .layout_tree()
                     .find_leaf_id::<PluginPanel>(|p| p.id() == id)
                 {
-                    compositor.remove_leaf(leaf);
+                    // rail 面板:取除 rail(remove 对 rail 免疫)
+                    if !compositor.close_rail(leaf) {
+                        compositor.remove_leaf(leaf);
+                    }
                 }
                 compositor.remove_panel(id);
                 cx.editor.set_error(format!(
