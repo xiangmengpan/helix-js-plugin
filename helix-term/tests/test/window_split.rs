@@ -1,6 +1,7 @@
 use super::*;
 
 use helix_term::application::Application;
+use helix_term::config::Config;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
 use helix_view::input::parse_macro;
@@ -213,4 +214,60 @@ async fn split_close_stress_no_panic() -> anyhow::Result<()> {
     let (_, doc) = current_ref!(app.editor);
     assert!(!doc.text().to_string().is_empty());
     Ok(())
+}
+
+// 原生 bufferline(按文档数)探针:1/2 文档 + :hsplit 与 C-w v 分屏后顶行渲染差异
+// 回归:空 scratch 分屏 → x 关闭 → scratch 文档随窗销毁(ghost buffer/bufferline 残留)
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_scratch_leaf_drops_orphan_scratch_doc() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    // C-w n 新建空 scratch 分屏 → 2 docs
+    pump(&mut app, "<C-w>n<esc>").await?;
+    assert_eq!(app.editor.documents.len(), 2, "scratch + a.txt");
+    // 关闭承载空 scratch 的叶(BufferLeaf 活动)→ scratch 文档应随之销毁(无其他 view 引用)
+    pump(&mut app, "<C-w>x<esc>").await?;
+    assert_eq!(
+        app.editor.documents.len(),
+        1,
+        "空 scratch 失去最后 view 应销毁,不残留 ghost buffer"
+    );
+    // 有内容/有路径的文档不受影响:再开一个写内容的 scratch,关闭后保留
+    pump(&mut app, "<C-w>n<esc>").await?;
+    pump(&mut app, "idata<esc>").await?; // scratch 写内容 → modified
+    assert_eq!(app.editor.documents.len(), 2);
+    pump(&mut app, "<C-w>x<esc>").await?;
+    assert_eq!(
+        app.editor.documents.len(),
+        2,
+        "已修改的 scratch 关闭后文档保留(不丢数据)"
+    );
+    Ok(())
+}
+
+fn render_rows_probe(app: &mut Application) -> Vec<String> {
+    use helix_view::graphics::Rect;
+    let area = app.compositor.area();
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let mut jobs = Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+    };
+    app.compositor.reset_plugin_diffs();
+    app.compositor.render(area, &mut buf, &mut cx);
+    (0..area.height)
+        .map(|y| {
+            buf.content
+                .iter()
+                .skip(y as usize * area.width as usize)
+                .take(area.width as usize)
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect()
 }

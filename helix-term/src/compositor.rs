@@ -682,10 +682,23 @@ impl Compositor {
     /// （否则 tree.traverse 仍视为“文档被其他窗口显示”，remove_empty_scratch 等误判）。
     pub fn remove_buffer_leaf(&mut self, editor: &mut Editor, id: u64) {
         if let Some(vid) = self.main_tree.view_id_of(id) {
+            let doc_id = editor.tree.contains(vid).then(|| editor.tree.get(vid).doc);
             self.main_tree.remove(id);
             if editor.tree.contains(vid) {
                 // editor.close 清理所有 doc 上该 view 的 selection + 树节点
                 editor.close(vid);
+            }
+            // 空 scratch(无路径且未修改)失去最后一个 view → 随窗销毁,
+            // 否则 ghost buffer 残留(bufferline 按文档数显示,gn 才触发回收)。
+            if let Some(doc_id) = doc_id {
+                let orphan_scratch = editor
+                    .document(doc_id)
+                    .map(|d| !d.is_modified() && d.path().is_none())
+                    .unwrap_or(false)
+                    && !editor.tree.views().any(|(v, _)| v.doc == doc_id);
+                if orphan_scratch {
+                    let _ = editor.close_document(doc_id, false);
+                }
             }
             self.sync_layout_cache();
             self.sync_editor_focus(editor);
