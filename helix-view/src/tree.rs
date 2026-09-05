@@ -141,6 +141,22 @@ impl Tree {
         node
     }
 
+    /// 注册一个不参与几何布局的 view：入 arena 并挂到根容器（traverse/可见性
+    /// 检查可达），但**不改变焦点、不 recalculate**——几何由承载它的 LayoutTree
+    /// 叶子在渲染时各自赋值 `view.area`。
+    pub fn register_flat(&mut self, view: View) -> ViewId {
+        let mut node = Node::view(view);
+        node.parent = self.root;
+        let id = self.nodes.insert(node);
+        self.get_mut(id).id = id;
+        let root_container = match &mut self.nodes[self.root].content {
+            Content::Container(container) => container,
+            _ => unreachable!(),
+        };
+        root_container.children.push(id);
+        id
+    }
+
     pub fn split(&mut self, view: View, layout: Layout) -> ViewId {
         let focus = self.focus;
         let parent = self.nodes[focus].parent;
@@ -727,6 +743,27 @@ mod test {
     use super::*;
     use crate::editor::GutterConfig;
     use crate::DocumentId;
+
+    #[test]
+    fn register_flat_view_is_gettable_traversable_and_keeps_focus() {
+        let mut tree = Tree::new(Rect::new(0, 0, 180, 80));
+        let v1 = tree.insert(View::new(DocumentId::default(), GutterConfig::default()));
+        let focus_before = tree.focus;
+        let v2 = tree.register_flat(View::new(DocumentId::default(), GutterConfig::default()));
+        assert_ne!(v1, v2, "新 view 拿到独立 id");
+        assert_eq!(tree.get(v2).id, v2, "arena 可取");
+        assert!(
+            tree.traverse().any(|(id, _)| id == v2),
+            "traverse 可见(供 remove_empty_scratch 等检查)"
+        );
+        assert_eq!(tree.focus, focus_before, "register_flat 不改变焦点");
+        // 语义与普通 view 一致:可移除
+        tree.remove(v2);
+        assert!(
+            !tree.traverse().any(|(id, _)| id == v2),
+            "移除后不再可见"
+        );
+    }
 
     #[test]
     fn find_split_in_direction() {
