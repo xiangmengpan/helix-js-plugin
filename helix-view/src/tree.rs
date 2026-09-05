@@ -759,10 +759,7 @@ mod test {
         assert_eq!(tree.focus, focus_before, "register_flat 不改变焦点");
         // 语义与普通 view 一致:可移除
         tree.remove(v2);
-        assert!(
-            !tree.traverse().any(|(id, _)| id == v2),
-            "移除后不再可见"
-        );
+        assert!(!tree.traverse().any(|(id, _)| id == v2), "移除后不再可见");
     }
 
     #[test]

@@ -4,6 +4,7 @@ use helix_term::job::Jobs;
 use helix_term::ui::layout::SplitDir;
 use helix_term::ui::plugin_panel::PanelSide;
 use helix_term::ui::PluginPanel;
+use helix_view::current_ref;
 use helix_view::input::parse_macro;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -225,6 +226,56 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
         app.compositor.layout_tree().minimized().is_none(),
         "fixed×minimized 叶子可还原(z 往返)"
     );
+    Ok(())
+}
+
+/// buffer_open 叶子可编辑:聚焦新叶后输入应命中其自身 doc(而非编辑器叶 doc),
+/// 且编辑器叶渲染不被双画(防双画由 claimed 过滤保证)。
+#[tokio::test(flavor = "multi_thread")]
+async fn buffer_open_leaf_is_editable_targets_own_doc() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "AAA\n")?;
+    std::fs::write(&b, "BBB\n")?;
+    let mut app = AppBuilder::new().with_file(a.clone(), None).build()?;
+    let src = r#"
+        helix.register_command("bo", () => {
+            helix.buffer_open(ARG_PATH, { split: "h" });
+        });
+    "#
+    .replace("ARG_PATH", &format!("{:?}", b.display()));
+    let plugin_path = dir.path().join("bo.js");
+    std::fs::write(&plugin_path, src)?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
+    pump(&mut app, ":bo<ret>").await?;
+    // 布局断言:2 叶(编辑器 0 + BufferLeaf)
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 2, "buffer_open 新增叶子: {types:?}");
+    // 输入 "XXX" → 应命中 b.txt 的 doc(活动叶=B),a.txt 不被改动
+    pump(&mut app, "iXXX<esc>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "XXXBBB\n",
+        "输入应命中 BufferLeaf 自身 doc(b.txt): {:?}",
+        doc.text().to_string()
+    );
+    // a.txt 的 doc 未被编辑(保持 AAA)\n)
+    let a_doc = app
+        .editor
+        .documents
+        .values()
+        .find(|d| d.path().is_some_and(|p| p.ends_with("a.txt")))
+        .unwrap();
+    assert_eq!(a_doc.text().to_string(), "AAA\n", "编辑器叶 doc 不应被改");
+    let _ = b;
     Ok(())
 }
 

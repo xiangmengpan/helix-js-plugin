@@ -4984,15 +4984,12 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             return;
                         }
                     };
-                    // 为何必须瞬态插入:slotmap 键只能由 tree.insert 分配,外部无法构造 ViewId;
-                    // 先 insert 拿 id,再 clone 出 view 并 remove——id 保持有效,BufferLeaf 持有该 view。
-                    // 为何安全:insert/remove 之间无渲染、无焦点切换,活视图树仅此瞬态改动,
-                    // 依赖 Tree 内部不变式(remove 不销毁已取出的 view,id 仍可被 ensure_view_init 使用)。
-                    let mut view =
-                        helix_view::view::View::new(doc_id, editor.config().gutters.clone());
-                    let id = editor.tree.insert(view);
-                    view = editor.tree.get_mut(id).clone();
-                    editor.tree.remove(id);
+                    // view 经 register_flat 注册进 editor.tree(不参与几何布局、不动焦点):
+                    // core 路由 current! = tree.get(tree.focus) 需要 view 在树内,
+                    // 叶子渲染各自 view.area 赋值;tree.remove 时同步清理。
+                    let view = helix_view::view::View::new(doc_id, editor.config().gutters.clone());
+                    let id = editor.tree.register_flat(view);
+                    let _ = view;
                     if let Some(doc) = editor.document_mut(doc_id) {
                         doc.ensure_view_init(id);
                     }
@@ -5000,8 +4997,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         Some("h") => crate::ui::layout::SplitDir::H,
                         _ => crate::ui::layout::SplitDir::V,
                     };
-                    let _ =
-                        compositor.split_leaf(dir, false, Box::new(crate::ui::BufferLeaf { view }));
+                    let _ = compositor.split_leaf(
+                        dir,
+                        false,
+                        Box::new(crate::ui::BufferLeaf { view_id: id }),
+                    );
+                    // 新叶激活 → 输入路由指向新叶 view
+                    compositor.sync_editor_focus(editor);
                 });
             }
             helix_js::UiRequest::TermClear { view_id } => {

@@ -43,6 +43,8 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    /// 被其他叶子(BufferLeaf)持有的 view id:渲染时排除,防同 view 双画
+    claimed_views: Vec<helix_view::ViewId>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +68,13 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            claimed_views: Vec::new(),
         }
+    }
+
+    /// 设置被其他叶子认领的 view id(渲染整树时排除——叶=窗口模型防双画)
+    pub fn set_claimed_views(&mut self, claimed: Vec<helix_view::ViewId>) {
+        self.claimed_views = claimed;
     }
 
     pub fn spinners_mut(&mut self) -> &mut ProgressSpinners {
@@ -1699,7 +1707,12 @@ impl Component for EditorView {
             Self::render_bufferline(cx.editor, area.with_height(1), surface);
         }
 
-        for (view, is_focused) in cx.editor.tree.views() {
+        for (view, is_focused) in cx
+            .editor
+            .tree
+            .views()
+            .filter(|(v, _)| !self.claimed_views.contains(&v.id))
+        {
             let doc = cx.editor.document(view.doc).unwrap();
             EditorView::render_view(
                 cx.editor,

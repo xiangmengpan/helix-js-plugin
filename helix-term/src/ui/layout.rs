@@ -710,6 +710,18 @@ impl LayoutTree {
             }
             return;
         }
+        // 叶=窗口:leaf0(EditorView)渲染前告知被 BufferLeaf 认领的 view(渲染整树时排除,防双画)
+        {
+            let claimed = self.claimed_view_ids();
+            if !claimed.is_empty() {
+                if let Some(ev) = self.components.get_mut(&0).and_then(|c| {
+                    c.as_any_mut()
+                        .downcast_mut::<crate::ui::editor::EditorView>()
+                }) {
+                    ev.set_claimed_views(claimed);
+                }
+            }
+        }
         let mut rects = Vec::new();
         // 浮动/最小化叶子不占布局空间（其余叶子占满，无 dock 位置留白）
         layout_node(&self.root, area, &mut rects, self.float, self.minimized);
@@ -823,6 +835,38 @@ impl LayoutTree {
     /// 活动叶子的组件（可变）
     pub fn active_component(&mut self) -> Option<&mut Box<dyn Component>> {
         self.components.get_mut(&self.active())
+    }
+
+    /// 活动叶子的组件类型名（window mode hint / 测试用）
+    pub fn active_type_name(&self) -> String {
+        self.components
+            .get(&self.active())
+            .map(|c| c.type_name().to_string())
+            .unwrap_or_default()
+    }
+
+    /// 活动叶子若为 BufferLeaf（持有独立 view），返回其 view id；否则 None。
+    pub fn active_view_id(&self) -> Option<helix_view::ViewId> {
+        self.view_id_of(self.active())
+    }
+
+    /// 指定叶子若为 BufferLeaf 返回其 view id。
+    pub fn view_id_of(&self, id: u64) -> Option<helix_view::ViewId> {
+        use crate::ui::buffer_leaf::BufferLeaf;
+        self.components
+            .get(&id)
+            .and_then(|c| c.as_any().downcast_ref::<BufferLeaf>())
+            .map(|b| b.view_id)
+    }
+
+    /// 所有 BufferLeaf 叶子持有的 view id（EditorView 渲染需排除，防双画）。
+    pub fn claimed_view_ids(&self) -> Vec<helix_view::ViewId> {
+        use crate::ui::buffer_leaf::BufferLeaf;
+        self.components
+            .iter()
+            .filter(|(_, c)| c.as_any().downcast_ref::<BufferLeaf>().is_some())
+            .filter_map(|(id, _)| self.view_id_of(*id))
+            .collect()
     }
 
     /// 按类型找组件（树内所有叶子）

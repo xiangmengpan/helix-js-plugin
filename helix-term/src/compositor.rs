@@ -254,19 +254,19 @@ impl Compositor {
                         return true;
                     }
                     Some('h') => {
-                        self.window_mode_focus('h');
+                        self.window_mode_focus('h', cx);
                         return true;
                     }
                     Some('j') => {
-                        self.window_mode_focus('j');
+                        self.window_mode_focus('j', cx);
                         return true;
                     }
                     Some('k') => {
-                        self.window_mode_focus('k');
+                        self.window_mode_focus('k', cx);
                         return true;
                     }
                     Some('l') => {
-                        self.window_mode_focus('l');
+                        self.window_mode_focus('l', cx);
                         return true;
                     }
                     Some('H') => {
@@ -286,7 +286,7 @@ impl Compositor {
                         return true;
                     }
                     Some('x') => {
-                        self.window_mode_close();
+                        self.window_mode_close(cx);
                         return true;
                     }
                     Some('z') => {
@@ -470,8 +470,13 @@ impl Compositor {
                     .main_tree
                     .find_component::<crate::ui::BufferLeaf>()
                     .and_then(|bl| {
+                        let vid = bl.view_id;
+                        if !cx.editor.tree.contains(vid) {
+                            return None;
+                        }
+                        let doc = cx.editor.tree.get(vid).doc;
                         cx.editor
-                            .document(bl.view.doc)
+                            .document(doc)
                             .and_then(|d| d.path().map(|p| p.to_string_lossy().into_owned()))
                     });
                 return ("buffer", path);
@@ -634,6 +639,48 @@ impl Compositor {
         self.sync_layout_cache();
     }
 
+    /// 同步 editor.tree.focus 到活动叶子承载的 view（叶=可编辑窗口的路由基础）：
+    /// 活动叶为 BufferLeaf → focus 指向其 view；活动叶为编辑器(id=0) → focus 指向
+    /// 未被任何 BufferLeaf 认领的 view（含旧 view-tree 遗留）；terminal/panel 无 view 不动。
+    pub fn sync_editor_focus(&mut self, editor: &mut Editor) {
+        let target = match self.main_tree.active() {
+            0 => {
+                let claimed = self.main_tree.claimed_view_ids();
+                let focus_unclaimed = editor
+                    .tree
+                    .views()
+                    .any(|(v, _)| v.id == editor.tree.focus && !claimed.contains(&v.id));
+                if focus_unclaimed {
+                    return; // 已指向合法 view,不动
+                }
+                editor
+                    .tree
+                    .views()
+                    .find(|(v, _)| !claimed.contains(&v.id))
+                    .map(|(v, _)| v.id)
+            }
+            id => self.main_tree.view_id_of(id),
+        };
+        if let Some(vid) = target {
+            editor.tree.focus = vid;
+        }
+    }
+
+    /// 关闭一个 BufferLeaf 叶子：同步移除其在 editor.tree 中注册的 view
+    /// （否则 tree.traverse 仍视为“文档被其他窗口显示”，remove_empty_scratch 等误判）。
+    pub fn remove_buffer_leaf(&mut self, editor: &mut Editor, id: u64) {
+        if let Some(vid) = self.main_tree.view_id_of(id) {
+            self.main_tree.remove(id);
+            if editor.tree.contains(vid) {
+                editor.tree.remove(vid);
+            }
+            self.sync_layout_cache();
+            self.sync_editor_focus(editor);
+        } else {
+            self.remove_leaf(id);
+        }
+    }
+
     pub fn zoom_leaf(&mut self, id: u64) {
         self.main_tree.zoom(id);
         self.sync_layout_cache();
@@ -735,10 +782,11 @@ impl Compositor {
         .is_some()
     }
 
-    fn window_mode_focus(&mut self, c: char) {
+    fn window_mode_focus(&mut self, c: char, cx: &mut Context) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
         let _ = self.focus_leaf_dir(a, dir, side);
+        self.sync_editor_focus(cx.editor);
     }
 
     /// 窗口模式:与方向邻居交换内容(H/J/K/L)。委托 swap_leaf_dir(含缓存同步)
@@ -762,7 +810,7 @@ impl Compositor {
 
     /// 窗口模式:关闭活动窗口。优先关闭覆盖层(layers)中的终端/面板浮层;
     /// 否则关闭布局树活动叶子(编辑器叶子 id=0 不可关)。
-    fn window_mode_close(&mut self) {
+    fn window_mode_close(&mut self, cx: &mut Context) {
         let layer_has_term = self
             .layers
             .iter()
@@ -783,7 +831,12 @@ impl Compositor {
         }
         let a = self.main_tree.active();
         if a != 0 {
-            self.remove_leaf(a);
+            if self.main_tree.view_id_of(a).is_some() {
+                self.remove_buffer_leaf(cx.editor, a);
+            } else {
+                self.remove_leaf(a);
+            }
+            self.sync_editor_focus(cx.editor);
         }
     }
 
