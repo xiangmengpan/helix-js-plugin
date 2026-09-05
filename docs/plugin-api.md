@@ -96,7 +96,7 @@
 
 ### 终端与布局树
 
-`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`split`/`buffer_open`/`close_leaf`/`zoom`/`unzoom`/`resize_leaf`/`layout_*`/`focus`/`get_layout`/`restore_layout`(半成品)+ `C-w` 窗口模式。
+`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`close_leaf`/`zoom`/`unzoom`/`resize_leaf`/`layout_*`/`focus`/`get_layout`/`restore_layout` + `C-w` 窗口模式(叶=窗口:创建 v/s/n、聚焦、交换、缩放、关闭;`tree.focus` 随活动叶同步,任意叶可编辑)。
 
 - 优点:原生 pty;四种显示模式;滚动缓冲;zellij 式窗口管理;layout_fix。
 - 局限:组合字符/鼠标/选择复制不支持;restore_layout 未接线;PTY 仅 Unix。

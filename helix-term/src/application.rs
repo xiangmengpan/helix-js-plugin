@@ -294,6 +294,10 @@ impl Application {
                 .unwrap_or_else(|_| editor.new_file(Action::VerticalSplit));
         }
 
+        // 叶=窗口:收编启动期遗留的 view-tree 分裂(启动多文件/空文件路径仍走 core split)
+        // 为 BufferLeaf 叶——之后全部窗口均可被 window mode 控制。
+        compositor.adopt_orphan_views(&mut editor);
+
         #[cfg(windows)]
         let signals = futures_util::stream::empty();
         #[cfg(not(windows))]

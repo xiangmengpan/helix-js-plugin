@@ -148,3 +148,35 @@ async fn vsplit_new_creates_scratch_leaf() -> anyhow::Result<()> {
     assert!(doc.path().is_none(), "scratch 无路径");
     Ok(())
 }
+
+// 启动迁移:core 遗留的多 view(无叶)被收编为 BufferLeaf 叶,可被 window mode 控制
+#[tokio::test(flavor = "multi_thread")]
+async fn orphan_views_adopted_into_leaves() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    // 造一个"遗留"第二 view(直接 core tree.split,模拟旧模型/启动路径)
+    {
+        let e = &mut app.editor;
+        let doc_id = e.tree.get(e.tree.focus).doc;
+        let view = helix_view::view::View::new(doc_id, e.config().gutters.clone());
+        e.tree.split(view, helix_view::tree::Layout::Vertical);
+    }
+    // 此时 2 个未认领 view,但只有 1 叶(旧模型:双 view 渲染在编辑器叶内)
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 1, "迁移前仍单叶(旧双 view 在叶内): {types:?}");
+    // 收编
+    app.compositor.adopt_orphan_views(&mut app.editor);
+    let types = app.compositor.layout_tree().leaf_types();
+    assert_eq!(types.len(), 2, "迁移后 2 叶: {types:?}");
+    assert!(
+        types.contains(&"BufferLeaf"),
+        "第二 view 进 BufferLeaf: {types:?}"
+    );
+    // 双叶均可编辑且同 doc 不重复
+    assert_eq!(app.editor.documents.len(), 1, "同一 doc");
+    Ok(())
+}

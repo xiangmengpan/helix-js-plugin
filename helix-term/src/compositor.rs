@@ -694,6 +694,29 @@ impl Compositor {
         }
     }
 
+    /// 收编孤儿 view(旧 view-tree 分裂遗留/启动多文件等非叶 view)为 BufferLeaf 叶:
+    /// 保留首个作为编辑器叶,其余逐个开叶。调用点:Application::new 启动末尾。
+    pub fn adopt_orphan_views(&mut self, editor: &mut Editor) {
+        let claimed = self.main_tree.claimed_view_ids();
+        let views: Vec<helix_view::ViewId> = editor
+            .tree
+            .views()
+            .map(|(v, _)| v.id)
+            .filter(|id| !claimed.contains(id))
+            .collect();
+        if views.len() <= 1 {
+            return; // 0 或仅编辑器自身 view,无需收编
+        }
+        for vid in views.iter().skip(1) {
+            self.split_leaf(
+                crate::ui::layout::SplitDir::H,
+                false,
+                Box::new(crate::ui::BufferLeaf { view_id: *vid }),
+            );
+        }
+        self.sync_editor_focus(editor);
+    }
+
     /// 打开路径到新叶（buffer_open/:vsplit path/gf 共用落点）：editor.open(Load) 建/取 doc
     /// → open_buffer_leaf 挂叶。失败 set_error。返回是否成功。
     pub fn open_doc_in_new_leaf(
