@@ -55,5 +55,6 @@ mod test {
     mod plugin_yank_error;
     mod splits;
     mod window_mode;
+    mod window_rail;
     mod window_split;
 }
