@@ -142,3 +142,52 @@ async fn rail_focused_can_type_colon_commands() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_key_dispatch_under_rail() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let fp = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("readme.md"), "hi\n").unwrap();
+    let plugin = dir.path().join("filetree.js");
+    std::fs::write(&plugin, std::fs::read_to_string(&fp).unwrap()).unwrap();
+    let mut app = AppBuilder::new()
+        .with_file(dir.path().join("readme.md"), None)
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    eprintln!(
+        "DBG open status: {:?}",
+        app.editor.get_status().map(|(s, _)| s.to_string())
+    );
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    eprintln!(
+        "DBG reveal status: {:?}",
+        app.editor.get_status().map(|(s, _)| s.to_string())
+    );
+    let act = |app: &mut Application| app.compositor.layout_tree().active();
+    eprintln!("DBG open active={}", act(&mut app));
+    pump(&mut app, "H").await?;
+    eprintln!(
+        "DBG after H1: {:?}",
+        app.editor.get_status().map(|(s, _)| s.to_string())
+    );
+    // dump rail rows
+    let area = app.compositor.area();
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let mut jobs = Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+    };
+    app.compositor.render(area, &mut buf, &mut cx);
+    let w = area.width as usize;
+    let s: String = buf.content[0..w.min(44)]
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect();
+    eprintln!("DBG row0 after H: [{s}]");
+    Ok(())
+}

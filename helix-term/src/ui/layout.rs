@@ -1002,11 +1002,25 @@ impl LayoutTree {
                     && !k.modifiers.contains(helix_view::input::KeyModifiers::ALT));
             if let Some(comp) = self.components.get_mut(&target) {
                 let r = comp.handle_event(event, cx);
-                if r.is_ignored() && (is_esc || is_plain_l) {
+                if !r.is_ignored() {
+                    return r; // 面板已消费:绝不二次分发
+                }
+                if is_esc || is_plain_l {
                     self.active = self.operational_target();
                     return EventResult::Consumed(None); // 退出 rail 焦点回 main
                 }
+                // 未消费:穿透给编辑器(非模态:冒号命令等),不再次触碰面板
+                if let Some(editor) = self.components.get_mut(&0) {
+                    let re = editor.handle_event(event, cx);
+                    return if re.is_ignored() {
+                        EventResult::Consumed(None) // rail 上吞掉,不落编辑器编辑键
+                    } else {
+                        re
+                    };
+                }
+                return EventResult::Consumed(None);
             }
+            return EventResult::Consumed(None);
         }
         if let Some(comp) = self.components.get_mut(&target) {
             match comp.handle_event(event, cx) {
