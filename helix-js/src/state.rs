@@ -97,6 +97,9 @@ thread_local! {
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    // 加载中的脚本 key 栈（跨脚本共享）：嵌套 helix.load 期间保持祖先在栈上，
+    // 循环依赖（A load B, B load A）在此检出——否则嵌套 eval 无限递归栈溢出崩溃。
+    static LOAD_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static SCRIPT_EXPORTS: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -342,6 +345,11 @@ pub(crate) fn with_command_docs<T>(f: impl FnOnce(&mut HashMap<String, String>) 
 /// 访问 LOADED_SCRIPTS（普通 Vec，随线程 drop）
 pub(crate) fn with_loaded_scripts<T>(f: impl FnOnce(&mut Vec<(String, String)>) -> T) -> T {
     LOADED_SCRIPTS.with(|s| f(&mut s.borrow_mut()))
+}
+
+/// 访问 LOAD_STACK（加载中的脚本 key 栈；普通 Vec，随线程 drop）
+pub(crate) fn with_load_stack<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    LOAD_STACK.with(|s| f(&mut s.borrow_mut()))
 }
 
 /// 访问 THEME_OVERRIDES（普通 HashMap，随线程 drop）

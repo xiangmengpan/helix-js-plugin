@@ -91,7 +91,7 @@ pub fn resolve_watch_events() -> Result<()> {
                 .as_callable()
                 .and_then(JsFunction::from_object)
                 .ok_or_else(|| anyhow!("watch {id} callback not callable"))?;
-            let arr = JsArray::new(engine);
+            let arr = JsArray::new(engine).expect("JsArray::new");
             for c in &changes {
                 let item = ObjectInitializer::new(engine)
                     .property(

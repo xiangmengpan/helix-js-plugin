@@ -2097,6 +2097,35 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     }
 
     #[test]
+    fn circular_runtime_load_errors_not_crash() {
+        // 回归:跨脚本运行时 helix.load 循环(A load B,B load A)曾无限嵌套 eval 递归
+        // → 栈溢出 SIGABRT。js_load 每次新建空栈导致循环检测失效;现在共享加载栈,
+        // 循环应报错退出而非崩溃。用绝对路径避免占用全局 PLUGINS_DIR(与其他测试并行)。
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        std::fs::create_dir_all(d.join("features")).unwrap();
+        let a_abs = d.join("features/a.js").to_string_lossy().into_owned();
+        let b_abs = d.join("features/b.js").to_string_lossy().into_owned();
+        let a_src = format!(r#"const B = helix.load("{b_abs}"); helix.export(() => B);"#);
+        let b_src = format!(r#"const A = helix.load("{a_abs}"); helix.export(() => A);"#);
+        std::fs::write(d.join("features/a.js"), a_src).unwrap();
+        std::fs::write(d.join("features/b.js"), b_src).unwrap();
+        let init_path = d.join("init.js");
+        let init_src = format!(r#"helix.load("{a_abs}");"#);
+        std::fs::write(&init_path, init_src).unwrap();
+        let r = load_script_named(
+            &init_path.display().to_string(),
+            &std::fs::read_to_string(&init_path).unwrap(),
+        );
+        let msg = format!("{r:?}");
+        assert!(r.is_err(), "循环 load 应报错退出而非崩溃, got {msg}");
+        assert!(msg.contains("circular"), "错误应说明循环依赖, got {msg}");
+    }
+
+    #[test]
     fn reload_all_real_plugins_keeps_commands() {
         // 加载仓库全部真实插件(init.js 同款序列)+ reload,验证命令/钩子保留
         let _guard = TEST_LOCK.lock().unwrap();

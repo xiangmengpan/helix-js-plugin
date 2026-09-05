@@ -579,7 +579,7 @@ pub(crate) fn js_read_dir(
         })
         .collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let arr = JsArray::new(ctx);
+    let arr = JsArray::new(ctx)?;
     for (name, is_dir, path) in entries {
         let obj = ObjectInitializer::new(ctx)
             .property(
@@ -1500,7 +1500,7 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
     let func = hook.as_callable().and_then(JsFunction::from_object)?;
     crate::state::with_engine(|engine| {
         let undefined = JsValue::undefined();
-        let entries_arr = JsArray::new(engine);
+        let entries_arr = JsArray::new(engine).expect("JsArray::new");
         for (keys, doc) in entries {
             let item = ObjectInitializer::new(engine)
                 .property(
@@ -1695,7 +1695,7 @@ pub(crate) fn js_term_list(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let arr = boa_engine::object::builtins::JsArray::new(ctx);
+    let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
     for (view_id, cmd) in crate::state::list_terms() {
         let item = ObjectInitializer::new(ctx)
             .property(
@@ -1824,7 +1824,7 @@ pub fn render_completion_row(
             .as_callable()
             .and_then(JsFunction::from_object)
             .ok_or_else(|| anyhow!("completion render hook is not a function"))?;
-        let match_indices_arr = JsArray::new(engine);
+        let match_indices_arr = JsArray::new(engine).expect("JsArray::new");
         for i in match_indices {
             match_indices_arr
                 .push(JsValue::from(*i as f64), engine)

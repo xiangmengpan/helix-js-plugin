@@ -107,7 +107,7 @@ pub(crate) fn js_get_config_docs(
     let Some(obj) = parsed.as_object() else {
         return Ok(JsValue::null());
     };
-    let arr = boa_engine::object::builtins::JsArray::new(ctx);
+    let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
     for (key, field) in obj {
         let Some(fo) = field.as_object() else {
             continue;

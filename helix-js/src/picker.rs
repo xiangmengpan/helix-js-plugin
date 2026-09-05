@@ -120,7 +120,7 @@ fn push_message(msg: String) {
 
 /// 字符串切片 → JS 数组（action/preview 的 payload 传参）
 fn js_array_from_strings(items: &[String], ctx: &mut Context) -> JsValue {
-    let arr = JsArray::new(ctx);
+    let arr = JsArray::new(ctx).expect("JsArray::new");
     for s in items {
         let _ = arr.push(JsValue::from(JsString::from(s.as_str())), ctx);
     }
@@ -443,10 +443,8 @@ mod tests {
         // 空 rows（如 grep 无匹配）→ 仍 push OpenPicker（columns 非空,term 侧建空列表展示）
         let _guard = TEST_LOCK.lock().unwrap();
         crate::init();
-        load_script(
-            r#"helix.picker.define("f", { columns: ["name"], items: () => [] });"#,
-        )
-        .unwrap();
+        load_script(r#"helix.picker.define("f", { columns: ["name"], items: () => [] });"#)
+            .unwrap();
         load_script(r#"helix.picker.run("f");"#).unwrap();
         let reqs = take_ui_requests();
         match &reqs[0] {

@@ -92,17 +92,15 @@ pub(crate) fn js_load(
             "helix.load: name must not be empty",
         ))));
     }
-    load_script_checked(ctx, &name, &mut Vec::new())
+    load_script_checked(ctx, &name)
 }
 
 /// 加载脚本（含依赖递归）。依赖在脚本内 helix.plugin(name, { deps }) 声明：
 /// deps 是文件 key（load 参数，如 "lib/icons.js"），加载目标前先递归加载依赖；
 /// 已加载的跳过（with_script_exports 缓存），循环依赖报错。
-fn load_script_checked(
-    ctx: &mut Context,
-    name: &str,
-    stack: &mut Vec<String>,
-) -> boa_engine::JsResult<JsValue> {
+/// 加载栈为跨脚本共享的 thread_local（LOAD_STACK）：js_load 不再每次新建空栈，
+/// 嵌套 helix.load（运行时/依赖递归）都能看到祖先——循环依赖报错而非栈溢出崩溃。
+fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<JsValue> {
     let key = if name.ends_with(".js") {
         name.to_string()
     } else {
@@ -111,53 +109,60 @@ fn load_script_checked(
     if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
         return Ok(cached);
     }
-    if stack.contains(&key) {
-        let chain = stack
-            .iter()
-            .chain([&key])
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" -> ");
+    if crate::state::with_load_stack(|s| s.iter().any(|k| k == &key)) {
+        let chain = crate::state::with_load_stack(|s| {
+            s.iter()
+                .chain([&key])
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        });
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             format!("helix.load: circular dependency: {chain}"),
         ))));
     }
-    let path = if Path::new(&key).is_absolute() {
-        PathBuf::from(&key)
-    } else {
-        PLUGINS_DIR.get().map(|d| d.join(&key)).ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.load: plugins dir not set",
-            )))
-        })?
-    };
-    let src = std::fs::read_to_string(&path).map_err(|e| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.load('{key}'): {e}"
-        ))))
-    })?;
-    // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
-    crate::state::with_last_plugin_deps(|d| d.clear());
-    eval_wrapped(ctx, &src).map_err(|e| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.load('{key}') failed: {e}"
-        ))))
-    })?;
-    let deps = crate::state::with_last_plugin_deps(std::mem::take);
-    // 先取外层 export（递归依赖 eval 会覆盖 LAST_EXPORT，外层 export 必须提前保存）
-    let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
-    stack.push(key.clone());
-    for dep in &deps {
-        load_script_checked(ctx, dep, stack)?;
-    }
-    stack.pop();
-    crate::state::with_loaded_scripts(|s| {
-        if !s.iter().any(|(n, _)| n == &key) {
-            s.push((key.clone(), src));
+    // eval 前入栈（嵌套 load 期间本 key 保持可见）；借用即刻释放，不跨 eval 持有。
+    crate::state::with_load_stack(|s| s.push(key.clone()));
+    let result = (|| -> boa_engine::JsResult<JsValue> {
+        let path = if Path::new(&key).is_absolute() {
+            PathBuf::from(&key)
+        } else {
+            PLUGINS_DIR.get().map(|d| d.join(&key)).ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "helix.load: plugins dir not set",
+                )))
+            })?
+        };
+        let src = std::fs::read_to_string(&path).map_err(|e| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "helix.load('{key}'): {e}"
+            ))))
+        })?;
+        // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
+        crate::state::with_last_plugin_deps(|d| d.clear());
+        eval_wrapped(ctx, &src).map_err(|e| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "helix.load('{key}') failed: {e}"
+            ))))
+        })?;
+        let deps = crate::state::with_last_plugin_deps(std::mem::take);
+        // 先取外层 export（递归依赖 eval 会覆盖 LAST_EXPORT，外层 export 必须提前保存）
+        let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
+        for dep in &deps {
+            load_script_checked(ctx, dep)?;
         }
+        crate::state::with_loaded_scripts(|s| {
+            if !s.iter().any(|(n, _)| n == &key) {
+                s.push((key.clone(), src));
+            }
+        });
+        with_script_exports(|m| m.insert(key.clone(), export.clone()));
+        Ok(export)
+    })();
+    crate::state::with_load_stack(|s| {
+        s.pop();
     });
-    with_script_exports(|m| m.insert(key, export.clone()));
-    Ok(export)
+    result
 }
 
 /// helix.plugin(name, { deps, version })：声明当前脚本的依赖清单（方案 2）。
@@ -829,7 +834,7 @@ fn build_changes_array(
     engine: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     if changes.is_empty() {
-        return Ok(JsValue::from(JsArray::new(engine)));
+        return Ok(JsValue::from(JsArray::new(engine)?));
     }
     let old_start = changes.iter().map(|c| c.0 .0).min().unwrap();
     let old_end = changes.iter().map(|c| c.0 .1).max().unwrap();
@@ -1723,6 +1728,8 @@ fn reset_plugin_state() {
     crate::state::with_command_docs(|d| d.clear());
     // 导出缓存与 pending 导出随插件状态重置（reload 后按名重读磁盘重跑）
     with_script_exports(|m| m.clear());
+    // 加载栈防御性清空（正常路径已 pop；防止异常残留影响后续 reload）
+    crate::state::with_load_stack(|s| s.clear());
     with_last_export(|l| *l = None);
     // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
     crate::state::with_theme_overrides(|o| o.clear());

@@ -193,7 +193,7 @@ pub(crate) fn js_get_style(
         None => JsValue::null(),
     };
     // modifiers 数组
-    let mods = boa_engine::object::builtins::JsArray::new(ctx);
+    let mods = boa_engine::object::builtins::JsArray::new(ctx)?;
     for m in &info.modifiers {
         mods.push(JsValue::from(JsString::from(m.clone())), ctx)
             .map_err(|_| {
@@ -232,7 +232,7 @@ pub(crate) fn js_theme_info(
         Some(src) => src(),
         None => (String::new(), Vec::new()),
     };
-    let arr = boa_engine::object::builtins::JsArray::new(ctx);
+    let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
     for t in &themes {
         arr.push(JsValue::from(JsString::from(t.clone())), ctx)
             .map_err(|_| {

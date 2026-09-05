@@ -819,7 +819,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                         }
                         let err = JsNativeError::error()
                             .with_message(format!("exit {code}: {msg}"))
-                            .to_opaque(engine);
+                            .into_opaque(engine);
                         vec![err.into()]
                     };
                     let _: JsValue = f
@@ -1003,7 +1003,7 @@ fn reject_msg(
 ) -> Result<(), JsError> {
     let err = JsNativeError::error()
         .with_message(msg.to_string())
-        .to_opaque(engine);
+        .into_opaque(engine);
     resolving
         .reject
         .call(&JsValue::undefined(), &[err.into()], engine)

@@ -242,7 +242,7 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
                     // 服务端响应畸形 → 走 reject，promise 不能悬空
                     let err = JsNativeError::error()
                         .with_message(e.to_string())
-                        .to_opaque(engine);
+                        .into_opaque(engine);
                     resolving
                         .reject
                         .call(&undefined, &[err.into()], engine)
@@ -254,7 +254,7 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
                 .call(&undefined, &[JsValue::null()], engine)
                 .map(|_| ()),
             Err(e) => {
-                let err = JsNativeError::error().with_message(e).to_opaque(engine);
+                let err = JsNativeError::error().with_message(e).into_opaque(engine);
                 resolving
                     .reject
                     .call(&undefined, &[err.into()], engine)
