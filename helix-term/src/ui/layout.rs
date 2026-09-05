@@ -42,6 +42,9 @@ pub struct LayoutTree {
     leaf_rects: std::collections::HashMap<u64, Rect>,
     /// 固定叶子 id 集合（fixed：不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
     fixed: std::collections::HashSet<u64>,
+    /// rail(侧栏轨道)叶子:恒为 root 的直接子叶(H 分屏边缘侧,占全高)。
+    /// 不参与分裂/换位/最小化/放大等窗口操作;窗口操作只发生在 main 子树。
+    rail: Option<u64>,
 }
 
 /// 叶子布局结果：每个叶子的 id + Rect
@@ -154,6 +157,7 @@ impl Default for LayoutTree {
             float: None,
             minimized: None,
             fixed: Default::default(),
+            rail: None,
             leaf_rects: Default::default(),
         }
     }
@@ -172,6 +176,88 @@ impl LayoutTree {
     /// 叶子是否 fixed
     pub fn is_fixed(&self, id: u64) -> bool {
         self.fixed.contains(&id)
+    }
+
+    /// 当前 rail 叶子(无 → None)
+    pub fn rail_leaf(&self) -> Option<u64> {
+        self.rail
+    }
+
+    /// id 是否为 rail
+    pub fn is_rail(&self, id: u64) -> bool {
+        self.rail == Some(id)
+    }
+
+    /// 把组件注册为 rail(贴 root 边缘):先取除旧 rail(若有),再把当前 root 包成 main 子树。
+    /// ratio=rail 占宽份额(0<ratio<1)。返回被替换的旧 rail id(组件已移除)。
+    pub fn register_rail(
+        &mut self,
+        component: Box<dyn Component>,
+        left: bool,
+        ratio: f32,
+    ) -> Option<u64> {
+        let old = self.take_rail();
+        let rid = self.next_id_for_split();
+        self.components.insert(rid, component);
+        let main_root = std::mem::replace(&mut self.root, LayoutNode::Leaf { id: rid });
+        self.root = if left {
+            LayoutNode::Split {
+                dir: SplitDir::H,
+                ratio,
+                first: Box::new(LayoutNode::Leaf { id: rid }),
+                second: Box::new(main_root),
+            }
+        } else {
+            LayoutNode::Split {
+                dir: SplitDir::H,
+                ratio: 1.0 - ratio,
+                first: Box::new(main_root),
+                second: Box::new(LayoutNode::Leaf { id: rid }),
+            }
+        };
+        self.rail = Some(rid);
+        if self.active == rid || !self.components.contains_key(&self.active) {
+            self.active = self.main_first_leaf();
+        }
+        old
+    }
+
+    /// 取除 rail:root 收缩回 main 子树;rail 组件移除。返回原 rail id。
+    pub fn take_rail(&mut self) -> Option<u64> {
+        let rid = self.rail.take()?;
+        if self.components.contains_key(&rid) {
+            self.components.remove(&rid);
+            prune(&mut self.root, rid);
+        }
+        if self.active == rid {
+            self.active = 0;
+        }
+        Some(rid)
+    }
+
+    /// main 子树的首个叶(跳过 rail);退化(整树只有 rail)回退 0
+    fn main_first_leaf(&self) -> u64 {
+        match &self.root {
+            LayoutNode::Leaf { id } => {
+                if self.rail == Some(*id) {
+                    0
+                } else {
+                    *id
+                }
+            }
+            LayoutNode::Split { first, second, .. } => first_leaf_skipping(first, self.rail)
+                .or_else(|| first_leaf_skipping(second, self.rail))
+                .unwrap_or(0),
+        }
+    }
+
+    /// 活动叶若为 rail,分裂/操作落点 = main 首个叶
+    pub fn operational_target(&self) -> u64 {
+        if self.rail == Some(self.active) {
+            self.main_first_leaf()
+        } else {
+            self.active
+        }
     }
 
     /// 浮动叶子 id
@@ -264,6 +350,12 @@ impl LayoutTree {
         if !self.components.contains_key(&id) {
             return None;
         }
+        // rail 不参与分裂:目标落 main
+        let id = if self.rail == Some(id) {
+            self.main_first_leaf()
+        } else {
+            id
+        };
         let (first, second) = if new_first {
             (new_id, id)
         } else {
@@ -291,6 +383,12 @@ impl LayoutTree {
         if !self.components.contains_key(&id) {
             return None;
         }
+        // rail 不参与分裂:目标落 main
+        let id = if self.rail == Some(id) {
+            self.main_first_leaf()
+        } else {
+            id
+        };
         let new_id = self.next_id;
         self.next_id += 1;
         let (first, second) = if new_first {
@@ -312,8 +410,12 @@ impl LayoutTree {
     /// 移除叶子：其父 Split 收缩为兄弟子树；组件随之销毁（Drop）。
     /// fixed 叶子 / 编辑器叶子(id=0) / 不存在的 id → false，不操作。
     pub fn remove(&mut self, id: u64) -> bool {
-        if id == 0 || self.fixed.contains(&id) || !self.components.contains_key(&id) {
-            return false; // 编辑器叶子不可移除；fixed 叶子免疫
+        if id == 0
+            || self.fixed.contains(&id)
+            || self.rail == Some(id)
+            || !self.components.contains_key(&id)
+        {
+            return false; // 编辑器叶子不可移除；fixed/rail 免疫
         }
         self.components.remove(&id);
         prune(&mut self.root, id);
@@ -335,6 +437,9 @@ impl LayoutTree {
 
     /// 缩放：叶子占满全区（其他叶子隐藏）；再次调用取消
     pub fn zoom(&mut self, id: u64) {
+        if self.rail == Some(id) {
+            return; // rail 不参与 zoom
+        }
         if self.components.contains_key(&id) {
             self.zoomed = Some(id);
         }
@@ -361,8 +466,8 @@ impl LayoutTree {
     /// 按方向调整叶子份额：dir 必须匹配其直接父 Split 的方向（H=左右 / V=上下）
     /// 才生效；delta>0 增大该叶子、<0 减小（clamp 到 [0.05, 0.95]）。返回是否调整。
     pub fn resize_leaf_dir(&mut self, id: u64, dir: SplitDir, delta: f32) -> bool {
-        if self.fixed.contains(&id) {
-            return false; // fixed 叶子不可 resize
+        if self.fixed.contains(&id) || self.rail == Some(id) {
+            return false; // fixed/rail 不可 resize
         }
         fn adjust(node: &mut LayoutNode, id: u64, dir: SplitDir, delta: f32) -> bool {
             match node {
@@ -407,8 +512,10 @@ impl LayoutTree {
             || !self.components.contains_key(&id2)
             || self.fixed.contains(&id1)
             || self.fixed.contains(&id2)
+            || self.rail == Some(id1)
+            || self.rail == Some(id2)
         {
-            return false; // fixed 叶子不可 swap
+            return false; // fixed/rail 不可 swap
         }
         let c1 = self.components.remove(&id1).unwrap();
         let c2 = self.components.remove(&id2).unwrap();
@@ -489,8 +596,8 @@ impl LayoutTree {
 
     /// 目标叶子所在（最内层）Split 恢复 50/50。
     pub fn equalize(&mut self, id: u64) {
-        if self.fixed.contains(&id) {
-            return; // fixed 叶子所在 Split 不可均衡
+        if self.fixed.contains(&id) || self.rail == Some(id) {
+            return; // fixed/rail 所在 Split 不可均衡
         }
         fn eq(node: &mut LayoutNode, id: u64) {
             match node {
@@ -526,8 +633,8 @@ impl LayoutTree {
         if !self.components.contains_key(&id) {
             return;
         }
-        if minimized && self.fixed.contains(&id) {
-            return; // fixed 叶子不可被最小化;还原不受限(否则 z 后设 fixed 的叶子无恢复路径)
+        if minimized && (self.fixed.contains(&id) || self.rail == Some(id)) {
+            return; // fixed/rail 不可被最小化
         }
         if minimized {
             self.minimized = Some(id);
@@ -650,14 +757,19 @@ impl LayoutTree {
 
     pub fn dump(&self) -> LayoutDump {
         let fixed = &self.fixed;
+        let rail = self.rail;
         fn dump_node(
             node: &LayoutNode,
             fixed: &std::collections::HashSet<u64>,
+            rail: Option<u64>,
         ) -> serde_json::Value {
             match node {
-                LayoutNode::Leaf { id } => {
-                    serde_json::json!({ "type": "leaf", "id": id, "fixed": fixed.contains(id) })
-                }
+                LayoutNode::Leaf { id } => serde_json::json!({
+                    "type": "leaf",
+                    "id": id,
+                    "fixed": fixed.contains(id),
+                    "rail": Some(*id) == rail,
+                }),
                 LayoutNode::Split {
                     dir,
                     ratio,
@@ -667,14 +779,15 @@ impl LayoutTree {
                     "type": "split",
                     "dir": match dir { SplitDir::H => "h", SplitDir::V => "v" },
                     "ratio": ratio,
-                    "first": dump_node(first, fixed),
-                    "second": dump_node(second, fixed),
+                    "first": dump_node(first, fixed, rail),
+                    "second": dump_node(second, fixed, rail),
                 }),
             }
         }
         fn collect_leafs(
             node: &LayoutNode,
             fixed: &std::collections::HashSet<u64>,
+            rail: Option<u64>,
             out: &mut Vec<LeafInfo>,
         ) {
             match node {
@@ -682,18 +795,19 @@ impl LayoutTree {
                     out.push(LeafInfo {
                         id: *id,
                         fixed: fixed.contains(id),
+                        rail: Some(*id) == rail,
                     });
                 }
                 LayoutNode::Split { first, second, .. } => {
-                    collect_leafs(first, fixed, out);
-                    collect_leafs(second, fixed, out);
+                    collect_leafs(first, fixed, rail, out);
+                    collect_leafs(second, fixed, rail, out);
                 }
             }
         }
         let mut leafs = Vec::new();
-        collect_leafs(&self.root, fixed, &mut leafs);
+        collect_leafs(&self.root, fixed, rail, &mut leafs);
         LayoutDump {
-            tree: dump_node(&self.root, fixed),
+            tree: dump_node(&self.root, fixed, rail),
             active: self.active,
             zoomed: self.zoomed,
             minimized: self.minimized,
@@ -1022,6 +1136,21 @@ fn prune(node: &mut LayoutNode, target: u64) -> bool {
     }
 }
 
+fn first_leaf_skipping(node: &LayoutNode, skip: Option<u64>) -> Option<u64> {
+    match node {
+        LayoutNode::Leaf { id } => {
+            if Some(*id) == skip {
+                None
+            } else {
+                Some(*id)
+            }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            first_leaf_skipping(first, skip).or_else(|| first_leaf_skipping(second, skip))
+        }
+    }
+}
+
 fn contains_leaf(node: &LayoutNode, target: u64) -> bool {
     match node {
         LayoutNode::Leaf { id } => *id == target,
@@ -1047,6 +1176,7 @@ pub struct LayoutDump {
 pub struct LeafInfo {
     pub id: u64,
     pub fixed: bool,
+    pub rail: bool,
 }
 
 pub(crate) trait EventResultExt {
@@ -1320,5 +1450,149 @@ mod tests {
         let mut rects = Vec::new();
         layout_node(&tree.root, area, &mut rects, tree.float, tree.minimized);
         assert_eq!(rects.len(), 2, "恢复后回到原分割");
+    }
+}
+
+// ---- rail 单元测试 ----
+
+mod rail_tests {
+    use super::*;
+    use crate::ui::plugin_terminal::PluginTerminal;
+
+    fn base() -> LayoutTree {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
+        tree
+    }
+
+    #[test]
+    fn register_rail_wraps_root_and_marks_dump() {
+        let mut tree = base();
+        tree.register_rail(Box::new(PluginTerminal::new(9, 0, 80)), true, 0.2);
+        let rid = tree.rail_leaf().expect("注册后有 rail");
+        assert_eq!(tree.rail_leaf(), Some(rid));
+        assert!(tree.is_rail(rid));
+        // root = Split(rail(1) | main(0))
+        match &tree.root {
+            LayoutNode::Split { first, second, .. } => {
+                assert_eq!(tree.leaf_ids_of(&*first), vec![rid], "rail 在 first(左侧)");
+                assert!(tree.leaf_ids_of(&*second).contains(&0), "main 含编辑器");
+            }
+            _ => panic!("注册 rail 后 root 应为 Split"),
+        }
+        let dump = tree.dump();
+        let rail_leaf = dump.leafs.iter().find(|l| l.id == rid).unwrap();
+        assert!(rail_leaf.rail, "dump 标记 rail");
+        let editor_leaf = dump.leafs.iter().find(|l| l.id == 0).unwrap();
+        assert!(!editor_leaf.rail, "编辑器非 rail");
+        // 右侧 rail 对称:root=Split(main|rail)
+        let mut tree2 = base();
+        tree2.register_rail(Box::new(PluginTerminal::new(8, 0, 80)), false, 0.2);
+        let rid2 = tree2.rail_leaf().expect("注册后有 rail");
+        match &tree2.root {
+            LayoutNode::Split { first, second, .. } => {
+                assert!(
+                    tree2.leaf_ids_of(&*second).contains(&rid2),
+                    "rail 在 second(右侧)"
+                );
+                assert!(tree2.leaf_ids_of(&*first).contains(&0));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn rail_replace_and_take() {
+        let mut tree = base();
+        tree.register_rail(Box::new(PluginTerminal::new(9, 0, 80)), true, 0.2);
+        let r1 = tree.rail_leaf().unwrap();
+        // 替换:旧 rail 被取除,新 rail 就位,root 仍单层 Split(rail|main)
+        let replaced = tree
+            .register_rail(Box::new(PluginTerminal::new(10, 0, 80)), true, 0.3)
+            .unwrap();
+        let r2 = tree.rail_leaf().unwrap();
+        assert_eq!(r1, replaced, "返回被替换的旧 rail id");
+        assert!(!tree.is_rail(r1) || r1 != r2);
+        match &tree.root {
+            LayoutNode::Split { first, second, .. } => {
+                assert!(tree.leaf_ids_of(&*first).contains(&r2));
+                assert!(tree.leaf_ids_of(&*second).contains(&0));
+            }
+            _ => panic!(),
+        }
+        // 取除:root 收缩回编辑器叶
+        tree.take_rail();
+        assert_eq!(tree.rail_leaf(), None);
+        assert!(matches!(tree.root, LayoutNode::Leaf { id: 0 }));
+        assert!(!tree.components.contains_key(&r2), "rail 组件已移除");
+    }
+
+    #[test]
+    fn rail_immune_to_window_ops() {
+        let mut tree = base();
+        tree.register_rail(Box::new(PluginTerminal::new(9, 0, 80)), true, 0.2);
+        let rid = tree.rail_leaf().unwrap();
+        let mid = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                true,
+                Box::new(PluginTerminal::new(2, 0, 80)),
+            )
+            .unwrap();
+        // 分裂在 main 内:rail 仍在 root first,root 不增层
+        match &tree.root {
+            LayoutNode::Split { first, second, .. } => {
+                assert!(tree.leaf_ids_of(&*first).contains(&rid));
+                assert!(tree.leaf_ids_of(&*second).contains(&mid), "main 含新分裂叶");
+            }
+            _ => panic!(),
+        }
+        // 对 rail 的 remove/zoom/swap/minimize 全部免疫
+        assert!(!tree.remove(rid), "rail 不可 remove");
+        let before = tree.zoomed;
+        tree.zoom(rid);
+        assert_eq!(tree.zoomed, before, "rail 不可 zoom");
+        assert!(!tree.swap(rid, mid), "rail 不可 swap");
+        tree.set_minimized(rid, true);
+        assert_ne!(tree.minimized_leaf(), Some(rid), "rail 不可最小化");
+        // 活动在 rail 上时,分裂落 main(operational_target)
+        tree.focus(rid);
+        let target = tree.operational_target();
+        assert_ne!(target, rid, "rail 上操作目标落 main");
+        let nid = tree
+            .split_side(
+                target,
+                SplitDir::H,
+                true,
+                Box::new(PluginTerminal::new(3, 0, 80)),
+            )
+            .unwrap();
+        assert!(tree.is_rail(rid) && !tree.is_rail(nid));
+        // rail 仍直接贴 root
+        match &tree.root {
+            LayoutNode::Split { first, .. } => {
+                assert!(tree.leaf_ids_of(&*first).contains(&rid));
+            }
+            _ => panic!(),
+        }
+    }
+}
+
+// LayoutTree::leaf_ids_of 测试辅助(递归收集)
+impl LayoutTree {
+    fn leaf_ids_of(&self, node: &LayoutNode) -> Vec<u64> {
+        fn go(n: &LayoutNode, out: &mut Vec<u64>) {
+            match n {
+                LayoutNode::Leaf { id } => out.push(*id),
+                LayoutNode::Split { first, second, .. } => {
+                    go(first, out);
+                    go(second, out);
+                }
+            }
+        }
+        let mut v = Vec::new();
+        go(node, &mut v);
+        v
     }
 }
