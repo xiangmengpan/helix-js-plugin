@@ -44,6 +44,8 @@ Press `C-w` from any focus (editor/terminal/panel) in normal mode:
 | `Enter` | Confirm current window & exit |
 | `Esc` / `C-w` | Exit |
 
+**Sidebar rail** — `open_panel({ side:"left"|"right", rail:true })` pins a panel (e.g. filetree) to the screen edge at full height; window-mode splits/swap/minimize/zoom never touch it (`C-w h/l` focuses it, browsing keys go to the panel, `Esc`/`C-\`/`C-w h/l` return to the editor area).
+
 - **Window = leaf** (LayoutTree): every window is a leaf showing one view of a buffer; terminal/panel/BufferLeaf are all leaves under the same window mode. The leaf that owns the view routes editing to it (`tree.focus` follows leaf focus), so same-doc multi-leaf editing stays in sync.
 - `:vsplit`/`:hsplit` (with or without a path), `gf`, `:vsplit-new`/`:hsplit-new` all create **new leaves** (the old helix view-tree splitting is retired; startup leftovers are auto-adopted into leaves).
 - `C-w` in insert mode keeps delete-word; terminal Insert passthrough lets `C-w` through to the pty (vim/emacs inside terminal)
