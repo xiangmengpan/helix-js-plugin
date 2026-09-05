@@ -105,11 +105,8 @@ async fn rail_focus_enter_leave_and_split_stays_in_main() -> anyhow::Result<()> 
         rid,
         "C-w h 聚焦 rail"
     );
-    // rail 聚焦态按普通键 → 被 rail 吞(不透穿编辑器:文本不变)
-    pump(&mut app, "ixxx").await?;
-    let (_, doc) = current_ref!(app.editor);
-    assert_eq!(doc.text().to_string(), "AAA\n", "rail 聚焦时普通键不透穿");
-    // Esc(插件 rail 脚本无 onKey → 未消费)→ 回 main
+    // rail 聚焦态:无 onKey 插件未消费键按"非模态"穿透编辑器(filetree 等面板设计意图)
+    // Esc(插件未消费)→ 回 main
     pump(&mut app, "<esc>").await?;
     assert_ne!(app.compositor.layout_tree().active(), rid, "Esc 回 main");
     // 再进 rail,C-w v → 分裂落在 main(rail 不被切)
@@ -121,5 +118,27 @@ async fn rail_focus_enter_leave_and_split_stays_in_main() -> anyhow::Result<()> 
     assert_eq!(rails.len(), 1, "rail 仍唯一");
     assert!(app.compositor.layout_tree().is_rail(rails[0].id));
     assert_eq!(dump.leafs.len(), 3, "main 分裂成 2 叶 + rail");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rail_focused_can_type_colon_commands() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let p = rail_plugin(dir.path(), "left");
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", p.display())).await?;
+    pump(&mut app, ":open-rail<ret>").await?;
+    let rid = app.compositor.layout_tree().rail_leaf().unwrap();
+    assert_eq!(app.compositor.layout_tree().active(), rid, "rail 活动");
+    // rail 聚焦态输入 :no-such 命令 → 应出现错误(证明 prompt 能从 rail 打开)
+    pump(&mut app, ":no-such-cmd-xyz<ret>").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.contains("no-such-cmd-xyz") || status.contains("no such"),
+        "命令应执行并报错: {status}"
+    );
     Ok(())
 }

@@ -216,9 +216,8 @@ impl LayoutTree {
             }
         };
         self.rail = Some(rid);
-        if self.active == rid || !self.components.contains_key(&self.active) {
-            self.active = self.main_first_leaf();
-        }
+        // 注册即聚焦 rail(与普通面板打开后活动一致:按键直达浏览;Esc/l 或 C-\ 回 main)
+        self.active = rid;
         old
     }
 
@@ -992,25 +991,22 @@ impl LayoutTree {
     /// 事件路由：浮动叶子优先，其次活动叶子；Ignored → 编辑器叶子（id=0）兜底
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let target = self.float.unwrap_or_else(|| self.active());
-        // rail 焦点态:组件优先消费(浏览键);未消费的 Esc/'l' → 回 main;其余键吞掉
-        // (不透穿编辑器,避免 rail 聚焦时误编辑)。filetree 自消费 l/h/Esc/C-\ 等,不受影响。
+        // rail 焦点态:组件优先消费(浏览键);组件未消费时仅 Esc/plain-l 退出回 main,
+        // 其余键(如 : 开命令)照旧穿透编辑器——filetree 等面板按"非模态"设计(未映射键穿透)。
         if target != 0 && self.rail == Some(target) {
-            let exit_key = matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc)
-                || matches!(event, Event::Key(k)
-                    if k.code == helix_view::input::KeyCode::Char('l')
-                        && !k.modifiers.contains(helix_view::input::KeyModifiers::CONTROL)
-                        && !k.modifiers.contains(helix_view::input::KeyModifiers::ALT));
+            let is_esc =
+                matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc);
+            let is_plain_l = matches!(event, Event::Key(k)
+                if k.code == helix_view::input::KeyCode::Char('l')
+                    && !k.modifiers.contains(helix_view::input::KeyModifiers::CONTROL)
+                    && !k.modifiers.contains(helix_view::input::KeyModifiers::ALT));
             if let Some(comp) = self.components.get_mut(&target) {
                 let r = comp.handle_event(event, cx);
-                if r.is_ignored() {
-                    if exit_key {
-                        self.active = self.operational_target();
-                    }
-                    return EventResult::Consumed(None); // rail 吞键,不落编辑器
+                if r.is_ignored() && (is_esc || is_plain_l) {
+                    self.active = self.operational_target();
+                    return EventResult::Consumed(None); // 退出 rail 焦点回 main
                 }
-                return r;
             }
-            return EventResult::Consumed(None);
         }
         if let Some(comp) = self.components.get_mut(&target) {
             match comp.handle_event(event, cx) {
