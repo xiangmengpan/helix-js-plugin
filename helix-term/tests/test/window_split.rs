@@ -69,10 +69,21 @@ async fn vsplit_creates_controllable_same_doc_leaf() -> anyhow::Result<()> {
         doc.text().to_string()
     );
 
-    // 5) 清理:模式内聚焦右叶(l)再 x 关闭 → 回 1 叶
+    // 5) 清理:模式内聚焦右叶(l)再 x 关闭 → 回 1 叶;doc 不被关闭(remove_empty_scratch
+    //    经 tree.traverse 仍见 leaf0 的 view 显示同一 doc)
     pump(&mut app, "<C-w>lx<esc>").await?;
     let types = app.compositor.layout_tree().leaf_types();
     assert_eq!(types.len(), 1, "x 关闭 BufferLeaf 后回单叶: {types:?}");
+    assert_eq!(app.editor.documents.len(), 1, "关闭一叶不关文档");
+    // 关闭后编辑仍命中该 doc(leaf0)
+    pump(&mut app, "izzz<esc>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.text().to_string(),
+        "XXXYYYzzzAAA\n",
+        "关闭 BufferLeaf 后 leaf0 编辑照常: {:?}",
+        doc.text().to_string()
+    );
     Ok(())
 }
 

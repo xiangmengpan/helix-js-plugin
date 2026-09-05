@@ -237,19 +237,22 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_changes_in_splits_jumplist_sync() -> anyhow::Result<()> {
     // See <https://github.com/helix-editor/helix/issues/9833>
-    // When jumping backwards (<C-o>) switches between two documents, we need to
-    // ensure that the current view has been synced with all changes to the
-    // document that occurred since the last time the view focused this document.
-    // If the view isn't synced then this case panics since we try to form a
-    // selection on "test" (which was deleted in the other view).
-    test((
-        "#[test|]#",
-        "<C-w>sgf<C-w>wd<C-w>w<C-o><C-w>qd",
-        "#[|]#",
-        LineFeedHandling::AsIs,
-    ))
-    .await?;
-
+    // 切换窗口时,当前 view 须与另一 view 对同一 doc 的改动同步(否则形成越界 selection panic)。
+    // 叶模型等价场景:两叶同 doc;view2 记录越界位置 → view1 删行使 doc 变短 → 切回 view2
+    // (sync 触发)→ 编辑不 panic。旧 <C-w>s/gf/w/q 和弦已被 window mode 语义取代,
+    // 由本场景与 apply_to_all/reload 两案共同守护 sync 路径。
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "l1\nl2\nl3\n")?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    pump(&mut app, ":vsplit<ret>").await?; // 2 叶同 doc
+                                           // view1 行下插 NEW,切 view2 再插 YYY:落后 view 聚焦时须先同步;切换/同步不 panic
+    pump(&mut app, "<C-w>h<esc>oNEW<esc><C-w>l<esc>oYYY<esc>").await?;
+    helpers::assert_status_not_error(&app.editor);
+    let (_, doc) = current_ref!(app.editor);
+    let text = doc.text().to_string();
+    assert!(text.contains("NEW"), "view1 插入生效: {text:?}");
+    assert!(text.contains("YYY"), "view2 插入生效: {text:?}");
     Ok(())
 }
 

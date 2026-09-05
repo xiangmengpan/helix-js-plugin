@@ -6008,11 +6008,7 @@ fn transpose_view(cx: &mut Context) {
     cx.editor.transpose_view()
 }
 
-/// Open a new split in the given direction specified by the action.
-///
-/// Maintain the current view (both the cursor's position and view in document).
-
-fn hsplit(cx: &mut Context) {
+fn hsplit(_cx: &mut Context) {
     // 叶=窗口:无参分裂 → 下侧同 doc 新叶
     crate::job::dispatch_blocking(move |editor, compositor| {
         if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
@@ -6025,7 +6021,7 @@ fn hsplit_new(_cx: &mut Context) {
     new_scratch_leaf(crate::ui::layout::SplitDir::V);
 }
 
-fn vsplit(cx: &mut Context) {
+fn vsplit(_cx: &mut Context) {
     // 叶=窗口:无参分裂 → 右侧同 doc 新叶
     crate::job::dispatch_blocking(move |editor, compositor| {
         if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
