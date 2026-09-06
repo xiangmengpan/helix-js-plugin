@@ -288,8 +288,8 @@ function row_el(r, i, W) {
   return helix.el("text", line, sel ? { style: "ui.selection" } : {});
 }
 
-// 底帮助行:常态帮助 / 搜索提示 / busy 进度互斥
-function footer_text() {
+// 底帮助行:常态帮助 / 搜索提示 / busy 进度互斥;窄窗用短版防截断丢尾部键位
+function footer_text(W) {
   const b = S.busy;
   if (b) {
     const fin = b.done + b.fail.length;
@@ -298,8 +298,11 @@ function footer_text() {
     const cur = b.cur ? b.cur.op + " " + b.cur.name : "";
     return bar + " " + pct + "% (" + b.done + "/" + b.items.length + ") " + cur;
   }
-  if (S.searching) return "filtering: type chars · ↑↓ move · Enter act · Tab kind · Esc exit search";
-  return "move ↑↓/jk · / search · Enter act · i info · t mark · x remove · u update · r refresh · C clear-ver · q/Esc close";
+  if (S.searching) return "filtering: type to filter · ↑↓ move · Enter act · Esc exit";
+  const wide = (W || 200) >= 96;
+  return wide
+    ? "↑↓/jk move · / search · Enter act · i info · t mark · x rm · u upd · r ref · C ver · Esc/q close"
+    : "↑↓/jk · / search · Enter act · i info · t mark · x rm · u upd · r ref · Esc/q";
 }
 
 function main_render(focus, ctx) {
@@ -310,18 +313,22 @@ function main_render(focus, ctx) {
     const rows = visible();
     if (S.sel > rows.length - 1) S.sel = Math.max(0, rows.length - 1);
     const start = Math.max(0, Math.min(S.sel - Math.floor(listH / 2), Math.max(0, rows.length - listH)));
-    const win = rows.slice(start, start + listH).map((r, i) => row_el(r, start + i, W));
-    const list = win.length
-      ? win
-      : [
-          helix.el(
-            "text",
-            frame_mid(W, S.filter && S.searching ? "no matches for '" + wc_trunc(S.filter, W - 6) + "'" : "no servers yet — press r to refresh"),
-            { style: "ui.virtual" }
-          ),
-        ];
+    const win = rows.slice(start, start + listH);
+    const lines = win.map((r, i) => row_el(r, start + i, W));
+    if (!win.length) {
+      lines.push(
+        helix.el(
+          "text",
+          frame_mid(W, S.filter && S.searching ? "no matches for '" + wc_trunc(S.filter, Math.max(1, W - 8)) + "'" : "no servers yet — press r to refresh"),
+          { style: "ui.virtual" }
+        )
+      );
+    }
+    // 行不足时以空白填充到 listH:scroll 只保留末尾 listH 行,框底须贴区域底
+    while (lines.length < listH) lines.push(helix.el("text", frame_mid(W, ""), {}));
+    const list = lines;
     const topTxt = frame_top(W, "arsenal", rows.length + "/" + S.rows.length + " recipes");
-    const footer = frame_mid(W, wc_ell(footer_text(), W - 2));
+    const footer = frame_mid(W, wc_ell(footer_text(W), W - 2));
     return helix.el("col", [
       helix.el("text", topTxt, { style: "ui.virtual" }),
       tab_row(W),

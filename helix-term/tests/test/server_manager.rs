@@ -528,7 +528,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     std::fs::write(
         &cfg,
         format!(
-            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\ndescription = \"假 demo 工具\"\nhomepage = \"https://example.invalid/demo\"\n",
+            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\ndescription = \"Fake demo tool\"\nhomepage = \"https://example.invalid/demo\"\n",
             dir.path().display()
         ),
     )?;
@@ -565,22 +565,20 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         text.contains("rust-analyzer") && text.contains("demo-bin"),
         "内置 + 注入配方行可见: {text:?}"
     );
-    // TEMP-SHOT-OPEN
-    eprintln!("\n===SHOT@OPEN===\n{}", arsenal_text(&mut app));
 
     // 2. Enter 在 rust-analyzer(sel0;缺失+installable+needs_version)→ 版本输入弹窗(install 单项直达)
     pump(&mut app, "<ret>").await?;
     assert!(!app.editor.is_err(), "Enter 版本输入不应报错");
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("rust-analyzer 需显式版本"),
+        text.contains("explicit version"),
         "needs_version → 版本输入弹窗应开: {text:?}"
     );
     pump(&mut app, "<esc>").await?; // 取消
     assert!(!app.editor.is_err(), "版本输入 Esc 不应报错");
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("arsenal") && !text.contains("需显式版本"),
+        text.contains("arsenal") && !text.contains("explicit version"),
         "Esc 取消版本输入后回主窗: {text:?}"
     );
 
@@ -588,7 +586,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     pump(&mut app, "i").await?;
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("命令: (未安装)") && text.contains("下载源: https://github.com/rust-lang"),
+        text.contains("command: (not installed)") && text.contains("source: https://github.com/rust-lang"),
         "信息弹窗应显示命令/下载源(行字段): {text:?}"
     );
     pump(&mut app, "<esc>").await?;
@@ -597,21 +595,19 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         "信息弹窗关闭后主窗仍在"
     );
 
-    // 4. 即搜过滤 "demo"(d/e/m/o 均无命令键冲突) → 仅 demo-bin 行
-    pump(&mut app, "demo").await?;
+    // 4. / 模态搜索过滤 "demo";SEARCH 内可打印字符进查询 → 仅 demo-bin 行
+    pump(&mut app, "/demo").await?;
     let text = arsenal_text(&mut app);
     assert!(
         text.contains("demo-bin") && !text.contains("rust-analyzer"),
         "过滤 'demo' 后仅 demo-bin: {text:?}"
     );
-    // TEMP-SHOT-FILTER
-    eprintln!("\n===SHOT@FILTER===\n{}", arsenal_text(&mut app));
 
     // 5. Enter → demo-bin install 单项直达(version 固定,needs_version false,直发 task)→ 安装收敛 ✓
     pump(&mut app, "<ret>").await?;
     assert!(!app.editor.is_err(), "install 提交不应报错");
-    // 无害键步撑窗:过滤 'demo' 仍非空,字母(j/f 等)已是搜索字符 → 用 <down> 撑窗
-    // (I2 语义;worker(file:// 假源)事件 + done 后 fetch_rows 渲染收敛)
+    // 无害键步撑窗:SEARCH 态字母(j/f 等)是查询字符 → 用 <down> 撑窗
+    // (v2 模态;worker(file:// 假源)事件 + done 后 fetch_rows 渲染收敛)
     for _ in 0..4 {
         pump(&mut app, "<down>").await?;
     }
@@ -629,7 +625,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         std::fs::write(&bin, "#!/bin/sh\necho 'demo-bin 9.9'\n")?;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
     }
-    pump(&mut app, "<esc>q").await?; // I2:过滤非空时 q 是搜索字符 → 先 Esc 清过滤再关
+    pump(&mut app, "<esc>q").await?; // SEARCH Esc 清查询回 NORMAL,q 关窗(模态)
     assert!(
         !app.compositor.has_component(popup_type),
         "Esc+q 应关闭浮层主窗"
@@ -642,13 +638,13 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         "检测版本 9.9 ≠ 配方 1.0.0 → ▲ 9.9(剥前缀): {text:?}"
     );
 
-    // 7. 过滤 'demo' 选中 demo-bin → Enter → 动作菜单(update/remove);Esc 关菜单后
-    //    清过滤 → f kind 循环仍响应(主窗按键在无过滤下正常)
-    pump(&mut app, "demo").await?;
+    // 7. / 过滤 'demo' 选中 demo-bin → Enter → 动作菜单(update/remove);Esc 关菜单后
+    //    Esc 清搜索 → Tab 切页签 lsp 仍响应(主窗按键在无过滤下正常)
+    pump(&mut app, "/demo").await?;
     pump(&mut app, "<ret>").await?;
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("update 升级") && text.contains("remove 卸载"),
+        text.contains("▸ update") && text.contains("remove  demo-bin"),
         "动作菜单应列 update/remove: {text:?}"
     );
     pump(&mut app, "<esc>").await?; // 子层 Esc 关菜单回主窗(filter 仍 demo)
@@ -656,12 +652,15 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         arsenal_text(&mut app).contains("arsenal"),
         "菜单 Esc 后主窗仍在"
     );
-    pump(&mut app, "<esc>").await?; // 清过滤(I2:过滤中 f 是搜索字符)
-    pump(&mut app, "f").await?; // 主窗仍响应:kind 循环 all → lsp
+    pump(&mut app, "<esc>").await?; // 清搜索(I2→v2:SEARCH Esc 退 NORMAL)
+    pump(&mut app, "<tab>").await?; // NORMAL Tab:页签 all → lsp
+    let text = arsenal_text(&mut app);
     assert!(
-        arsenal_text(&mut app).contains("· lsp ·"),
-        "主窗按键仍响应(kind 循环): {:?}",
-        arsenal_text(&mut app)
+        text.contains("rust-analyzer")
+            && text.contains("demo-bin")
+            && !text.contains("prettier")
+            && !text.contains("debugpy"),
+        "Tab→lsp 页签过滤生效(非 lsp 行不可见): {text:?}"
     );
 
     // 8. q 关闭市场窗;编辑器仍响应
@@ -678,6 +677,71 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
             "关闭后 :server status 正常, got: {status}"
         );
     }
+    Ok(())
+}
+
+// 宽字符回归:注入 CJK 描述(64 显示列,超 desc 列宽)配方 → 行内描述按显示列宽截断
+// 并以 … 收尾,描述尾部哨兵不得溢出到渲染(状态列右锚不被推出,无 render error)。
+// v2 行模型按列宽截断(旧 slice() 字符截断会让 CJK 把行撑出可视区)。
+#[tokio::test(flavor = "multi_thread")]
+async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("w.txt");
+    std::fs::write(&file, "x\n")?;
+    let _sm = sm_env(dir.path());
+
+    let desc = format!("{}越界哨兵", "甲".repeat(28)); // 64 显示列 > desc 列宽 → 必截断
+    let cfg = dir.path().join("sm-config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[server-manager]\n\n[server-manager.registry.wide-desc-tool]\nurl = \"file://{}/rel/{{version}}/wide.tar.gz\"\nversion = \"9.9\"\nstrip = 1\nbin = \"wide-tool\"\nlanguages = [\"cjk\"]\ndescription = \"{desc}\"\n",
+            dir.path().display()
+        ),
+    )?;
+    let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
+
+    let plugin = format!(
+        "{}/plugins/features/arsenal/index.js",
+        std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap()
+            .rsplitn(2, '/')
+            .nth(1)
+            .unwrap_or(".")
+    );
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
+    pump(&mut app, ":arsenal<ret>").await?;
+    assert!(!app.editor.is_err(), "市场窗打开不应报错");
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("wide-desc-tool"),
+        "CJK 描述行应可见: {text:?}"
+    );
+    assert!(text.contains("…"), "超长描述应以 … 收尾: {text:?}");
+    assert!(
+        !text.contains("哨兵"),
+        "描述尾部不得溢出到渲染(按列截断): {text:?}"
+    );
+    assert!(!text.contains("render error"), "渲染不应报错: {text:?}");
+
+    // / 模态搜索命中单行(CJK 行亦可被过滤)
+    pump(&mut app, "/wide").await?;
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("wide-desc-tool") && !text.contains("rust-analyzer"),
+        "/wide 过滤后仅 CJK 行: {text:?}"
+    );
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, "q").await?;
+    assert!(
+        !app.compositor.has_component(std::any::type_name::<
+            helix_term::ui::Popup<helix_term::ui::PluginPopup>
+        >()),
+        "q 应关闭市场窗"
+    );
     Ok(())
 }
 
@@ -720,15 +784,15 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     pump(&mut app, ":arsenal<ret>").await?;
     assert!(!app.editor.is_err(), "市场窗打开不应报错");
 
-    // 过滤 'demo' 命中 demo-bin + demob(I2:过滤非空时 t/j 是搜索字符,过滤仅用来看)
-    pump(&mut app, "demo").await?;
+    // / 过滤 'demo' 命中 demo-bin + demob(SEARCH 态 t/j 是查询字符,过滤仅用来看)
+    pump(&mut app, "/demo").await?;
     let text = arsenal_text(&mut app);
     assert!(
         text.contains("demo-bin") && text.contains("demob"),
         "两注入配方应可见: {text:?}"
     );
-    // Esc 清过滤回全量(sel=0=rust-analyzer);内置 7 配方在前 → j×7 到 demo-bin 再标记两件
-    // (标记/导航须在无过滤态:I2 语义)
+    // Esc 清搜索回 NORMAL(sel=0=rust-analyzer);内置 7 配方在前 → j×7 到 demo-bin 再标记两件
+    // (标记/导航须在 NORMAL 态:字母是命令)
     pump(&mut app, "<esc>").await?;
     pump(&mut app, "jjjjjjj").await?; // sel → demo-bin(第 8 行)
     pump(&mut app, "t").await?; // 标记 demo-bin
