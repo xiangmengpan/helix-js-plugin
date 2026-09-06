@@ -399,6 +399,18 @@ pub fn is_upgradable(spec: &registry::Spec) -> bool {
     }
 }
 
+/// 安装/更新是否需要用户显式提供版本:archive 下载源 url 含 {version} 占位
+/// 且配方未固定 version(config 扩展解析已强制 {version} 配 version,故 true 只可能
+/// 来自内置活配方,如 rust-analyzer;Tool 类与无占位 url 恒 false)。
+pub fn needs_version(spec: &registry::Spec) -> bool {
+    match &spec.install {
+        registry::Install::Archive { url_template, .. } => {
+            url_template.contains("{version}") && spec.version.is_none()
+        }
+        registry::Install::Tool { .. } => false,
+    }
+}
+
 /// 工具可用来源
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -2135,6 +2147,45 @@ mod tests {
         let spec2 = registry::parse_ext_recipe("my-ls", &nover).unwrap();
         assert!(!is_upgradable(&spec2), "recipe 无 version → 不可升级");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn needs_version_archive_template_semantics() {
+        // 内置活配方 rust-analyzer:url 含 {version} 且 recipe 无固定 version → 需显式版本
+        let ra = registry::all().into_iter().find(|s| s.name == "rust-analyzer").unwrap();
+        assert!(
+            needs_version(&ra),
+            "内置 {{version}} 占位 + 无 version → needs_version"
+        );
+        // 惰性配方(url 空)与 Tool 类(debugpy/black) → false
+        let gopls = registry::all().into_iter().find(|s| s.name == "gopls").unwrap();
+        assert!(!needs_version(&gopls), "url 空(惰性)→ false");
+        let debugpy = registry::all().into_iter().find(|s| s.name == "debugpy").unwrap();
+        assert!(!needs_version(&debugpy), "Tool 安装 → false");
+        // 手构 Spec 补边界:url 含 {version} + version 固定 → false;url 无 {version} → false
+        let mk = |url: &str, version: Option<String>| registry::Spec {
+            name: "t".into(),
+            kind: registry::Kind::Lsp,
+            languages: vec![],
+            bin_name: "t".into(),
+            description: String::new(),
+            homepage: None,
+            install: registry::Install::Archive {
+                url_template: url.into(),
+                sha256: String::new(),
+                strip: 1,
+                bin_rel: "t".into(),
+            },
+            version,
+        };
+        assert!(
+            !needs_version(&mk("https://x/v{version}/t.tar.gz", Some("1.0".into()))),
+            "version 固定 → false"
+        );
+        assert!(
+            !needs_version(&mk("https://x/v1.0/t.tar.gz", None)),
+            "url 无 {{version}} 占位 → false"
+        );
     }
 
     // ---- M2a:进度聚合器 / download_to 进度 / run_task 纯函数 ----

@@ -207,6 +207,14 @@ pub struct ServerRow {
     pub description: String,
     pub homepage: Option<String>,
     pub installable: bool,
+    /// 受管已装且 detected 版本 != 配方 version → 可升级(行 ▲ 标记)
+    pub upgradable: bool,
+    /// 下载源含 {version} 占位且未固定 version → 安装/升级需用户显式版本
+    pub needs_version: bool,
+    /// 可执行路径:受管 = managed/bin 软链;本机 = PATH 绝对路径;缺失 = None
+    pub bin: Option<String>,
+    /// 下载源(archive url_template 原文;Tool/惰性 = None;仅显示用)
+    pub source: Option<String>,
 }
 
 /// 后台任务的一项(JS → term):op 为 server_manager 任务名(install/update/remove/unmanage),name 为配方名

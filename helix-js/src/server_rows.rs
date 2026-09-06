@@ -129,6 +129,32 @@ pub fn deliver(id: u64, rows: Vec<ServerRow>) -> Result<()> {
                     JsValue::from(r.installable),
                     Attribute::all(),
                 )
+                .property(
+                    JsString::from("upgradable"),
+                    JsValue::from(r.upgradable),
+                    Attribute::all(),
+                )
+                .property(
+                    JsString::from("needs_version"),
+                    JsValue::from(r.needs_version),
+                    Attribute::all(),
+                )
+                .property(
+                    JsString::from("bin"),
+                    r.bin
+                        .as_ref()
+                        .map(|v| JsValue::from(JsString::from(v.clone())))
+                        .unwrap_or(JsValue::null()),
+                    Attribute::all(),
+                )
+                .property(
+                    JsString::from("source"),
+                    r.source
+                        .as_ref()
+                        .map(|v| JsValue::from(JsString::from(v.clone())))
+                        .unwrap_or(JsValue::null()),
+                    Attribute::all(),
+                )
                 .build();
             arr.push(item, engine)
                 .map_err(|e| anyhow!("row build: {e}"))?;
@@ -159,7 +185,7 @@ mod tests {
             r#"
             helix.register_command("sm-rows", () => {
                 helix.server.rows((rows) => {
-                    helix.echo("rows:" + rows.length + ":" + rows[0].name + ":" + rows[0].installed + ":" + rows[0].version);
+                    helix.echo("rows:" + rows.length + ":" + rows[0].name + ":" + rows[0].installed + ":" + rows[0].version + ":" + rows[0].upgradable + ":" + rows[0].needs_version + ":" + rows[0].bin + ":" + rows[0].source);
                 });
             });
             "#,
@@ -190,12 +216,16 @@ mod tests {
                 description: "".into(),
                 homepage: None,
                 installable: true,
+                upgradable: true,
+                needs_version: false,
+                bin: Some("/m/bin/ra".into()),
+                source: Some("https://x/v{version}/ra.gz".into()),
             }],
         )
         .unwrap();
         assert_eq!(
             crate::take_messages(),
-            vec!["rows:1:rust-analyzer:true:rust-analyzer 1.2.3"]
+            vec!["rows:1:rust-analyzer:true:rust-analyzer 1.2.3:true:false:/m/bin/ra:https://x/v{version}/ra.gz"]
         );
         // 一次性:再次 deliver 同 id 无回调,静默跳过
         deliver(id, Vec::new()).unwrap();

@@ -5318,14 +5318,36 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     .into_iter()
                     .map(|spec| {
                         use server_manager::Availability;
-                        let (installed, local, version) =
-                            match server_manager::availability(&spec.name) {
-                                Availability::Managed => (true, false, spec.version_detected()),
-                                Availability::Local(p) => {
-                                    (true, true, server_manager::detect_version(&p))
-                                }
-                                Availability::Missing => (false, false, None),
-                            };
+                        // 一次 availability 判定,分支内取齐 installed/local/version/upgradable/bin:
+                        // Managed → 受管已装(version=--version 检测串;upgradable 比较;bin=软链路径);
+                        // Local(p) → 本机已有(bin=PATH 绝对路径);Missing → 全空。
+                        let avail = server_manager::availability(&spec.name);
+                        let (installed, local, version, upgradable, bin) = match avail {
+                            Availability::Managed => (
+                                true,
+                                false,
+                                spec.version_detected(),
+                                server_manager::is_upgradable(&spec),
+                                Some(spec.bin_path().to_string_lossy().into_owned()),
+                            ),
+                            Availability::Local(p) => (
+                                true,
+                                true,
+                                server_manager::detect_version(&p),
+                                false,
+                                Some(p.to_string_lossy().into_owned()),
+                            ),
+                            Availability::Missing => (false, false, None, false, None),
+                        };
+                        // 下载源仅供显示:archive 有 url → 原文;Tool/惰性 → None
+                        let source = match &spec.install {
+                            server_manager::registry::Install::Archive { url_template, .. }
+                                if !url_template.is_empty() =>
+                            {
+                                Some(url_template.clone())
+                            }
+                            _ => None,
+                        };
                         let kind = match spec.kind {
                             server_manager::registry::Kind::Lsp => "lsp",
                             server_manager::registry::Kind::Dap => "dap",
@@ -5343,6 +5365,10 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             description: spec.description.clone(),
                             homepage: spec.homepage.clone(),
                             installable: spec.is_installable(),
+                            upgradable,
+                            needs_version: server_manager::needs_version(&spec),
+                            bin,
+                            source,
                         }
                     })
                     .collect();
