@@ -111,3 +111,10 @@ homepage = "https://example.com/my-ls"
 - arsenal(本插件):浮层市场窗——搜索、分类、标记批量、版本输入、行/批量进度、
   信息弹窗一应俱全,取代 `:server-manager` rail 面板(已 deprecated,见
   `plugins/features/server-manager/index.js` 头注释)。
+
+## 配方从哪来(50+ 语言)
+
+arsenal 行 = 内置 registry(7 条)+ config.toml `[server-manager.registry.*]` + 独立配方文件
+(`~/.config/helix/server-manager-recipes.toml`,复制自仓库 `contrib/server-manager-recipes.toml`),
+同名后源覆盖前源。仓库文件覆盖 50+ 语言:包管理器 Tool(npm/pip3/gem/dotnet)一键可装,
+`url=""` 占位条目显示 no source 并按 description 引导。改配方文件即生效(每次操作前重读),零重编译。

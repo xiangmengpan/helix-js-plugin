@@ -563,6 +563,8 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         text.contains("rust-analyzer") && text.contains("demo-bin"),
         "内置 + 注入配方行可见: {text:?}"
     );
+    // TEMP-SHOT-OPEN
+    eprintln!("\n===SHOT@OPEN===\n{}", arsenal_text(&mut app));
 
     // 2. Enter 在 rust-analyzer(sel0;缺失+installable+needs_version)→ 版本输入弹窗(install 单项直达)
     pump(&mut app, "<ret>").await?;
@@ -600,6 +602,8 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         text.contains("demo-bin") && !text.contains("rust-analyzer"),
         "过滤 'demo' 后仅 demo-bin: {text:?}"
     );
+    // TEMP-SHOT-FILTER
+    eprintln!("\n===SHOT@FILTER===\n{}", arsenal_text(&mut app));
 
     // 5. Enter → demo-bin install 单项直达(version 固定,needs_version false,直发 task)→ 安装收敛 ✓
     pump(&mut app, "<ret>").await?;
@@ -754,5 +758,54 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
             "批量后 :server status 正常, got: {status}"
         );
     }
+    Ok(())
+}
+// 独立配方文件在编辑器会话内生效:SM_SERVER_RECIPES 指向 contrib 文件 → :server search 可见
+#[tokio::test(flavor = "multi_thread")]
+async fn server_recipes_file_visible_in_editor() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("f.txt");
+    std::fs::write(&file, "x\n")?;
+    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
+    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    std::env::set_var("SM_PATH", "");
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let repo = manifest
+        .rsplitn(2, '/')
+        .nth(1)
+        .unwrap_or(&manifest)
+        .to_string();
+    std::env::set_var(
+        "SM_SERVER_RECIPES",
+        format!("{repo}/contrib/server-manager-recipes.toml"),
+    );
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(":server search taplo<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        !app.editor.is_err() && status.as_ref().contains("taplo"),
+                        "配方文件条目可搜到, got: {status}"
+                    );
+                }),
+            ),
+            (
+                Some(":server search marksman<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        !app.editor.is_err() && status.as_ref().contains("marksman"),
+                        "占位条目可搜到, got: {status}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
     Ok(())
 }

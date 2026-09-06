@@ -67,6 +67,24 @@ homepage = "https://example.com"
 - `server unmanage <name>`:把该 local 加入停用名单(`<managed>/ignored.txt`),
   重建后不再挂接;再跑一次恢复。用户语言已在标记外自定义时本就跳过挂接。
 
+## 独立配方文件(50+ 语言)
+
+数据与代码解耦:把仓库 `contrib/server-manager-recipes.toml` 复制到
+`~/.config/helix/server-manager-recipes.toml`(测试/开发可用 `SM_SERVER_RECIPES` 覆写),
+`:server`/arsenal 自动加载其配方(结构同 config.toml 的 `[server-manager.registry.<name>]`,
+同名覆盖内置/config;文件在每次 server 操作前重读,改完即生效)。
+
+文件含 44 条配方、连同内置共覆盖 **52 种语言**(ts/js/tsx/jsx/bash/json(c)/css/scss/less/
+html/yaml/toml/dockerfile/sql/graphql/vue/svelte/elm/php/astro/prisma/ruby/cmake/fortran/
+fsharp/c-sharp/go/rust/python/c/cpp 等 + java/kotlin/swift/scala/dart/zig/haskell/ocaml/
+erlang/elixir/lua/r/julia/nim/clojure/latex/powershell/hcl/markdown/perl):
+
+- `cmd = "npm|pip3|gem|dotnet"` + args:包管理器 Tool,一键可装(需对应运行时 node/python/
+  ruby/dotnet + 网络/镜像;产物落 `managed/<name>/bin`,自动接 languages.toml)。
+- `url = ""`:说明型占位(需官方安装器/平台资产),列表显示 no source,`description` 给安装引导。
+
+增删配方 = 编辑该文件追加/删除一段,零重编译。
+
 ## 目录布局
 
 - 受管根目录 `~/.local/share/helix/managed/`
