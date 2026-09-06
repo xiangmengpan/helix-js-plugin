@@ -1,5 +1,7 @@
 # arsenal(mason 式 LSP/工具管理市场界面)设计规格
 
+> UI 改版(自绘窗框/分类 Tab/`/` 搜索模态/全英文)见 `2026-09-07-arsenal-ui-v2-design.md`;本文为初版历史规格。
+
 日期:2026-09-06
 状态:待审查
 关联:server manager(`docs/superpowers/specs/2026-09-05-server-manager-design.md` 与实现计划)为能力后端;本规格只做"前台 UI + 喂数据扩展",不重写后端。
