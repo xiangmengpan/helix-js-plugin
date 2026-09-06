@@ -1,5 +1,40 @@
 use super::*;
 
+/// env RAII(仿 lib 的 EnvGuard):Drop 恢复旧值/删除。SM_* 是进程级变量,测试 panic
+/// 会跳过尾部清理 → 残留指向已删 tempdir 的 env 污染后续串行测试;guard 在 unwind 时
+/// 也执行 Drop,panic 安全。
+pub struct EnvGuard(&'static str, Option<String>);
+impl EnvGuard {
+    pub fn new(key: &'static str, val: String) -> Self {
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, &val);
+        EnvGuard(key, prev)
+    }
+}
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.1 {
+            Some(v) => std::env::set_var(self.0, v),
+            None => std::env::remove_var(self.0),
+        }
+    }
+}
+
+/// 标准 SM_* 三件套 guard:managed 目录 / languages.toml / 禁用宿主 PATH(hermetic)
+fn sm_env(root: &std::path::Path) -> [EnvGuard; 3] {
+    [
+        EnvGuard::new(
+            "SM_MANAGED_DIR",
+            root.join("managed").to_string_lossy().into_owned(),
+        ),
+        EnvGuard::new(
+            "SM_LANGS_TOML",
+            root.join("languages.toml").to_string_lossy().into_owned(),
+        ),
+        EnvGuard::new("SM_PATH", String::new()),
+    ]
+}
+
 // :server 命令族——冒烟验证(list/search/status + 惰性配方的负路径 install)。
 // 环境隔离:SM_MANAGED_DIR/SM_LANGS_TOML 指到临时目录,不碰真实 ~/.local/share。
 #[tokio::test(flavor = "multi_thread")]
@@ -9,9 +44,7 @@ async fn server_list_search_status() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
-    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    let _sm = sm_env(dir.path());
 
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
@@ -64,9 +97,7 @@ async fn server_manager_panel_toggle() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("c.txt");
     std::fs::write(&file, "x\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
-    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    let _sm = sm_env(dir.path());
     let plugin = format!(
         "{}/plugins/features/server-manager/index.js",
         std::env::var("CARGO_MANIFEST_DIR")
@@ -126,9 +157,7 @@ async fn server_negative_paths() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("b.txt");
     std::fs::write(&file, "x\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
-    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    let _sm = sm_env(dir.path());
 
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
@@ -195,8 +224,6 @@ async fn server_local_short_circuit_and_unmanage() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "x\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
     // PATH 里放一个假 rust-analyzer → 视为本地已装
     let bins = dir.path().join("localbin");
     std::fs::create_dir_all(&bins)?;
@@ -206,7 +233,20 @@ async fn server_local_short_circuit_and_unmanage() -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&ra, std::fs::Permissions::from_mode(0o755))?;
     }
-    std::env::set_var("SM_PATH", bins.to_string_lossy().to_string());
+    let _sm = [
+        EnvGuard::new(
+            "SM_MANAGED_DIR",
+            dir.path().join("managed").to_string_lossy().into_owned(),
+        ),
+        EnvGuard::new(
+            "SM_LANGS_TOML",
+            dir.path()
+                .join("languages.toml")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        EnvGuard::new("SM_PATH", bins.to_string_lossy().to_string()),
+    ];
 
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
@@ -302,9 +342,11 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
     std::fs::write(&file, "x\n")?;
     let managed = dir.path().join("managed");
     let langs = dir.path().join("languages.toml");
-    std::env::set_var("SM_MANAGED_DIR", &managed);
-    std::env::set_var("SM_LANGS_TOML", &langs);
-    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    let _sm = [
+        EnvGuard::new("SM_MANAGED_DIR", managed.to_string_lossy().into_owned()),
+        EnvGuard::new("SM_LANGS_TOML", langs.to_string_lossy().into_owned()),
+        EnvGuard::new("SM_PATH", String::new()),
+    ];
 
     // 假 release:file://{dir}/rel/1.0.0/demo.tar.gz(顶层 demo-bin-1.0.0/,strip=1 → demo-bin)
     let rel_dir = dir.path().join("rel").join("1.0.0");
@@ -319,7 +361,7 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
             dir.path().display()
         ),
     )?;
-    std::env::set_var("SM_SERVER_CONFIG", &cfg);
+    let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
     // 驱动 JS:helix.server.task 提交后台 install,回调把事件汇聚进脚本级数组;
     // :arsenal-e2e-dump 一次性 echo 全序列(状态栏每泵会覆写,跨泵断言不靠单步截屏)。
@@ -347,7 +389,9 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
                 Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
                 None,
             ),
-            // 提交后台任务:worker 异步执行;file:// 假源毫秒级,事件在后续 idle 泵回投
+            // 提交后台任务:worker 异步执行;file:// 假源毫秒级。提交后不再发任何键——
+            // 事件在本 pump 的 idle 窗口内 resolve(I1 起 push 即唤醒;集成下至少单 idle
+            // 收敛,真实区别见 helix-js push_event_fires_registered_wake 单测 + 报告局限)
             (
                 Some(":arsenal-e2e<ret>"),
                 Some(&|app| {
@@ -358,10 +402,6 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
                     );
                 }),
             ),
-            // 无害键步:每步一个 idle 泵窗口,保证 worker 事件(phase/progress/done)全部 resolve
-            (Some("j"), None),
-            (Some("j"), None),
-            (Some("j"), None),
             // 收敛断言:事件序列(JS 侧累积,不受状态栏覆写影响)
             (
                 Some(":arsenal-e2e-dump<ret>"),
@@ -404,8 +444,6 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
         langs_text.contains(&managed.join("bin").join("demo-bin").display().to_string()),
         "command 应指向受管绝对路径, got: {langs_text}"
     );
-    // env 是进程级:清掉 SM_SERVER_CONFIG,避免后续测试(同进程)读到已删临时 config
-    std::env::remove_var("SM_SERVER_CONFIG");
     Ok(())
 }
 
@@ -478,9 +516,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
-    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    let _sm = sm_env(dir.path());
 
     // 假 release:file://{dir}/rel/{version}/demo.tar.gz(顶层 demo-bin-1.0.0/,strip=1)
     let rel_dir = dir.path().join("rel").join("1.0.0");
@@ -494,7 +530,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
             dir.path().display()
         ),
     )?;
-    std::env::set_var("SM_SERVER_CONFIG", &cfg);
+    let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
     let plugin = format!(
         "{}/plugins/features/arsenal/index.js",
@@ -568,15 +604,16 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     // 5. Enter → demo-bin install 单项直达(version 固定,needs_version false,直发 task)→ 安装收敛 ✓
     pump(&mut app, "<ret>").await?;
     assert!(!app.editor.is_err(), "install 提交不应报错");
-    // 无害键步撑窗:worker(file:// 假源)事件 + done 后 fetch_rows 渲染收敛
+    // 无害键步撑窗:过滤 'demo' 仍非空,字母(j/f 等)已是搜索字符 → 用 <down> 撑窗
+    // (I2 语义;worker(file:// 假源)事件 + done 后 fetch_rows 渲染收敛)
     for _ in 0..4 {
-        pump(&mut app, "j").await?;
+        pump(&mut app, "<down>").await?;
     }
     assert!(!app.editor.is_err(), "后台安装不应报错");
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("✓ demo-bin 1.0"),
-        "安装收敛后行状态 ✓: {text:?}"
+        text.contains("✓ 1.0.0"),
+        "安装收敛后行状态 ✓ 1.0.0(版本串已剥 bin 名前缀): {text:?}"
     );
 
     // 6. 改 bin 检测版本 → 重开市场 → ▲ 可升级标记(upgradable 字段驱动)
@@ -586,31 +623,35 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         std::fs::write(&bin, "#!/bin/sh\necho 'demo-bin 9.9'\n")?;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
     }
-    pump(&mut app, "q").await?; // 关主窗(filter 仍 demo)
+    pump(&mut app, "<esc>q").await?; // I2:过滤非空时 q 是搜索字符 → 先 Esc 清过滤再关
     assert!(
         !app.compositor.has_component(popup_type),
-        "q 应关闭浮层主窗"
+        "Esc+q 应关闭浮层主窗"
     );
     pump(&mut app, ":arsenal<ret>").await?;
+    // 重开后过滤为空、sel=0(rust-analyzer);demo-bin 行在列表内(9 行 < 可视高度)
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("▲ demo-bin 9.9"),
-        "检测版本 9.9 ≠ 配方 1.0.0 → ▲ 可升级: {text:?}"
+        text.contains("▲ 9.9"),
+        "检测版本 9.9 ≠ 配方 1.0.0 → ▲ 9.9(剥前缀): {text:?}"
     );
 
-    // 7. Enter → demo-bin 受管已装 → 动作菜单(update/remove 两动作)开/关;主窗仍在
+    // 7. 过滤 'demo' 选中 demo-bin → Enter → 动作菜单(update/remove);Esc 关菜单后
+    //    清过滤 → f kind 循环仍响应(主窗按键在无过滤下正常)
+    pump(&mut app, "demo").await?;
     pump(&mut app, "<ret>").await?;
     let text = arsenal_text(&mut app);
     assert!(
         text.contains("update 升级") && text.contains("remove 卸载"),
         "动作菜单应列 update/remove: {text:?}"
     );
-    pump(&mut app, "<esc>").await?; // 子层 Esc 关自己回主窗
+    pump(&mut app, "<esc>").await?; // 子层 Esc 关菜单回主窗(filter 仍 demo)
     assert!(
         arsenal_text(&mut app).contains("arsenal"),
         "菜单 Esc 后主窗仍在"
     );
-    pump(&mut app, "f").await?; // 主窗仍响应:kind 循环
+    pump(&mut app, "<esc>").await?; // 清过滤(I2:过滤中 f 是搜索字符)
+    pump(&mut app, "f").await?; // 主窗仍响应:kind 循环 all → lsp
     assert!(
         arsenal_text(&mut app).contains("· lsp ·"),
         "主窗按键仍响应(kind 循环): {:?}",
@@ -631,9 +672,6 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
             "关闭后 :server status 正常, got: {status}"
         );
     }
-
-    // env 是进程级:清掉 SM_SERVER_CONFIG,避免后续测试读到已删临时 config
-    std::env::remove_var("SM_SERVER_CONFIG");
     Ok(())
 }
 
@@ -646,9 +684,7 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("b.txt");
     std::fs::write(&file, "x\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
-    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    let _sm = sm_env(dir.path());
 
     let rel_dir = dir.path().join("rel").join("1.0.0");
     write_fake_tar_gz(&rel_dir.join("demo.tar.gz"), "demo-bin", "1.0.0")?;
@@ -662,7 +698,7 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
             dir.path().display()
         ),
     )?;
-    std::env::set_var("SM_SERVER_CONFIG", &cfg);
+    let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
     let plugin = format!(
         "{}/plugins/features/arsenal/index.js",
@@ -678,14 +714,18 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     pump(&mut app, ":arsenal<ret>").await?;
     assert!(!app.editor.is_err(), "市场窗打开不应报错");
 
-    // 过滤 'demo' 命中 demo-bin + demob 两行;t/j/t 标记两件
+    // 过滤 'demo' 命中 demo-bin + demob(I2:过滤非空时 t/j 是搜索字符,过滤仅用来看)
     pump(&mut app, "demo").await?;
     let text = arsenal_text(&mut app);
     assert!(
         text.contains("demo-bin") && text.contains("demob"),
         "两注入配方应可见: {text:?}"
     );
-    pump(&mut app, "t").await?; // 标记 demo-bin(sel0)
+    // Esc 清过滤回全量(sel=0=rust-analyzer);内置 7 配方在前 → j×7 到 demo-bin 再标记两件
+    // (标记/导航须在无过滤态:I2 语义)
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, "jjjjjjj").await?; // sel → demo-bin(第 8 行)
+    pump(&mut app, "t").await?; // 标记 demo-bin
     pump(&mut app, "j").await?; // sel → demob
     pump(&mut app, "t").await?; // 标记 demob
     pump(&mut app, "<ret>").await?; // 批量 Enter(集合快照)
@@ -696,8 +736,8 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     assert!(!app.editor.is_err(), "批量安装不应报错");
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("✓ demo-bin 1.0") && text.contains("✓ demob 1.0.0"),
-        "批量收敛后两行均 ✓: {text:?}"
+        text.contains("✓ 1.0.0"),
+        "批量收敛后两行均 ✓ 1.0.0(版本剥 bin 名前缀): {text:?}"
     );
     let managed_bin = dir.path().join("managed").join("bin");
     assert!(
@@ -714,7 +754,5 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
             "批量后 :server status 正常, got: {status}"
         );
     }
-
-    std::env::remove_var("SM_SERVER_CONFIG");
     Ok(())
 }
