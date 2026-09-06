@@ -59,9 +59,9 @@
 | 状态 | 可打印字符 | `/` | Backspace | Esc | Enter | ↑↓ | j/k | q |
 |---|---|---|---|---|---|---|---|---|
 | NORMAL | 忽略(消费) | 进 SEARCH(`S.filter=""`) | – | 关窗 | 动作/批量 | 移动 | 移动 | 关窗 |
-| SEARCH | 追加进查询 | 忽略 | 删尾 | 清查询退 NORMAL | 动作/批量 | 移动 | 移动(仅此二键) | 查询字符 |
+| SEARCH | 追加进查询 | 忽略 | 删尾 | 清查询退 NORMAL | 动作/批量 | 移动 | 查询字符 | 查询字符 |
 
-- SEARCH 内 `x/u/f/t/r/C/i` 等一律为查询字符(与 I2 精神一致,但触发由 `/` 显式开启)。
+- SEARCH 内一切可打印字符(含 j/k/q/x/u/f/t/r/C/i)皆为查询字符(与 I2 精神一致,触发由 `/` 显式开启);移动仅 `↑↓`(搜 `jdtls` 等以 j 开头的名字必须能输入 j)。
 - 顶框标题在 SEARCH 态不变;页签条右侧显示 `/query`(超长截断),便于看到输入状态。
 - 默认动作入口(Enter:有标记→批量,无→动作菜单)与现实现一致,SEARCH 内 Enter 同样生效。
 
@@ -112,7 +112,7 @@
 NORMAL:  ↑↓ / j k 移动      /  进搜索            Enter 动作菜单(有标记→批量)
          i 信息   t 标记     x 卸/unmanage  u 升级  r 刷新
          C(Shift+c) 清版本记忆                  Tab/Shift+Tab 切页签   q/Esc 关窗
-SEARCH:  可打印字符进查询    Backspace 删尾      ↑↓ / j k 移动
+SEARCH:  一切可打印字符进查询(含 j/k/q/f/x/u/t/r/i)  Backspace 删尾   ↑↓ 移动
          Enter 动作/批量     Tab 切页签          Esc 清查询回 NORMAL
 busy 中: 写动作拒绝(echo),其余照常
 ```
