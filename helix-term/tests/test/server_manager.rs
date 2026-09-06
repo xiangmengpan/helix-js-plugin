@@ -408,3 +408,178 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
     std::env::remove_var("SM_SERVER_CONFIG");
     Ok(())
 }
+
+// ────────────────────────── arsenal M3 冒烟本地辅助（渲染到 buffer 读面板文本） ──────────────────────────
+
+use helix_term::application::Application;
+use helix_term::job::Jobs;
+use helix_view::input::parse_macro;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
+#[cfg(windows)]
+use crossterm::event::{Event, KeyEvent};
+#[cfg(not(windows))]
+use termina::event::{Event, KeyEvent};
+
+/// 发送键序列并泵事件直到空闲
+async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(keys)?.into_iter() {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    Ok(())
+}
+
+/// 渲染 compositor 到 Buffer，返回所有行
+fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
+    let mut buf = tui::buffer::Buffer::empty(area);
+    app.compositor.reset_plugin_diffs();
+    let mut jobs = Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+    };
+    app.compositor.render(area, &mut buf, &mut cx);
+    (0..area.height)
+        .map(|y| {
+            buf.content
+                .iter()
+                .skip(y as usize * area.width as usize)
+                .take(area.width as usize)
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// 左侧 64 列（arsenal 面板区）内容拼接
+fn arsenal_panel_text(app: &mut Application) -> String {
+    render_rows(app, helix_view::graphics::Rect::new(0, 0, 120, 30))
+        .iter()
+        .map(|r| r.chars().take(64).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// Arsenal M3 主视图冒烟:插件目录内 :plugin-load arsenal → :arsenal 打开市场窗 →
+// rows 回传渲染(内置配方行可见) → 即搜过滤("ru" 命中 rust-analyzer) → Backspace 清空复原 →
+// 导航/标记/Enter 占位/i 信息弹窗开关 → q 关闭 → 编辑器仍响应。
+// 断言风格与 server_manager_panel_toggle 同:全程无 JS 错误状态;面板文本经渲染 buffer 读取。
+#[tokio::test(flavor = "multi_thread")]
+async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x\n")?;
+    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
+    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+    // 空 config → registry 仅内置 7 配方(rust-analyzer/gopls/pyright/clangd/debugpy/black/prettier)
+    let cfg = dir.path().join("sm-config-empty.toml");
+    std::fs::write(&cfg, "")?;
+    std::env::set_var("SM_SERVER_CONFIG", &cfg);
+
+    let plugin = format!(
+        "{}/plugins/features/arsenal/index.js",
+        std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap()
+            .rsplitn(2, '/')
+            .nth(1)
+            .unwrap_or(".")
+    );
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
+    let popup_type = std::any::type_name::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>();
+
+    // 1. 加载插件 + 打开市场窗
+    pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
+    assert!(
+        !app.editor.is_err(),
+        "arsenal 插件加载不应报错, got: {:?}",
+        app.editor.get_status()
+    );
+    pump(&mut app, ":arsenal<ret>").await?;
+    assert!(
+        !app.editor.is_err(),
+        ":arsenal 打开不应报错, got: {:?}",
+        app.editor.get_status()
+    );
+    assert!(app.compositor.has_component(panel_type), "市场窗(面板)打开");
+
+    // 2. rows 回传渲染:标题 + 内置配方行可见(证明 fetch_rows→render 链路通)
+    let text = arsenal_panel_text(&mut app);
+    assert!(text.contains("arsenal"), "标题应渲染: {text:?}");
+    assert!(
+        text.contains("rust-analyzer") && text.contains("gopls"),
+        "内置配方行应可见(rust-analyzer/gopls): {text:?}"
+    );
+
+    // 3. 即搜过滤:"pyr" 命中 pyright(name),排除其余内置配方(p/y/r 均无命令键映射,纯入过滤)
+    pump(&mut app, "pyr").await?;
+    assert!(!app.editor.is_err(), "过滤不应报错");
+    let text = arsenal_panel_text(&mut app);
+    assert!(
+        text.contains("pyright"),
+        "过滤 'pyr' 后 pyright 仍在: {text:?}"
+    );
+    for gone in ["rust-analyzer", "gopls", "debugpy", "black"] {
+        assert!(
+            !text.contains(gone),
+            "过滤 'pyr' 后 {gone} 应被滤掉: {text:?}"
+        );
+    }
+
+    // 4. Backspace 清空过滤 → 复原全列表
+    pump(&mut app, "<backspace><backspace><backspace>").await?;
+    let text = arsenal_panel_text(&mut app);
+    assert!(
+        text.contains("gopls"),
+        "清空过滤后 gopls 复现: {text:?}"
+    );
+
+    // 5. 导航/标记/Enter(占位 echo,不真发任务)/i 信息弹窗 → Esc 关闭弹窗,市场仍在
+    pump(&mut app, "j").await?; // sel → 1(gopls)
+    pump(&mut app, "f").await?; // kind 循环 all→lsp(仍含行)
+    pump(&mut app, "k").await?; // sel → 0(rust-analyzer)
+    pump(&mut app, "t").await?; // 标记 rust-analyzer
+    pump(&mut app, "<ret>").await?; // 批量 1 选中 → 占位 echo
+    pump(&mut app, "i").await?; // 信息占位弹窗
+    assert!(
+        app.compositor.has_component(popup_type),
+        "i 应打开信息弹窗"
+    );
+    assert!(!app.editor.is_err(), "i 弹窗不应报错");
+    pump(&mut app, "<esc>").await?;
+    assert!(
+        !app.compositor.has_component(popup_type),
+        "Esc 关闭信息弹窗"
+    );
+    assert!(
+        app.compositor.has_component(panel_type),
+        "信息弹窗关闭后市场窗仍在"
+    );
+
+    // 6. q 关闭市场窗;编辑器仍响应
+    pump(&mut app, "q").await?;
+    assert!(
+        !app.compositor.has_component(panel_type),
+        "q 关闭市场窗"
+    );
+    pump(&mut app, ":server status<ret>").await?;
+    {
+        let (status, _) = app.editor.get_status().unwrap();
+        assert!(
+            !app.editor.is_err() && status.as_ref().contains("受管/"),
+            "关闭后 :server status 正常, got: {status}"
+        );
+    }
+
+    // env 是进程级:清掉 SM_SERVER_CONFIG,避免后续测试读到已删临时 config
+    std::env::remove_var("SM_SERVER_CONFIG");
+    Ok(())
+}
