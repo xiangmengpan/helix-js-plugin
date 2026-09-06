@@ -16,8 +16,10 @@ server-manager 的受管目录与 `languages.toml` 挂接,`:arsenal` 即点即�
 helix.load("features/arsenal/index.js");
 ```
 
-- `:arsenal` 打开市场窗(浮层主窗居中;**Esc 先清过滤再关、q 直接关**;子弹窗
-  Esc 只关自己回主窗)。
+- `:arsenal` 打开市场窗(浮层主窗居中;**Esc 先清过滤再关、q 直接关**(过滤非空时
+  q 也作搜索字符,需先 Esc 清过滤再 q);子弹窗 Esc 只关自己回主窗)。
+  **窗尺寸固定**为终端约 78%×75%(设计规格里的 `+/-` 尺寸调整未实现——引擎侧
+  popup 无创建后调尺寸 API)。
 - 行布局:名称列 + 描述列(伸缩)+ 状态列;顶部标题 `arsenal [过滤] · 分类 ·
   N/M servers`;底部为动作键位提示或批量进度条。
 
@@ -25,9 +27,10 @@ helix.load("features/arsenal/index.js");
 
 | 键 | 动作 |
 |---|---|
-| `j`/`k` 或 `↑`/`↓` | 上下移动选中 |
-| 可打印字符 | 即搜(匹配 名称/语言/描述,大小写不敏感) |
+| `j`/`k` | 上下移动选中(仅无过滤时;过滤非空时 j/k 为搜索字符,移动用 `↑`/`↓`) |
+| 可打印字符 | 即搜(匹配 名称/语言/描述,大小写不敏感)。**过滤非空时字母一律为搜索字符**——x/u/i/f/t/j/k/q/r/C 均不再触发对应命令/导航(防输名字里的字母误卸载/误弹窗) |
 | `Backspace` | 删末位过滤字符 |
+| `r` | 刷新行列表(无过滤时;过滤中为搜索字符) |
 | `f` | 分类循环:`all → lsp → dap → linter → formatter → installed → local` |
 | `t` | 标记/取消标记选中行(供 Enter 批量) |
 | `Enter` | 无标记:选中行动作(唯一动作直达,update/remove 等多动作开菜单);有标记:批量 install |
@@ -36,7 +39,7 @@ helix.load("features/arsenal/index.js");
 | `i` | 信息弹窗(状态/语言/描述/主页/命令路径/下载源/版本需求);**动作菜单里按 `i` 直达该行信息**(菜单保留) |
 | `C`(Shift+c) | 清版本记忆:选中行 needs_version 且有记忆 → 清该行;否则清全部(换版本逃生) |
 | `Esc` | 先清过滤再关(子弹窗:关自己回主窗) |
-| `q` | 关闭主窗 |
+| `q` | 关闭主窗(无过滤时;过滤非空时 q 为搜索字符,先 Esc 清过滤再 q) |
 
 ## 动作菜单
 
@@ -89,8 +92,15 @@ homepage = "https://example.com/my-ls"
 `helix.server.task(items, cb)` 入队即回:worker 串行执行 install/update,事件
 (`phase` 下载中/写入配置、`progress` bytes/total、`done`/`error`)经 JS 泵回 →
 **行内进度**(受管下载行显示 `pct%`)+ **底栏进度条**(`▮▮▮▯▯▯▯ 30% (1/2) 行名 op`,
-含失败名单)。echo 约定:单项成功只在完成时报服务端 msg(不重复汇总),**失败与多于 1 项的批量**才在末尾给"批量完成 N/M"汇总。主窗关闭不取消进行中的任务(进度不再
-渲染,完成/失败的 echo 仍会出现在状态栏)。
+含失败名单)。**事件推送即唤醒主循环重绘**(不等按键/下一次 idle):提交后无需
+按键,进度/done 自动收敛上屏。echo 约定:单项成功只在完成时报服务端 msg(不重复
+汇总),**失败与多于 1 项的批量**才在末尾给"批量完成 N/M"汇总。主窗关闭不取消
+进行中的任务(进度不再渲染,完成/失败的 echo 仍会出现在状态栏)。
+
+**并发写互斥**:后台任务(worker 批次)与 `:server install/update/remove/unmanage`、
+`:server panel` Enter 共用一把写锁(`server_manager::OP_LOCK`),任意两个写流不会
+交错(整 op 含 languages.toml 重写);后台下载中主线程写命令会阻塞到其结束——
+**后台任务进行中建议不用 `:server` 写命令**(锁只防坏不防等,见 server-manager.md)。
 
 ## 与 `:server` / `:server panel` / `:server-manager` 关系
 

@@ -32,6 +32,15 @@ upgradable/bin/source/needs_version(完整说明见 arsenal 文档)。
 > 版本输入/行与批量进度/信息弹窗),取代 `:server panel` 与 `:server-manager` rail 面板。
 > 内置配方 M5 起带中文 description + 官方 homepage,arsenal 行/信息弹窗直接展示。
 
+## 并发写互斥
+
+> managed/ 与 `languages.toml` 的**写流共用一把锁**(`server_manager::OP_LOCK`),任意两个
+> 不会交错:后台 `helix.server.task` worker 批次(`commands/server_tasks.rs::run_batch` 整批
+> 持锁)与主线程 `:server install/update/remove/unmanage` 写臂、`:server panel` Enter
+> 分支(各含整 op 与 rewrite)。
+> 锁防坏但不防等:后台任务下载中(分钟级)主线程同步写命令会阻塞到其结束——**后台任务
+> 进行中建议等完成后再用 :server 写命令**。
+
 - 打开:`init.js` 里 `helix.load("features/arsenal/index.js")`,`:arsenal` 切换浮层市场窗。
 - 安装/升级/卸载仍走本页命令族底层(`helix.server.task`,worker 串行 + 进度事件);
   版本输入弹窗只在配方下载源含 `{version}` 占位且未固定 version(如内置 rust-analyzer)时出现。
