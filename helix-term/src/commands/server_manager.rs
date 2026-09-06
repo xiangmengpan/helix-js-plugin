@@ -93,16 +93,31 @@ impl<'a> ProgressAgg<'a> {
 
 // 下载字节进度钩子(线程局部):单 worker 队列线程在跑 install/update 前经
 // [with_download_progress] 挂载;install_adhoc 的 download_to 消费一次(take)。
-// 主线程 :server 同步路径不挂 → 空钩子,与 M2a 行为一致;worker 线程退出后
-// thread_local 自动消亡,无需清理。
+// 挂载方每批(含内联回退)结束须调 [clear_download_progress] 清除——install_adhoc
+// 的 take 只发生在真实下载处,未达下载点的批次会把残留钩子留在当前线程,
+// 主线程若带残留跑同步 :server install 会消费到死 task_id/seq 的幽灵钩子。
+// 主线程 :server 同步路径本身不挂 → 空钩子,与 M2a 行为一致。
 thread_local! {
     static DL_PROGRESS: std::cell::RefCell<Option<Box<dyn FnMut(u64, Option<u64>) + Send>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// 挂载下载字节进度回调(每次 install_adhoc 下载消费一次;download_to 层已节流)。
+/// 每批结束后须调 [clear_download_progress](run_batch 已在两分支处理)。
 pub fn with_download_progress(f: Box<dyn FnMut(u64, Option<u64>) + Send>) {
     DL_PROGRESS.with(|c| *c.borrow_mut() = Some(f));
+}
+
+/// 清除当前线程的下载进度钩子(worker/内联路径每批收尾调用;防止未达下载点的
+/// 批次把残留钩子留给同线程后续同步下载)。
+pub fn clear_download_progress() {
+    DL_PROGRESS.with(|c| *c.borrow_mut() = None);
+}
+
+/// 当前线程是否挂有下载进度钩子(仅测试断言用)
+#[cfg(test)]
+pub(crate) fn download_progress_hook_set() -> bool {
+    DL_PROGRESS.with(|c| c.borrow().is_some())
 }
 
 /// 下载 URL 到 dest(file:// 本地复制;https 经 ureq;遵循 mirror)。
@@ -2213,6 +2228,19 @@ mod tests {
         fn drop(&mut self) {
             std::env::remove_var(self.0);
         }
+    }
+
+    /// clear API:未达下载点的批次(remove/unmanage/下载前报错)经 clear 后当前线程
+    /// 钩子必清——主线程后续同步 :server install 不会消费到残留幽灵钩子。
+    #[test]
+    fn clear_download_progress_drops_hook() {
+        with_download_progress(Box::new(|_, _| {}));
+        assert!(download_progress_hook_set(), "钩子已挂");
+        clear_download_progress();
+        assert!(
+            !download_progress_hook_set(),
+            "clear 后当前线程钩子已清(无残留)"
+        );
     }
 
     #[test]

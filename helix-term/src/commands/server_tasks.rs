@@ -34,32 +34,39 @@ pub(crate) fn submit(task_id: u64, items: Vec<(String, String, Option<String>)>)
     if items.is_empty() {
         return;
     }
-    let mut slot = WORKER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if slot.is_none() {
-        let (tx, rx) = std::sync::mpsc::channel::<Job>();
-        match std::thread::Builder::new()
-            .name("server-task-worker".to_string())
-            .spawn(move || worker_loop(rx))
-        {
-            Ok(_) => *slot = Some(tx),
-            Err(e) => log::warn!("server task worker spawn 失败({e});本批内联执行"),
-        }
-    }
-    match slot.as_ref() {
-        Some(tx) => {
-            // 接收端仅 worker 持有(双层 catch 保证其不死),send 失败仅当线程异常消亡
-            if let Err(e) = tx.send(Job { task_id, items }) {
-                log::warn!("server task worker 不可用;task {task_id} 内联执行");
-                let Job { task_id, items } = e.0;
-                run_batch(task_id, items);
+    // 锁内只做 spawn/发送决策,内联执行在锁外(不持锁跑同步下载)
+    let inline = {
+        let mut slot = WORKER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<Job>();
+            match std::thread::Builder::new()
+                .name("server-task-worker".to_string())
+                .spawn(move || worker_loop(rx))
+            {
+                Ok(_) => *slot = Some(tx),
+                Err(e) => log::warn!("server task worker spawn 失败({e});task {task_id} 内联执行"),
             }
         }
-        None => {
-            log::warn!("server task {task_id} 无 worker,内联执行");
-            run_batch(task_id, items);
+        match slot.as_mut() {
+            // 接收端仅 worker 持有(双层 catch 保证其不死);send 失败仅当线程异常消亡
+            Some(tx) => match tx.send(Job { task_id, items }) {
+                Ok(()) => None,
+                Err(e) => {
+                    // 槽位置回 None:死 tx 不缓存,下次 submit 重试建 worker
+                    // (否则每次 send 都 Err→内联,永不重试 spawn)
+                    *slot = None;
+                    log::warn!("server task worker 已失效;task {task_id} 内联执行");
+                    let Job { task_id, items } = e.0;
+                    Some((task_id, items))
+                }
+            },
+            None => Some((task_id, items)), // spawn 失败:内联,下次 submit 重试
         }
+    };
+    if let Some((task_id, items)) = inline {
+        run_batch(task_id, items);
     }
 }
 
@@ -72,6 +79,9 @@ fn worker_loop(rx: Receiver<Job>) {
 /// 跑完一批（worker 线程或内联回退共用）：batch 级 catch 兜底 per-item 之外的
 /// panic（事件 push 自身等）——若逃逸会杀死 worker 线程导致队列永久静默。
 /// catch 后推批次 error 事件；per-item 的 panic 已在 run_job 内转成 error 事件。
+/// 批次结束(含 catch 分支)无条件清 DL_PROGRESS 钩子：未达下载点的批次(remove/
+/// unmanage/下载前报错)不会把残留钩子留在本线程——内联回退发生在主线程时,
+/// 残留钩子会让后续同步 :server install 消费到死 task_id/seq 的幽灵 progress 事件。
 fn run_batch(task_id: u64, items: Vec<(String, String, Option<String>)>) {
     // seq 每批次自 0：DL 钩子(Box<'static>)与阶段 progress 闭包共享
     let seq = Arc::new(AtomicU32::new(0));
@@ -92,6 +102,8 @@ fn run_batch(task_id: u64, items: Vec<(String, String, Option<String>)>) {
             None,
         );
     }
+    // 无论 Ok/Err(含 run_job 中途 unwind)收尾都清:本线程不留钩子
+    server_manager::clear_download_progress();
 }
 
 fn push_event(
@@ -193,6 +205,39 @@ mod tests {
         TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// R2:未达下载点的批次(remove/bogus,均 error 分支不触网)跑完后当前线程
+    /// DL 钩子必清——内联回退在主线程时,残留钩子会让后续同步 :server install
+    /// 消费到死 task_id/seq 的幽灵 progress 事件。run_batch = submit/worker 共用入口。
+    #[test]
+    fn run_batch_leaves_no_dl_hook_after_nondownload_batch() {
+        let _g = lock();
+        let _ = helix_js::server_tasks::drain_events();
+        // 预设幽灵钩子(模拟历史残留),批次跑完必须为 None
+        server_manager::with_download_progress(Box::new(|_, _| {}));
+        assert!(
+            server_manager::download_progress_hook_set(),
+            "前置:钩子已挂"
+        );
+        run_batch(
+            8001,
+            vec![
+                ("remove".to_string(), "ghost-ls".to_string(), None), // 未装→error
+                ("bogus".to_string(), "x".to_string(), None),         // unknown op→error
+            ],
+        );
+        assert!(
+            !server_manager::download_progress_hook_set(),
+            "批次结束当前线程钩子已清(含未达下载点的 item)"
+        );
+        let evs: Vec<_> = helix_js::server_tasks::drain_events()
+            .into_iter()
+            .filter(|e| e.task_id == 8001)
+            .collect();
+        assert_eq!(evs.len(), 2, "两个 item 各推一个 error 事件");
+        assert!(evs.iter().all(|e| e.kind == "error"), "{evs:?}");
+        assert_eq!((evs[0].seq, evs[1].seq), (0, 1), "seq 连续");
     }
 
     /// 冒烟：submit → worker 串行执行 → error 事件回投 helix-js 通道
