@@ -284,10 +284,12 @@ pub fn installed_specs() -> Vec<registry::Spec> {
     v
 }
 
-/// 受管已装且配方 version 与检测版本不同(纯字符串比较,不做 semver)
+/// 受管已装且 detected 版本串不含配方 version → 可升级。
+/// detect_version 返回 `<bin> --version` 首行整串,常带工具名前缀
+/// (如 "rust-analyzer 2024-09-16"),故用"包含"判定同版;不做 semver。
 pub fn is_upgradable(spec: &registry::Spec) -> bool {
     match spec.version_detected() {
-        Some(v) => spec.version.as_deref().is_some_and(|want| want != v),
+        Some(v) => spec.version.as_deref().is_some_and(|want| !v.contains(want)),
         None => false,
     }
 }
@@ -1847,6 +1849,52 @@ mod tests {
         assert_eq!(spec.homepage.as_deref(), Some("https://example.com"));
         // 可升级判定:受管已装 && version 有值 && != 检测版本 → true
         let _ = spec;
+    }
+
+    #[test]
+    fn is_upgradable_contains_semantics() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        // 配方 version=1.0.0;受管装 bin 输出 "my-ls 1.0.0"(detected 含 recipe 版本 → 同版)
+        let ok: toml::Table = toml::from_str(
+            "url = \"https://x/v{version}/my-ls.tar.gz\"\nbin = \"my-ls\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let spec = registry::parse_ext_recipe("my-ls", &ok).unwrap();
+        let arc = root.join("my-ls.tar.gz");
+        let sha = make_tar_gz(&arc, "my-ls").unwrap();
+        install_adhoc(
+            "my-ls",
+            "my-ls",
+            "my-ls",
+            1,
+            &format!("file://{}", arc.display()),
+            &sha,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_version(&managed_bin("my-ls")).unwrap(),
+            "my-ls 1.0.0"
+        );
+        assert!(
+            !is_upgradable(&spec),
+            "detected 含 recipe version → 同版不可升级"
+        );
+        // 换装:bin 检测输出变为 "my-ls 9.9"(detected 不含 recipe 版本 → 可升级)
+        let bin = managed_bin("my-ls");
+        std::fs::write(&bin, "#!/bin/sh\necho my-ls 9.9\n").unwrap();
+        assert_eq!(detect_version(&bin).unwrap(), "my-ls 9.9");
+        assert!(
+            is_upgradable(&spec),
+            "detected 不含 recipe version → 可升级"
+        );
+        // version=None → 恒 false
+        let nover: toml::Table =
+            toml::from_str("url = \"https://x/v1/my-ls.tar.gz\"\nbin = \"my-ls\"\n").unwrap();
+        let spec2 = registry::parse_ext_recipe("my-ls", &nover).unwrap();
+        assert!(!is_upgradable(&spec2), "recipe 无 version → 不可升级");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     struct EnvGuard(&'static str, String);
