@@ -37,6 +37,72 @@ pub(crate) fn opt_u16(
     Ok(Some(n as u16))
 }
 
+/// open_popup width/height 尺寸值:数字 → 像素(px);"NN%" 字符串 → 视口百分比
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dim {
+    Px(u16),
+    Pct(u16),
+}
+
+/// 解析单个尺寸字段:缺省 → None;数字 → Px(沿用 opt_u16 的 [0, u16::MAX] 整数约束);
+/// "NN%"(NN∈[1,100] 整数) → Pct;其余(无 % 的字符串、小数 %、越界 %) → Err。
+fn opt_dim(
+    v: &JsValue,
+    ctx: &mut Context,
+    name: &str,
+) -> boa_engine::JsResult<Option<Dim>> {
+    if v.is_null_or_undefined() {
+        return Ok(None);
+    }
+    if v.is_number() {
+        let n: f64 = v.try_js_into(ctx).map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                "'{name}' must be a number"
+            ))))
+        })?;
+        if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                format!("'{name}' must be an integer in [0, {}]", u16::MAX),
+            ))));
+        }
+        return Ok(Some(Dim::Px(n as u16)));
+    }
+    // 非数字:必须为 "NN%" 百分比字符串
+    let s: String = v.try_js_into(ctx).map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "'{name}' must be a number (px) or a 'NN%' string"
+        ))))
+    })?;
+    let Some(num) = s.strip_suffix('%') else {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("'{name}' must be a number (px) or a 'NN%' string"),
+        ))));
+    };
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "'{name}' percent must be a whole number in 1..=100"
+        )))));
+    }
+    let pct: u16 = num.parse().map_err(|_| {
+        JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "'{name}' percent must be a whole number in 1..=100"
+        ))))
+    })?;
+    if !(1..=100).contains(&pct) {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+            "'{name}' percent must be in 1..=100"
+        )))));
+    }
+    Ok(Some(Dim::Pct(pct)))
+}
+
+/// helix.open_popup({ render, onKey?, onClose?, width?, height?, position?, layer? })。
+/// - render 必需(函数);onKey/onClose 可选函数。
+/// - width/height:数字 → px 尺寸(锚点模式 = 上限 hint;center 模式 = 固定 px);
+///   "NN%"(0<NN≤100)→ 视口百分比——仅 position:"center" 支持且须两轴成对,否则报错。
+/// - position:缺省或 {row,col} 对象 → 锚点模式(参照光标/锚点,现状);"center" → 居中浮层。
+/// - layer:可选字符串,缺省 "plugin-popup"——同 layer 再 open 替换同层,不同 layer 叠层并存。
+/// 任一字段非法 → 整体报错,不产生半注册(回调不插入、无 UI 请求)。
 pub(crate) fn js_open_popup(
     _this: &JsValue,
     args: &[JsValue],
@@ -61,19 +127,26 @@ pub(crate) fn js_open_popup(
     let on_key = on_key.as_callable().map(|_| on_key);
     let on_close = opts.get(JsString::from("onClose"), ctx)?;
     let on_close = on_close.as_callable().map(|_| on_close);
-    // 尺寸/位置在注册前解析：任一非法则整体失败，不产生半注册
-    let width = opt_u16(&opts.get(JsString::from("width"), ctx)?, ctx, "width")?;
-    let height = opt_u16(&opts.get(JsString::from("height"), ctx)?, ctx, "height")?;
-    let position = {
+    // 图层名/尺寸/位置在注册前解析：任一非法则整体失败，不产生半注册。
+    // 缺省层名 "plugin-popup"：旧调用不传 layer → 单弹窗层现状，零破坏。
+    let layer: String = {
+        let v = opts.get(JsString::from("layer"), ctx)?;
+        if v.is_null_or_undefined() {
+            "plugin-popup".to_string()
+        } else {
+            v.try_js_into::<String>(ctx).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "open_popup: 'layer' must be a string",
+                )))
+            })?
+        }
+    };
+    // position: "center" 字符串 → 居中浮层;{row, col} 对象 → anchor 参照点;缺省 → anchor
+    let (position, center) = {
         let v = opts.get(JsString::from("position"), ctx)?;
         if v.is_null_or_undefined() {
-            None
-        } else {
-            let obj = v.as_object().ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "open_popup: 'position' must be an object with row/col",
-                )))
-            })?;
+            (None, false)
+        } else if let Some(obj) = v.as_object() {
             let row = opt_u16(&obj.get(JsString::from("row"), ctx)?, ctx, "position.row")?
                 .ok_or_else(|| {
                     JsError::from_opaque(JsValue::from(JsString::from(
@@ -86,8 +159,42 @@ pub(crate) fn js_open_popup(
                         "open_popup: 'position.col' is required",
                     )))
                 })?;
-            Some((row, col))
+            (Some((row, col)), false)
+        } else {
+            let s: String = v.try_js_into(ctx).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "open_popup: 'position' must be an object with row/col or the string \"center\""
+                ))))
+            })?;
+            if s == "center" {
+                (None, true)
+            } else {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                    format!("open_popup: 'position' must be an object with row/col or \"center\""),
+                ))));
+            }
         }
+    };
+    // width/height:数字 → px(既有语义);"NN%" → 视口百分比。百分比 v1 仅 center 模式支持
+    // (锚点语义不做百分比膨胀)且须两轴成对——视口相对尺寸必须双轴确定。
+    let width = opt_dim(&opts.get(JsString::from("width"), ctx)?, ctx, "width")?;
+    let height = opt_dim(&opts.get(JsString::from("height"), ctx)?, ctx, "height")?;
+    let (width, height, size_pct) = match (width, height) {
+        (Some(Dim::Pct(w)), Some(Dim::Pct(h))) if center => (None, None, Some((w, h))),
+        (Some(Dim::Pct(_)), _) | (_, Some(Dim::Pct(_))) if !center => {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                "open_popup: percentage sizes require position: \"center\"",
+            ))));
+        }
+        (Some(Dim::Pct(_)), _) | (_, Some(Dim::Pct(_))) => {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                "open_popup: percentage width/height must be given as a pair",
+            ))));
+        }
+        (Some(Dim::Px(w)), Some(Dim::Px(h))) => (Some(w), Some(h), None),
+        (Some(Dim::Px(w)), None) => (Some(w), None, None),
+        (None, Some(Dim::Px(h))) => (None, Some(h), None),
+        (None, None) => (None, None, None),
     };
 
     let id = crate::state::next_popup_id();
@@ -111,6 +218,9 @@ pub(crate) fn js_open_popup(
             width,
             height,
             position,
+            layer,
+            center,
+            size_pct,
         });
     Ok(JsValue::from(id))
 }
@@ -1891,6 +2001,8 @@ pub fn render_completion_row(
 
 #[cfg(test)]
 mod tests {
+    use crate::types::UiRequest;
+
     #[test]
     fn completion_icon_hook() {
         let _guard = crate::tests::TEST_LOCK.lock().unwrap();
@@ -1965,5 +2077,133 @@ mod tests {
         );
         // 收尾重注册无害钩子(避免 thread_local 残留抛错钩子影响后续断言)
         crate::load_script(r#"helix.set_completion_render(() => []);"#).unwrap();
+    }
+
+    /// v2 弹窗:position:"center" + width/height "NN%" + layer → OpenPopup{center:true,
+    /// size_pct:Some((w,h)), layer} 且 px width/height/position 均为 None
+    #[test]
+    fn open_popup_v2_center_pct_layer() {
+        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::load_script(
+            r#"
+        helix.open_popup({ render: () => ["x"], width: "78%", height: "75%", position: "center", layer: "arsenal" });
+        "#,
+        )
+        .unwrap();
+        let reqs = crate::take_ui_requests();
+        assert_eq!(reqs.len(), 1);
+        match &reqs[0] {
+            UiRequest::OpenPopup {
+                id: _,
+                width,
+                height,
+                position,
+                layer,
+                center,
+                size_pct,
+            } => {
+                assert_eq!(*width, None);
+                assert_eq!(*height, None);
+                assert_eq!(*position, None);
+                assert_eq!(layer, "arsenal");
+                assert!(*center);
+                assert_eq!(*size_pct, Some((78, 75)));
+            }
+            other => panic!("expected OpenPopup, got {other:?}"),
+        }
+    }
+
+    /// v2 校验失败路径:任一非法 → 整体报错且不产生任何 UI 请求(无半注册)
+    #[test]
+    fn open_popup_v2_validation_failures() {
+        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 数字宽高但尺寸为无 % 的非数字字符串
+        assert!(
+            crate::load_script(r#"helix.open_popup({ render: () => [], width: "78" });"#).is_err()
+        );
+        // position 非对象非 "center" 字符串
+        assert!(
+            crate::load_script(r#"helix.open_popup({ render: () => [], position: 42 });"#).is_err()
+        );
+        assert!(
+            crate::load_script(r#"helix.open_popup({ render: () => [], position: "left" });"#)
+                .is_err()
+        );
+        // anchor(对象 position) + % → 拒绝(百分比仅 center 模式)
+        assert!(
+            crate::load_script(
+                r#"helix.open_popup({ render: () => [], width: "78%", height: "75%", position: { row: 0, col: 0 } });"#
+            )
+            .is_err()
+        );
+        // 仅单轴 % → 拒绝(须两轴成对)
+        assert!(
+            crate::load_script(
+                r#"helix.open_popup({ render: () => [], width: "78%", position: "center" });"#
+            )
+            .is_err()
+        );
+        // % 越界(0 / >100 / 非整数)
+        assert!(
+            crate::load_script(
+                r#"helix.open_popup({ render: () => [], width: "0%", height: "50%", position: "center" });"#
+            )
+            .is_err()
+        );
+        assert!(
+            crate::load_script(
+                r#"helix.open_popup({ render: () => [], width: "101%", height: "50%", position: "center" });"#
+            )
+            .is_err()
+        );
+        assert!(
+            crate::load_script(
+                r#"helix.open_popup({ render: () => [], width: "7.5%", height: "50%", position: "center" });"#
+            )
+            .is_err()
+        );
+        // layer 非字符串
+        assert!(
+            crate::load_script(r#"helix.open_popup({ render: () => [], layer: 7 });"#).is_err()
+        );
+        // 以上失败都不应留下任何请求
+        assert!(crate::take_ui_requests().is_empty());
+    }
+
+    /// 兼容:旧调用(px + {row,col},无 layer) → 缺省 layer="plugin-popup"、center:false、
+    /// size_pct:None,width/height/position 原值透传(行为与 v1 完全一致)
+    #[test]
+    fn open_popup_v2_legacy_call_unchanged() {
+        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::load_script(
+            r#"
+        helix.open_popup({ render: () => ["x"], width: 10, height: 5, position: { row: 0, col: 0 } });
+        "#,
+        )
+        .unwrap();
+        let reqs = crate::take_ui_requests();
+        assert_eq!(reqs.len(), 1);
+        match &reqs[0] {
+            UiRequest::OpenPopup {
+                id: _,
+                width,
+                height,
+                position,
+                layer,
+                center,
+                size_pct,
+            } => {
+                assert_eq!(*width, Some(10));
+                assert_eq!(*height, Some(5));
+                assert_eq!(*position, Some((0, 0)));
+                assert_eq!(layer, "plugin-popup");
+                assert!(!*center);
+                assert_eq!(*size_pct, None);
+            }
+            other => panic!("expected OpenPopup, got {other:?}"),
+        }
     }
 }

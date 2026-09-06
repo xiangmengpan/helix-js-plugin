@@ -220,7 +220,7 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 
 **键位绑定** `map(mode, key, command|fn)`:重复绑定即覆盖;支持多键序列与修饰键;回调自动注册隐藏命令。局限:重启失效(插件启动时重新注册)。
 
-**弹窗/面板/组件树**:`open_popup`(覆盖层弹窗,onKey 可 return close/handled/ignore)`open_panel`(侧边面板,布局树叶子)`close_panel` `move_panel` `el`(组件树:row/col/scroll/button/input)。优点:渲染与布局引擎分离,脏格 diff;input 组件引擎权威(onChange 自动回调)。局限:popup 重复打开替换前一个。
+**弹窗/面板/组件树**:`open_popup`(覆盖层弹窗,onKey 可 return close/handled/ignore;`layer` 同层替换/异层并存,`position:"center"`+`width/height:"NN%"` 居中浮层)`open_panel`(侧边面板,布局树叶子)`close_panel` `move_panel` `el`(组件树:row/col/scroll/button/input)。优点:渲染与布局引擎分离,脏格 diff;input 组件引擎权威(onChange 自动回调)。局限:无 layer 时 popup 重复打开替换前一个;浮层百分比仅 center 模式(须 width/height 成对)。
 
 **Picker 选择器** `helix.picker.define/run`:定义数据源,调起**原生 Picker**(nucleo 模糊匹配/滚动/预览/键位全核心)。优点:性能原生;插件可定义任意源(files/grep/buffers/symbols);行格式数组或 `{cells, payload}` 分离。局限:候选一次性返回(非流式);行渲染不支持每行组件。
 

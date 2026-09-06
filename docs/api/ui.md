@@ -4,9 +4,9 @@
 
 ## 弹窗
 
-### `helix.open_popup({ render, onKey?, onClose?, width?, height?, position? })`
+### `helix.open_popup({ render, onKey?, onClose?, width?, height?, position?, layer? })`
 
-JS 渲染的覆盖层弹窗(模态层,重复 `open_popup` 替换前一个)。返回弹窗 id。
+JS 渲染的覆盖层弹窗(模态层;同 `layer` 重复 `open_popup` 替换同层,不同 layer 叠层并存)。返回弹窗 id。
 
 ```js
 helix.open_popup({
@@ -26,12 +26,15 @@ helix.open_popup({
 ```
 
 - **render 返回两种形式**:字符串/`{text, style}` 数组(行 API),或 `helix.el` 组件树(见下)。
+- **尺寸**:`width`/`height` 支持数字(px;锚点模式 = 尺寸上限 clamp)或 `"NN%"` 字符串(0<NN≤100 = 视口百分比,仅 center 模式且须两轴成对)。
+- **layer**:可选字符串,缺省 `"plugin-popup"`(旧调用零破坏)。同 layer 再 open 替换同层;不同 layer 叠层并存。
+- **position**:缺省 → 锚点式(参照光标/内容自适应);`{ row, col }` → 屏幕锚点(均现状);`"center"` → 居中浮层:无视光标与内容尺寸,按视口算固定居中矩形(百分比 → 视口比例;px → 固定尺寸,超视口钳满屏;无任何尺寸 → 约定 80%×80%)。内容区 = 矩形去边框,溢出由 JS 侧 `el("scroll")` 自理。
 - **onKey 返回值**:`"close"`(关闭并触发 onClose) | `"handled"`(消费) | `"ignore"`(穿透)。未识别 → `"handled"`。
 - 未提供 `onKey` 时:Esc 关闭,其余穿透。
 - `key` 对象:`{ name, shift, ctrl, alt }`;name:字符键/Enter/Esc/Tab/Backspace/Delete/Insert/方向键/Home/End/PageUp/PageDown/F1..F12。
 - onKey 的 `doc` 同命令 ctx.doc(编辑 = 一次按键一个事务)。
 
-**优缺点**：优点：模态清晰、onKey 三态返回;重复打开替换。局限：重复打开替换前一个(无多弹窗);Shift-Tab 不可表示。
+**优缺点**：优点：模态清晰、onKey 三态返回;同层替换、异层并存(主窗 + 叠层菜单/信息);center 浮层比例尺寸。局限：不传 layer 时同层 open 替换前一个(无多弹窗);百分比仅 center 且须成对;Shift-Tab 不可表示。
 
 ## 组件树(el)
 

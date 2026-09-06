@@ -2,6 +2,7 @@ use std::fmt::Write;
 use std::io::BufReader;
 use std::ops::{self, Deref};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use crate::job::Job;
 
@@ -4841,6 +4842,19 @@ pub(crate) fn apply_plugin_decorations(
 
 /// 消费插件 UI 请求：MapKey 注入 keymap、OpenPopup 推层都经 job 通道
 /// （闭包只捕获 owned 数据，满足 'static + Send）。
+
+/// 插件弹窗 layer 名 → &'static str 的 intern 表：compositor 层 id 需 &'static str，
+/// 每名字只 leak 一次；同名后续 open 复用同一 id（replace_or_push 同层替换的判据）。
+static LAYER_INTERNS: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+fn layer_id(layer: &str) -> &'static str {
+    *LAYER_INTERNS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(layer.to_string())
+        .or_insert_with(|| Box::leak(layer.to_string().into_boxed_str()))
+}
+
 pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Result<()> {
     for req in reqs {
         match req {
@@ -4849,16 +4863,29 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 width,
                 height,
                 position,
+                layer,
+                center,
+                size_pct,
             } => {
-                let popup =
-                    ui::Popup::new("plugin-popup", ui::PluginPopup::new(id, width.zip(height)))
-                        .position(position.map(|(row, col)| {
-                            helix_core::Position::new(row as usize, col as usize)
-                        }))
-                        .auto_close(false);
+                let lid = layer_id(&layer);
+                // center → 居中浮层(layer 层可叠多张,同层替换);anchor → 现状(参照点/尺寸 hint)
+                let popup = if center {
+                    ui::Popup::new(lid, ui::PluginPopup::new(id, None).with_layer(lid))
+                        .floating(width, height, size_pct)
+                        .auto_close(false)
+                } else {
+                    ui::Popup::new(
+                        lid,
+                        ui::PluginPopup::new(id, width.zip(height)).with_layer(lid),
+                    )
+                    .position(position.map(|(row, col)| {
+                        helix_core::Position::new(row as usize, col as usize)
+                    }))
+                    .auto_close(false)
+                };
                 // 由事件循环在下一轮推层并渲染。
                 job::dispatch_blocking(move |_editor, compositor| {
-                    compositor.replace_or_push("plugin-popup", popup);
+                    compositor.replace_or_push(lid, popup);
                 });
             }
             helix_js::UiRequest::OpenPanel {

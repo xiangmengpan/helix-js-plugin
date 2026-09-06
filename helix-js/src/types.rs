@@ -9,9 +9,17 @@ pub type DocChange = ((usize, usize), (usize, usize));
 pub enum UiRequest {
     OpenPopup {
         id: u64,
+        /// 弹窗宽高上限(px;v1 尺寸 hint;center 模式下为固定 px 尺寸)
         width: Option<u16>,
         height: Option<u16>,
+        /// anchor 模式:参照点 (row, col);center 模式忽略(恒 None)
         position: Option<(u16, u16)>,
+        /// 图层名:同层 open_popup 替换、不同层并存(JS 缺省 "plugin-popup" 保兼容)
+        layer: String,
+        /// 居中浮层(position:"center")
+        center: bool,
+        /// center 模式视口百分比 (width%, height%),两轴成对给定(78/75 → 78%×75%)
+        size_pct: Option<(u16, u16)>,
     },
     OpenPanel {
         id: u64,

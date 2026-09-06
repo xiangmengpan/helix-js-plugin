@@ -15,6 +15,8 @@ pub struct PluginPopup {
     lines: Vec<StyledLine>,
     /// open_popup 的 width/height 尺寸上限（两者都提供时才生效）
     size_hint: Option<(u16, u16)>,
+    /// 本弹窗所在图层名（open_popup layer；None = 直构/单测，Close 时回退 pop）
+    layer: Option<&'static str>,
     /// 当前焦点节点 id（Tab/Shift-Tab 在可聚焦节点间移动；None = 无节点焦点）
     focus: Option<String>,
     /// 可聚焦节点 id 列表（树序，渲染时刷新）
@@ -29,10 +31,18 @@ impl PluginPopup {
             id,
             lines: Vec::new(),
             size_hint,
+            layer: None,
             focus: None,
             focusables: Vec::new(),
             diff: Default::default(),
         }
+    }
+
+    /// 记录本弹窗图层名：JS onKey 返回 "close" 时按层名移除自身
+    /// （异层并存场景顶层不一定是本弹窗，pop 会误伤）。
+    pub fn with_layer(mut self, layer: &'static str) -> Self {
+        self.layer = Some(layer);
+        self
     }
 
     /// 清空脏格 diff 状态（测试向不同 surface 渲染时需要重置）
@@ -249,13 +259,19 @@ impl Component for PluginPopup {
         match result {
             Ok(PopupKeyResult::Close) => {
                 let id = self.id;
+                let layer = self.layer;
                 // 先通知 JS（触发 onClose，echo 消息入队），再弹掉图层，最后把
                 // echo 消息刷成状态栏（与命令路径取消息的约定一致）。
                 EventResult::Consumed(Some(Box::new(
                     move |compositor: &mut Compositor, cx: &mut Context| {
                         let _ = helix_js::close_popup(id);
-                        // ponytail: pop() 假定弹窗层在栈顶；若未来有叠加图层场景，改用 compositor.remove("plugin-popup")
-                        compositor.pop();
+                        // 按 layer 名移除自身：同层替换/异层并存下顶层不一定是本弹窗；
+                        // 直构（单测）无层名时回退 pop。
+                        if let Some(layer) = layer {
+                            compositor.remove(layer);
+                        } else {
+                            compositor.pop();
+                        }
                         let msgs = helix_js::take_messages();
                         if !msgs.is_empty() {
                             cx.editor.set_status(msgs.join(" "));
