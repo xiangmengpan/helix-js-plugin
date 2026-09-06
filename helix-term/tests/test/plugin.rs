@@ -1,6 +1,7 @@
 use super::*;
 
 use helix_core::diagnostic::Severity;
+use helix_term::application::Application;
 use helix_term::ui;
 use helix_view::current_ref;
 
@@ -128,6 +129,103 @@ async fn plugin_popup_size_smoke() -> anyhow::Result<()> {
                     assert!(
                         app.compositor.has_component(popup_type),
                         "popup open with size/position options"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// 任务 9 remove(layer) 修复的针对性守卫（M4 叠层弹窗落地前固化）：
+/// 两层不同 layer 的 plugin popup 叠开，上层对某键返回 "ignore"（事件冒泡到下层），
+/// 下层 onKey 对该键返回 "close" → 断言只移除下层自身（按 layer 名），上层保留且继续响应。
+/// 回归前的 pop() 实现会把栈顶（上层）误弹掉。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_popup_layer_close_removes_only_own() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("layers.js");
+    std::fs::write(
+        &path,
+        r#"
+        helix.register_command("layers", () => {
+            // 下层 layer-a：x/Esc → close
+            helix.open_popup({
+                layer: "layer-a", width: 30, height: 8, position: { row: 2, col: 2 },
+                render: () => ["LOWER"],
+                onKey: (key) => (key.name === "x" || key.name === "Esc") ? "close" : "handled",
+                onClose: () => helix.echo("lower-closed"),
+            });
+            // 上层 layer-b：y → echo（证明活着且在最上）；Esc → close；其余 ignore（放行冒泡到下层）
+            helix.open_popup({
+                layer: "layer-b", width: 30, height: 8, position: { row: 4, col: 4 },
+                render: () => ["UPPER"],
+                onKey: (key) => {
+                    if (key.name === "y") { helix.echo("upper-alive"); return "handled"; }
+                    if (key.name === "Esc") return "close";
+                    return "ignore";
+                },
+                onClose: () => helix.echo("upper-closed"),
+            });
+        });
+        "#,
+    )?;
+
+    let popup_type = std::any::type_name::<ui::Popup<ui::PluginPopup>>();
+    let assert_status = |app: &Application, want: &str| {
+        let (status, severity) = app.editor.get_status().unwrap();
+        assert_eq!(*severity, Severity::Info, "status: {status}");
+        assert_eq!(status.as_ref(), want, "status 应为 {want}");
+    };
+
+    test_key_sequences(
+        &mut AppBuilder::new().build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", path.display())), None),
+            (
+                Some(":layers<ret>"),
+                Some(&|app| {
+                    assert!(
+                        app.compositor.has_component(popup_type),
+                        "两层弹窗打开后应有 Popup 层"
+                    );
+                }),
+            ),
+            // x：上层 ignore → 冒泡到下层 → 下层按 layer 名移除自身
+            (
+                Some("x"),
+                Some(&|app| {
+                    assert_status(app, "lower-closed");
+                    assert!(
+                        app.compositor.has_component(popup_type),
+                        "下层关闭后上层仍在"
+                    );
+                }),
+            ),
+            // y：若上层被误弹（旧 pop() 行为）此键会落到下层且不 echo → 断言失败
+            (
+                Some("y"),
+                Some(&|app| {
+                    assert_status(app, "upper-alive");
+                    assert!(
+                        app.compositor.has_component(popup_type),
+                        "上层弹窗应保留并响应"
+                    );
+                }),
+            ),
+            // Esc：上层自己关，全部清空
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    assert_status(app, "upper-closed");
+                    assert!(
+                        !app.compositor.has_component(popup_type),
+                        "上层 Esc 关闭后应无弹窗残留"
                     );
                 }),
             ),
