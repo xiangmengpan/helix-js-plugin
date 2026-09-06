@@ -765,14 +765,14 @@ impl EditorView {
             };
 
             let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
-            let used_width = viewport.x.saturating_sub(x);
-            let rem_width = surface.area.width.saturating_sub(used_width);
+            // 只在叶子矩形内绘制:不得溢出到相邻叶子(如右/下的 terminal)顶行
+            let rem_width = viewport.right().saturating_sub(x);
 
             x = surface
                 .set_stringn(x, viewport.y, &text, rem_width as usize, style)
                 .0;
 
-            if x >= surface.area.right() {
+            if x >= viewport.right() {
                 break;
             }
         }

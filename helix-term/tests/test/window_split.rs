@@ -271,3 +271,55 @@ fn render_rows_probe(app: &mut Application) -> Vec<String> {
         })
         .collect()
 }
+
+// bufferline 不得溢出编辑器叶到相邻叶(terminal/BufferLeaf)顶行
+#[tokio::test(flavor = "multi_thread")]
+async fn bufferline_clamped_to_editor_leaf() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let b = dir.path().join("b.txt");
+    std::fs::write(&b, "BBB\n")?;
+    let mut cfg = helpers::test_config();
+    cfg.editor.bufferline = helix_view::editor::BufferLine::Always;
+    let mut app = AppBuilder::new()
+        .with_config(cfg)
+        .with_file(a, None)
+        .build()?;
+    // 多个文档让 bufferline 标签足够长(能溢出的宽度)
+    for i in 0..10 {
+        pump(&mut app, &format!(":new<ret>")).await?;
+    }
+    // H 分屏出右叶(BufferLeaf 承载后一个 scratch? :vsplit 同 doc 即可,验证 bufferline 不外溢)
+    pump(&mut app, ":vsplit<ret>").await?;
+    // 编辑器叶左侧窄条顶部 bufferline;右叶顶行必须是自己内容(边框/行号),不能是标签文字尾巴
+    let area = app.compositor.area();
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let mut jobs = Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+    };
+    app.compositor.render(area, &mut buf, &mut cx);
+    // 找编辑器的右侧边界:布局 50/50
+    let half = area.width / 2;
+    // 右半区顶行(行0~1):若出现 "scratch"/"a.txt" 等标签文字 → 溢出
+    let w = area.width as usize;
+    let right_top: String = (0..1usize)
+        .flat_map(|y| {
+            buf.content[y * w + half as usize..y * w + w]
+                .iter()
+                .map(|c| c.symbol.as_str())
+        })
+        .collect();
+    // 右叶应显示自己的边框/内容;文本行(如 gutter "1")允许,但不能是 bufferline 文件名字样
+    // 简化断言:整个右半不含 "scratch" 标签
+    assert!(
+        !right_top.contains("scratch"),
+        "bufferline 不应溢出到右叶顶行: {right_top:?}"
+    );
+    let _ = b;
+    Ok(())
+}
