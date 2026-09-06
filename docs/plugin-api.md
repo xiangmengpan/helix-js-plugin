@@ -112,6 +112,12 @@
 
 → 详细见 [`api/plugin.md`](api/plugin.md)
 
+### server 管理(非插件特性;JS 可镜像调用)
+
+`:server list/search/panel/install/update/remove/status`(mason 式 LSP/DAP/linter/formatter 管理器):统一注册表 + mirror/sha256 下载安装,自动写 `languages.toml` 标记段(`# >>> helix-managed`)。JS API `helix.server.list/search/install/update/remove/status`(经 `UiRequest::ServerOp`,单向,结果看状态栏)。
+
+→ 详细见 [`../server-manager.md`](../server-manager.md)
+
 ### LSP
 
 `helix.lsp.hover/completion/goto_definition/document_symbols`(查询)+ `format/rename/code_actions/execute_code_action`(编辑,自动应用)。返回 LSP 协议原始 JSON;失败 resolve null 不悬挂;超时(默认 20s)reject。

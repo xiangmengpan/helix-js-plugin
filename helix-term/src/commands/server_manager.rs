@@ -329,8 +329,9 @@ fn abs_bin(bin: &Path) -> PathBuf {
     }
 }
 
-/// 一次重写的结果(供命令层展示/提示)
+/// 一次重写的结果(供命令层展示/提示;path/servers 供测试与后续 UI 读)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LangRewrite {
     pub path: PathBuf,
     /// 是否实际写了文件(false = 无内容可写且文件本不存在)
@@ -524,6 +525,7 @@ pub mod registry {
     }
 
     impl Spec {
+        #[allow(clippy::too_many_arguments)]
         fn archive(
             name: &str,
             kind: Kind,
@@ -573,6 +575,7 @@ pub mod registry {
         pub fn bin_path(&self) -> PathBuf {
             managed_root().join("bin").join(&self.bin_name)
         }
+        #[cfg(test)]
         pub fn installed_dir(&self) -> PathBuf {
             managed_dir(&self.name)
         }
@@ -777,7 +780,7 @@ pub fn install_adhoc(
     std::fs::create_dir_all(&root)?;
     let tmp_archive = root.join(format!(".{name}.download"));
     let tmp_dir = root.join(format!(".{name}.tmp"));
-    download_to(&url, &tmp_archive)?;
+    download_to(url, &tmp_archive)?;
     if !sha256.is_empty() {
         let got = sha256_hex(&tmp_archive)?;
         if got != *sha256 {
@@ -910,7 +913,7 @@ pub fn remove_adhoc(name: &str, bin_name: &str) -> Result<()> {
 }
 
 /// 供测试/开发:把本地目录作为"已装"(跳过下载),验证 bin 检测/版本
-#[doc(hidden)]
+#[cfg(test)]
 pub fn install_from_local_dir_for_test(name: &str, dir: &Path) -> Result<()> {
     let spec = registry::get(name).ok_or_else(|| anyhow!("unknown '{name}'"))?;
     let dest = spec.installed_dir();
@@ -924,7 +927,7 @@ pub fn install_from_local_dir_for_test(name: &str, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[doc(hidden)]
+#[cfg(test)]
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {
