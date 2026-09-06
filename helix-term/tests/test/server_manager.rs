@@ -100,10 +100,7 @@ async fn server_manager_panel_toggle() -> anyhow::Result<()> {
             // 面板内 Enter 触发 install(惰性/活配方 → 错误或成功提示,面板不崩;异步 op 在后续帧)
             (Some("<ret>"), None),
             // q 关闭面板后编辑器仍响应(下一命令正常执行覆盖错误状态)
-            (
-                Some("q"),
-                None,
-            ),
+            (Some("q"), None),
             (
                 Some(":server status<ret>"),
                 Some(&|app| {

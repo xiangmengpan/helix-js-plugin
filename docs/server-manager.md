@@ -12,14 +12,17 @@ mason 式工具管理器:统一注册表 + 下载安装/升级/卸载(mirror 支
 :server list                    # 全部配方 + 安装状态
 :server search <kw>             # 按名称/语言过滤
 :server panel                   # 原生 picker 面板(输入即过滤;Enter=install/update)
+:server-manager                 # JS rail 面板(:server-manager 插件;j/k Enter x r q)
 :server install <name> [version]
 :server update [name]           # 无 name = 更新全部已装
 :server remove <name>
 :server status                  # 目录/已装统计/版本/languages.toml 路径
 ```
 
-JS API 镜像:`helix.server.list/search/install/update/remove/status`(经
-`UiRequest::ServerOp`,单向请求,结果显示在状态栏)。
+JS API:`helix.server.list/search/install/update/remove/status`(经
+`UiRequest::ServerOp`,单向,结果显示在状态栏)+ `helix.server.rows(cb)`——
+term→JS 行数据回传(面板渲染用;行对象 {name,kind,languages,installed,version,installable},
+一次性回调)。
 
 ## 目录布局
 
@@ -39,6 +42,9 @@ JS API 镜像:`helix.server.list/search/install/update/remove/status`(经
 [server-manager]
 mirror = ""   # https 下载前缀改写(如 https://ghproxy.com/);file:// 与本地路径原样
 
+# url_template 支持占位:{version}(由配方 version/install 参数提供)、{os}/{arch}、
+# {triple}(rust 常用 target,见 rust_triple());单文件 .gz release 直接解码安装
+
 # 用户扩展配方(v1:archive 类;url 含 {version} 时必填 version)
 [server-manager.registry.rust-analyzer]
 url = "https://github.com/rust-lang/rust-analyzer/releases/download/{version}/rust-analyzer-x86_64-unknown-linux-gnu.gz"
@@ -55,10 +61,11 @@ languages = ["rust"]   # 挂接的语言(生成 [[language]] 条目引用)
 (运行时语言配置在启动时加载)。已装再 `install` 会报错提示改走 `update`;
 `remove` 正在使用的 server 只删配置,不杀进程,重启后不再启动。
 
-内置注册表(v1:rust-analyzer/gopls/pyright/clangd/debugpy/black/prettier)为
-**惰性占位**:下载源留空,install 会提示"下载源未配置"——真实 URL 是 OS 相关
-数据,请通过上面 `[server-manager.registry.<name>]` 提供(镜像场景本就该配
-自己的源/校验)。
+内置注册表(v1:rust-analyzer/gopls/pyright/clangd/debugpy/black/prettier):
+**rust-analyzer** 已带真实源模板(`{triple}` 自动展开,version 由 config version
+或 `install <name> <version>` 给;sha256 空 = 跳过校验);其余为**惰性占位**
+(install 报"下载源未配置")——真实 URL 是 OS 相关数据,经
+`[server-manager.registry.<name>]` 提供(镜像场景本就该配自己的源/校验)。
 
 ## health 联动
 
