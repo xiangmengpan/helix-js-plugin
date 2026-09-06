@@ -831,7 +831,7 @@ mod test {
                 1,
                 0,
                 &text_fmt,
-                TextAnnotations::default().add_inline_annotations(&annotations, None)
+                TextAnnotations::default().add_inline_annotations(annotations.as_slice(), None)
             ),
             (2, 1)
         );
