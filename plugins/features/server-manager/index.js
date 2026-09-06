@@ -19,13 +19,14 @@ function fetch_rows() {
 }
 
 function status_of(r) {
+  if (r.installed && r.local) return r.version ? "本机 " + r.version : "本机";
   if (r.installed) return r.version ? "installed " + r.version : "installed";
   if (r.installable) return "ready";
   return "no source";
 }
 
 function row_el(r, selected) {
-  const mark = r.installed ? "\u2713" : " ";
+  const mark = r.installed ? (r.local ? "\u2299" : "\u2713") : " ";
   const glyph = r.kind === "lsp" ? "L" : r.kind === "dap" ? "D" : r.kind === "linter" ? "!" : "F";
   const langs = r.languages && r.languages.length ? " [" + r.languages.join(",") + "]" : "";
   const status = status_of(r);
@@ -68,12 +69,20 @@ function selected() {
 function act_toggle() {
   const r = selected();
   if (!r) return;
+  if (r.local) {
+    helix.echo("server '" + r.name + "' 本地已可用,无需安装(停用挂接用 :server unmanage)");
+    return;
+  }
+  if (r.installed) {
+    helix.server.update(r.name);
+    fetch_rows();
+    return;
+  }
   if (!r.installable) {
     helix.echo("server '" + r.name + "': 下载源未配置;配 [server-manager.registry." + r.name + "] url/version");
     return;
   }
-  if (r.installed) helix.server.update(r.name);
-  else helix.server.install(r.name);
+  helix.server.install(r.name);
   fetch_rows(); // op 应用后行数据会更新;此处先请求(term 顺序处理 op→rows)
 }
 
@@ -81,6 +90,10 @@ function act_remove() {
   const r = selected();
   if (!r || !r.installed) {
     helix.echo("server '" + (r ? r.name : "?") + "' 未安装");
+    return;
+  }
+  if (r.local) {
+    helix.echo("server '" + r.name + "' 是本地工具,不能卸载(停用挂接用 :server unmanage)");
     return;
   }
   helix.server.remove(r.name);

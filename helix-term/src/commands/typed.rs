@@ -5290,7 +5290,15 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 let rows: Vec<helix_js::ServerRow> = server_manager::registry::all()
                     .into_iter()
                     .map(|spec| {
-                        let installed = server_manager::is_installed(&spec.name);
+                        use server_manager::Availability;
+                        let (installed, local, version) =
+                            match server_manager::availability(&spec.name) {
+                                Availability::Managed => (true, false, spec.version_detected()),
+                                Availability::Local(p) => {
+                                    (true, true, server_manager::detect_version(&p))
+                                }
+                                Availability::Missing => (false, false, None),
+                            };
                         let kind = match spec.kind {
                             server_manager::registry::Kind::Lsp => "lsp",
                             server_manager::registry::Kind::Dap => "dap",
@@ -5303,11 +5311,8 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             kind,
                             languages: spec.languages.clone(),
                             installed,
-                            version: if installed {
-                                spec.version_detected()
-                            } else {
-                                None
-                            },
+                            local,
+                            version,
                             installable: spec.is_installable(),
                         }
                     })
@@ -5682,19 +5687,37 @@ fn server_panel(cx: &mut compositor::Context) -> anyhow::Result<()> {
                         s.languages.join(",").into()
                     }),
                     ui::PickerColumn::new("status", |s: &registry::Spec, _| {
-                        let t: String = if server_manager::is_installed(&s.name) {
-                            s.version_detected()
+                        let t: String = match server_manager::availability(&s.name) {
+                            server_manager::Availability::Managed => s
+                                .version_detected()
                                 .map(|v| format!("installed {v}"))
-                                .unwrap_or_else(|| "installed".to_string())
-                        } else if s.is_installable() {
-                            "ready".to_string()
-                        } else {
-                            "no source".to_string()
+                                .unwrap_or_else(|| "installed".to_string()),
+                            server_manager::Availability::Local(p) => {
+                                server_manager::detect_version(&p)
+                                    .map(|v| format!("本机 {v}"))
+                                    .unwrap_or_else(|| "本机".to_string())
+                            }
+                            server_manager::Availability::Missing if s.is_installable() => {
+                                "ready".to_string()
+                            }
+                            server_manager::Availability::Missing => "no source".to_string(),
                         };
                         t.into()
                     }),
                 ];
                 let picker = ui::Picker::new(columns, 0, specs, (), move |cx, spec, _action| {
+                    match server_manager::availability(&spec.name) {
+                        server_manager::Availability::Managed => {}
+                        server_manager::Availability::Local(p) => {
+                            cx.editor.set_status(format!(
+                                "server '{}' 本地已可用({}),无需安装;卸载不受 server manager 管",
+                                spec.name,
+                                p.display()
+                            ));
+                            return;
+                        }
+                        server_manager::Availability::Missing => {}
+                    }
                     if !spec.is_installable() {
                         cx.editor.set_error(format!(
                             "server '{}': 下载源未配置;配 [server-manager.registry.{}] url/version",
@@ -5710,7 +5733,10 @@ fn server_panel(cx: &mut compositor::Context) -> anyhow::Result<()> {
                         ));
                         return;
                     }
-                    let already = server_manager::is_installed(&spec.name);
+                    let already = matches!(
+                        server_manager::availability(&spec.name),
+                        server_manager::Availability::Managed
+                    );
                     let result = if already {
                         server_manager::update(&spec.name, &version)
                     } else {
@@ -5756,6 +5782,7 @@ pub(crate) fn server_op(
     arg2: Option<&str>,
 ) -> anyhow::Result<()> {
     use server_manager::registry;
+    use server_manager::Availability;
 
     server_manager::apply_server_config(server_manager::disk_server_manager_table().as_ref())
         .map_err(|e| anyhow!("config [server-manager]: {e:#}"))?;
@@ -5773,26 +5800,35 @@ pub(crate) fn server_op(
             spec.name
         ))
     };
+    let ver_path = |p: &std::path::Path| -> String {
+        server_manager::detect_version(p)
+            .map(|v| format!(" v{v}"))
+            .unwrap_or_default()
+    };
     match sub {
         "list" => {
+            let all = registry::all();
             let mut parts = Vec::new();
-            for spec in registry::all() {
-                let mark = if server_manager::is_installed(&spec.name) {
-                    let v = spec
-                        .version_detected()
-                        .map(|s| format!("@\u{2713}{s}"))
-                        .unwrap_or_default();
-                    format!("{}{v}", spec.name)
-                } else {
-                    format!("{}-（未装）", spec.name)
+            for spec in &all {
+                let mark = match server_manager::availability(&spec.name) {
+                    Availability::Managed => {
+                        let v = spec
+                            .version_detected()
+                            .map(|s| format!("@{s}"))
+                            .unwrap_or_default();
+                        format!("\u{2713}{}{v}", spec.name)
+                    }
+                    Availability::Local(p) => {
+                        format!("{}⊙(本机{})", spec.name, ver_path(&p))
+                    }
+                    Availability::Missing if spec.is_installable() => {
+                        format!("{}-（可装）", spec.name)
+                    }
+                    Availability::Missing => format!("{}-（无源）", spec.name),
                 };
                 parts.push(mark);
             }
-            editor.set_status(format!(
-                "servers[{}]: {}",
-                registry::all().len(),
-                parts.join("  ")
-            ));
+            editor.set_status(format!("servers[{}]: {}", all.len(), parts.join("  ")));
         }
         "search" => {
             let Some(kw) = arg else {
@@ -5806,10 +5842,10 @@ pub(crate) fn server_op(
                         || s.languages.iter().any(|l| l.to_lowercase().contains(&kw))
                 })
                 .map(|s| {
-                    let mark = if server_manager::is_installed(&s.name) {
-                        "已装"
-                    } else {
-                        "未装"
+                    let mark = match server_manager::availability(&s.name) {
+                        Availability::Managed => "已装(受管)",
+                        Availability::Local(_) => "本机已有",
+                        Availability::Missing => "未装",
                     };
                     format!("{} ({mark}) langs={}", s.name, s.languages.join(","))
                 })
@@ -5826,14 +5862,26 @@ pub(crate) fn server_op(
             };
             let spec = registry::get(name)
                 .ok_or_else(|| anyhow!("unknown server '{name}'(见 server list)"))?;
-            if server_manager::is_installed(name) {
-                let v = spec
-                    .version_detected()
-                    .map(|s| format!(" v{s}"))
-                    .unwrap_or_default();
-                return Err(anyhow!(
-                    "server '{name}' 已安装({v});升级用 server update {name}"
-                ));
+            match server_manager::availability(name) {
+                Availability::Managed => {
+                    let v = spec
+                        .version_detected()
+                        .map(|s| format!(" v{s}"))
+                        .unwrap_or_default();
+                    return Err(anyhow!(
+                        "server '{name}' 已安装({v});升级用 server update {name}"
+                    ));
+                }
+                Availability::Local(p) => {
+                    // 本地已可用:直接使用,不下载安装
+                    editor.set_status(format!(
+                        "server '{name}' 本地已可用({}){},无需安装;卸载本地工具不受 server manager 管",
+                        p.display(),
+                        ver_path(&p)
+                    ));
+                    return Ok(());
+                }
+                Availability::Missing => {}
             }
             if !spec.is_installable() {
                 return Err(anyhow!(
@@ -5862,14 +5910,25 @@ pub(crate) fn server_op(
                 Some(name) => {
                     let spec =
                         registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
-                    if !server_manager::is_installed(name) {
-                        return Err(anyhow!("server '{name}' 未安装,用 install"));
+                    match server_manager::availability(name) {
+                        Availability::Managed => vec![spec],
+                        Availability::Local(p) => {
+                            return Err(anyhow!(
+                                "server '{name}' 由本地提供({}),不走 server manager 升级(受管安装才可 update)",
+                                p.display()
+                            ));
+                        }
+                        Availability::Missing => {
+                            return Err(anyhow!("server '{name}' 未安装,用 install"));
+                        }
                     }
-                    vec![spec]
                 }
                 None => all
                     .into_iter()
-                    .filter(|s| server_manager::is_installed(&s.name) && s.is_installable())
+                    .filter(|s| {
+                        matches!(server_manager::availability(&s.name), Availability::Managed)
+                            && s.is_installable()
+                    })
                     .collect(),
             };
             if targets.is_empty() {
@@ -5902,51 +5961,90 @@ pub(crate) fn server_op(
             let Some(name) = arg else {
                 return Err(anyhow!("usage: server remove <name>"));
             };
-            if !server_manager::is_installed(name) {
-                return Err(anyhow!("server '{name}' 未安装"));
+            match server_manager::availability(name) {
+                Availability::Managed => {
+                    server_manager::remove(name)?;
+                    editor.set_status(format!("removed '{name}';若正被 LSP 使用,重启后生效"));
+                }
+                Availability::Local(p) => {
+                    return Err(anyhow!(
+                        "server '{name}' 是本地工具({}),不能卸载;如需停用自动挂接用 server unmanage {name}",
+                        p.display()
+                    ));
+                }
+                Availability::Missing => {
+                    return Err(anyhow!("server '{name}' 未安装"));
+                }
             }
-            server_manager::remove(name)?;
-            editor.set_status(format!("removed '{name}';若正被 LSP 使用,重启后生效"));
+        }
+        "unmanage" | "ignore" => {
+            let Some(name) = arg else {
+                return Err(anyhow!("usage: server unmanage <name>"));
+            };
+            match server_manager::availability(name) {
+                Availability::Local(_) => {
+                    let on = !server_manager::ignored_local().contains(&name.to_string());
+                    server_manager::set_ignored(name, on)?;
+                    let _ = server_manager::rewrite_languages_toml();
+                    editor.set_status(if on {
+                        format!("'{name}' 已停用自动挂接(本地工具保留);server unmanage {name} 恢复")
+                    } else {
+                        format!("'{name}' 已恢复自动挂接")
+                    });
+                }
+                Availability::Managed => {
+                    return Err(anyhow!("server '{name}' 是受管安装,用 remove 卸载"));
+                }
+                Availability::Missing => {
+                    return Err(anyhow!("server '{name}' 未安装/不在 PATH"));
+                }
+            }
         }
         "status" => {
             let all = registry::all();
-            let installed: Vec<&registry::Spec> = all
+            let (managed_rows, local_rows): (Vec<String>, Vec<String>) = all
                 .iter()
-                .filter(|s| server_manager::is_installed(&s.name))
-                .collect();
-            let rows: Vec<String> = installed
-                .iter()
-                .map(|s| {
-                    format!(
-                        "{}\u{2713}{}",
-                        s.name,
-                        s.version_detected()
-                            .map(|v| format!(" v{v}"))
-                            .unwrap_or_default()
-                    )
+                .filter_map(|s| match server_manager::availability(&s.name) {
+                    Availability::Managed => Some((
+                        format!(
+                            "{}\u{2713}{}",
+                            s.name,
+                            s.version_detected()
+                                .map(|v| format!(" v{v}"))
+                                .unwrap_or_default()
+                        ),
+                        String::new(),
+                    )),
+                    Availability::Local(p) => {
+                        Some((String::new(), format!("{}⊙{}", s.name, ver_path(&p))))
+                    }
+                    Availability::Missing => None,
                 })
-                .collect();
-            let mut msg = format!(
-                "server-manager: {} 已装/{} 配方;managed dir: {}\n",
-                installed.len(),
+                .unzip();
+            let msg = format!(
+                "server-manager: {}/{} 受管/配方;本机已有 {};managed dir: {}\n已装(受管): {}\n本机: {}\nlanguages.toml: {}",
+                managed_rows.len(),
                 all.len(),
-                server_manager::managed_root().display()
-            );
-            msg.push_str(&format!(
-                "languages.toml: {}\n已装: {}",
-                server_manager::lang_config_file().display(),
-                if rows.is_empty() {
+                local_rows.len(),
+                server_manager::managed_root().display(),
+                if managed_rows.is_empty() {
                     "(无)".to_string()
                 } else {
-                    rows.join(", ")
-                }
-            ));
+                    managed_rows.join(", ")
+                },
+                if local_rows.is_empty() {
+                    "(无)".to_string()
+                } else {
+                    local_rows.join(", ")
+                },
+                server_manager::lang_config_file().display()
+            );
             editor.set_status(msg);
         }
         other => {
             return Err(anyhow!(
-                "unknown server subcommand '{other}'(list|search|install|update|remove|status)"
-            ))
+                "unknown server subcommand '{other}'(list|search|install|update|remove|unmanage|status|panel)"
+            ));
         }
     }
     Ok(())

@@ -11,6 +11,7 @@ async fn server_list_search_status() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
     std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
 
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
@@ -42,7 +43,7 @@ async fn server_list_search_status() -> anyhow::Result<()> {
                 Some(&|app| {
                     let (status, _) = app.editor.get_status().unwrap();
                     assert!(
-                        status.as_ref().contains("已装/")
+                        status.as_ref().contains("受管/")
                             && status.as_ref().contains("managed dir"),
                         "status 应报统计与目录, got: {status}"
                     );
@@ -65,6 +66,7 @@ async fn server_manager_panel_toggle() -> anyhow::Result<()> {
     std::fs::write(&file, "x\n")?;
     std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
     std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
     let plugin = format!(
         "{}/plugins/features/server-manager/index.js",
         std::env::var("CARGO_MANIFEST_DIR")
@@ -106,7 +108,7 @@ async fn server_manager_panel_toggle() -> anyhow::Result<()> {
                 Some(&|app| {
                     let (status, _) = app.editor.get_status().unwrap();
                     assert!(
-                        !app.editor.is_err() && status.as_ref().contains("已装/"),
+                        !app.editor.is_err() && status.as_ref().contains("受管/"),
                         "关闭后 :server status 正常, got: {status}"
                     );
                 }),
@@ -126,6 +128,7 @@ async fn server_negative_paths() -> anyhow::Result<()> {
     std::fs::write(&file, "x\n")?;
     std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
     std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
 
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
@@ -175,6 +178,76 @@ async fn server_negative_paths() -> anyhow::Result<()> {
                     assert!(
                         status.as_ref().contains("usage: server"),
                         "缺参给 usage, got: {status}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+// 本地已装识别:install 短路(直接用)、remove 拒绝、unmanage 停挂接(toggle)。
+#[tokio::test(flavor = "multi_thread")]
+async fn server_local_short_circuit_and_unmanage() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("d.txt");
+    std::fs::write(&file, "x\n")?;
+    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
+    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    // PATH 里放一个假 rust-analyzer → 视为本地已装
+    let bins = dir.path().join("localbin");
+    std::fs::create_dir_all(&bins)?;
+    let ra = bins.join("rust-analyzer");
+    std::fs::write(&ra, "#!/bin/sh\necho rust-analyzer 9.9\n")?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&ra, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::env::set_var("SM_PATH", bins.to_string_lossy().to_string());
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(":server install rust-analyzer<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        !app.editor.is_err() && status.as_ref().contains("本地已可用"),
+                        "本地已装应短路安装, got: {status}"
+                    );
+                }),
+            ),
+            (
+                Some(":server remove rust-analyzer<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        app.editor.is_err() && status.as_ref().contains("不能卸载"),
+                        "本地工具 remove 应拒绝, got: {status}"
+                    );
+                }),
+            ),
+            (
+                Some(":server unmanage rust-analyzer<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        !app.editor.is_err() && status.as_ref().contains("已停用"),
+                        "unmanage 停用挂接, got: {status}"
+                    );
+                }),
+            ),
+            (
+                Some(":server unmanage rust-analyzer<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        !app.editor.is_err() && status.as_ref().contains("已恢复"),
+                        "再 unmanage 恢复, got: {status}"
                     );
                 }),
             ),

@@ -99,6 +99,11 @@ pub fn deliver(id: u64, rows: Vec<ServerRow>) -> Result<()> {
                     Attribute::all(),
                 )
                 .property(
+                    JsString::from("local"),
+                    JsValue::from(r.local),
+                    Attribute::all(),
+                )
+                .property(
                     JsString::from("version"),
                     r.version
                         .as_ref()
@@ -167,6 +172,7 @@ mod tests {
                 kind: "lsp".into(),
                 languages: vec!["rust".into()],
                 installed: true,
+                local: false,
                 version: Some("rust-analyzer 1.2.3".into()),
                 installable: true,
             }],

@@ -16,13 +16,28 @@ mason 式工具管理器:统一注册表 + 下载安装/升级/卸载(mirror 支
 :server install <name> [version]
 :server update [name]           # 无 name = 更新全部已装
 :server remove <name>
-:server status                  # 目录/已装统计/版本/languages.toml 路径
+:server unmanage <name>         # 停用/恢复某"本地已有"工具的自动挂接(toggle)
+:server status                  # 受管/本机已有统计/版本/languages.toml 路径
 ```
 
 JS API:`helix.server.list/search/install/update/remove/status`(经
 `UiRequest::ServerOp`,单向,结果显示在状态栏)+ `helix.server.rows(cb)`——
 term→JS 行数据回传(面板渲染用;行对象 {name,kind,languages,installed,version,installable},
 一次性回调)。
+
+## 本地已装识别(local)
+
+注册表配方按 `bin-name` 在 PATH 中探测(排除受管 bin 目录自身):已存在则标记
+**本机已有(local)**,三态显示(✓ 受管 / ⊙ 本机 / - 未装):
+
+- `server install <name>`:本机已有 → 提示"本地已可用",**不下载**直接使用;
+  受管已装 → 提示用 update;缺失才真正下载安装。
+- `server update`:只升级受管安装;local 报"不走 server manager 升级"。
+- `server remove`:只卸载受管;local 报错并提示用 `unmanage`。
+- languages.toml 重建会把 local server 也挂接(写实际 PATH 绝对路径),
+  环境变量 `SM_PATH` 可覆写探测路径列表(空 = 禁用;测试用)。
+- `server unmanage <name>`:把该 local 加入停用名单(`<managed>/ignored.txt`),
+  重建后不再挂接;再跑一次恢复。用户语言已在标记外自定义时本就跳过挂接。
 
 ## 目录布局
 

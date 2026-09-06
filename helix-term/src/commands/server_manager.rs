@@ -284,6 +284,105 @@ pub fn installed_specs() -> Vec<registry::Spec> {
     v
 }
 
+/// 工具可用来源
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Availability {
+    /// 受管安装(managed/bin 软链;可升级/卸载)
+    Managed,
+    /// 本地 PATH 已有(非受管;直接使用;不能卸载)
+    Local(PathBuf),
+    /// 缺失
+    Missing,
+}
+
+/// 状态判定:受管优先;其次 PATH 中的 bin_name(排除受管 bin 目录自身,
+/// 避免 managed/bin 入 PATH 时把受管软链误判为 local)。
+pub fn availability(name: &str) -> Availability {
+    let Some(spec) = registry::get(name) else {
+        return Availability::Missing;
+    };
+    let managed = spec.bin_path();
+    if managed.exists() {
+        return Availability::Managed;
+    }
+    match path_in_path(&spec.bin_name) {
+        Some(p) => Availability::Local(p),
+        None => Availability::Missing,
+    }
+}
+
+/// 在 PATH 中查找可执行文件(不含受管 bin 目录)。
+/// SM_PATH 为测试/开发覆写(空串 = 禁用本地检测;生产不设)。
+fn path_in_path(bin: &str) -> Option<PathBuf> {
+    let managed_bin_dir = managed_root().join("bin");
+    let path = std::env::var("SM_PATH")
+        .or_else(|_| std::env::var("PATH"))
+        .ok()?;
+    for dir in std::env::split_paths(&path) {
+        if dir == managed_bin_dir {
+            continue;
+        }
+        let cand = dir.join(bin);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// 本地可用(非受管、未被忽略)的配方
+pub fn local_specs() -> Vec<registry::Spec> {
+    let mut v: Vec<_> = registry::all()
+        .into_iter()
+        .filter(|s| matches!(availability(&s.name), Availability::Local(_)) && !is_ignored(&s.name))
+        .collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
+}
+
+/// 本地停用挂接名单(managed_root/ignored.txt,每行一个配方名)
+fn ignored_path() -> PathBuf {
+    managed_root().join("ignored.txt")
+}
+
+pub fn ignored_local() -> Vec<String> {
+    std::fs::read_to_string(ignored_path())
+        .map(|t| {
+            t.lines()
+                .map(str::to_string)
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn is_ignored(name: &str) -> bool {
+    ignored_local().iter().any(|n| n == name)
+}
+
+/// 设/清本地忽略并返回最新名单
+pub fn set_ignored(name: &str, ignored: bool) -> Result<Vec<String>> {
+    let mut list = ignored_local();
+    let pos = list.iter().position(|n| n == name);
+    match (ignored, pos) {
+        (true, None) => list.push(name.to_string()),
+        (false, Some(i)) => {
+            list.remove(i);
+        }
+        _ => {}
+    }
+    std::fs::create_dir_all(managed_root())?;
+    std::fs::write(
+        ignored_path(),
+        format!(
+            "{}
+",
+            list.join("\n")
+        ),
+    )?;
+    Ok(list)
+}
+
 /// 拆分标记段:返回 (标记外文本, 段内文本)。无标记 → 原文本;段不完整/重复 → Err。
 pub fn split_managed(text: &str) -> Result<(String, Option<String>)> {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -383,32 +482,56 @@ pub fn build_section(
     user_langs: &[String],
     user_ls: &[String],
 ) -> (String, Vec<String>, Vec<String>) {
-    let specs = installed_specs();
+    let all = registry::all();
     let mut servers = Vec::new();
     let mut conflicts = Vec::new();
     let mut body = String::new();
-    let attached: Vec<&registry::Spec> = specs
-        .iter()
-        .filter(|s| matches!(s.kind, registry::Kind::Lsp | registry::Kind::Dap))
-        .collect();
+    // 参与挂接:受管已装 ∪ 本地 PATH 可用(未被忽略);记录 command 来源
+    struct Entry<'a> {
+        spec: &'a registry::Spec,
+        /// None=受管(绝对路径);Some(abs)=本地 PATH 路径
+        local: Option<PathBuf>,
+    }
+    let mut attached: Vec<Entry> = Vec::new();
+    for spec in &all {
+        let is_attach_kind = matches!(spec.kind, registry::Kind::Lsp | registry::Kind::Dap);
+        if !is_attach_kind {
+            continue;
+        }
+        match availability(&spec.name) {
+            Availability::Managed => attached.push(Entry { spec, local: None }),
+            Availability::Local(p) if !is_ignored(&spec.name) => attached.push(Entry {
+                spec,
+                local: Some(p),
+            }),
+            _ => {}
+        }
+    }
+    attached.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
     // [language-server.<name>] 表(Lsp 且用户未自带同名)
-    for s in &attached {
+    for e in &attached {
+        let s = e.spec;
         if matches!(s.kind, registry::Kind::Lsp) && !user_ls.iter().any(|n| n == &s.name) {
             body.push_str(&format!("[language-server.{}]\n", s.name));
-            let cmd = abs_bin(&s.bin_path()).to_string_lossy().into_owned();
+            let cmd = match &e.local {
+                Some(p) => abs_bin(p).to_string_lossy().into_owned(),
+                None => abs_bin(&s.bin_path()).to_string_lossy().into_owned(),
+            };
             body.push_str(&format!("command = {}\n\n", toml_str(&cmd)));
-            servers.push(s.name.clone());
+            if e.local.is_none() {
+                servers.push(s.name.clone());
+            }
         }
     }
     // 按语言聚合 lsp 名与 dap 配置
     let mut by_lang: std::collections::BTreeMap<String, (Vec<String>, Option<&registry::Spec>)> =
         std::collections::BTreeMap::new();
-    for s in &attached {
-        for lang in &s.languages {
-            let e = by_lang.entry(lang.clone()).or_default();
-            match s.kind {
-                registry::Kind::Lsp => e.0.push(s.name.clone()),
-                registry::Kind::Dap => e.1 = Some(s),
+    for e in &attached {
+        for lang in &e.spec.languages {
+            let slot = by_lang.entry(lang.clone()).or_default();
+            match e.spec.kind {
+                registry::Kind::Lsp => slot.0.push(e.spec.name.clone()),
+                registry::Kind::Dap => slot.1 = Some(e.spec),
                 _ => {}
             }
         }
@@ -424,9 +547,14 @@ pub fn build_section(
                 ));
             }
             if let Some(s) = dap {
+                let hint = attached
+                    .iter()
+                    .find(|e| std::ptr::eq(e.spec, s))
+                    .and_then(|e| e.local.clone())
+                    .unwrap_or_else(|| s.bin_path());
                 conflicts.push(format!(
                     "语言 '{lang}' 你已自定义:请手动为它配置 debugger(command 指向 {})",
-                    s.bin_path().display()
+                    hint.display()
                 ));
             }
             continue;
@@ -445,11 +573,15 @@ pub fn build_section(
             body.push_str(&format!("language-servers = [{list}]\n"));
         }
         if let Some(s) = dap {
-            let cmd = abs_bin(&s.bin_path());
+            let cmd = attached
+                .iter()
+                .find(|e| std::ptr::eq(e.spec, s))
+                .and_then(|e| e.local.clone())
+                .unwrap_or_else(|| s.bin_path());
             body.push_str(&format!(
                 "debugger = {{ name = {}, transport = \"stdio\", command = {}, args = [], templates = [{{ name = \"launch\", request = \"launch\", args = {{ }} }}] }}\n",
                 toml_str(&s.name),
-                toml_str(&cmd.to_string_lossy())
+                toml_str(&abs_bin(&cmd).to_string_lossy())
             ));
         }
         body.push('\n');
@@ -1248,7 +1380,7 @@ mod tests {
     // ---- languages.toml 标记段 ----
 
     /// 双 env guard:SM_MANAGED_DIR + SM_LANGS_TOML → tmp root;返回 languages 路径
-    fn sm_env(root: &Path) -> (PathBuf, EnvGuard, EnvGuard) {
+    fn sm_env(root: &Path) -> (PathBuf, EnvGuard, EnvGuard, EnvGuard) {
         let langs = root.join("languages.toml");
         let ls = langs.to_string_lossy().into_owned();
         let m = root.to_string_lossy().into_owned();
@@ -1256,6 +1388,7 @@ mod tests {
             langs,
             EnvGuard::new("SM_MANAGED_DIR", m),
             EnvGuard::new("SM_LANGS_TOML", ls),
+            EnvGuard::new("SM_PATH", String::new()), // 禁用宿主 PATH 本地检测(hermetic)
         )
     }
 
@@ -1276,7 +1409,7 @@ mod tests {
     fn langs_rewrite_from_empty_builds_section_idempotent() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (_langs, _a, _b) = sm_env(&root);
+        let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
         let rw = rewrite_languages_toml().unwrap();
         assert!(rw.written);
@@ -1301,7 +1434,7 @@ mod tests {
     fn langs_user_content_preserved_and_section_replaced() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (langs, _ga, _gb) = sm_env(&root);
+        let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "# 用户注释\n[[language]]\nname = \"haskell\"\nscope = \"source.haskell\"\n\n\
             # >>> helix-managed\n[language-server.rust-analyzer]\ncommand = \"/old/stale/path\"\n\n\
             [[language]]\nname = \"rust\"\nlanguage-servers = [\"rust-analyzer\"]\n# <<< helix-managed\n\n\
@@ -1325,7 +1458,7 @@ mod tests {
     fn langs_conflict_user_defined_language_skipped_with_hint() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (langs, _ga, _gb) = sm_env(&root);
+        let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "[[language]]\nname = \"rust\"\nroots = [\"my-own-root\"]\n";
         std::fs::write(&langs, existing).unwrap();
         install_fake("rust-analyzer");
@@ -1349,7 +1482,7 @@ mod tests {
     fn langs_dap_debugpy_emits_debugger_block() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (_langs, _a, _b) = sm_env(&root);
+        let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("debugpy");
         let rw = rewrite_languages_toml().unwrap();
         assert!(rw.servers.is_empty(), "Dap 不进 language-server 表");
@@ -1366,7 +1499,7 @@ mod tests {
     fn langs_bad_user_toml_and_unbalanced_marker_abort() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (langs, _ga, _gb) = sm_env(&root);
+        let (langs, _ga, _gb, _gp) = sm_env(&root);
         let p = &langs;
         // 语法坏(无标记)→ 报错不改写
         std::fs::write(p, "this is not toml {{{\n[[language]\n").unwrap();
@@ -1391,7 +1524,7 @@ mod tests {
     fn langs_remove_clears_entry() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (_langs, _a, _b) = sm_env(&root);
+        let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
         rewrite_languages_toml().unwrap();
         remove("rust-analyzer").unwrap();
@@ -1405,7 +1538,7 @@ mod tests {
     fn langs_user_own_server_table_not_duplicated() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (langs, _ga, _gb) = sm_env(&root);
+        let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "[language-server.rust-analyzer]\ncommand = \"/mine/custom/ra\"\n";
         std::fs::write(&langs, existing).unwrap();
         install_fake("rust-analyzer");
@@ -1430,7 +1563,7 @@ mod tests {
     fn langs_loader_merge_resolves_managed_servers() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (_langs, _a, _b) = sm_env(&root);
+        let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
         install_fake("debugpy");
         rewrite_languages_toml().unwrap();
@@ -1478,7 +1611,7 @@ mod tests {
     fn config_mirror_and_ext_recipe_install_loop() {
         let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let (langs, _ga, _gb) = sm_env(&root);
+        let (langs, _ga, _gb, _gp) = sm_env(&root);
         // file:// 假 release(tar.gz 顶层 my-ls-1.0.0/,strip=1)
         let arc = root.join("rel.tar.gz");
         let sha = make_tar_gz(&arc, "my-ls").unwrap();
@@ -1616,6 +1749,64 @@ mod tests {
         assert!(!rust_triple().is_empty(), "本机平台应有 triple");
         assert!(v.contains(&rust_triple()));
         // mirror_url 仍走 file 原样 / https 前缀
+    }
+
+    // ---- 本地 PATH 已装识别(local)+ 忽略名单 ----
+
+    /// 在 tmp bin 目录放一个可执行假工具(用于 SM_PATH 注入)
+    fn fake_local_bin(root: &Path, name: &str) -> PathBuf {
+        let dir = root.join("localbin");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_sh(&dir, name, &format!("#!/bin/sh\necho {name} 9.9\n"));
+        dir
+    }
+
+    #[test]
+    fn availability_prefers_managed_over_local() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _a, _b, _p) = sm_env(&root);
+        let bin_dir = fake_local_bin(&root, "rust-analyzer");
+        let _bin = EnvGuard::new("SM_PATH", bin_dir.to_string_lossy().into_owned());
+        // 仅本地
+        assert_eq!(
+            availability("rust-analyzer"),
+            Availability::Local(bin_dir.join("rust-analyzer"))
+        );
+        // 受管优先
+        install_fake("rust-analyzer");
+        assert_eq!(availability("rust-analyzer"), Availability::Managed);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_server_writes_path_command_and_ignore_removes_it() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (langs, _a, _b, _p) = sm_env(&root);
+        let bin_dir = fake_local_bin(&root, "rust-analyzer");
+        let _bin = EnvGuard::new("SM_PATH", bin_dir.to_string_lossy().into_owned());
+        // languages.toml 对本地 server 写绝对 PATH command 并挂接 rust
+        let rw = rewrite_languages_toml().unwrap();
+        let text = std::fs::read_to_string(&langs).unwrap();
+        assert!(text.contains("[language-server.rust-analyzer]"), "{text}");
+        let cmd = bin_dir.join("rust-analyzer").to_string_lossy().into_owned();
+        assert!(
+            text.contains(&format!("command = \"{cmd}\"")),
+            "本地 server command=PATH 绝对路径:\n{text}"
+        );
+        assert!(rw.servers.is_empty(), "local 不计入受管报告");
+        // unmanage(忽略)→ 重建后无该 server;恢复后回来
+        set_ignored("rust-analyzer", true).unwrap();
+        assert!(ignored_local().contains(&"rust-analyzer".to_string()));
+        rewrite_languages_toml().unwrap();
+        let text = std::fs::read_to_string(&langs).unwrap();
+        assert!(!text.contains("rust-analyzer"), "忽略后不再挂接:\n{text}");
+        set_ignored("rust-analyzer", false).unwrap();
+        rewrite_languages_toml().unwrap();
+        let text = std::fs::read_to_string(&langs).unwrap();
+        assert!(text.contains("[language-server.rust-analyzer]"), "恢复挂接");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     struct EnvGuard(&'static str, String);
