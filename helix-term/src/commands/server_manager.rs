@@ -95,8 +95,8 @@ impl<'a> ProgressAgg<'a> {
 /// progress(bytes, total) 节流回调;total 未知为 None;file:// 复制完成后回调一次(总大小)。
 fn download_to(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
     if let Some(path) = url.strip_prefix("file://") {
-        std::fs::copy(path, dest).with_context(|| format!("copy {path} -> {}", dest.display()))?;
-        let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        let size = std::fs::copy(path, dest)
+            .with_context(|| format!("copy {path} -> {}", dest.display()))?;
         progress(size, Some(size));
         return Ok(());
     }
@@ -1304,6 +1304,12 @@ pub fn run_task(
             "unmanage" => {
                 // 仅本机已有(local)可停/恢复自动挂接;受管用 remove,缺失报错
                 match availability(name) {
+                    Availability::Managed => {
+                        Err(anyhow!("server '{name}' 是受管安装,用 remove 卸载"))
+                    }
+                    Availability::Missing => {
+                        Err(anyhow!("server '{name}' 未安装/不在 PATH"))
+                    }
                     Availability::Local(_) => {
                         let on = !ignored_local().contains(&name.to_string());
                         set_ignored(name, on)?;
@@ -1314,7 +1320,6 @@ pub fn run_task(
                             format!("'{name}' 已恢复挂接")
                         })
                     }
-                    _ => Err(anyhow!("'{name}' 非本机已有,unmanage 仅对 local 有效")),
                 }
             }
             other => Err(anyhow!("unknown task op '{other}'")),
@@ -2148,7 +2153,7 @@ mod tests {
         let out = run_task("install", "ghost", None, |_, _, _| {});
         assert!(!out.ok && out.msg.contains("unknown server"), "{out:?}");
         let out = run_task("unmanage", "ghost", None, |_, _, _| {});
-        assert!(!out.ok && out.msg.contains("非本机已有"), "{out:?}");
+        assert!(!out.ok && out.msg.contains("未安装/不在 PATH"), "{out:?}");
         // install 命中受管 → 引导 update
         install_fake("rust-analyzer");
         let out = run_task("install", "rust-analyzer", None, |_, _, _| {});
