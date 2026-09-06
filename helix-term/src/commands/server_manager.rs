@@ -977,11 +977,11 @@ pub mod registry {
                 "rust-analyzer",
             )
             .describe(
-                "Rust 语言服务器(rust-analyzer)",
+                "Rust language server",
                 "https://github.com/rust-lang/rust-analyzer",
             ),
             Spec::archive("gopls", Kind::Lsp, &["go"], "gopls", "", "", 1, "gopls")
-                .describe("Go 官方语言服务器(gopls)", "https://github.com/golang/tools"),
+                .describe("Go official language server", "https://github.com/golang/tools"),
             Spec::archive(
                 "pyright",
                 Kind::Lsp,
@@ -993,7 +993,7 @@ pub mod registry {
                 "pyright-langserver",
             )
             .describe(
-                "Python 静态类型检查器/Pylance 内核(pyright)",
+                "Python static type checker (Pylance core)",
                 "https://github.com/microsoft/pyright",
             ),
             Spec::archive(
@@ -1006,16 +1006,13 @@ pub mod registry {
                 1,
                 "clangd",
             )
-            .describe(
-                "C/C++ 语言服务器(clangd, LLVM 官方)",
-                "https://clangd.llvm.org",
-            ),
+            .describe("C/C++ language server (clangd, LLVM)", "https://clangd.llvm.org"),
             Spec::tool("debugpy", Kind::Dap, &["python"], "debugpy", "", &[]).describe(
-                "Python 调试适配器(debugpy, VS Code 内核)",
+                "Python debug adapter (debugpy, VS Code core)",
                 "https://github.com/microsoft/debugpy",
             ),
             Spec::tool("black", Kind::Formatter, &["python"], "black", "", &[]).describe(
-                "Python 代码格式化器(black)",
+                "Python code formatter (black)",
                 "https://github.com/psf/black",
             ),
             Spec::tool(
@@ -1033,10 +1030,7 @@ pub mod registry {
                 "",
                 &[],
             )
-            .describe(
-                "多语言代码格式化器(prettier)",
-                "https://github.com/prettier/prettier",
-            ),
+            .describe("Multi-language code formatter (prettier)", "https://github.com/prettier/prettier"),
         ]
     }
 
@@ -1403,7 +1397,7 @@ pub struct TaskOutcome {
 
 /// 在独立线程执行单步任务(install/update/remove/unmanage)——纯函数:不做 UI,
 /// 只重读 config 后执行并返回结果。progress(阶段, bytes, total):阶段事件为
-/// "下载中"/"写入配置"等(bytes/total 恒 None);install 的真实字节进度不走本参数——
+/// 阶段事件文案("downloading"/"writing config" 等;bytes/total 恒 None);install 的真实字节进度不走本参数——
 /// 由调用方(commands/server_tasks.rs worker)经 [with_download_progress] 挂线程局部
 /// 钩子、install_adhoc 下载时消费后单独推事件(kind=progress)。
 pub fn run_task(
@@ -1437,9 +1431,9 @@ pub fn run_task(
                         ))
                     }
                 };
-                progress("下载中", None, None);
+                progress("downloading", None, None);
                 install(name, &ver)?;
-                progress("写入配置", None, None);
+                progress("writing config", None, None);
                 rewrite_languages_toml()?;
                 Ok(format!("installed '{name}' {ver}"))
             }
@@ -1468,9 +1462,9 @@ pub fn run_task(
                         ))
                     }
                 };
-                progress("下载中", None, None);
+                progress("downloading", None, None);
                 update(name, &ver)?;
-                progress("写入配置", None, None);
+                progress("writing config", None, None);
                 rewrite_languages_toml()?;
                 Ok(format!("updated '{name}' {ver}"))
             }

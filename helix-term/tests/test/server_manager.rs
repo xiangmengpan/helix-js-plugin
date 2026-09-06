@@ -586,7 +586,8 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     pump(&mut app, "i").await?;
     let text = arsenal_text(&mut app);
     assert!(
-        text.contains("command: (not installed)") && text.contains("source: https://github.com/rust-lang"),
+        text.contains("command: (not installed)")
+            && text.contains("source: https://github.com/rust-lang"),
         "信息弹窗应显示命令/下载源(行字段): {text:?}"
     );
     pump(&mut app, "<esc>").await?;
@@ -738,7 +739,7 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
     pump(&mut app, "q").await?;
     assert!(
         !app.compositor.has_component(std::any::type_name::<
-            helix_term::ui::Popup<helix_term::ui::PluginPopup>
+            helix_term::ui::Popup<helix_term::ui::PluginPopup>,
         >()),
         "q 应关闭市场窗"
     );
