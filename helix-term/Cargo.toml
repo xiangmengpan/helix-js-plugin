@@ -89,6 +89,13 @@ thiserror.workspace = true
 # opening URLs
 open = "5.3.5"
 
+# server manager(mason 式):下载/解压/校验
+ureq = "2"
+flate2 = "1"
+tar = "0.4"
+zip = "2"
+sha2 = "0.11"
+
 # config
 toml.workspace = true
 
