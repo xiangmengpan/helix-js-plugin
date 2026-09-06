@@ -1,0 +1,346 @@
+# server-manager 独立配方文件(数据与代码解耦)。
+# 结构同 config.toml 的 [server-manager.registry.<name>];被 apply_server_config 自动加载。
+# 位置:复制到 ~/.config/helix/server-manager-recipes.toml(测试/开发可用 SM_SERVER_RECIPES 覆写)。
+# 安装方式:
+#   - cmd(npm/pip3/gem/dotnet):包管理器 Tool,产物落 managed/<name>/bin,一键可装(需对应运行时+网络/镜像);
+#   - url="":说明型占位(需官方安装器/平台资产),列表显示 no source,按 description 引导。
+# 内置配方(rust-analyzer/gopls/clangd/black/prettier/debugpy 等)不在此文件,同名条目会覆盖内置。
+
+[server-manager.registry.typescript-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "typescript-language-server"]
+languages = ["typescript", "tsx", "javascript", "jsx"]
+description = "TypeScript/JavaScript 语言服务器"
+homepage = "https://github.com/typescript-language-server/typescript-language-server"
+
+[server-manager.registry.bash-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "bash-language-server"]
+languages = ["bash"]
+description = "Bash/Shell 语言服务器"
+homepage = "https://github.com/bash-lsp/bash-language-server"
+
+[server-manager.registry.vscode-json-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "vscode-json-language-server"]
+languages = ["json", "jsonc"]
+description = "JSON 语言服务器(VSCode)"
+homepage = "https://github.com/microsoft/vscode-json-languageservice"
+
+[server-manager.registry.vscode-html-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "vscode-html-language-server"]
+languages = ["html"]
+description = "HTML 语言服务器(VSCode)"
+homepage = "https://github.com/microsoft/vscode"
+
+[server-manager.registry.vscode-css-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "vscode-css-language-server"]
+languages = ["css", "scss", "less"]
+description = "CSS/SCSS/LESS 语言服务器(VSCode)"
+homepage = "https://github.com/microsoft/vscode"
+
+[server-manager.registry.yaml-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "yaml-language-server"]
+languages = ["yaml"]
+description = "YAML 语言服务器"
+homepage = "https://github.com/redhat-developer/yaml-language-server"
+
+[server-manager.registry.dockerfile-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "dockerfile-language-server-nodejs"]
+bin-name = "dockerfile-language-server"
+languages = ["dockerfile"]
+description = "Dockerfile 语言服务器"
+homepage = "https://github.com/rcjsuen/dockerfile-language-server"
+
+[server-manager.registry.intelephense]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "intelephense"]
+languages = ["php"]
+description = "PHP 语言服务器(intelephense,个人免费)"
+homepage = "https://intelephense.com"
+
+[server-manager.registry.pyright]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "pyright"]
+bin-name = "pyright-langserver"
+languages = ["python"]
+description = "Python 类型检查/语言服务器(Microsoft,与内置惰性配方同名覆盖为可装)"
+homepage = "https://github.com/microsoft/pyright"
+
+[server-manager.registry.vue-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "@vue/language-server"]
+bin-name = "vue-language-server"
+languages = ["vue"]
+description = "Vue 语言服务器(Volar)"
+homepage = "https://github.com/vuejs/language-tools"
+
+[server-manager.registry.svelte-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "svelte-language-server"]
+languages = ["svelte"]
+description = "Svelte 语言服务器"
+homepage = "https://github.com/sveltejs/language-tools"
+
+[server-manager.registry.elm-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "elm-language-server"]
+languages = ["elm"]
+description = "Elm 语言服务器"
+homepage = "https://github.com/elm-tooling/elm-language-server"
+
+[server-manager.registry.graphql-lsp]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "graphql-language-service-cli"]
+bin-name = "graphql-lsp"
+languages = ["graphql"]
+description = "GraphQL 语言服务器"
+homepage = "https://github.com/graphql/graphql-language-service"
+
+[server-manager.registry.taplo]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "@taplo/cli"]
+bin-name = "taplo"
+languages = ["toml"]
+description = "TOML 语言服务器(taplo)"
+homepage = "https://github.com/tamasfe/taplo"
+
+[server-manager.registry.prisma-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "prisma-language-server"]
+languages = ["prisma"]
+description = "Prisma Schema 语言服务器"
+homepage = "https://github.com/prisma/language-tools"
+
+[server-manager.registry.sql-language-server]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "sql-language-server"]
+languages = ["sql"]
+description = "SQL 语言服务器(纯解析,不连库)"
+homepage = "https://github.com/joe-re/sql-language-server"
+
+[server-manager.registry.astro-ls]
+kind = "lsp"
+cmd = "npm"
+args = ["install", "--prefix", "{prefix}", "@astrojs/language-server"]
+bin-name = "astro-ls"
+languages = ["astro"]
+description = "Astro 语言服务器"
+homepage = "https://github.com/withastro/language-tools"
+
+[server-manager.registry.pylsp]
+kind = "lsp"
+cmd = "pip3"
+args = ["install", "--target", "{prefix}", "python-lsp-server"]
+bin-name = "pylsp"
+languages = ["python"]
+description = "Python LSP(python-lsp-server,需 pip3)"
+homepage = "https://github.com/python-lsp/python-lsp-server"
+
+[server-manager.registry.jedi-language-server]
+kind = "lsp"
+cmd = "pip3"
+args = ["install", "--target", "{prefix}", "jedi-language-server"]
+languages = ["python"]
+description = "Python LSP(Jedi,需 pip3)"
+homepage = "https://github.com/pappasam/jedi-language-server"
+
+[server-manager.registry.cmake-language-server]
+kind = "lsp"
+cmd = "pip3"
+args = ["install", "--target", "{prefix}", "cmake-language-server"]
+languages = ["cmake"]
+description = "CMake 语言服务器(需 pip3)"
+homepage = "https://github.com/regen100/cmake-language-server"
+
+[server-manager.registry.fortls]
+kind = "lsp"
+cmd = "pip3"
+args = ["install", "--target", "{prefix}", "fortls"]
+languages = ["fortran"]
+description = "Fortran 语言服务器(需 pip3)"
+homepage = "https://github.com/fortran-lang/fortls"
+
+[server-manager.registry.solargraph]
+kind = "lsp"
+cmd = "gem"
+args = ["install", "--install-dir", "{prefix}", "solargraph"]
+languages = ["ruby"]
+description = "Ruby 语言服务器(需 gem/ruby)"
+homepage = "https://solargraph.org"
+
+[server-manager.registry.fsautocomplete]
+kind = "lsp"
+cmd = "dotnet"
+args = ["tool", "install", "--tool-path", "{prefix}/bin", "fsautocomplete"]
+languages = ["fsharp"]
+description = "F# 语言服务器(需 dotnet SDK)"
+homepage = "https://github.com/fsharp/FsAutoComplete"
+
+[server-manager.registry.csharp-ls]
+kind = "lsp"
+cmd = "dotnet"
+args = ["tool", "install", "--tool-path", "{prefix}/bin", "csharp-ls"]
+languages = ["c-sharp"]
+description = "C# 语言服务器 csharp-ls(需 dotnet SDK;完整体验建议 omnisharp)"
+homepage = "https://github.com/razzmatazz/csharp-language-server"
+
+[server-manager.registry.jdtls]
+kind = "lsp"
+url = ""
+languages = ["java"]
+description = "Java LSP(Eclipse JDT LS)——安装:下载 eclipse.jdt.ls release 并配启动脚本;或 IDE 自带"
+homepage = "https://github.com/eclipse-jdtls/eclipse.jdt.ls"
+
+[server-manager.registry.kotlin-language-server]
+kind = "lsp"
+url = ""
+languages = ["kotlin"]
+description = "Kotlin LSP(需 JVM)——安装:从 fwcd/kotlin-language-server release 下载 zip"
+homepage = "https://github.com/fwcd/kotlin-language-server"
+
+[server-manager.registry.sourcekit-lsp]
+kind = "lsp"
+url = ""
+languages = ["swift"]
+description = "Swift LSP——随 Xcode/Swift toolchain 自带(sourcekit-lsp)"
+homepage = "https://github.com/swiftlang/sourcekit-lsp"
+
+[server-manager.registry.metals]
+kind = "lsp"
+url = ""
+languages = ["scala"]
+description = "Scala LSP(Metals)——安装:coursier 安装 cs launch metals"
+homepage = "https://scalameta.org/metals"
+
+[server-manager.registry.dart-analysis-server]
+kind = "lsp"
+url = ""
+languages = ["dart"]
+description = "Dart LSP——随 Dart SDK 自带(dart language-server);或 flutter 环境"
+homepage = "https://dart.dev/tools"
+
+[server-manager.registry.zls]
+kind = "lsp"
+url = ""
+languages = ["zig"]
+description = "Zig LSP(zls)——从 zigtools/zls release 下载本平台资产"
+homepage = "https://github.com/zigtools/zls"
+
+[server-manager.registry.haskell-language-server]
+kind = "lsp"
+url = ""
+languages = ["haskell"]
+description = "Haskell LSP(HLS)——安装:ghcup 或官方 release 本平台资产"
+homepage = "https://haskell-language-server.readthedocs.io"
+
+[server-manager.registry.ocamllsp]
+kind = "lsp"
+url = ""
+languages = ["ocaml"]
+description = "OCaml LSP(ocaml-lsp)——安装:opam install ocaml-lsp-server"
+homepage = "https://github.com/ocaml/ocaml-lsp"
+
+[server-manager.registry.erlang_ls]
+kind = "lsp"
+url = ""
+languages = ["erlang"]
+description = "Erlang LSP(erlang_ls)——安装:rebar3/从 elixir-ls 生态获取"
+homepage = "https://github.com/erlang-ls/erlang_ls"
+
+[server-manager.registry.elixir-ls]
+kind = "lsp"
+url = ""
+languages = ["elixir"]
+description = "Elixir LSP(elixir-ls)——安装:需 Erlang/Elixir,release 下载 zip 或用 asdf/mise"
+homepage = "https://github.com/elixir-lsp/elixir-ls"
+
+[server-manager.registry.lua-language-server]
+kind = "lsp"
+url = ""
+languages = ["lua"]
+description = "Lua LSP(sumneko)——从 LuaLS/lua-language-server release 下载本平台资产(需 patch win 无)"
+homepage = "https://github.com/LuaLS/lua-language-server"
+
+[server-manager.registry.languageserver-r]
+kind = "lsp"
+url = ""
+languages = ["r"]
+description = "R 语言服务器——安装:install.packages(\"languageserver\")(R 环境)"
+homepage = "https://github.com/REditorSupport/languageserver"
+
+[server-manager.registry.julia-lsp]
+kind = "lsp"
+url = ""
+languages = ["julia"]
+description = "Julia LSP——安装:Julia 内 Pkg.add(\"LanguageServer\")"
+homepage = "https://github.com/julia-vscode/LanguageServer.jl"
+
+[server-manager.registry.nimlsp]
+kind = "lsp"
+url = ""
+languages = ["nim"]
+description = "Nim LSP(nimlsp)——安装:nimble install nimlsp"
+homepage = "https://github.com/PMunch/nimlsp"
+
+[server-manager.registry.clojure-lsp]
+kind = "lsp"
+url = ""
+languages = ["clojure"]
+description = "Clojure LSP(clojure-lsp)——安装:官方脚本/brew/mise,本平台资产"
+homepage = "https://clojure-lsp.io"
+
+[server-manager.registry.texlab]
+kind = "lsp"
+url = ""
+languages = ["latex"]
+description = "LaTeX LSP(texlab)——从 latex-lsp/texlab release 下载本平台资产"
+homepage = "https://github.com/latex-lsp/texlab"
+
+[server-manager.registry.powershell-editor-services]
+kind = "lsp"
+url = ""
+languages = ["powershell"]
+description = "PowerShell LSP(PowerShellEditorServices)——安装:随 PowerShell + PSES 模块"
+homepage = "https://github.com/PowerShell/PowerShellEditorServices"
+
+[server-manager.registry.terraform-ls]
+kind = "lsp"
+url = ""
+languages = ["hcl"]
+description = "Terraform/HCL LSP(terraform-ls)——从 hashicorp/terraform-ls release 下载本平台资产"
+homepage = "https://github.com/hashicorp/terraform-ls"
+
+[server-manager.registry.marksman]
+kind = "lsp"
+url = ""
+languages = ["markdown"]
+description = "Markdown LSP(marksman)——从 artempyanykh/marksman release 下载本平台资产"
+homepage = "https://github.com/artempyanykh/marksman"
+
+[server-manager.registry.perl-language-server]
+kind = "lsp"
+url = ""
+languages = ["perl"]
+description = "Perl LSP(perl-language-server)——安装:npm 全局或官方说明(实验性)"
+homepage = "https://github.com/richterger/Perl-LanguageServer"

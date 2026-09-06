@@ -926,6 +926,13 @@ pub mod registry {
             self
         }
 
+        #[cfg(test)]
+        pub fn bin_rel_for_test(&self) -> String {
+            match &self.install {
+                Install::Archive { bin_rel, .. } => bin_rel.clone(),
+                Install::Tool { .. } => String::new(),
+            }
+        }
         /// 已装工具的 bin 绝对路径(managed/bin/<bin_name> 软链)
         pub fn bin_path(&self) -> PathBuf {
             managed_root().join("bin").join(&self.bin_name)
@@ -1072,11 +1079,7 @@ pub mod registry {
                 .map(str::to_string)
                 .ok_or_else(|| anyhow!("registry '{name}': 缺必填 '{k}'"))
         };
-        let url = tbl
-            .get("url")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .filter(|s| !s.is_empty());
+        let url = tbl.get("url").and_then(Value::as_str).map(str::to_string); // 允许显式空串 = 占位(no source,description 引导)
         let cmd = tbl
             .get("cmd")
             .and_then(Value::as_str)
@@ -1091,8 +1094,21 @@ pub mod registry {
             .and_then(Value::as_str)
             .unwrap_or(name)
             .to_string();
-        let install = match (url, cmd) {
-            (Some(url), None) => {
+        let install = match (cmd, url.as_deref().filter(|u| !u.is_empty())) {
+            (Some(cmd), Some(_url)) => {
+                return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一"))
+            }
+            (Some(cmd), None) => {
+                let args: Vec<String> = match tbl.get("args") {
+                    Some(Value::Array(a)) => a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                Install::Tool { cmd, args }
+            }
+            (None, Some(url)) => {
                 if url.contains("{version}") && version.is_none() {
                     return Err(anyhow!(
                         "registry '{name}': url 含 {{version}} 占位则必填 version(安装版本来源)"
@@ -1109,27 +1125,26 @@ pub mod registry {
                     .unwrap_or(1)
                     .max(0) as usize;
                 Install::Archive {
-                    url_template: url,
+                    url_template: url.to_string(),
                     sha256,
                     strip,
                     bin_rel: need("bin")?,
                 }
             }
-            (None, Some(cmd)) => {
-                let args: Vec<String> = match tbl.get("args") {
-                    Some(Value::Array(a)) => a
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                Install::Tool { cmd, args }
-            }
-            (Some(_), Some(_)) => return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一")),
             (None, None) => {
-                return Err(anyhow!(
-                    "registry '{name}': 缺安装方式(url 或 cmd 必填其一)"
-                ))
+                // 显式 url = "" → 占位(列表 no source;description 写安装引导)
+                if url.as_deref() == Some("") {
+                    Install::Archive {
+                        url_template: String::new(),
+                        sha256: String::new(),
+                        strip: 1,
+                        bin_rel: bin_name.clone(),
+                    }
+                } else {
+                    return Err(anyhow!(
+                        "registry '{name}': 缺安装方式(url、cmd 或 url = \"\" 占位)"
+                    ));
+                }
             }
         };
         let languages: Vec<String> = match tbl.get("languages") {
@@ -2481,6 +2496,48 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = (ga, gb, gp);
+    }
+
+    /// 配方数据文件(contrib/)完整性:每条可解析、结构有效;仓库副本与发布物同源
+    #[test]
+    fn bundled_recipes_file_parses_and_is_healthy() {
+        let raw = include_str!("../../../contrib/server-manager-recipes.toml");
+        let v: toml::Value = toml::from_str(raw).expect("contrib 配方文件可解析");
+        let reg = v
+            .get("server-manager")
+            .and_then(toml::Value::as_table)
+            .and_then(|t| t.get("registry"))
+            .and_then(toml::Value::as_table)
+            .expect("含 [server-manager.registry.*]");
+        assert!(reg.len() >= 40, "配方数 {} >= 40", reg.len());
+        let mut installable = 0usize;
+        let mut langs: std::collections::BTreeSet<String> = Default::default();
+        for (name, rv) in reg {
+            let tbl = rv.as_table().expect("配方是表");
+            let spec = registry::parse_ext_recipe(name, tbl)
+                .unwrap_or_else(|e| panic!("配方 {name} 解析失败: {e}"));
+            assert!(!spec.languages.is_empty(), "配方 {name} languages 非空");
+            assert!(!spec.description.is_empty(), "配方 {name} description 非空");
+            langs.extend(spec.languages.iter().cloned());
+            if spec.is_installable() {
+                installable += 1;
+            }
+        }
+        assert!(installable >= 20, "可装配方 >= 20, got {installable}");
+        assert!(langs.len() >= 45, "覆盖语言 >= 45, got {}", langs.len());
+    }
+
+    #[test]
+    fn parse_ext_recipe_explicit_empty_url_is_placeholder() {
+        let t: toml::Table =
+            toml::from_str("url = \"\"\n\ndescription = \"安装:见官网(仅占位引导)\"\n").unwrap();
+        let spec = registry::parse_ext_recipe("lua-ls", &t).unwrap();
+        assert!(!spec.is_installable(), "空 url = no source");
+        assert_eq!(
+            spec.bin_rel_for_test(),
+            "lua-ls",
+            "占位 bin_rel=配方名,免填 bin"
+        );
     }
 
     #[test]
