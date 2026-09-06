@@ -317,8 +317,16 @@ pub fn is_installed(name: &str) -> bool {
 }
 
 /// 从磁盘 config.toml 取 [server-manager] 段(与 plugin manifest 同哲学:磁盘为源)。
+/// SM_SERVER_CONFIG 可覆写读取路径(与 SM_MANAGED_DIR/SM_LANGS_TOML 同哲学:
+/// 集成测试用 env 指向临时 config,生产不设该 env 零影响)。
 pub fn disk_server_manager_table() -> Option<toml::Table> {
-    let text = std::fs::read_to_string(helix_loader::config_file_opt()?).ok()?;
+    let text = std::fs::read_to_string(
+        std::env::var("SM_SERVER_CONFIG")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(helix_loader::config_file_opt)?,
+    )
+    .ok()?;
     let v: toml::Value = toml::from_str(&text).ok()?;
     v.get("server-manager")
         .and_then(toml::Value::as_table)
