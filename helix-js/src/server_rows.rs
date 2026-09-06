@@ -112,6 +112,19 @@ pub fn deliver(id: u64, rows: Vec<ServerRow>) -> Result<()> {
                     Attribute::all(),
                 )
                 .property(
+                    JsString::from("description"),
+                    JsValue::from(JsString::from(r.description.clone())),
+                    Attribute::all(),
+                )
+                .property(
+                    JsString::from("homepage"),
+                    r.homepage
+                        .as_ref()
+                        .map(|v| JsValue::from(JsString::from(v.clone())))
+                        .unwrap_or(JsValue::null()),
+                    Attribute::all(),
+                )
+                .property(
                     JsString::from("installable"),
                     JsValue::from(r.installable),
                     Attribute::all(),
@@ -174,6 +187,8 @@ mod tests {
                 installed: true,
                 local: false,
                 version: Some("rust-analyzer 1.2.3".into()),
+                description: "".into(),
+                homepage: None,
                 installable: true,
             }],
         )

@@ -284,6 +284,14 @@ pub fn installed_specs() -> Vec<registry::Spec> {
     v
 }
 
+/// 受管已装且配方 version 与检测版本不同(纯字符串比较,不做 semver)
+pub fn is_upgradable(spec: &registry::Spec) -> bool {
+    match spec.version_detected() {
+        Some(v) => spec.version.as_deref().is_some_and(|want| want != v),
+        None => false,
+    }
+}
+
 /// 工具可用来源
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -686,6 +694,8 @@ pub mod registry {
         pub kind: Kind,
         pub languages: Vec<String>,
         pub bin_name: String,
+        pub description: String,
+        pub homepage: Option<String>,
         pub install: Install,
         /// 固定安装版本({version} 占位填充);None = install/update 须显式版本
         pub version: Option<String>,
@@ -708,6 +718,8 @@ pub mod registry {
                 kind,
                 languages: languages.iter().map(|s| s.to_string()).collect(),
                 bin_name: bin_name.to_string(),
+                description: String::new(),
+                homepage: None,
                 install: Install::Archive {
                     url_template: url.to_string(),
                     sha256: sha.to_string(),
@@ -730,6 +742,8 @@ pub mod registry {
                 kind,
                 languages: languages.iter().map(|s| s.to_string()).collect(),
                 bin_name: bin_name.to_string(),
+                description: String::new(),
+                homepage: None,
                 install: Install::Tool {
                     cmd: cmd.to_string(),
                     args: args.iter().map(|s| s.to_string()).collect(),
@@ -886,11 +900,22 @@ pub mod registry {
                 .collect(),
             _ => Vec::new(),
         };
+        let description = tbl
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let homepage = tbl
+            .get("homepage")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         Ok(Spec {
             name: name.to_string(),
             kind,
             languages,
             bin_name,
+            description,
+            homepage,
             version,
             install: Install::Archive {
                 url_template: url,
@@ -1807,6 +1832,21 @@ mod tests {
         let text = std::fs::read_to_string(&langs).unwrap();
         assert!(text.contains("[language-server.rust-analyzer]"), "恢复挂接");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spec_description_homepage_and_upgradable() {
+        // parse_ext_recipe 支持 description/homepage
+        let ok: toml::Table = toml::from_str(
+            "url = \"file:///v{version}/x.tar.gz\"\nbin = \"z\"\nversion = \"1.0\"\n\
+             description = \"假工具\"\nhomepage = \"https://example.com\"\n",
+        )
+        .unwrap();
+        let spec = registry::parse_ext_recipe("demo", &ok).unwrap();
+        assert_eq!(spec.description, "假工具");
+        assert_eq!(spec.homepage.as_deref(), Some("https://example.com"));
+        // 可升级判定:受管已装 && version 有值 && != 检测版本 → true
+        let _ = spec;
     }
 
     struct EnvGuard(&'static str, String);

@@ -5313,6 +5313,8 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             installed,
                             local,
                             version,
+                            description: spec.description.clone(),
+                            homepage: spec.homepage.clone(),
                             installable: spec.is_installable(),
                         }
                     })

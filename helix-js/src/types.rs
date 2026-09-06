@@ -190,6 +190,8 @@ pub struct ServerRow {
     /// true = 本地 PATH 已有(非受管)
     pub local: bool,
     pub version: Option<String>,
+    pub description: String,
+    pub homepage: Option<String>,
     pub installable: bool,
 }
 
