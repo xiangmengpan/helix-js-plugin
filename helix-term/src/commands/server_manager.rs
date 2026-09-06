@@ -194,6 +194,13 @@ pub mod registry {
             /// 解压后要链接到 managed/bin 的可执行相对路径(相对解压根)
             bin_rel: &'static str,
         },
+        /// 包管理器类(pip --target / cargo --root / npm --prefix):cmd 在受管目录内执行,
+        /// args 占位 {version}、{prefix}(= 受管目录,staging);产物须落在 <prefix>/bin/<bin_name>,
+        /// 框架软链到 managed/bin。
+        Tool {
+            cmd: &'static str,
+            args: &'static [&'static str],
+        },
     }
 
     /// 配方
@@ -219,17 +226,16 @@ pub mod registry {
         }
     }
 
-    /// 内置注册表(v1 子集;T1 仅 archive 类)
+    /// 内置注册表(v1 子集)。配方为"惰性占位":下载源留空 = install 报"未配置"
+    /// (避免无校验/误装);真实 URL/版本/校验由后续数据录入或 config 扩展补充。
     pub fn all() -> Vec<&'static ServerSpec> {
-        // sha256 占位为空的配方在 install 时若配了 sha256 才校验(空=跳过校验,v1 内置已填真实值前先跳过)
         vec![
             &ServerSpec {
                 name: "rust-analyzer",
                 kind: Kind::Lsp,
                 languages: &["rust"],
                 install: Install::Archive {
-                    // 真实发布资产名随平台不同;v1 配方先留 template+bin_rel 架构,
-                    // sha256 为空 = 跳过校验(下载仍可用)——真实值由 T4/后续录入时补
+                    // 真实发布资产名随平台不同;v1 先留架构,真实 template/sha 待录
                     url_template: "",
                     sha256: "",
                     strip: 1,
@@ -237,7 +243,70 @@ pub mod registry {
                 },
                 bin_name: "rust-analyzer",
             },
-            // gopls/black/prettier 等后续批次;T1 架构验证用注入式配方(测试)
+            &ServerSpec {
+                name: "gopls",
+                kind: Kind::Lsp,
+                languages: &["go"],
+                install: Install::Archive {
+                    url_template: "",
+                    sha256: "",
+                    strip: 1,
+                    bin_rel: "gopls",
+                },
+                bin_name: "gopls",
+            },
+            &ServerSpec {
+                name: "pyright",
+                kind: Kind::Lsp,
+                languages: &["python"],
+                install: Install::Archive {
+                    url_template: "",
+                    sha256: "",
+                    strip: 1,
+                    bin_rel: "pyright-langserver",
+                },
+                bin_name: "pyright-langserver",
+            },
+            &ServerSpec {
+                name: "clangd",
+                kind: Kind::Lsp,
+                languages: &["c", "cpp"],
+                install: Install::Archive {
+                    url_template: "",
+                    sha256: "",
+                    strip: 1,
+                    bin_rel: "clangd",
+                },
+                bin_name: "clangd",
+            },
+            &ServerSpec {
+                name: "debugpy",
+                kind: Kind::Dap,
+                languages: &["python"],
+                install: Install::Tool { cmd: "", args: &[] },
+                bin_name: "debugpy",
+            },
+            &ServerSpec {
+                name: "black",
+                kind: Kind::Formatter,
+                languages: &["python"],
+                install: Install::Tool { cmd: "", args: &[] },
+                bin_name: "black",
+            },
+            &ServerSpec {
+                name: "prettier",
+                kind: Kind::Formatter,
+                languages: &[
+                    "javascript",
+                    "typescript",
+                    "html",
+                    "css",
+                    "json",
+                    "markdown",
+                ],
+                install: Install::Tool { cmd: "", args: &[] },
+                bin_name: "prettier",
+            },
         ]
     }
 
@@ -248,21 +317,30 @@ pub mod registry {
 
 // ============================ 安装/升级/卸载 ============================
 
-/// 安装(archive):下载 → sha256 → 解压到临时 → 软链 bin → rename。
-/// version 占位(v1:url_template 空 = 未接下载源 → 报"配方未配置下载源",测试用注入 override)
+/// 安装:按配方类型分发。version 占位(v1:下载源为空 = 报"配方未配置下载源";
+/// 测试/自定义源走 *_adhoc 注入)
 pub fn install(name: &str, version: &str) -> Result<()> {
     let spec = registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
-    let registry::Install::Archive {
-        url_template,
-        sha256,
-        strip,
-        bin_rel,
-    } = &spec.install;
-    if url_template.is_empty() {
-        return Err(anyhow!("server '{name}': 下载源未配置(v1 配方待补)"));
+    match &spec.install {
+        registry::Install::Archive {
+            url_template,
+            sha256,
+            strip,
+            bin_rel,
+        } => {
+            if url_template.is_empty() {
+                return Err(anyhow!("server '{name}': 下载源未配置(v1 配方待补)"));
+            }
+            let url = mirror_url(&url_template.replace("{version}", version));
+            install_adhoc(name, spec.bin_name, bin_rel, *strip, &url, sha256)
+        }
+        registry::Install::Tool { cmd, args } => {
+            if cmd.is_empty() {
+                return Err(anyhow!("server '{name}': 下载源未配置(v1 配方待补)"));
+            }
+            install_tool_adhoc(name, spec.bin_name, cmd, args, version)
+        }
     }
-    let url = mirror_url(&url_template.replace("{version}", version));
-    install_adhoc(name, spec.bin_name, bin_rel, *strip, &url, sha256)
 }
 
 /// 安装内核(不依赖注册表;测试/自定义源走这里)
@@ -316,6 +394,75 @@ pub fn install_adhoc(
         )
     })?;
     let _ = std::fs::remove_file(&tmp_archive);
+    Ok(())
+}
+
+/// tool 类安装内核(不依赖注册表;测试/自定义源走这里)。
+/// 直接在受管目录执行 `cmd args`(args 中 {prefix} → 受管目录、{version} → version),
+/// 产物须生成 <dir>/bin/<bin_name> 后软链 managed/bin——工具自烘焙路径写的是最终路径。
+/// 升级先 mv 旧目录 → .bak;失败删新目录并回滚 .bak(§4:升级失败保留旧版);
+pub fn install_tool_adhoc(
+    name: &str,
+    bin_name: &str,
+    cmd: &str,
+    args: &[&str],
+    version: &str,
+) -> Result<()> {
+    let root = managed_root();
+    std::fs::create_dir_all(&root)?;
+    let dest = managed_dir(name);
+    let bak = root.join(format!(".{name}.bak"));
+    let _ = std::fs::remove_dir_all(&bak);
+    let had_old = dest.exists();
+    if had_old {
+        std::fs::rename(&dest, &bak)?;
+    }
+    std::fs::create_dir_all(&dest)?;
+    let rollback = |_err: anyhow::Error| -> anyhow::Error {
+        let _ = std::fs::remove_dir_all(&dest);
+        if had_old {
+            let _ = std::fs::rename(&bak, &dest);
+        }
+        _err
+    };
+    let expanded: Vec<String> = args
+        .iter()
+        .map(|a| {
+            a.replace("{prefix}", &dest.to_string_lossy())
+                .replace("{version}", version)
+        })
+        .collect();
+    let out = std::process::Command::new(cmd)
+        .args(&expanded)
+        .current_dir(&dest)
+        .output()
+        .map_err(|e| rollback(anyhow!("run '{cmd}' for {name}: {e}")))?;
+    if !out.status.success() {
+        let tail = String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(rollback(anyhow!(
+            "tool '{name}' 安装失败({}):\n{tail}",
+            out.status
+        )));
+    }
+    let bin_in = dest.join("bin").join(bin_name);
+    if !bin_in.is_file() {
+        return Err(rollback(anyhow!(
+            "tool '{name}' 未生成 {} (cmd 退出 0 但无产物)",
+            bin_in.display()
+        )));
+    }
+    let _ = std::fs::remove_dir_all(&bak);
+    let bin_dir = root.join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let link = bin_dir.join(bin_name);
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&bin_in, &link)
+        .with_context(|| format!("symlink {} -> {}", link.display(), bin_in.display()))?;
     Ok(())
 }
 
@@ -411,6 +558,8 @@ mod tests {
     }
 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    /// EnvGuard 类测试改进程级环境变量,cargo 并行会互踩 → 串行化
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn tmp_root() -> PathBuf {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let d = std::env::temp_dir().join(format!("sm-test-{}-{n}", std::process::id()));
@@ -443,8 +592,9 @@ mod tests {
 
     #[test]
     fn archive_install_update_remove_lifecycle() {
+        let _m = ENV_LOCK.lock().unwrap();
         let root = tmp_root();
-        let _guard = EnvGuard("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("src/rel.tar.gz");
         std::fs::create_dir_all(arc.parent().unwrap()).unwrap();
         let sha = make_tar_gz(&arc, "demo-bin").unwrap();
@@ -483,7 +633,132 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 写可执行的假脚本
+    fn write_sh(root: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let p = root.join(name);
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    /// 假"工具"脚本(模拟 pip --target / cargo --root):$1=前缀目录,$2=版本;
+    /// 在 $1/bin/ 生成 bin_name 可执行,内容里带上前缀与版本以验证占位替换。
+    fn make_fake_tool(root: &Path, bin_name: &str) -> PathBuf {
+        let script = format!(
+            "#!/bin/sh\nset -e\nmkdir -p \"$1/bin\"\n\
+             printf '#!/bin/sh\\necho {bin_name} 2.0.0 via %s %s\\n' \"$1\" \"$2\" > \"$1/bin/{bin_name}\"\n\
+             chmod +x \"$1/bin/{bin_name}\"\n"
+        );
+        write_sh(root, "fake-tool.sh", &script)
+    }
+
+    #[test]
+    fn tool_install_expands_placeholders_and_links_bin() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let fake = make_fake_tool(&root, "demo-tool");
+        // args 含 {prefix}/{version} 占位——应被替换为受管目录与版本
+        install_tool_adhoc(
+            "demo-tool",
+            "demo-tool",
+            fake.to_string_lossy().as_ref(),
+            &["{prefix}", "{version}"],
+            "2.0.0",
+        )
+        .unwrap();
+        let link = managed_bin("demo-tool");
+        assert!(link.exists(), "bin 软链已建");
+        let prefix = managed_dir("demo-tool");
+        let content = std::fs::read_to_string(prefix.join("bin/demo-tool")).unwrap();
+        assert!(
+            content.contains(prefix.to_string_lossy().as_ref()),
+            "{{prefix}} 已替换为受管目录"
+        );
+        assert!(content.contains("2.0.0"), "{{version}} 已替换");
+        let v = detect_version(&link).unwrap();
+        assert!(v.contains("2.0.0"), "detect_version 走软链读到新版本: {v}");
+        // 幂等:重装(同 update 语义)后仍一致
+        install_tool_adhoc(
+            "demo-tool",
+            "demo-tool",
+            fake.to_string_lossy().as_ref(),
+            &["{prefix}", "{version}"],
+            "2.0.0",
+        )
+        .unwrap();
+        assert!(managed_bin("demo-tool").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_failure_cleans_up_and_keeps_old_on_upgrade() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let ok_tool = make_fake_tool(&root, "demo-tool");
+        // 先装成功
+        install_tool_adhoc(
+            "demo-tool",
+            "demo-tool",
+            ok_tool.to_string_lossy().as_ref(),
+            &["{prefix}", "{version}"],
+            "2.0.0",
+        )
+        .unwrap();
+        // 升级失败 → 旧版保留(§4),staging 不残留
+        let fail = write_sh(&root, "fail-tool.sh", "#!/bin/sh\necho boom >&2\nexit 3\n");
+        let r = install_tool_adhoc(
+            "demo-tool",
+            "demo-tool",
+            fail.to_string_lossy().as_ref(),
+            &["{prefix}"],
+            "9.9",
+        );
+        assert!(r.is_err(), "非零退出应失败");
+        assert!(
+            managed_dir("demo-tool").exists(),
+            "升级失败保留旧版受管目录"
+        );
+        let v = detect_version(&managed_bin("demo-tool")).unwrap();
+        assert!(
+            v.contains("2.0.0") && !v.contains("9.9"),
+            "旧版本仍可检测: {v}"
+        );
+        assert!(
+            !managed_root().join(".demo-tool.bak").exists(),
+            "成功后 .bak 不残留"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_success_without_bin_fails_cleanly() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let fake = write_sh(&root, "noop-tool.sh", "#!/bin/sh\nmkdir -p \"$1\"\n");
+        let r = install_tool_adhoc(
+            "demo-tool",
+            "demo-tool",
+            fake.to_string_lossy().as_ref(),
+            &["{prefix}"],
+            "1.0",
+        );
+        let msg = format!("{:?}", r);
+        assert!(r.is_err() && msg.contains("未生成"), "缺 bin 应报错: {msg}");
+        assert!(!managed_dir("demo-tool").exists(), "缺 bin 也清理");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     struct EnvGuard(&'static str, String);
+    impl EnvGuard {
+        fn new(key: &'static str, val: String) -> Self {
+            std::env::set_var(key, &val);
+            EnvGuard(key, val)
+        }
+    }
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             std::env::remove_var(self.0);
