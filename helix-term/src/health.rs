@@ -265,6 +265,33 @@ fn languages(selection: Option<HashSet<String>>) -> std::io::Result<()> {
             write!(stdout, "{}", fit(""))?;
             writeln!(stdout, "{}", check_binary_with_name(Some(cmd)))?;
         }
+
+        // 受管配方 hint:语言 server/debugger 缺失且注册表有可装配方 → 附 :server install 行
+        use crate::commands::server_manager;
+        let mut missing: Vec<&str> = Vec::new();
+        for ls in &lang.language_servers {
+            if let Some(cfg) = syn_loader_conf.language_server.get(&ls.name) {
+                if helix_stdx::env::which(&cfg.command).is_err() {
+                    missing.push(&ls.name);
+                }
+            }
+        }
+        if let Some(dap) = lang.debugger.as_ref() {
+            if helix_stdx::env::which(&dap.command).is_err() {
+                missing.push(&dap.name);
+            }
+        }
+        missing.sort_unstable();
+        missing.dedup();
+        for name in missing {
+            let hint = server_manager::registry::get(name)
+                .filter(|s| s.is_installable() && !server_manager::is_installed(name))
+                .map(|_| format!("✘ 可经 server manager 安装:server install {name}"));
+            if let Some(hint) = hint {
+                write!(stdout, "{}", fit(""))?;
+                writeln!(stdout, "{}", color(hint.stylized(), ColorSpec::BRIGHT_RED))?;
+            }
+        }
     }
 
     if selection.is_some() {

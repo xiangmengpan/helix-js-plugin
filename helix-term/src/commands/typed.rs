@@ -5609,10 +5609,106 @@ fn server(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     }
     let Some(sub) = args.first() else {
         return Err(anyhow!(
-            "usage: server <list|search|install|update|remove|status>"
+            "usage: server <list|search|install|update|remove|status|panel>"
         ));
     };
+    if sub == "panel" {
+        return server_panel(cx);
+    }
     server_op(cx.editor, sub, args.get(1), args.get(2))
+}
+
+/// `:server panel`:原生 picker 面板——列表/过滤(输入即搜)/状态列;
+/// Enter = 未装则 install,已装则 update。移除用 `:server remove <name>`。
+fn server_panel(cx: &mut compositor::Context) -> anyhow::Result<()> {
+    use server_manager::registry;
+
+    let specs: Vec<registry::Spec> = registry::all();
+    if specs.is_empty() {
+        cx.editor.set_status("server registry is empty");
+        return Ok(());
+    }
+    let fut = async move {
+        let call: job::Callback =
+            Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+                let columns = [
+                    ui::PickerColumn::new("server", |s: &registry::Spec, _| s.name.as_str().into()),
+                    ui::PickerColumn::new("kind", |s: &registry::Spec, _| {
+                        match s.kind {
+                            registry::Kind::Lsp => "lsp",
+                            registry::Kind::Dap => "dap",
+                            registry::Kind::Linter => "linter",
+                            registry::Kind::Formatter => "formatter",
+                        }
+                        .into()
+                    }),
+                    ui::PickerColumn::new("langs", |s: &registry::Spec, _| {
+                        s.languages.join(",").into()
+                    }),
+                    ui::PickerColumn::new("status", |s: &registry::Spec, _| {
+                        let t: String = if server_manager::is_installed(&s.name) {
+                            s.version_detected()
+                                .map(|v| format!("installed {v}"))
+                                .unwrap_or_else(|| "installed".to_string())
+                        } else if s.is_installable() {
+                            "ready".to_string()
+                        } else {
+                            "no source".to_string()
+                        };
+                        t.into()
+                    }),
+                ];
+                let picker = ui::Picker::new(columns, 0, specs, (), move |cx, spec, _action| {
+                    if !spec.is_installable() {
+                        cx.editor.set_error(format!(
+                            "server '{}': 下载源未配置;配 [server-manager.registry.{}] url/version",
+                            spec.name, spec.name
+                        ));
+                        return;
+                    }
+                    let version = spec.version.clone().unwrap_or_default();
+                    if version.is_empty() {
+                        cx.editor.set_error(format!(
+                            "server '{}': 配方未给固定 version;在 config 的 registry 段加 version",
+                            spec.name
+                        ));
+                        return;
+                    }
+                    let already = server_manager::is_installed(&spec.name);
+                    let result = if already {
+                        server_manager::update(&spec.name, &version)
+                    } else {
+                        server_manager::install(&spec.name, &version)
+                    };
+                    match result {
+                        Ok(()) => {
+                            let verb = if already { "updated" } else { "installed" };
+                            let mut msg = format!(
+                                "{verb} '{}' {version} -> {}",
+                                spec.name,
+                                spec.bin_path().display()
+                            );
+                            if let Ok(rw) = server_manager::rewrite_languages_toml() {
+                                if rw.written {
+                                    msg.push_str(" | languages.toml 已更新(重启后生效)");
+                                }
+                                if !rw.conflicts.is_empty() {
+                                    msg.push_str(&format!(" | 提示: {}", rw.conflicts.join("; ")));
+                                }
+                            }
+                            cx.editor.set_status(msg);
+                        }
+                        Err(e) => cx
+                            .editor
+                            .set_error(format!("server '{}': {e:#}", spec.name)),
+                    }
+                });
+                compositor.push(Box::new(overlaid(picker)));
+            }));
+        Ok::<_, anyhow::Error>(call)
+    };
+    cx.jobs.callback(fut);
+    Ok(())
 }
 
 /// server 操作核心(:server 命令与 JS API helix.server.<op> 共用)。
