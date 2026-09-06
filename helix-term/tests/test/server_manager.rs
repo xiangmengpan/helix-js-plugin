@@ -21,7 +21,7 @@ impl Drop for EnvGuard {
 }
 
 /// 标准 SM_* 三件套 guard:managed 目录 / languages.toml / 禁用宿主 PATH(hermetic)
-fn sm_env(root: &std::path::Path) -> [EnvGuard; 3] {
+fn sm_env(root: &std::path::Path) -> [EnvGuard; 4] {
     [
         EnvGuard::new(
             "SM_MANAGED_DIR",
@@ -32,6 +32,7 @@ fn sm_env(root: &std::path::Path) -> [EnvGuard; 3] {
             root.join("languages.toml").to_string_lossy().into_owned(),
         ),
         EnvGuard::new("SM_PATH", String::new()),
+        EnvGuard::new("SM_SERVER_RECIPES", String::new()),
     ]
 }
 
@@ -346,6 +347,7 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
         EnvGuard::new("SM_MANAGED_DIR", managed.to_string_lossy().into_owned()),
         EnvGuard::new("SM_LANGS_TOML", langs.to_string_lossy().into_owned()),
         EnvGuard::new("SM_PATH", String::new()),
+        EnvGuard::new("SM_SERVER_RECIPES", String::new()),
     ];
 
     // 假 release:file://{dir}/rel/1.0.0/demo.tar.gz(顶层 demo-bin-1.0.0/,strip=1 → demo-bin)
@@ -770,13 +772,14 @@ async fn server_recipes_file_visible_in_editor() -> anyhow::Result<()> {
     std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
     std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
     std::env::set_var("SM_PATH", "");
+    std::env::set_var("SM_SERVER_RECIPES", "");
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let repo = manifest
         .rsplitn(2, '/')
         .nth(1)
         .unwrap_or(&manifest)
         .to_string();
-    std::env::set_var(
+    let _rec = EnvGuard::new(
         "SM_SERVER_RECIPES",
         format!("{repo}/contrib/server-manager-recipes.toml"),
     );
