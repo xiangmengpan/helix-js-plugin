@@ -173,6 +173,22 @@ pub enum UiRequest {
         op: String,
         arg: Option<String>,
     },
+    /// server 面板行数据请求(JS helix.server.rows(cb) → term 算好回投到 cb)
+    ServerListRows {
+        id: u64,
+    },
+}
+
+/// server manager 一行(term → JS 回传)
+#[derive(Debug, Clone)]
+pub struct ServerRow {
+    pub name: String,
+    /// "lsp" | "dap" | "linter" | "formatter"
+    pub kind: String,
+    pub languages: Vec<String>,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub installable: bool,
 }
 
 /// 文件系统 watcher 变更条目（JS 回调收到 [{kind, path}] 数组）

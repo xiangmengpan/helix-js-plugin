@@ -5280,6 +5280,42 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::ServerListRows { id } => {
+                // 面板行数据:同步算好回投(无 editor 依赖);config 扩展配方先重读
+                if let Err(e) = server_manager::apply_server_config(
+                    server_manager::disk_server_manager_table().as_ref(),
+                ) {
+                    log::error!("server rows config: {e:#}");
+                }
+                let rows: Vec<helix_js::ServerRow> = server_manager::registry::all()
+                    .into_iter()
+                    .map(|spec| {
+                        let installed = server_manager::is_installed(&spec.name);
+                        let kind = match spec.kind {
+                            server_manager::registry::Kind::Lsp => "lsp",
+                            server_manager::registry::Kind::Dap => "dap",
+                            server_manager::registry::Kind::Linter => "linter",
+                            server_manager::registry::Kind::Formatter => "formatter",
+                        }
+                        .to_string();
+                        helix_js::ServerRow {
+                            name: spec.name.clone(),
+                            kind,
+                            languages: spec.languages.clone(),
+                            installed,
+                            version: if installed {
+                                spec.version_detected()
+                            } else {
+                                None
+                            },
+                            installable: spec.is_installable(),
+                        }
+                    })
+                    .collect();
+                if let Err(e) = helix_js::server_rows::deliver(id, rows) {
+                    log::error!("server rows deliver: {e:#}");
+                }
+            }
         }
     }
     Ok(())

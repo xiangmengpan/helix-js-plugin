@@ -16,6 +16,7 @@ mod types;
 pub mod config;
 pub mod cursor;
 pub mod diagnostics;
+pub mod server_rows;
 pub mod watch;
 
 pub use commands::*;
@@ -195,6 +196,11 @@ pub fn init() {
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_server_status),
                     JsString::from("status"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(server_rows::js_server_rows),
+                    JsString::from("rows"),
                     1,
                 )
                 .build();
