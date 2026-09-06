@@ -79,7 +79,12 @@ impl<T: Component> Popup<T> {
     /// 每维分辨率:width_pct/height_pct(视口百分比,优先)→ width_px/height_px(固定 px,
     /// 超视口钳到视口)→ 缺省 80%(约定:center 且无任何尺寸 = 80%×80%)。
     /// 边框在矩形内绘制(沿用 Anchor 的 border 绘制路径),不改变外框尺寸。
-    pub fn floating(mut self, width: Option<u16>, height: Option<u16>, pct: Option<(u16, u16)>) -> Self {
+    pub fn floating(
+        mut self,
+        width: Option<u16>,
+        height: Option<u16>,
+        pct: Option<(u16, u16)>,
+    ) -> Self {
         self.layout = PopupLayout::Float {
             width_pct: pct.map(|(w, _)| w),
             height_pct: pct.map(|(_, h)| h),
@@ -164,14 +169,9 @@ impl<T: Component> Popup<T> {
                 height_pct,
                 width_px,
                 height_px,
-            } => self.render_info_float(
-                viewport,
-                editor,
-                width_pct,
-                height_pct,
-                width_px,
-                height_px,
-            ),
+            } => {
+                self.render_info_float(viewport, editor, width_pct, height_pct, width_px, height_px)
+            }
         }
     }
 

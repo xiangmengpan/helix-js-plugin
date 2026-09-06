@@ -46,11 +46,7 @@ enum Dim {
 
 /// 解析单个尺寸字段:缺省 → None;数字 → Px(沿用 opt_u16 的 [0, u16::MAX] 整数约束);
 /// "NN%"(NN∈[1,100] 整数) → Pct;其余(无 % 的字符串、小数 %、越界 %) → Err。
-fn opt_dim(
-    v: &JsValue,
-    ctx: &mut Context,
-    name: &str,
-) -> boa_engine::JsResult<Option<Dim>> {
+fn opt_dim(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<Dim>> {
     if v.is_null_or_undefined() {
         return Ok(None);
     }
@@ -79,9 +75,9 @@ fn opt_dim(
         ))));
     };
     if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "'{name}' percent must be a whole number in 1..=100"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("'{name}' percent must be a whole number in 1..=100"),
+        ))));
     }
     let pct: u16 = num.parse().map_err(|_| {
         JsError::from_opaque(JsValue::from(JsString::from(format!(
@@ -89,9 +85,9 @@ fn opt_dim(
         ))))
     })?;
     if !(1..=100).contains(&pct) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "'{name}' percent must be in 1..=100"
-        )))));
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("'{name}' percent must be in 1..=100"),
+        ))));
     }
     Ok(Some(Dim::Pct(pct)))
 }
@@ -2139,12 +2135,10 @@ mod tests {
             .is_err()
         );
         // 仅单轴 % → 拒绝(须两轴成对)
-        assert!(
-            crate::load_script(
-                r#"helix.open_popup({ render: () => [], width: "78%", position: "center" });"#
-            )
-            .is_err()
-        );
+        assert!(crate::load_script(
+            r#"helix.open_popup({ render: () => [], width: "78%", position: "center" });"#
+        )
+        .is_err());
         // % 越界(0 / >100 / 非整数)
         assert!(
             crate::load_script(
