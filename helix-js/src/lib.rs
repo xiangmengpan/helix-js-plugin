@@ -165,6 +165,39 @@ pub fn init() {
                     .set(JsString::from(name), f, false, engine)
                     .expect("set plugin method");
             }
+            // helix.server 命名空间:list/search/install/update/remove/status(镜像 :server)
+            let server_obj = ObjectInitializer::new(engine)
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_server_list),
+                    JsString::from("list"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_server_search),
+                    JsString::from("search"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_server_install),
+                    JsString::from("install"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_server_update),
+                    JsString::from("update"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_server_remove),
+                    JsString::from("remove"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(commands::js_server_status),
+                    JsString::from("status"),
+                    1,
+                )
+                .build();
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
             let mut builder = ObjectInitializer::new(engine);
@@ -588,6 +621,11 @@ pub fn init() {
             builder.property(
                 JsString::from("plugin"),
                 plugin_fn,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
+                JsString::from("server"),
+                server_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             let helix = builder.build();
@@ -3181,6 +3219,41 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         assert!(reqs
             .iter()
             .any(|r| matches!(r, crate::types::UiRequest::PluginOp { op, arg } if op == "update" && arg.is_none())));
+    }
+
+    #[test]
+    fn server_api_pushes_server_ops() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // install/remove 缺 arg → 报错
+        assert!(load_script(r#"helix.server.install();"#).is_err());
+        assert!(load_script(r#"helix.server.remove();"#).is_err());
+        crate::state::take_ui_requests(); // 清空
+        load_script(r#"helix.server.list();"#).unwrap();
+        load_script(r#"helix.server.install("rust-analyzer");"#).unwrap();
+        load_script(r#"helix.server.update();"#).unwrap(); // 无参 = 全量
+        load_script(r#"helix.server.remove("black");"#).unwrap();
+        load_script(r#"helix.server.status();"#).unwrap();
+        let reqs = crate::state::take_ui_requests();
+        let ops: Vec<(&str, Option<&str>)> = reqs
+            .iter()
+            .filter_map(|r| match r {
+                crate::types::UiRequest::ServerOp { op, arg } => {
+                    Some((op.as_str(), arg.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ops,
+            vec![
+                ("list", None),
+                ("install", Some("rust-analyzer")),
+                ("update", None),
+                ("remove", Some("black")),
+                ("status", None),
+            ]
+        );
     }
 
     /// 统一入口：load/export 往返 + 缓存、lazy 桩、run_command 带 ctx、未知文件报错。

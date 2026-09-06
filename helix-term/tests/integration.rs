@@ -53,6 +53,7 @@ mod test {
     mod plugin_terminal_view;
     mod plugin_theme;
     mod plugin_yank_error;
+    mod server_manager;
     mod splits;
     mod window_mode;
     mod window_rail;

@@ -267,6 +267,120 @@ fn push_plugin_op(op: &str, arg: Option<String>) {
         });
 }
 
+/// helix.server.<op>：镜像 :server(list/search/install/update/remove/status)。
+/// 单向请求(与 PluginOp 同构)：结果经 editor 状态栏/错误显示,不回传 JS。
+pub(crate) fn js_server_list(
+    _this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let arg = args
+        .first()
+        .and_then(|v| v.as_string())
+        .map(|s| s.to_std_string_escaped());
+    push_server_op("list", arg);
+    Ok(JsValue::undefined())
+}
+
+pub(crate) fn js_server_search(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let kw: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.server.search: keyword required",
+            )))
+        })?;
+    push_server_op("search", Some(kw));
+    Ok(JsValue::undefined())
+}
+
+pub(crate) fn js_server_install(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.server.install: name required",
+            )))
+        })?;
+    push_server_op("install", Some(name));
+    Ok(JsValue::undefined())
+}
+
+pub(crate) fn js_server_update(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    // 无参 = 更新全部(与 :server update 一致)
+    let name: Option<String> = match args.first() {
+        Some(v) if !v.is_undefined() && !v.is_null() => {
+            Some(v.clone().try_js_into(context).map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "helix.server.update: name must be a string",
+                )))
+            })?)
+        }
+        _ => None,
+    };
+    push_server_op("update", name);
+    Ok(JsValue::undefined())
+}
+
+pub(crate) fn js_server_remove(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.server.remove: name required",
+            )))
+        })?;
+    push_server_op("remove", Some(name));
+    Ok(JsValue::undefined())
+}
+
+pub(crate) fn js_server_status(
+    _this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let arg = args
+        .first()
+        .and_then(|v| v.as_string())
+        .map(|s| s.to_std_string_escaped());
+    push_server_op("status", arg);
+    Ok(JsValue::undefined())
+}
+
+fn push_server_op(op: &str, arg: Option<String>) {
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::ServerOp {
+            op: op.to_string(),
+            arg,
+        });
+}
+
 /// helix.export(obj)：声明当前脚本的导出（被 helix.load 的返回值拿到）。undefined/null 清空。
 pub(crate) fn js_export(
     _this: &JsValue,

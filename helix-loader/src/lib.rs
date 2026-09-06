@@ -144,6 +144,11 @@ pub fn config_file() -> PathBuf {
     CONFIG_FILE.get().map(|path| path.to_path_buf()).unwrap()
 }
 
+/// config.toml 路径(可能未初始化:库/测试上下文)
+pub fn config_file_opt() -> Option<PathBuf> {
+    CONFIG_FILE.get().map(|path| path.to_path_buf())
+}
+
 pub fn log_file() -> PathBuf {
     LOG_FILE.get().map(|path| path.to_path_buf()).unwrap()
 }

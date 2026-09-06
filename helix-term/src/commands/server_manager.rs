@@ -6,13 +6,28 @@
 //! - archive 配方:mirror URL 改写 + sha256 校验 + tar.gz/zip 解压 + managed/bin 软链
 //! - languages.toml 标记段自动写(T3)
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context as _, Result};
 
-/// 下载层 mirror 前缀(空 = 直连)。T1 无 config,模块级可设(T4 接 config)。
-fn mirror_prefix() -> &'static str {
-    ""
+/// 下载层 mirror 前缀(空 = 直连):经 [server-manager].mirror 配置(T4 读入)
+fn mirror_prefix() -> String {
+    MIRROR
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
 }
+
+pub fn set_mirror(prefix: &str) {
+    MIRROR
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .replace(prefix.to_string());
+}
+
+static MIRROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 /// URL 经 mirror 改写:file:// 与本地路径原样;https 前加 mirror 前缀(若配置)。
 fn mirror_url(raw: &str) -> String {
@@ -169,6 +184,42 @@ pub fn is_installed(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 从磁盘 config.toml 取 [server-manager] 段(与 plugin manifest 同哲学:磁盘为源)。
+pub fn disk_server_manager_table() -> Option<toml::Table> {
+    let text = std::fs::read_to_string(helix_loader::config_file_opt()?).ok()?;
+    let v: toml::Value = toml::from_str(&text).ok()?;
+    v.get("server-manager")
+        .and_then(toml::Value::as_table)
+        .cloned()
+}
+
+/// 从 [server-manager] 段读入 mirror + 扩展配方(registry.<name>)。
+/// dir 覆写 v1 未支持(默认受管目录;环境 SM_MANAGED_DIR 可测)。
+pub fn apply_server_config(cfg: Option<&toml::Table>) -> Result<()> {
+    set_mirror("");
+    registry::set_ext(Vec::new());
+    let Some(cfg) = cfg else {
+        return Ok(());
+    };
+    if let Some(m) = cfg.get("mirror").and_then(toml::Value::as_str) {
+        set_mirror(m);
+    }
+    if let Some(dir) = cfg.get("dir") {
+        let _ = dir; // v1 忽略 dir 覆写(默认 ~/.local/share/helix/managed)
+    }
+    let mut ext = Vec::new();
+    if let Some(reg) = cfg.get("registry").and_then(toml::Value::as_table) {
+        for (name, v) in reg {
+            let tbl = v
+                .as_table()
+                .ok_or_else(|| anyhow!("[server-manager.registry.{name}] 需是表"))?;
+            ext.push(registry::parse_ext_recipe(name, tbl)?);
+        }
+    }
+    registry::set_ext(ext);
+    Ok(())
+}
+
 // ============================ languages.toml 标记段 ============================
 //
 // 文本手术:文件由 标记段(# >>> helix-managed … # <<< helix-managed)内的受管内容 +
@@ -189,12 +240,12 @@ pub fn lang_config_file() -> PathBuf {
 }
 
 /// 已安装的 registry 配方(managed/bin 在位)
-pub fn installed_specs() -> Vec<&'static registry::ServerSpec> {
+pub fn installed_specs() -> Vec<registry::Spec> {
     let mut v: Vec<_> = registry::all()
         .into_iter()
-        .filter(|s| is_installed(s.name))
+        .filter(|s| is_installed(&s.name))
         .collect();
-    v.sort_by_key(|s| s.name);
+    v.sort_by(|a, b| a.name.cmp(&b.name));
     v
 }
 
@@ -300,35 +351,34 @@ pub fn build_section(
     let mut servers = Vec::new();
     let mut conflicts = Vec::new();
     let mut body = String::new();
-    let attached: Vec<&registry::ServerSpec> = specs
+    let attached: Vec<&registry::Spec> = specs
         .iter()
-        .copied()
         .filter(|s| matches!(s.kind, registry::Kind::Lsp | registry::Kind::Dap))
         .collect();
     // [language-server.<name>] 表(Lsp 且用户未自带同名)
     for s in &attached {
-        if matches!(s.kind, registry::Kind::Lsp) && !user_ls.iter().any(|n| n == s.name) {
+        if matches!(s.kind, registry::Kind::Lsp) && !user_ls.iter().any(|n| n == &s.name) {
             body.push_str(&format!("[language-server.{}]\n", s.name));
             let cmd = abs_bin(&s.bin_path()).to_string_lossy().into_owned();
             body.push_str(&format!("command = {}\n\n", toml_str(&cmd)));
-            servers.push(s.name.to_string());
+            servers.push(s.name.clone());
         }
     }
     // 按语言聚合 lsp 名与 dap 配置
-    let mut by_lang: std::collections::BTreeMap<&str, (Vec<&str>, Option<&registry::ServerSpec>)> =
+    let mut by_lang: std::collections::BTreeMap<String, (Vec<String>, Option<&registry::Spec>)> =
         std::collections::BTreeMap::new();
     for s in &attached {
-        for lang in s.languages {
-            let e = by_lang.entry(lang).or_default();
+        for lang in &s.languages {
+            let e = by_lang.entry(lang.clone()).or_default();
             match s.kind {
-                registry::Kind::Lsp => e.0.push(s.name),
+                registry::Kind::Lsp => e.0.push(s.name.clone()),
                 registry::Kind::Dap => e.1 = Some(s),
                 _ => {}
             }
         }
     }
     for (lang, (lsp, dap)) in by_lang {
-        let custom = user_langs.iter().any(|u| u == lang);
+        let custom = user_langs.iter().any(|u| u == &lang);
         if custom {
             // 用户已自定义该语言 → 不生成条目,提示手动挂接
             for n in &lsp {
@@ -349,7 +399,7 @@ pub fn build_section(
             continue;
         }
         body.push_str("[[language]]\n");
-        body.push_str(&format!("name = {}\n", toml_str(lang)));
+        body.push_str(&format!("name = {}\n", toml_str(&lang)));
         if !lsp.is_empty() {
             let list = lsp
                 .iter()
@@ -362,7 +412,7 @@ pub fn build_section(
             let cmd = abs_bin(&s.bin_path());
             body.push_str(&format!(
                 "debugger = {{ name = {}, transport = \"stdio\", command = {}, args = [], templates = [{{ name = \"launch\", request = \"launch\", args = {{ }} }}] }}\n",
-                toml_str(s.name),
+                toml_str(&s.name),
                 toml_str(&cmd.to_string_lossy())
             ));
         }
@@ -445,120 +495,141 @@ pub mod registry {
         Formatter,
     }
 
-    /// 安装方式
+    /// 安装方式(owned;config 扩展配方经 TOML 构造)
     #[derive(Debug, Clone)]
     pub enum Install {
         /// 下载 release 产物(可 tar.gz/zip);url_template 含 {version} 占位
         Archive {
-            url_template: &'static str,
-            sha256: &'static str,
+            url_template: String,
+            sha256: String,
             strip: usize,
             /// 解压后要链接到 managed/bin 的可执行相对路径(相对解压根)
-            bin_rel: &'static str,
+            bin_rel: String,
         },
         /// 包管理器类(pip --target / cargo --root / npm --prefix):cmd 在受管目录内执行,
-        /// args 占位 {version}、{prefix}(= 受管目录,staging);产物须落在 <prefix>/bin/<bin_name>,
-        /// 框架软链到 managed/bin。
-        Tool {
-            cmd: &'static str,
-            args: &'static [&'static str],
-        },
+        /// args 占位 {version}、{prefix}(= 受管目录);产物须落在 <prefix>/bin/<bin_name>
+        Tool { cmd: String, args: Vec<String> },
     }
 
-    /// 配方
-    pub struct ServerSpec {
-        pub name: &'static str,
+    /// 配方(内置 + config 扩展同构)
+    #[derive(Debug, Clone)]
+    pub struct Spec {
+        pub name: String,
         pub kind: Kind,
-        pub languages: &'static [&'static str],
+        pub languages: Vec<String>,
+        pub bin_name: String,
         pub install: Install,
-        /// 版本检测别名(默认 name)
-        pub bin_name: &'static str,
+        /// 固定安装版本({version} 占位填充);None = install/update 须显式版本
+        pub version: Option<String>,
     }
 
-    impl ServerSpec {
-        /// 已装工具的 bin 绝对路径
+    impl Spec {
+        fn archive(
+            name: &str,
+            kind: Kind,
+            languages: &[&str],
+            bin_name: &str,
+            url: &str,
+            sha: &str,
+            strip: usize,
+            bin_rel: &str,
+        ) -> Spec {
+            Spec {
+                name: name.to_string(),
+                kind,
+                languages: languages.iter().map(|s| s.to_string()).collect(),
+                bin_name: bin_name.to_string(),
+                install: Install::Archive {
+                    url_template: url.to_string(),
+                    sha256: sha.to_string(),
+                    strip,
+                    bin_rel: bin_rel.to_string(),
+                },
+                version: None,
+            }
+        }
+        fn tool(
+            name: &str,
+            kind: Kind,
+            languages: &[&str],
+            bin_name: &str,
+            cmd: &str,
+            args: &[&str],
+        ) -> Spec {
+            Spec {
+                name: name.to_string(),
+                kind,
+                languages: languages.iter().map(|s| s.to_string()).collect(),
+                bin_name: bin_name.to_string(),
+                install: Install::Tool {
+                    cmd: cmd.to_string(),
+                    args: args.iter().map(|s| s.to_string()).collect(),
+                },
+                version: None,
+            }
+        }
+
+        /// 已装工具的 bin 绝对路径(managed/bin/<bin_name> 软链)
         pub fn bin_path(&self) -> PathBuf {
-            managed_root().join("bin").join(self.bin_name)
+            managed_root().join("bin").join(&self.bin_name)
         }
         pub fn installed_dir(&self) -> PathBuf {
-            managed_dir(self.name)
+            managed_dir(&self.name)
         }
-        pub fn version(&self) -> Option<String> {
+        pub fn version_detected(&self) -> Option<String> {
             detect_version(&self.bin_path())
+        }
+        /// 有可用下载源(否则 install 报"配方未配置")
+        pub fn is_installable(&self) -> bool {
+            match &self.install {
+                Install::Archive { url_template, .. } => !url_template.is_empty(),
+                Install::Tool { cmd, .. } => !cmd.is_empty(),
+            }
         }
     }
 
     /// 内置注册表(v1 子集)。配方为"惰性占位":下载源留空 = install 报"未配置"
-    /// (避免无校验/误装);真实 URL/版本/校验由后续数据录入或 config 扩展补充。
-    pub fn all() -> Vec<&'static ServerSpec> {
+    /// (避免无校验/误装);真实 URL/版本/校验是 OS 相关数据,经
+    /// [server-manager.registry.<name>] config 扩展(T4)提供可跑源。
+    fn builtin_specs() -> Vec<Spec> {
         vec![
-            &ServerSpec {
-                name: "rust-analyzer",
-                kind: Kind::Lsp,
-                languages: &["rust"],
-                install: Install::Archive {
-                    // 真实发布资产名随平台不同;v1 先留架构,真实 template/sha 待录
-                    url_template: "",
-                    sha256: "",
-                    strip: 1,
-                    bin_rel: "rust-analyzer",
-                },
-                bin_name: "rust-analyzer",
-            },
-            &ServerSpec {
-                name: "gopls",
-                kind: Kind::Lsp,
-                languages: &["go"],
-                install: Install::Archive {
-                    url_template: "",
-                    sha256: "",
-                    strip: 1,
-                    bin_rel: "gopls",
-                },
-                bin_name: "gopls",
-            },
-            &ServerSpec {
-                name: "pyright",
-                kind: Kind::Lsp,
-                languages: &["python"],
-                install: Install::Archive {
-                    url_template: "",
-                    sha256: "",
-                    strip: 1,
-                    bin_rel: "pyright-langserver",
-                },
-                bin_name: "pyright-langserver",
-            },
-            &ServerSpec {
-                name: "clangd",
-                kind: Kind::Lsp,
-                languages: &["c", "cpp"],
-                install: Install::Archive {
-                    url_template: "",
-                    sha256: "",
-                    strip: 1,
-                    bin_rel: "clangd",
-                },
-                bin_name: "clangd",
-            },
-            &ServerSpec {
-                name: "debugpy",
-                kind: Kind::Dap,
-                languages: &["python"],
-                install: Install::Tool { cmd: "", args: &[] },
-                bin_name: "debugpy",
-            },
-            &ServerSpec {
-                name: "black",
-                kind: Kind::Formatter,
-                languages: &["python"],
-                install: Install::Tool { cmd: "", args: &[] },
-                bin_name: "black",
-            },
-            &ServerSpec {
-                name: "prettier",
-                kind: Kind::Formatter,
-                languages: &[
+            Spec::archive(
+                "rust-analyzer",
+                Kind::Lsp,
+                &["rust"],
+                "rust-analyzer",
+                "",
+                "",
+                1,
+                "rust-analyzer",
+            ),
+            Spec::archive("gopls", Kind::Lsp, &["go"], "gopls", "", "", 1, "gopls"),
+            Spec::archive(
+                "pyright",
+                Kind::Lsp,
+                &["python"],
+                "pyright-langserver",
+                "",
+                "",
+                1,
+                "pyright-langserver",
+            ),
+            Spec::archive(
+                "clangd",
+                Kind::Lsp,
+                &["c", "cpp"],
+                "clangd",
+                "",
+                "",
+                1,
+                "clangd",
+            ),
+            Spec::tool("debugpy", Kind::Dap, &["python"], "debugpy", "", &[]),
+            Spec::tool("black", Kind::Formatter, &["python"], "black", "", &[]),
+            Spec::tool(
+                "prettier",
+                Kind::Formatter,
+                &[
                     "javascript",
                     "typescript",
                     "html",
@@ -566,14 +637,98 @@ pub mod registry {
                     "json",
                     "markdown",
                 ],
-                install: Install::Tool { cmd: "", args: &[] },
-                bin_name: "prettier",
-            },
+                "prettier",
+                "",
+                &[],
+            ),
         ]
     }
 
-    pub fn get(name: &str) -> Option<&'static ServerSpec> {
+    static EXT: OnceLock<Mutex<Vec<Spec>>> = OnceLock::new();
+    /// 重读 config 扩展配方(每次 server 操作前从 [server-manager.registry] 解析后调用)
+    pub fn set_ext(specs: Vec<Spec>) {
+        *EXT.get_or_init(Default::default).lock().unwrap() = specs;
+    }
+
+    /// 全部配方:内置 + config 扩展(快照)
+    pub fn all() -> Vec<Spec> {
+        let mut v = builtin_specs();
+        if let Some(m) = EXT.get() {
+            v.extend(m.lock().unwrap().clone());
+        }
+        v
+    }
+
+    pub fn get(name: &str) -> Option<Spec> {
         all().into_iter().find(|s| s.name == name)
+    }
+
+    /// 解析 [server-manager.registry.<name>] 配方表(v1:archive 类)。
+    pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
+        use toml::Value;
+        let kind = match tbl.get("kind").and_then(Value::as_str) {
+            None | Some("lsp") => Kind::Lsp,
+            Some("dap") => Kind::Dap,
+            Some("linter") => Kind::Linter,
+            Some("formatter") => Kind::Formatter,
+            Some(k) => {
+                return Err(anyhow!(
+                    "registry '{name}': 未知 kind '{k}'(lsp|dap|linter|formatter)"
+                ))
+            }
+        };
+        let need = |k: &str| -> Result<String> {
+            tbl.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("registry '{name}': 缺必填 '{k}'"))
+        };
+        let url = need("url")?;
+        let version = tbl
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if url.contains("{version}") && version.is_none() {
+            return Err(anyhow!(
+                "registry '{name}': url 含 {{version}} 占位则必填 version(安装版本来源)"
+            ));
+        }
+        let sha256 = tbl
+            .get("sha256")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let strip = tbl
+            .get("strip")
+            .and_then(Value::as_integer)
+            .unwrap_or(1)
+            .max(0) as usize;
+        let bin_rel = need("bin")?;
+        let bin_name = tbl
+            .get("bin-name")
+            .and_then(Value::as_str)
+            .unwrap_or(name)
+            .to_string();
+        let languages: Vec<String> = match tbl.get("languages") {
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        Ok(Spec {
+            name: name.to_string(),
+            kind,
+            languages,
+            bin_name,
+            version,
+            install: Install::Archive {
+                url_template: url,
+                sha256,
+                strip,
+                bin_rel,
+            },
+        })
     }
 }
 
@@ -591,16 +746,17 @@ pub fn install(name: &str, version: &str) -> Result<()> {
             bin_rel,
         } => {
             if url_template.is_empty() {
-                return Err(anyhow!("server '{name}': 下载源未配置(v1 配方待补)"));
+                return Err(anyhow!("server '{name}': 下载源未配置(内置配方待录;或在 [server-manager.registry.{name}] 配 url)"));
             }
             let url = mirror_url(&url_template.replace("{version}", version));
-            install_adhoc(name, spec.bin_name, bin_rel, *strip, &url, sha256)
+            install_adhoc(name, &spec.bin_name, bin_rel, *strip, &url, sha256)
         }
         registry::Install::Tool { cmd, args } => {
             if cmd.is_empty() {
-                return Err(anyhow!("server '{name}': 下载源未配置(v1 配方待补)"));
+                return Err(anyhow!("server '{name}': 下载源未配置(内置配方待录)"));
             }
-            install_tool_adhoc(name, spec.bin_name, cmd, args, version)
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            install_tool_adhoc(name, &spec.bin_name, cmd, &arg_refs, version)
         }
     }
 }
@@ -740,7 +896,7 @@ pub fn update(name: &str, version: &str) -> Result<()> {
 /// (languages.toml 失败时卸载仍完成,报错提示)
 pub fn remove(name: &str) -> Result<()> {
     let spec = registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
-    remove_adhoc(name, spec.bin_name)?;
+    remove_adhoc(name, &spec.bin_name)?;
     rewrite_languages_toml()
         .map(|_| ())
         .map_err(|e| anyhow!("server '{name}' 已卸载,但 languages.toml 未更新: {e:#}"))
@@ -762,9 +918,9 @@ pub fn install_from_local_dir_for_test(name: &str, dir: &Path) -> Result<()> {
     copy_dir_recursive(dir, &dest)?;
     let bin_dir = managed_root().join("bin");
     std::fs::create_dir_all(&bin_dir)?;
-    let link = bin_dir.join(spec.bin_name);
+    let link = bin_dir.join(&spec.bin_name);
     let _ = std::fs::remove_file(&link);
-    std::os::unix::fs::symlink(dest.join(spec.bin_name), &link)?;
+    std::os::unix::fs::symlink(dest.join(&spec.bin_name), &link)?;
     Ok(())
 }
 
@@ -836,6 +992,8 @@ mod tests {
 
     #[test]
     fn mirror_url_rewrite_and_file_passthrough() {
+        let _m = ENV_LOCK.lock().unwrap();
+        apply_server_config(None).unwrap(); // 清掉可能残留的 mirror/ext
         assert_eq!(mirror_url("https://x/y"), "https://x/y", "无 mirror 原样");
         assert_eq!(
             mirror_url("file:///tmp/a.tar.gz"),
@@ -1243,6 +1401,96 @@ mod tests {
             "debugger command 为受管绝对路径"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- T4:config 段(mirror + registry.<name> 扩展配方) ----
+
+    #[test]
+    fn config_mirror_and_ext_recipe_install_loop() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (langs, _ga, _gb) = sm_env(&root);
+        // file:// 假 release(tar.gz 顶层 my-ls-1.0.0/,strip=1)
+        let arc = root.join("rel.tar.gz");
+        let sha = make_tar_gz(&arc, "my-ls").unwrap();
+        let cfg = format!(
+            "[server-manager]\nmirror = \"https://mirror.example/\"\n\
+             [server-manager.registry.my-ls]\n\
+             url = \"{src}\"\nsha256 = \"{sha}\"\nstrip = 1\nbin = \"my-ls\"\n\
+             languages = [\"rust\"]\nkind = \"lsp\"\nversion = \"1.0.0\"\n",
+            src = format!("file://{}", arc.display())
+        );
+        let tbl: toml::Table = toml::from_str(&cfg).unwrap();
+        let sm = tbl
+            .get("server-manager")
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .clone();
+        apply_server_config(Some(&sm)).unwrap();
+        // mirror:https 前缀改写,file:// 原样
+        assert_eq!(
+            mirror_url("https://x/y"),
+            "https://mirror.example/https://x/y"
+        );
+        assert_eq!(mirror_url("file:///a"), "file:///a");
+        // ext 配方进注册表;内置不受影响
+        let spec = registry::get("my-ls").expect("ext 配方可查");
+        assert!(spec.is_installable() && spec.version.as_deref() == Some("1.0.0"));
+        assert!(registry::get("rust-analyzer").is_some(), "内置仍在");
+        assert!(registry::get("nope").is_none());
+        // 经 ext 源真实安装(版本默认取配方 version)
+        install("my-ls", spec.version.as_deref().unwrap()).unwrap();
+        assert!(managed_bin("my-ls").exists(), "bin 软链已建");
+        // languages.toml 重建含 my-ls 条目
+        let rw = rewrite_languages_toml().unwrap();
+        assert!(rw.servers.iter().any(|n| n == "my-ls"));
+        let text = std::fs::read_to_string(&langs).unwrap();
+        assert!(text.contains("[language-server.my-ls]"));
+        assert!(text.contains("language-servers = [\"my-ls\"]"));
+        // registry 路径 remove:清目录 + 重写标记段
+        remove("my-ls").unwrap();
+        assert!(!managed_bin("my-ls").exists());
+        let text = std::fs::read_to_string(&langs).unwrap();
+        assert!(!text.contains("my-ls"), "条目已清:{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_ext_recipe_validation_errors() {
+        let _m = ENV_LOCK.lock().unwrap();
+        // url 含 {version} 但缺 version 字段
+        let bad: toml::Table =
+            toml::from_str("url = \"https://x/{version}/y.tar.gz\"\nbin = \"x\"\n").unwrap();
+        let e = registry::parse_ext_recipe("demo", &bad)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("version"), "{e}");
+        // 缺 bin
+        let bad2: toml::Table = toml::from_str("url = \"https://x/v1/y.tar.gz\"\n").unwrap();
+        let e = registry::parse_ext_recipe("demo", &bad2)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("'bin'"), "{e}");
+        // 未知 kind
+        let bad3: toml::Table =
+            toml::from_str("url = \"https://x/{version}/y.tar.gz\"\nbin = \"y\"\nkind = \"wat\"\n")
+                .unwrap();
+        let e = registry::parse_ext_recipe("demo", &bad3)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("wat"), "{e}");
+        // 合法:默认值(strip=1/kind=lsp/bin-name=name)
+        let ok: toml::Table = toml::from_str(
+            "url = \"https://x/{version}/y.tar.gz\"\nbin = \"z\"\nversion = \"1.0\"\n",
+        )
+        .unwrap();
+        let spec = registry::parse_ext_recipe("demo", &ok).unwrap();
+        assert!(matches!(spec.kind, registry::Kind::Lsp));
+        assert_eq!(spec.bin_name, "demo");
+        assert_eq!(spec.languages.len(), 0);
+        assert_eq!(spec.version.as_deref(), Some("1.0"));
+        let _m2 = _m;
     }
 
     struct EnvGuard(&'static str, String);

@@ -2588,10 +2588,6 @@ block-comment-tokens = { start = "<!--", end = "-->" }
 indent = { tab-width = 2, unit = "  " }
 grammar = "embedded-template"
 
-[[grammar]]
-name = "embedded-template"
-source = { git = "https://github.com/tree-sitter/tree-sitter-embedded-template", rev = "5bce9d580d3b78f48e13e331f69dfa0abd4ff68b" }
-
 [[language]]
 name = "eex"
 scope = "source.eex"

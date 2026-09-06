@@ -4363,6 +4363,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (1, Some(2)), ..Signature::DEFAULT },
     },
     TypableCommand {
+        name: "server",
+        aliases: &[],
+        doc: "Manage LSP/DAP/linter/formatter servers (list|search|install|update|remove|status); sources from [server-manager.registry] config.",
+        fun: server,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (1, Some(3)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
         name: "panel-close",
         aliases: &[],
         doc: "Close the most recently opened plugin side panel.",
@@ -5265,6 +5273,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::ServerOp { op, arg } => {
+                job::dispatch_blocking(move |editor, _compositor| {
+                    if let Err(e) = server_op(editor, &op, arg.as_deref(), None) {
+                        editor.set_error(format!("server: {e}"));
+                    }
+                });
+            }
         }
     }
     Ok(())
@@ -5584,6 +5599,223 @@ fn plugin_op(editor: &mut Editor, sub: &str, arg: Option<&str>) -> anyhow::Resul
             editor.set_status(format!("{sub}ned '{name}'"));
         }
         other => return Err(anyhow!("unknown plugin subcommand '{other}'")),
+    }
+    Ok(())
+}
+
+fn server(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(sub) = args.first() else {
+        return Err(anyhow!(
+            "usage: server <list|search|install|update|remove|status>"
+        ));
+    };
+    server_op(cx.editor, sub, args.get(1), args.get(2))
+}
+
+/// server 操作核心(:server 命令与 JS API helix.server.<op> 共用)。
+/// 每次操作前从 config 的 [server-manager] 段重读 mirror/registry 配方(改配置即生效)。
+pub(crate) fn server_op(
+    editor: &mut Editor,
+    sub: &str,
+    arg: Option<&str>,
+    arg2: Option<&str>,
+) -> anyhow::Result<()> {
+    use server_manager::registry;
+
+    server_manager::apply_server_config(server_manager::disk_server_manager_table().as_ref())
+        .map_err(|e| anyhow!("config [server-manager]: {e:#}"))?;
+    let resolve_version = |spec: &registry::Spec,
+                           explicit: Option<&str>|
+     -> anyhow::Result<String> {
+        if let Some(v) = explicit {
+            return Ok(v.to_string());
+        }
+        if let Some(v) = &spec.version {
+            return Ok(v.clone());
+        }
+        Err(anyhow!(
+            "server '{}': 配方未给固定 version;用 server install <name> <version> 或 config 加 version",
+            spec.name
+        ))
+    };
+    match sub {
+        "list" => {
+            let mut parts = Vec::new();
+            for spec in registry::all() {
+                let mark = if server_manager::is_installed(&spec.name) {
+                    let v = spec
+                        .version_detected()
+                        .map(|s| format!("@\u{2713}{s}"))
+                        .unwrap_or_default();
+                    format!("{}{v}", spec.name)
+                } else {
+                    format!("{}-（未装）", spec.name)
+                };
+                parts.push(mark);
+            }
+            editor.set_status(format!(
+                "servers[{}]: {}",
+                registry::all().len(),
+                parts.join("  ")
+            ));
+        }
+        "search" => {
+            let Some(kw) = arg else {
+                return Err(anyhow!("usage: server search <keyword>"));
+            };
+            let kw = kw.to_lowercase();
+            let hits: Vec<String> = registry::all()
+                .into_iter()
+                .filter(|s| {
+                    s.name.to_lowercase().contains(&kw)
+                        || s.languages.iter().any(|l| l.to_lowercase().contains(&kw))
+                })
+                .map(|s| {
+                    let mark = if server_manager::is_installed(&s.name) {
+                        "已装"
+                    } else {
+                        "未装"
+                    };
+                    format!("{} ({mark}) langs={}", s.name, s.languages.join(","))
+                })
+                .collect();
+            if hits.is_empty() {
+                editor.set_status(format!("no server matches '{kw}'"));
+            } else {
+                editor.set_status(format!("matches: {}", hits.join("  ")));
+            }
+        }
+        "install" => {
+            let Some(name) = arg else {
+                return Err(anyhow!("usage: server install <name> [version]"));
+            };
+            let spec = registry::get(name)
+                .ok_or_else(|| anyhow!("unknown server '{name}'(见 server list)"))?;
+            if server_manager::is_installed(name) {
+                let v = spec
+                    .version_detected()
+                    .map(|s| format!(" v{s}"))
+                    .unwrap_or_default();
+                return Err(anyhow!(
+                    "server '{name}' 已安装({v});升级用 server update {name}"
+                ));
+            }
+            if !spec.is_installable() {
+                return Err(anyhow!(
+                    "server '{name}': 下载源未配置;内置配方待录,或配 [server-manager.registry.{name}] url/version"
+                ));
+            }
+            let version = resolve_version(&spec, arg2)?;
+            server_manager::install(name, &version)?;
+            let rw = server_manager::rewrite_languages_toml()?;
+            let mut msg = format!(
+                "installed '{name}' {version} -> {}",
+                spec.bin_path().display()
+            );
+            if rw.written {
+                msg.push_str(" | languages.toml 已更新(重启后生效)");
+            }
+            if !rw.conflicts.is_empty() {
+                msg.push_str(" | 提示: ");
+                msg.push_str(&rw.conflicts.join("; "));
+            }
+            editor.set_status(msg);
+        }
+        "update" => {
+            let all = registry::all();
+            let targets: Vec<registry::Spec> = match arg {
+                Some(name) => {
+                    let spec =
+                        registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
+                    if !server_manager::is_installed(name) {
+                        return Err(anyhow!("server '{name}' 未安装,用 install"));
+                    }
+                    vec![spec]
+                }
+                None => all
+                    .into_iter()
+                    .filter(|s| server_manager::is_installed(&s.name) && s.is_installable())
+                    .collect(),
+            };
+            if targets.is_empty() {
+                editor.set_status("nothing to update");
+                return Ok(());
+            }
+            let (mut updated, mut failed) = (0u32, Vec::new());
+            for spec in targets {
+                match resolve_version(&spec, None)
+                    .and_then(|v| server_manager::update(&spec.name, &v))
+                {
+                    Ok(()) => updated += 1,
+                    Err(e) => failed.push(format!("{}: {e:#}", spec.name)),
+                }
+            }
+            if updated > 0 {
+                let _ = server_manager::rewrite_languages_toml();
+            }
+            if failed.is_empty() {
+                editor.set_status(format!("updated {updated} server(s);重启后生效"));
+            } else {
+                editor.set_error(format!(
+                    "server update: updated {updated}, failed {} ({})",
+                    failed.len(),
+                    failed.join(" | ")
+                ));
+            }
+        }
+        "remove" => {
+            let Some(name) = arg else {
+                return Err(anyhow!("usage: server remove <name>"));
+            };
+            if !server_manager::is_installed(name) {
+                return Err(anyhow!("server '{name}' 未安装"));
+            }
+            server_manager::remove(name)?;
+            editor.set_status(format!("removed '{name}';若正被 LSP 使用,重启后生效"));
+        }
+        "status" => {
+            let all = registry::all();
+            let installed: Vec<&registry::Spec> = all
+                .iter()
+                .filter(|s| server_manager::is_installed(&s.name))
+                .collect();
+            let rows: Vec<String> = installed
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{}\u{2713}{}",
+                        s.name,
+                        s.version_detected()
+                            .map(|v| format!(" v{v}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect();
+            let mut msg = format!(
+                "server-manager: {} 已装/{} 配方;managed dir: {}\n",
+                installed.len(),
+                all.len(),
+                server_manager::managed_root().display()
+            );
+            msg.push_str(&format!(
+                "languages.toml: {}\n已装: {}",
+                server_manager::lang_config_file().display(),
+                if rows.is_empty() {
+                    "(无)".to_string()
+                } else {
+                    rows.join(", ")
+                }
+            ));
+            editor.set_status(msg);
+        }
+        other => {
+            return Err(anyhow!(
+                "unknown server subcommand '{other}'(list|search|install|update|remove|status)"
+            ))
+        }
     }
     Ok(())
 }

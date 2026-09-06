@@ -168,6 +168,11 @@ pub enum UiRequest {
         op: String,
         arg: Option<String>,
     },
+    /// server 管理操作(JS API helix.server.* 镜像 :server;UI 面板用)
+    ServerOp {
+        op: String,
+        arg: Option<String>,
+    },
 }
 
 /// 文件系统 watcher 变更条目（JS 回调收到 [{kind, path}] 数组）
