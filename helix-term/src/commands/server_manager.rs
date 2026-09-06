@@ -348,30 +348,60 @@ pub fn disk_server_manager_table() -> Option<toml::Table> {
         .cloned()
 }
 
-/// 从 [server-manager] 段读入 mirror + 扩展配方(registry.<name>)。
-/// dir 覆写 v1 未支持(默认受管目录;环境 SM_MANAGED_DIR 可测)。
+/// 独立配方文件(与代码解耦的数据;config_dir/server-manager-recipes.toml,
+/// 测试/演示可经 SM_SERVER_RECIPES 覆写)。结构同 config.toml 的
+/// [server-manager.registry.<name>](文件顶层即 [server-manager])。
+pub fn recipes_file_table() -> Option<toml::Table> {
+    let path = std::env::var("SM_SERVER_RECIPES")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| helix_loader::config_dir().join("server-manager-recipes.toml"));
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: toml::Value = toml::from_str(&text).ok()?;
+    v.get("server-manager")
+        .and_then(toml::Value::as_table)
+        .cloned()
+}
+
+/// 解析一个 registry 表(表名 → 配方表)为 (name, Spec) 列表
+fn parse_registry_table(reg: &toml::Table) -> Result<Vec<(String, registry::Spec)>> {
+    let mut out = Vec::new();
+    for (name, v) in reg {
+        let tbl = v
+            .as_table()
+            .ok_or_else(|| anyhow!("[server-manager.registry.{name}] 需是表"))?;
+        out.push((name.clone(), registry::parse_ext_recipe(name, tbl)?));
+    }
+    Ok(out)
+}
+
+/// 从 [server-manager] 段读入 mirror + 扩展配方(registry.<name>)；随后合并
+/// 独立配方文件(server-manager-recipes.toml,后者同名覆盖)。dir 覆写 v1 未支持。
 pub fn apply_server_config(cfg: Option<&toml::Table>) -> Result<()> {
     set_mirror("");
-    registry::set_ext(Vec::new());
-    let Some(cfg) = cfg else {
-        return Ok(());
-    };
-    if let Some(m) = cfg.get("mirror").and_then(toml::Value::as_str) {
-        set_mirror(m);
-    }
-    if let Some(dir) = cfg.get("dir") {
-        let _ = dir; // v1 忽略 dir 覆写(默认 ~/.local/share/helix/managed)
-    }
-    let mut ext = Vec::new();
-    if let Some(reg) = cfg.get("registry").and_then(toml::Value::as_table) {
-        for (name, v) in reg {
-            let tbl = v
-                .as_table()
-                .ok_or_else(|| anyhow!("[server-manager.registry.{name}] 需是表"))?;
-            ext.push(registry::parse_ext_recipe(name, tbl)?);
+    let mut by_name: std::collections::BTreeMap<String, registry::Spec> =
+        std::collections::BTreeMap::new();
+    if let Some(cfg) = cfg {
+        if let Some(m) = cfg.get("mirror").and_then(toml::Value::as_str) {
+            set_mirror(m);
+        }
+        if cfg.get("dir").is_some() {
+            // v1 忽略 dir 覆写(默认受管目录;环境 SM_MANAGED_DIR 可测)
+        }
+        if let Some(reg) = cfg.get("registry").and_then(toml::Value::as_table) {
+            for (name, spec) in parse_registry_table(reg)? {
+                by_name.insert(name, spec);
+            }
         }
     }
-    registry::set_ext(ext);
+    if let Some(rec) = recipes_file_table() {
+        if let Some(reg) = rec.get("registry").and_then(toml::Value::as_table) {
+            for (name, spec) in parse_registry_table(reg)? {
+                by_name.insert(name, spec); // 配方文件同名覆盖 config
+            }
+        }
+    }
+    registry::set_ext(by_name.into_values().collect());
     Ok(())
 }
 
@@ -914,6 +944,13 @@ pub mod registry {
                 Install::Tool { cmd, .. } => !cmd.is_empty(),
             }
         }
+        /// Archive 且 url 含 {version} 占位(安装必须给版本);Tool 与无占位 Archive 不需要
+        pub fn install_needs_version(&self) -> bool {
+            matches!(
+                &self.install,
+                Install::Archive { url_template, .. } if url_template.contains("{version}")
+            )
+        }
     }
 
     /// 内置注册表(v1 子集)。配方为"惰性占位":下载源留空 = install 报"未配置"
@@ -1035,32 +1072,66 @@ pub mod registry {
                 .map(str::to_string)
                 .ok_or_else(|| anyhow!("registry '{name}': 缺必填 '{k}'"))
         };
-        let url = need("url")?;
+        let url = tbl
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|s| !s.is_empty());
+        let cmd = tbl
+            .get("cmd")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|s| !s.is_empty());
         let version = tbl
             .get("version")
             .and_then(Value::as_str)
             .map(str::to_string);
-        if url.contains("{version}") && version.is_none() {
-            return Err(anyhow!(
-                "registry '{name}': url 含 {{version}} 占位则必填 version(安装版本来源)"
-            ));
-        }
-        let sha256 = tbl
-            .get("sha256")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let strip = tbl
-            .get("strip")
-            .and_then(Value::as_integer)
-            .unwrap_or(1)
-            .max(0) as usize;
-        let bin_rel = need("bin")?;
         let bin_name = tbl
             .get("bin-name")
             .and_then(Value::as_str)
             .unwrap_or(name)
             .to_string();
+        let install = match (url, cmd) {
+            (Some(url), None) => {
+                if url.contains("{version}") && version.is_none() {
+                    return Err(anyhow!(
+                        "registry '{name}': url 含 {{version}} 占位则必填 version(安装版本来源)"
+                    ));
+                }
+                let sha256 = tbl
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let strip = tbl
+                    .get("strip")
+                    .and_then(Value::as_integer)
+                    .unwrap_or(1)
+                    .max(0) as usize;
+                Install::Archive {
+                    url_template: url,
+                    sha256,
+                    strip,
+                    bin_rel: need("bin")?,
+                }
+            }
+            (None, Some(cmd)) => {
+                let args: Vec<String> = match tbl.get("args") {
+                    Some(Value::Array(a)) => a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                Install::Tool { cmd, args }
+            }
+            (Some(_), Some(_)) => return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一")),
+            (None, None) => {
+                return Err(anyhow!(
+                    "registry '{name}': 缺安装方式(url 或 cmd 必填其一)"
+                ))
+            }
+        };
         let languages: Vec<String> = match tbl.get("languages") {
             Some(Value::Array(a)) => a
                 .iter()
@@ -1085,12 +1156,7 @@ pub mod registry {
             description,
             homepage,
             version,
-            install: Install::Archive {
-                url_template: url,
-                sha256,
-                strip,
-                bin_rel,
-            },
+            install,
         })
     }
 }
@@ -1349,6 +1415,7 @@ pub fn run_task(
                 }
                 let ver = match version.map(str::to_string).or_else(|| spec.version.clone()) {
                     Some(v) => v,
+                    None if !spec.install_needs_version() => String::new(),
                     None => {
                         return Err(anyhow!(
                             "'{name}' 配方未给 version;传入 version 或 config 补"
@@ -1379,6 +1446,7 @@ pub fn run_task(
                 }
                 let ver = match version.map(str::to_string).or_else(|| spec.version.clone()) {
                     Some(v) => v,
+                    None if !spec.install_needs_version() => String::new(),
                     None => {
                         return Err(anyhow!(
                             "'{name}' 配方未给 version;传入 version 或 config 补"
@@ -2350,6 +2418,95 @@ mod tests {
         // remove 本地工具 → 指引 unmanage
         let out = run_task("remove", "rust-analyzer", None, |_, _, _| {});
         assert!(!out.ok && out.msg.contains("unmanage"), "{out:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- 独立配方文件 + Tool 配方解析 ----
+
+    #[test]
+    fn parse_ext_recipe_tool_and_archive_mutual_exclusive() {
+        // Tool:cmd+args
+        let t: toml::Table = toml::from_str(
+            "cmd = \"npm\"\nargs = [\"install\", \"--prefix\", \"{prefix}\", \"typescript-language-server\"]\n\
+             kind = \"lsp\"\nlanguages = [\"typescript\", \"javascript\"]\n\
+             description = \"TS 语言服务器\"\n",
+        )
+        .unwrap();
+        let spec = registry::parse_ext_recipe("tsserver", &t).unwrap();
+        assert!(
+            matches!(&spec.install, registry::Install::Tool { cmd, args } if cmd == "npm" && args.len() == 4)
+        );
+        assert_eq!(spec.bin_name, "tsserver", "bin-name 缺省=配方名");
+        assert!(spec.languages.contains(&"typescript".to_string()));
+        assert!(!spec.install_needs_version(), "Tool 不需 version");
+        // url+cmd 互斥
+        let bad: toml::Table = toml::from_str("cmd = \"npm\"\nurl = \"https://x\"\n").unwrap();
+        assert!(registry::parse_ext_recipe("x", &bad).is_err());
+        // 两者皆缺
+        let bad2: toml::Table = toml::from_str("languages = [\"a\"]\n").unwrap();
+        assert!(registry::parse_ext_recipe("x", &bad2).is_err());
+        // Archive 仍走 url 分支(含 {version} 需 version)
+        let a: toml::Table = toml::from_str(
+            "url = \"file:///v{version}/x.tar.gz\"\nbin = \"x\"\nversion = \"1.0\"\n",
+        )
+        .unwrap();
+        let spec = registry::parse_ext_recipe("arc", &a).unwrap();
+        assert!(matches!(&spec.install, registry::Install::Archive { .. }));
+        assert!(spec.install_needs_version());
+    }
+
+    #[test]
+    fn recipes_file_merges_and_overrides_config_registry() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, ga, gb, gp) = sm_env(&root);
+        // 独立配方文件(经 SM_SERVER_RECIPES 覆写):tool + archive 各一
+        let file = root.join("recipes.toml");
+        std::fs::write(
+            &file,
+            "[server-manager.registry.from-file]\ncmd = \"npm\"\nargs = [\"x\"]\n\
+             [server-manager.registry.both]\nurl = \"file:///v1/x.tar.gz\"\nbin = \"x\"\n",
+        )
+        .unwrap();
+        let _gr = EnvGuard::new("SM_SERVER_RECIPES", file.to_string_lossy().into_owned());
+        // config 段里同名 both → 文件后读覆盖为 archive
+        let cfg: toml::Table =
+            toml::from_str("[registry.both]\ncmd = \"pip3\"\nargs = [\"install\"]\n").unwrap();
+        apply_server_config(Some(&cfg)).unwrap();
+        assert!(registry::get("from-file").is_some(), "配方文件配方进入扩展");
+        let both = registry::get("both").expect("同名存在");
+        assert!(
+            matches!(&both.install, registry::Install::Archive { .. }),
+            "配方文件(后读)覆盖 config"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = (ga, gb, gp);
+    }
+
+    #[test]
+    fn run_task_tool_install_without_version_passes_gate() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _ga, _gb, _gp) = sm_env(&root);
+        // Tool 配方 /bin/false:版本门应放行(不再报"未给 version"),执行失败属另一原因
+        let file = root.join("recipes.toml");
+        std::fs::write(
+            &file,
+            "[server-manager.registry.falsey]\ncmd = \"/bin/false\"\nargs = []\n",
+        )
+        .unwrap();
+        let _gr = EnvGuard::new("SM_SERVER_RECIPES", file.to_string_lossy().into_owned());
+        let mut events = Vec::new();
+        let out = run_task("install", "falsey", None, |phase, _b, _t| {
+            events.push(phase.to_string())
+        });
+        assert!(!out.ok, "执行本身失败(预期)");
+        assert!(
+            !out.msg.contains("未给 version"),
+            "版本门放行 Tool: {}",
+            out.msg
+        );
+        assert!(!events.is_empty(), "阶段事件照发");
         let _ = std::fs::remove_dir_all(&root);
     }
 
