@@ -169,6 +169,268 @@ pub fn is_installed(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+// ============================ languages.toml 标记段 ============================
+//
+// 文本手术:文件由 标记段(# >>> helix-managed … # <<< helix-managed)内的受管内容 +
+// 标记外用户手写内容组成。每次 install/update/remove 后剥离旧段 → 按已装清单重建 →
+// 写回,标记外内容逐字节保留(幂等)。用户自定义了某语言 → 不生成其 [[language]]
+// 条目(避免覆盖用户配置,只给 hint);用户自带同名 [language-server.X] → 不重复写表
+// (TOML 禁止同一 doc 重复表头)。
+
+pub const MANAGED_HEADER: &str = "# >>> helix-managed";
+pub const MANAGED_FOOTER: &str = "# <<< helix-managed";
+
+/// languages.toml 路径:SM_LANGS_TOML 可覆写(测试隔离;否则 helix 全局配置目录)
+pub fn lang_config_file() -> PathBuf {
+    if let Ok(p) = std::env::var("SM_LANGS_TOML") {
+        return PathBuf::from(p);
+    }
+    helix_loader::lang_config_file()
+}
+
+/// 已安装的 registry 配方(managed/bin 在位)
+pub fn installed_specs() -> Vec<&'static registry::ServerSpec> {
+    let mut v: Vec<_> = registry::all()
+        .into_iter()
+        .filter(|s| is_installed(s.name))
+        .collect();
+    v.sort_by_key(|s| s.name);
+    v
+}
+
+/// 拆分标记段:返回 (标记外文本, 段内文本)。无标记 → 原文本;段不完整/重复 → Err。
+pub fn split_managed(text: &str) -> Result<(String, Option<String>)> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let idxs = |m: &str| -> Vec<usize> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == m)
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let (hs, fs) = (idxs(MANAGED_HEADER), idxs(MANAGED_FOOTER));
+    if hs.is_empty() && fs.is_empty() {
+        return Ok((text.to_string(), None));
+    }
+    if hs.len() != 1 || fs.len() != 1 {
+        return Err(anyhow!(
+            "languages.toml 标记段不完整(需且仅需一对 {} / {}),未改写",
+            MANAGED_HEADER,
+            MANAGED_FOOTER
+        ));
+    }
+    let (h, f) = (hs[0], fs[0]);
+    if h >= f {
+        return Err(anyhow!(
+            "languages.toml 标记段顺序错误({} 在 {} 后),未改写",
+            MANAGED_HEADER,
+            MANAGED_FOOTER
+        ));
+    }
+    let mut outside: Vec<&str> = lines[..h].to_vec();
+    outside.extend_from_slice(&lines[f + 1..]);
+    Ok((outside.join("\n"), Some(lines[h + 1..f].join("\n"))))
+}
+
+/// 解析标记外文本里用户定义的语言名与顶层 language-server 表名(供冲突判断)
+fn user_defined(text: &str) -> (Vec<String>, Vec<String>) {
+    let Ok(v) = toml::from_str::<toml::Value>(text) else {
+        return (Vec::new(), Vec::new());
+    };
+    let langs = v
+        .get("language")
+        .and_then(|l| l.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("name")?.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let lss = v
+        .get("language-server")
+        .and_then(|t| t.as_table())
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default();
+    (langs, lss)
+}
+
+fn toml_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn abs_bin(bin: &Path) -> PathBuf {
+    if bin.is_absolute() {
+        bin.to_path_buf()
+    } else {
+        std::path::absolute(bin).unwrap_or_else(|_| bin.to_path_buf())
+    }
+}
+
+/// 一次重写的结果(供命令层展示/提示)
+#[derive(Debug)]
+pub struct LangRewrite {
+    pub path: PathBuf,
+    /// 是否实际写了文件(false = 无内容可写且文件本不存在)
+    pub written: bool,
+    /// 写入的 [language-server.<n>] 表名(已装 LSP 配方,排除用户自带同名)
+    pub servers: Vec<String>,
+    /// 提示:语言已被用户自定义,未自动挂接(附手动引用片段)
+    pub conflicts: Vec<String>,
+}
+
+/// 重建受管段文本(不写盘)。`user_langs`/`user_ls` = 用户已在标记外定义的语言/顶层
+/// language-server 表名。返回 (段文本, servers, conflicts)。
+pub fn build_section(
+    user_langs: &[String],
+    user_ls: &[String],
+) -> (String, Vec<String>, Vec<String>) {
+    let specs = installed_specs();
+    let mut servers = Vec::new();
+    let mut conflicts = Vec::new();
+    let mut body = String::new();
+    let attached: Vec<&registry::ServerSpec> = specs
+        .iter()
+        .copied()
+        .filter(|s| matches!(s.kind, registry::Kind::Lsp | registry::Kind::Dap))
+        .collect();
+    // [language-server.<name>] 表(Lsp 且用户未自带同名)
+    for s in &attached {
+        if matches!(s.kind, registry::Kind::Lsp) && !user_ls.iter().any(|n| n == s.name) {
+            body.push_str(&format!("[language-server.{}]\n", s.name));
+            let cmd = abs_bin(&s.bin_path()).to_string_lossy().into_owned();
+            body.push_str(&format!("command = {}\n\n", toml_str(&cmd)));
+            servers.push(s.name.to_string());
+        }
+    }
+    // 按语言聚合 lsp 名与 dap 配置
+    let mut by_lang: std::collections::BTreeMap<&str, (Vec<&str>, Option<&registry::ServerSpec>)> =
+        std::collections::BTreeMap::new();
+    for s in &attached {
+        for lang in s.languages {
+            let e = by_lang.entry(lang).or_default();
+            match s.kind {
+                registry::Kind::Lsp => e.0.push(s.name),
+                registry::Kind::Dap => e.1 = Some(s),
+                _ => {}
+            }
+        }
+    }
+    for (lang, (lsp, dap)) in by_lang {
+        let custom = user_langs.iter().any(|u| u == lang);
+        if custom {
+            // 用户已自定义该语言 → 不生成条目,提示手动挂接
+            for n in &lsp {
+                conflicts.push(format!(
+                    "语言 '{lang}' 你已自定义:请在它的 [[language]] 条目加 language-servers = [{}]",
+                    toml_str(n)
+                ));
+            }
+            if let Some(s) = dap {
+                conflicts.push(format!(
+                    "语言 '{lang}' 你已自定义:请手动为它配置 debugger(command 指向 {})",
+                    s.bin_path().display()
+                ));
+            }
+            continue;
+        }
+        if lsp.is_empty() && dap.is_none() {
+            continue;
+        }
+        body.push_str("[[language]]\n");
+        body.push_str(&format!("name = {}\n", toml_str(lang)));
+        if !lsp.is_empty() {
+            let list = lsp
+                .iter()
+                .map(|n| toml_str(n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            body.push_str(&format!("language-servers = [{list}]\n"));
+        }
+        if let Some(s) = dap {
+            let cmd = abs_bin(&s.bin_path());
+            body.push_str(&format!(
+                "debugger = {{ name = {}, transport = \"stdio\", command = {}, args = [], templates = [{{ name = \"launch\", request = \"launch\", args = {{ }} }}] }}\n",
+                toml_str(s.name),
+                toml_str(&cmd.to_string_lossy())
+            ));
+        }
+        body.push('\n');
+    }
+    if body.is_empty() {
+        (String::new(), servers, conflicts)
+    } else {
+        (
+            format!("{MANAGED_HEADER}\n{body}{MANAGED_FOOTER}\n"),
+            servers,
+            conflicts,
+        )
+    }
+}
+
+/// 剥离旧段 → 校验用户部分 TOML 合法性 → 按已装清单重建 → 原子写回。
+pub fn rewrite_languages_toml() -> Result<LangRewrite> {
+    let path = lang_config_file();
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).context("读 languages.toml"),
+    };
+    let (outside, _inner) = split_managed(&existing)?;
+    if !outside.trim().is_empty() {
+        toml::from_str::<toml::Value>(&outside)
+            .context("用户 languages.toml 语法错误,未改写(请先修复)")?;
+    }
+    let (user_langs, user_ls) = user_defined(&outside);
+    let (section, servers, conflicts) = build_section(&user_langs, &user_ls);
+    let outside_trim = outside.trim_end();
+    let mut final_text = String::new();
+    if !outside_trim.is_empty() {
+        final_text.push_str(outside_trim);
+        final_text.push_str("\n\n");
+    }
+    if !section.is_empty() {
+        final_text.push_str(&section);
+    }
+    if final_text.is_empty() && existing.is_empty() {
+        // 无用户内容且无可写条目:文件本不存在就不创建空文件
+        return Ok(LangRewrite {
+            path,
+            written: false,
+            servers,
+            conflicts,
+        });
+    }
+    // 整份(用户+生成)必须可解析,否则不写
+    toml::from_str::<toml::Value>(&final_text).context("生成结果无法解析为 TOML,未改写")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_file_name(format!(
+        ".{}.sm.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    std::fs::write(&tmp, &final_text).with_context(|| format!("写 {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("落盘 {}", path.display()))?;
+    Ok(LangRewrite {
+        path,
+        written: true,
+        servers,
+        conflicts,
+    })
+}
+
 // ============================ registry ============================
 
 pub mod registry {
@@ -474,10 +736,14 @@ pub fn update(name: &str, version: &str) -> Result<()> {
     install(name, version)
 }
 
-/// 卸载:删受管目录 + bin 软链(不动 languages.toml,T3 处理配置)
+/// 卸载:删受管目录 + bin 软链,并重写 languages.toml 标记段移除其条目
+/// (languages.toml 失败时卸载仍完成,报错提示)
 pub fn remove(name: &str) -> Result<()> {
     let spec = registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
-    remove_adhoc(name, spec.bin_name)
+    remove_adhoc(name, spec.bin_name)?;
+    rewrite_languages_toml()
+        .map(|_| ())
+        .map_err(|e| anyhow!("server '{name}' 已卸载,但 languages.toml 未更新: {e:#}"))
 }
 
 /// 卸载内核(测试/adhoc)
@@ -749,6 +1015,233 @@ mod tests {
         let msg = format!("{:?}", r);
         assert!(r.is_err() && msg.contains("未生成"), "缺 bin 应报错: {msg}");
         assert!(!managed_dir("demo-tool").exists(), "缺 bin 也清理");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- languages.toml 标记段 ----
+
+    /// 双 env guard:SM_MANAGED_DIR + SM_LANGS_TOML → tmp root;返回 languages 路径
+    fn sm_env(root: &Path) -> (PathBuf, EnvGuard, EnvGuard) {
+        let langs = root.join("languages.toml");
+        let ls = langs.to_string_lossy().into_owned();
+        let m = root.to_string_lossy().into_owned();
+        (
+            langs,
+            EnvGuard::new("SM_MANAGED_DIR", m),
+            EnvGuard::new("SM_LANGS_TOML", ls),
+        )
+    }
+
+    /// 假装某 registry 配方已安装(受管目录 + bin 软链)
+    fn install_fake(name: &str) {
+        let root = PathBuf::from(std::env::var("SM_MANAGED_DIR").unwrap());
+        let src = root.join("src").join(name);
+        std::fs::create_dir_all(&src).unwrap();
+        write_sh(&src, name, &format!("#!/bin/sh\necho {name} 1.0\n"));
+        install_from_local_dir_for_test(name, &src).unwrap();
+    }
+
+    fn count(text: &str, sub: &str) -> usize {
+        text.matches(sub).count()
+    }
+
+    #[test]
+    fn langs_rewrite_from_empty_builds_section_idempotent() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _a, _b) = sm_env(&root);
+        install_fake("rust-analyzer");
+        let rw = rewrite_languages_toml().unwrap();
+        assert!(rw.written);
+        assert_eq!(rw.servers, vec!["rust-analyzer"]);
+        assert!(rw.conflicts.is_empty());
+        let text = std::fs::read_to_string(&rw.path).unwrap();
+        assert_eq!(count(&text, "# >>> helix-managed"), 1);
+        assert_eq!(count(&text, "# <<< helix-managed"), 1);
+        assert!(text.contains("[language-server.rust-analyzer]"));
+        assert!(text.contains("command = \"/"));
+        assert!(
+            text.contains("[[language]]\nname = \"rust\"\nlanguage-servers = [\"rust-analyzer\"]")
+        );
+        toml::from_str::<toml::Value>(&text).expect("生成文本可解析");
+        // 幂等:再次重写文本一致
+        let rw2 = rewrite_languages_toml().unwrap();
+        assert_eq!(text, std::fs::read_to_string(&rw2.path).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn langs_user_content_preserved_and_section_replaced() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (langs, _ga, _gb) = sm_env(&root);
+        let existing = "# 用户注释\n[[language]]\nname = \"haskell\"\nscope = \"source.haskell\"\n\n\
+            # >>> helix-managed\n[language-server.rust-analyzer]\ncommand = \"/old/stale/path\"\n\n\
+            [[language]]\nname = \"rust\"\nlanguage-servers = [\"rust-analyzer\"]\n# <<< helix-managed\n\n\
+            [[language]]\nname = \"toml\"\ncomment-token = \"#\"\n";
+        std::fs::write(&langs, existing).unwrap();
+        install_fake("rust-analyzer");
+        let rw = rewrite_languages_toml().unwrap();
+        let text = std::fs::read_to_string(&rw.path).unwrap();
+        // 用户标记外内容逐字节保留
+        assert!(text.contains("# 用户注释"));
+        assert!(text.contains("scope = \"source.haskell\""));
+        assert!(text.contains("comment-token = \"#\""));
+        // 旧段被整体替换,无残留
+        assert!(!text.contains("/old/stale/path"));
+        assert_eq!(count(&text, "# >>> helix-managed"), 1);
+        assert_eq!(count(&text, "# <<< helix-managed"), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn langs_conflict_user_defined_language_skipped_with_hint() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (langs, _ga, _gb) = sm_env(&root);
+        let existing = "[[language]]\nname = \"rust\"\nroots = [\"my-own-root\"]\n";
+        std::fs::write(&langs, existing).unwrap();
+        install_fake("rust-analyzer");
+        let rw = rewrite_languages_toml().unwrap();
+        let text = std::fs::read_to_string(&rw.path).unwrap();
+        assert_eq!(
+            count(&text, "name = \"rust\""),
+            1,
+            "用户已自定义 rust → 不再生成同名条目"
+        );
+        assert!(
+            text.contains("[language-server.rust-analyzer]"),
+            "server 表仍生成供手动引用"
+        );
+        assert_eq!(rw.conflicts.len(), 1);
+        assert!(rw.conflicts[0].contains("rust-analyzer"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn langs_dap_debugpy_emits_debugger_block() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _a, _b) = sm_env(&root);
+        install_fake("debugpy");
+        let rw = rewrite_languages_toml().unwrap();
+        assert!(rw.servers.is_empty(), "Dap 不进 language-server 表");
+        let text = std::fs::read_to_string(&rw.path).unwrap();
+        assert!(text.contains("[[language]]\nname = \"python\""));
+        assert!(text.contains("debugger = { name = \"debugpy\""));
+        assert!(text.contains("transport = \"stdio\""));
+        assert!(text.contains("templates = [{ name = \"launch\""));
+        toml::from_str::<toml::Value>(&text).expect("生成文本可解析");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn langs_bad_user_toml_and_unbalanced_marker_abort() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (langs, _ga, _gb) = sm_env(&root);
+        let p = &langs;
+        // 语法坏(无标记)→ 报错不改写
+        std::fs::write(p, "this is not toml {{{\n[[language]\n").unwrap();
+        let err = rewrite_languages_toml().unwrap_err().to_string();
+        assert!(err.contains("语法错误"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(p).unwrap(),
+            "this is not toml {{{\n[[language]\n"
+        );
+        // 只有单边标记 → 报错不改写
+        std::fs::write(p, "# >>> helix-managed\nx = 1\n").unwrap();
+        let err = rewrite_languages_toml().unwrap_err().to_string();
+        assert!(err.contains("不完整"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(p).unwrap(),
+            "# >>> helix-managed\nx = 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn langs_remove_clears_entry() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _a, _b) = sm_env(&root);
+        install_fake("rust-analyzer");
+        rewrite_languages_toml().unwrap();
+        remove("rust-analyzer").unwrap();
+        assert!(!managed_dir("rust-analyzer").exists());
+        let text = std::fs::read_to_string(root.join("languages.toml")).unwrap();
+        assert!(!text.contains("rust-analyzer"), "条目已清:{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn langs_user_own_server_table_not_duplicated() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (langs, _ga, _gb) = sm_env(&root);
+        let existing = "[language-server.rust-analyzer]\ncommand = \"/mine/custom/ra\"\n";
+        std::fs::write(&langs, existing).unwrap();
+        install_fake("rust-analyzer");
+        let rw = rewrite_languages_toml().unwrap();
+        let text = std::fs::read_to_string(&rw.path).unwrap();
+        assert_eq!(
+            count(&text, "[language-server.rust-analyzer]"),
+            1,
+            "不重复表头"
+        );
+        assert!(text.contains("/mine/custom/ra"), "用户 command 保留");
+        assert!(rw.servers.is_empty(), "用户自带同名 → 不再生成表");
+        assert!(text.contains("language-servers = [\"rust-analyzer\"]"));
+        toml::from_str::<toml::Value>(&text).expect("可解析");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 关键合并语义验证:生成的 languages.toml 经 helix-loader 真实合并逻辑
+    /// (merge_toml_values depth 3 → Configuration)后,rust 挂上 rust-analyzer 且
+    /// command 指向受管绝对路径;python 获得 debugpy debugger。
+    #[test]
+    fn langs_loader_merge_resolves_managed_servers() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _a, _b) = sm_env(&root);
+        install_fake("rust-analyzer");
+        install_fake("debugpy");
+        rewrite_languages_toml().unwrap();
+        let file_text = std::fs::read_to_string(root.join("languages.toml")).unwrap();
+        let user: toml::Value = toml::from_str(&file_text).unwrap();
+        let merged =
+            helix_loader::merge_toml_values(helix_loader::config::default_lang_config(), user, 3);
+        let conf: helix_core::syntax::config::Configuration = merged.try_into().unwrap();
+        let ra = conf
+            .language_server
+            .get("rust-analyzer")
+            .expect("rust-analyzer 表存在");
+        assert_eq!(
+            ra.command,
+            managed_bin("rust-analyzer").to_string_lossy(),
+            "command 被覆写为受管绝对路径"
+        );
+        let rust = conf
+            .language
+            .iter()
+            .find(|l| l.language_id == "rust")
+            .expect("builtin rust 条目与生成条目合并");
+        assert!(rust
+            .language_servers
+            .iter()
+            .any(|f| f.name == "rust-analyzer"));
+        let py = conf
+            .language
+            .iter()
+            .find(|l| l.language_id == "python")
+            .expect("python 语言存在");
+        let dap = py.debugger.as_ref().expect("python 获得 debugger");
+        assert_eq!(dap.name, "debugpy");
+        assert_eq!(
+            dap.command,
+            managed_bin("debugpy").to_string_lossy(),
+            "debugger command 为受管绝对路径"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
