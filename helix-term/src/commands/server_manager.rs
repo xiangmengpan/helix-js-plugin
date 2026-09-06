@@ -1238,7 +1238,9 @@ pub struct TaskOutcome {
 
 /// 在独立线程执行单步任务(install/update/remove/unmanage)——纯函数:不做 UI,
 /// 只重读 config 后执行并返回结果。progress(阶段, bytes, total):阶段事件为
-/// "下载中"/"写入配置"等(bytes/total 先 None;真实字节进度由 M3 接 install 内部)。
+/// "下载中"/"写入配置"等(bytes/total 恒 None);install 的真实字节进度不走本参数——
+/// 由调用方(commands/server_tasks.rs worker)经 [with_download_progress] 挂线程局部
+/// 钩子、install_adhoc 下载时消费后单独推事件(kind=progress)。
 pub fn run_task(
     op: &str,
     name: &str,
