@@ -48,18 +48,86 @@ fn sha256_hex(path: &Path) -> Result<String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// 下载 URL 到 dest(file:// 本地复制;https 经 ureq;遵循 mirror)
-fn download_to(url: &str, dest: &Path) -> Result<()> {
+/// 下载进度聚合:按字节阈值或时间间隔回调;finish 必 flush。
+/// add(bytes) 为**本次增量**(内部累计);回调收到累计已下载字节;finish(bytes) 为最终累计。
+pub struct ProgressAgg<'a> {
+    throttle_bytes: u64,
+    throttle_dur: std::time::Duration,
+    cb: &'a mut dyn FnMut(u64, Option<u64>),
+    done: u64,
+    last_bytes: u64,
+    last_at: std::time::Instant,
+}
+impl<'a> ProgressAgg<'a> {
+    pub fn new(
+        throttle_bytes: u64,
+        throttle_dur: std::time::Duration,
+        cb: &'a mut dyn FnMut(u64, Option<u64>),
+    ) -> Self {
+        ProgressAgg {
+            throttle_bytes,
+            throttle_dur,
+            cb,
+            done: 0,
+            last_bytes: 0,
+            last_at: std::time::Instant::now(),
+        }
+    }
+    pub fn add(&mut self, bytes: u64, total: Option<u64>) {
+        self.done += bytes;
+        let now = std::time::Instant::now();
+        if self.done >= self.last_bytes + self.throttle_bytes
+            || now.duration_since(self.last_at) >= self.throttle_dur
+        {
+            self.last_bytes = self.done;
+            self.last_at = now;
+            (self.cb)(self.done, total);
+        }
+    }
+    pub fn finish(&mut self, bytes: u64, total: Option<u64>) {
+        self.done = self.done.max(bytes);
+        self.last_bytes = self.done;
+        (self.cb)(self.done, total);
+    }
+}
+
+/// 下载 URL 到 dest(file:// 本地复制;https 经 ureq;遵循 mirror)。
+/// progress(bytes, total) 节流回调;total 未知为 None;file:// 复制完成后回调一次(总大小)。
+fn download_to(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
     if let Some(path) = url.strip_prefix("file://") {
         std::fs::copy(path, dest).with_context(|| format!("copy {path} -> {}", dest.display()))?;
+        let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        progress(size, Some(size));
         return Ok(());
     }
+    use std::io::{Read as _, Write as _};
     let resp = ureq::get(url)
         .call()
         .with_context(|| format!("download {url}"))?;
+    let total = resp
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok());
     let mut reader = resp.into_reader();
     let mut out = std::fs::File::create(dest)?;
-    std::io::copy(&mut reader, &mut out)?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut acc = 0u64;
+    let mut agg = ProgressAgg::new(
+        256 * 1024,
+        std::time::Duration::from_millis(80),
+        &mut progress,
+    );
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .with_context(|| format!("read {url}"))?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&buf[..n])?;
+        acc += n as u64;
+        agg.add(n as u64, total); // add 收增量(内部累计);循环后 finish(acc) flush 到 100%
+    }
+    agg.finish(acc, total);
     Ok(())
 }
 
@@ -1004,7 +1072,8 @@ pub fn install_adhoc(
     std::fs::create_dir_all(&root)?;
     let tmp_archive = root.join(format!(".{name}.download"));
     let tmp_dir = root.join(format!(".{name}.tmp"));
-    download_to(url, &tmp_archive)?;
+    // task 2:install 内核不改签名,字节进度暂不进(空闭包);真实穿透在 M3(run_task 回调)
+    download_to(url, &tmp_archive, |_, _| {})?;
     if !sha256.is_empty() {
         let got = sha256_hex(&tmp_archive)?;
         if got != *sha256 {
@@ -1135,6 +1204,129 @@ pub fn remove_adhoc(name: &str, bin_name: &str) -> Result<()> {
     let _ = std::fs::remove_dir_all(managed_dir(name));
     let _ = std::fs::remove_file(managed_bin(bin_name));
     Ok(())
+}
+
+// ============================ 任务执行纯函数(线程可跑) ============================
+//
+// UI 层(面板/JS API)在独立线程跑 run_task 做 install/update/remove/unmanage,
+// 主线程只消费 TaskOutcome + progress 事件——线程内不做任何 UI/editor 操作。
+
+/// 单步任务的纯结果(命令层据此 set_status/set_error/刷新面板)
+#[derive(Debug)]
+pub struct TaskOutcome {
+    pub ok: bool,
+    pub msg: String,
+}
+
+/// 在独立线程执行单步任务(install/update/remove/unmanage)——纯函数:不做 UI,
+/// 只重读 config 后执行并返回结果。progress(阶段, bytes, total):阶段事件为
+/// "下载中"/"写入配置"等(bytes/total 先 None;真实字节进度由 M3 接 install 内部)。
+pub fn run_task(
+    op: &str,
+    name: &str,
+    version: Option<&str>,
+    mut progress: impl FnMut(&str, Option<u64>, Option<u64>) + Send,
+) -> TaskOutcome {
+    // 每个 op 先重读 config(保持与 :server 一致;lib 测试无 CONFIG_FILE → None=清空扩展)
+    let _ = apply_server_config(disk_server_manager_table().as_ref());
+    let out = (|| -> Result<String> {
+        match op {
+            "install" => {
+                let spec = registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
+                match availability(name) {
+                    Availability::Managed => return Err(anyhow!("'{name}' 已安装,用 update")),
+                    Availability::Local(p) => {
+                        return Err(anyhow!("'{name}' 本地已可用({}),无需安装", p.display()))
+                    }
+                    Availability::Missing => {}
+                }
+                if !spec.is_installable() {
+                    return Err(anyhow!("'{name}' 下载源未配置(registry 缺 url)"));
+                }
+                let ver = match version.map(str::to_string).or_else(|| spec.version.clone()) {
+                    Some(v) => v,
+                    None => {
+                        return Err(anyhow!(
+                            "'{name}' 配方未给 version;传入 version 或 config 补"
+                        ))
+                    }
+                };
+                progress("下载中", None, None);
+                install(name, &ver)?;
+                progress("写入配置", None, None);
+                rewrite_languages_toml()?;
+                Ok(format!("installed '{name}' {ver}"))
+            }
+            "update" => {
+                // 受管已装才可;版本取参或配方 version;下载→重写;否则引导
+                let spec = registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
+                match availability(name) {
+                    Availability::Managed => {}
+                    Availability::Local(p) => {
+                        return Err(anyhow!(
+                            "'{name}' 由本地提供({}),不走 server manager 升级(受管安装才可 update)",
+                            p.display()
+                        ))
+                    }
+                    Availability::Missing => return Err(anyhow!("'{name}' 未安装,用 install")),
+                }
+                if !spec.is_installable() {
+                    return Err(anyhow!("'{name}' 下载源未配置(registry 缺 url)"));
+                }
+                let ver = match version.map(str::to_string).or_else(|| spec.version.clone()) {
+                    Some(v) => v,
+                    None => {
+                        return Err(anyhow!(
+                            "'{name}' 配方未给 version;传入 version 或 config 补"
+                        ))
+                    }
+                };
+                progress("下载中", None, None);
+                update(name, &ver)?;
+                progress("写入配置", None, None);
+                rewrite_languages_toml()?;
+                Ok(format!("updated '{name}' {ver}"))
+            }
+            "remove" => {
+                // 受管才可 remove(内部含 languages.toml 重写);local/missing 引导
+                match availability(name) {
+                    Availability::Managed => {
+                        remove(name)?;
+                        Ok(format!("removed '{name}'"))
+                    }
+                    Availability::Local(p) => Err(anyhow!(
+                        "'{name}' 是本地工具({}),不能卸载;如需停用自动挂接用 unmanage",
+                        p.display()
+                    )),
+                    Availability::Missing => Err(anyhow!("'{name}' 未安装")),
+                }
+            }
+            "unmanage" => {
+                // 仅本机已有(local)可停/恢复自动挂接;受管用 remove,缺失报错
+                match availability(name) {
+                    Availability::Local(_) => {
+                        let on = !ignored_local().contains(&name.to_string());
+                        set_ignored(name, on)?;
+                        rewrite_languages_toml()?;
+                        Ok(if on {
+                            format!("'{name}' 已停用挂接")
+                        } else {
+                            format!("'{name}' 已恢复挂接")
+                        })
+                    }
+                    _ => Err(anyhow!("'{name}' 非本机已有,unmanage 仅对 local 有效")),
+                }
+            }
+            other => Err(anyhow!("unknown task op '{other}'")),
+        }
+    })();
+    match out {
+        Ok(msg) => TaskOutcome { ok: true, msg },
+        Err(e) => TaskOutcome {
+            ok: false,
+            msg: format!("{e:#}"),
+        },
+    }
 }
 
 /// 供测试/开发:把本地目录作为"已装"(跳过下载),验证 bin 检测/版本
@@ -1894,6 +2086,94 @@ mod tests {
             toml::from_str("url = \"https://x/v1/my-ls.tar.gz\"\nbin = \"my-ls\"\n").unwrap();
         let spec2 = registry::parse_ext_recipe("my-ls", &nover).unwrap();
         assert!(!is_upgradable(&spec2), "recipe 无 version → 不可升级");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- M2a:进度聚合器 / download_to 进度 / run_task 纯函数 ----
+
+    #[test]
+    fn progress_aggregator_monotonic_throttled() {
+        // 聚合器:回调每 ≥throttle_bytes 或 ≥interval 触发;结束 flush 到 100%
+        let mut hits = Vec::new();
+        let mut cb = |n, total| {
+            hits.push((n, total));
+        };
+        let mut agg = ProgressAgg::new(8, std::time::Duration::from_millis(100), &mut cb);
+        for _ in 0..50u64 {
+            agg.add(1, Some(100)); // 共 50 字节,节流 8 → 约 6 次
+        }
+        agg.finish(50, Some(100));
+        assert!(hits.len() >= 2, "至少节流若干次+末尾 flush: {hits:?}");
+        let last = hits.last().unwrap();
+        assert_eq!(last.0, 50, "末尾 flush 到总量");
+        // 序列单调
+        let ns: Vec<u64> = hits.iter().map(|(n, _)| *n).collect();
+        assert!(ns.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn download_to_file_reports_progress_once_with_size() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let src = root.join("payload.bin");
+        let body = vec![0xabu8; 1024 * 5]; // 5KiB
+        std::fs::write(&src, &body).unwrap();
+        let dest = root.join("out.bin");
+        let mut hits = Vec::new();
+        download_to(&format!("file://{}", src.display()), &dest, |n, total| {
+            hits.push((n, total));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body, "内容已复制");
+        assert_eq!(
+            hits,
+            vec![(body.len() as u64, Some(body.len() as u64))],
+            "file:// 下载完成回调一次(总大小)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// run_task 分支冒烟(hermetic)。lib 测试无 CONFIG_FILE(config_file_opt=None),
+    /// run_task 开头重读磁盘 config 会把 registry 扩展清空——install 走 file:// 假源的
+    /// ok:true 全程(含阶段事件)需磁盘 config 注入配方,留给任务 5 编辑器集成;
+    /// 此处覆盖可离线判定的 ok/err 分支(均不触网)。
+    #[test]
+    fn run_task_branches_ok_and_err_hermetic() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let (_langs, _a, _b, _p) = sm_env(&root);
+        // 未知 op / 未知 server / unmanage 缺失 → ok:false 文案
+        let out = run_task("bogus", "x", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("unknown task op"), "{out:?}");
+        let out = run_task("install", "ghost", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("unknown server"), "{out:?}");
+        let out = run_task("unmanage", "ghost", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("非本机已有"), "{out:?}");
+        // install 命中受管 → 引导 update
+        install_fake("rust-analyzer");
+        let out = run_task("install", "rust-analyzer", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("已安装,用 update"), "{out:?}");
+        // update 受管但配方无 version → 引导显式 version(不触网)
+        let out = run_task("update", "rust-analyzer", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("配方未给 version"), "{out:?}");
+        // remove 受管 → ok:true 且清理
+        let out = run_task("remove", "rust-analyzer", None, |_, _, _| {});
+        assert!(out.ok && out.msg.contains("removed"), "{out:?}");
+        assert!(!managed_bin("rust-analyzer").exists());
+        // update 缺失 → 引导 install
+        let out = run_task("update", "rust-analyzer", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("未安装"), "{out:?}");
+        // unmanage 本地 PATH 工具 → 停用挂接,再跑恢复
+        let bin_dir = fake_local_bin(&root, "rust-analyzer");
+        let _bin = EnvGuard::new("SM_PATH", bin_dir.to_string_lossy().into_owned());
+        let out = run_task("unmanage", "rust-analyzer", None, |_, _, _| {});
+        assert!(out.ok && out.msg.contains("已停用挂接"), "{out:?}");
+        assert!(ignored_local().contains(&"rust-analyzer".to_string()));
+        let out = run_task("unmanage", "rust-analyzer", None, |_, _, _| {});
+        assert!(out.ok && out.msg.contains("已恢复挂接"), "{out:?}");
+        // remove 本地工具 → 指引 unmanage
+        let out = run_task("remove", "rust-analyzer", None, |_, _, _| {});
+        assert!(!out.ok && out.msg.contains("unmanage"), "{out:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
