@@ -356,6 +356,9 @@ impl Application {
         {
             // 仅 fs-watcher 事件:resolve 内部 drain(空则 no-op);回调可能编辑/echo
             let _ = helix_js::watch::resolve_watch_events();
+            // server 任务事件(worker 回投)与 fs-watcher 同例:单独到达也无其他事件泵,
+            // 早退路径 resolve,回调可能 echo/编辑(尾部统一 drain 消息/UI 请求)
+            let _ = helix_js::server_tasks::resolve_events();
             // 早退路径也要泵纯 JS 微任务(Promise.resolve().then(...) 不经过 term/async 事件)
             if let Err(err) = helix_js::pump_jobs() {
                 log::error!("promise job pump: {err}");
@@ -376,6 +379,9 @@ impl Application {
         }
         let mut error = None;
         if let Err(e) = helix_js::watch::resolve_watch_events() {
+            error = Some(e);
+        }
+        if let Err(e) = helix_js::server_tasks::resolve_events() {
             error = Some(e);
         }
         for event in term_events {

@@ -5323,6 +5323,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     log::error!("server rows deliver: {e:#}");
                 }
             }
+            helix_js::UiRequest::ServerTask { task_id, items } => {
+                // 后台任务批次:入队单 worker(串行)即返回,不阻塞主线程;事件异步回投
+                let mapped: Vec<(String, String, Option<String>)> = items
+                    .into_iter()
+                    .map(|i| (i.op, i.name, i.version))
+                    .collect();
+                crate::commands::server_tasks::submit(task_id, mapped);
+            }
         }
     }
     Ok(())

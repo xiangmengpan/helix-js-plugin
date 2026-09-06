@@ -177,6 +177,12 @@ pub enum UiRequest {
     ServerListRows {
         id: u64,
     },
+    /// 后台 server 任务批次:一组 items 由 term 单 worker 串行执行。
+    /// task_id 由 JS 分配(helix.server.task 返回值);term 回传事件沿用该 id。
+    ServerTask {
+        task_id: u64,
+        items: Vec<ServerTaskItem>,
+    },
 }
 
 /// server manager 一行(term → JS 回传)
@@ -193,6 +199,30 @@ pub struct ServerRow {
     pub description: String,
     pub homepage: Option<String>,
     pub installable: bool,
+}
+
+/// 后台任务的一项(JS → term):op 为 server_manager 任务名(install/update/remove/unmanage),name 为配方名
+#[derive(Debug, Clone)]
+pub struct ServerTaskItem {
+    pub op: String,
+    pub name: String,
+    pub version: Option<String>,
+}
+
+/// 后台任务事件(term → JS;helix.server.task 回调收到单对象 {task_id, seq, name, kind, msg, bytes, total})
+#[derive(Debug, Clone)]
+pub struct ServerTaskEvent {
+    /// JS 分配的 taskId(见 JS API)
+    pub task_id: u64,
+    /// 同一批次内从 0 递增
+    pub seq: u32,
+    /// 任务名(配方名)
+    pub name: String,
+    /// "phase" | "progress" | "done" | "error"
+    pub kind: String,
+    pub msg: Option<String>,
+    pub bytes: Option<u64>,
+    pub total: Option<u64>,
 }
 
 /// 文件系统 watcher 变更条目（JS 回调收到 [{kind, path}] 数组）

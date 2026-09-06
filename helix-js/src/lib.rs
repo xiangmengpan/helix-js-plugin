@@ -17,6 +17,7 @@ pub mod config;
 pub mod cursor;
 pub mod diagnostics;
 pub mod server_rows;
+pub mod server_tasks;
 pub mod watch;
 
 pub use commands::*;
@@ -202,6 +203,11 @@ pub fn init() {
                     NativeFunction::from_fn_ptr(server_rows::js_server_rows),
                     JsString::from("rows"),
                     1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(server_tasks::js_server_task),
+                    JsString::from("task"),
+                    2,
                 )
                 .build();
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；

@@ -91,6 +91,20 @@ impl<'a> ProgressAgg<'a> {
     }
 }
 
+// 下载字节进度钩子(线程局部):单 worker 队列线程在跑 install/update 前经
+// [with_download_progress] 挂载;install_adhoc 的 download_to 消费一次(take)。
+// 主线程 :server 同步路径不挂 → 空钩子,与 M2a 行为一致;worker 线程退出后
+// thread_local 自动消亡,无需清理。
+thread_local! {
+    static DL_PROGRESS: std::cell::RefCell<Option<Box<dyn FnMut(u64, Option<u64>) + Send>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 挂载下载字节进度回调(每次 install_adhoc 下载消费一次;download_to 层已节流)。
+pub fn with_download_progress(f: Box<dyn FnMut(u64, Option<u64>) + Send>) {
+    DL_PROGRESS.with(|c| *c.borrow_mut() = Some(f));
+}
+
 /// 下载 URL 到 dest(file:// 本地复制;https 经 ureq;遵循 mirror)。
 /// progress(bytes, total) 节流回调;total 未知为 None;file:// 复制完成后回调一次(总大小)。
 fn download_to(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
@@ -1072,8 +1086,12 @@ pub fn install_adhoc(
     std::fs::create_dir_all(&root)?;
     let tmp_archive = root.join(format!(".{name}.download"));
     let tmp_dir = root.join(format!(".{name}.tmp"));
-    // task 2:install 内核不改签名,字节进度暂不进(空闭包);真实穿透在 M3(run_task 回调)
-    download_to(url, &tmp_archive, |_, _| {})?;
+    // 字节进度:worker 线程经 with_download_progress 挂的钩子在此 take 一次消费;
+    // 未挂(主线程 :server 同步路径/测试) → 空闭包,与 M2a 行为一致
+    match DL_PROGRESS.with(|c| c.borrow_mut().take()) {
+        Some(mut cb) => download_to(url, &tmp_archive, |n, t| cb(n, t))?,
+        None => download_to(url, &tmp_archive, |_, _| {})?,
+    }
     if !sha256.is_empty() {
         let got = sha256_hex(&tmp_archive)?;
         if got != *sha256 {
@@ -2193,5 +2211,30 @@ mod tests {
         fn drop(&mut self) {
             std::env::remove_var(self.0);
         }
+    }
+
+    #[test]
+    fn download_progress_hook_consumed_by_install_adhoc() {
+        // DL_PROGRESS 线程局部钩子:install_adhoc 下载前挂载,take 一次消费并收到字节回调
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let arc = root.join("src/rel.tar.gz");
+        std::fs::create_dir_all(arc.parent().unwrap()).unwrap();
+        let sha = make_tar_gz(&arc, "demo-bin").unwrap();
+        let src = format!("file://{}", arc.display());
+        let size = std::fs::metadata(&arc).unwrap().len();
+        let hits: std::sync::Arc<std::sync::Mutex<Vec<(u64, Option<u64>)>>> =
+            std::sync::Arc::default();
+        let hits2 = hits.clone();
+        with_download_progress(Box::new(move |n, t| hits2.lock().unwrap().push((n, t))));
+        install_adhoc("demo-bin", "demo-bin", "demo-bin", 1, &src, &sha).unwrap();
+        assert!(managed_bin("demo-bin").exists());
+        assert_eq!(
+            hits.lock().unwrap().as_slice(),
+            &[(size, Some(size))],
+            "file:// 复制完成回调一次(总大小),钩子已消费"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
