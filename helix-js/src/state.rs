@@ -28,20 +28,28 @@ impl<T> Clone for WakeSender<T> {
 impl<T> WakeSender<T> {
     pub fn send(&self, t: T) -> Result<(), std::sync::mpsc::SendError<T>> {
         let r = self.inner.send(t);
-        // 发送时查当前注册的唤醒回调（set_term_wake 随时生效）
-        if let Some(wake) = TERM_WAKE.get() {
-            (wake)();
-        }
+        // 发送时触发当前注册的唤醒回调（set_term_wake 随时生效）
+        fire_term_wake();
         r
     }
 }
 
 /// 宿主注册的跨线程唤醒回调（helix-term 启动时设置：request_redraw）
-static TERM_WAKE: OnceLock<std::sync::Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+/// Mutex 而非 OnceLock：可重复注册（helix-js/term 单测各自设自己的探针 flag，
+/// 后设者生效）；生产只注册一次，语义不变。
+static TERM_WAKE: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
 /// 注册跨线程唤醒回调（worker 发事件时调用；未注册时 no-op）
 pub fn set_term_wake(f: Box<dyn Fn() + Send + Sync>) {
-    let _ = TERM_WAKE.set(std::sync::Arc::from(f));
+    *TERM_WAKE.lock().unwrap() = Some(std::sync::Arc::from(f));
+}
+
+/// 触发注册的唤醒回调（无注册 no-op）。worker 任意线程可调。
+pub(crate) fn fire_term_wake() {
+    let wake = TERM_WAKE.lock().unwrap().clone();
+    if let Some(w) = wake {
+        (w)();
+    }
 }
 
 pub(crate) fn wake_sender<T>(inner: std::sync::mpsc::Sender<T>) -> WakeSender<T> {
