@@ -6,10 +6,12 @@
 //       关闭一律走按键路径——onKey 返回 "close" 由 term 按 layer 移除,onClose 兜底置空。
 // 键位:j/k 或 Up/Down 导航 · 可打印字符即搜(匹配名/语言/描述) · f 分类循环 ·
 //       t 标记(Enter 批量) · Enter 动作菜单/批量 · x/u/i 直达卸载(停挂接)/升级/信息 ·
-//       Backspace 删过滤 · Esc 先清过滤再关 · q 关闭。
+//       C(Shift+c) 清版本记忆(选中行有则清该行,否则清全部) · Backspace 删过滤 ·
+//       Esc 先清过滤再关 · q 关闭。菜单内 i 直达该行信息。
 // 数据:helix.server.rows(cb) 回传行 {name,kind,languages,installed,local,version,
 //       description,homepage,installable,upgradable,needs_version,bin,source};
-//       upgradable → 状态列 ▲(受管且可升级);needs_version → install/update 先弹版本输入;
+//       upgradable → 状态列 ▲(受管且可升级);needs_version 行:install 无记忆弹输入、
+//       update 恒弹输入(升级重询,记忆锁不死换版入口);C/Shift+C 清版本记忆;
 //       bin/source 供信息弹窗显示命令路径与下载源。
 
 helix.plugin("arsenal", { deps: [] });
@@ -32,7 +34,9 @@ const S = {
   marks: new Set(), // 标记集合(name;Enter 批量)
   menu: null, // 动作菜单状态 { items:[{op,label}], sel, name };非空 = 菜单弹窗开
   vinput: null, // 版本输入弹窗状态 { op, name, val };非空 = 输入弹窗开
-  vinputs: {}, // name → 最近一次输入的版本(批量复用;清空/换装后仍可用)
+  // name → 最近一次输入的版本。install 有记忆快捷直发(批量复用);update 恒弹窗不受记忆
+  // 短路(换版本靠弹窗重输);Shift+C 清选中行记忆、无则清全部(弹窗内 C 清当前行)。
+  vinputs: {},
   busy: null, // 批量进度 { task_id, items, idx, done, fail, pct };非空 = 任务在跑
   row_busy: {}, // name → { phase, pct };行状态优先显示(进度覆写)
 };
@@ -64,10 +68,13 @@ function on_task_event(ev) {
   fetch_rows(); // done/error 后刷新行状态
   if (S.busy.done + S.busy.fail.length >= S.busy.items.length) {
     const { done, fail, items } = S.busy;
-    const all_done = fail.length === 0;
-    helix.echo(
-      "arsenal: 批量完成 " + done + "/" + items.length + (all_done ? "" : ", 失败: " + fail.join(" "))
-    );
+    // 单项成功:done 事件 msg 已直报,不再补汇总(防双 echo);失败或批量才汇总
+    if (items.length > 1 || fail.length > 0) {
+      const all_done = fail.length === 0;
+      helix.echo(
+        "arsenal: 批量完成 " + done + "/" + items.length + (all_done ? "" : ", 失败: " + fail.join(" "))
+      );
+    }
     S.busy = null;
     S.row_busy = {};
   }
@@ -193,7 +200,7 @@ function main_render(focus, ctx) {
     const footer = helix.el(
       "text",
       busy ||
-        "j/k ↑↓ · 字符即搜 · Enter 操作 · x/u/i 直达 · f 分类 · t 标记 · Esc 清过滤再关 · q 关闭",
+        "j/k ↑↓ · 字符即搜 · Enter 操作 · x/u/i 直达 · f 分类 · t 标记 · C 清版本记忆 · Esc 清过滤再关 · q 关闭",
       { style: busy ? "ui.popup" : "ui.virtual" }
     );
     return helix.el("col", [title, helix.el("scroll", list, { height: H }), footer]);
@@ -217,7 +224,9 @@ function row_actions(r) {
   return acts;
 }
 
-// 打开版本输入弹窗(needs_version 的 install/update 先取版本);value 记忆上次输入
+// 打开版本输入弹窗(needs_version 的 install/update 先取版本)。
+// e:update 恒弹(升级重询——记忆只在弹窗里预填,绝不跳过输入直发);
+//    install 无记忆才弹(有记忆走 run_action 快捷直发);弹窗内 C(Shift+c)清该行记忆(换版本逃生)。
 function open_version_input(r, op) {
   S.vinput = { op: op || (r.installed ? "update" : "install"), name: r.name, val: S.vinputs[r.name] || "" };
   helix.open_popup({
@@ -229,8 +238,11 @@ function open_version_input(r, op) {
       helix.el("col", [
         helix.el("text", S.vinput.name + " 需显式版本(下载源含 {version} 占位)", { style: "ui.virtual" }),
         helix.el("text", "> " + (S.vinput.val || "") + "▏"),
-        helix.el("text", "字符输入 · Enter 提交 · Backspace 删 · Esc 取消", { style: "ui.virtual" }),
+        helix.el("text", "字符输入 · Enter 提交 · C 清记忆 · Backspace 删 · Esc 取消", { style: "ui.virtual" }),
       ]),
+    onClose: () => {
+      S.vinput = null; // 引擎非按键关闭时自愈(任务 9 防抖)
+    },
     onKey: (key) => {
       if (key.ctrl || key.alt) return "handled";
       const k = key.name;
@@ -249,6 +261,12 @@ function open_version_input(r, op) {
         S.vinputs[name] = v;
         begin_task([{ op, name, version: v }]);
         return "close";
+      }
+      if (k === "C") {
+        // C(Shift+c):清该行版本记忆并清空预填——否则该记忆会锁死后续 install 的快捷直发
+        delete S.vinputs[S.vinput.name];
+        S.vinput.val = "";
+        return "handled";
       }
       if (k === "Backspace") {
         S.vinput.val = S.vinput.val.slice(0, -1);
@@ -304,7 +322,8 @@ function run_action(op, name) {
   if (!r) return;
   if (op === "info") return open_info(r);
   if (op === "install" || op === "update") {
-    if (r.needs_version && !S.vinputs[r.name]) return open_version_input(r, op);
+    // e:needs_version 的 update 恒弹输入(升级重询——防记忆把换版入口锁死);install 有记忆才直发(快捷)
+    if (r.needs_version && (op === "update" || !S.vinputs[r.name])) return open_version_input(r, op);
     const version = r.needs_version ? S.vinputs[r.name] : undefined;
     begin_task([{ op, name: r.name, version }]);
     return;
@@ -326,7 +345,7 @@ function open_action_menu() {
   helix.open_popup({
     layer: LAYERS.menu,
     position: "center",
-    width: 40,
+    width: 44,
     height: S.menu.items.length + 3,
     render: () =>
       helix.el("col", [
@@ -335,14 +354,21 @@ function open_action_menu() {
         S.menu.items.map((it, i) =>
           helix.el("text", (i === S.menu.sel ? "▸ " : "  ") + it.label, i === S.menu.sel ? { style: "ui.selection" } : {})
         ),
-        [helix.el("text", "↑↓/j k 选择 · Enter 执行 · Esc/q 关闭", { style: "ui.virtual" })]
+        [helix.el("text", "↑↓/j k 选择 · Enter 执行 · i 直达信息 · Esc/q 关闭", { style: "ui.virtual" })]
       )),
+    onClose: () => {
+      S.menu = null; // 引擎非按键关闭时自愈
+    },
     onKey: (key) => {
       if (key.ctrl || key.alt) return "handled";
       const k = key.name;
       if (k === "Esc" || k === "q") {
         S.menu = null;
         return "close";
+      }
+      if (k === "i") {
+        run_action("info", S.menu.name); // 信息叠于菜单层上(i 直达,菜单保留)
+        return "handled";
       }
       if (k === "j" || k === "Down") {
         S.menu.sel = (S.menu.sel + 1) % S.menu.items.length;
@@ -443,6 +469,23 @@ function handle_key(key) {
   }
   if (k === "t") {
     toggle_mark();
+    return "handled";
+  }
+  if (k === "C") {
+    // Shift+C:清版本记忆——选中行 needs_version 且有记忆清该行,否则清全部(换版本逃生)
+    const r = selected_row();
+    if (r && r.needs_version && S.vinputs[r.name] !== undefined) {
+      delete S.vinputs[r.name];
+      helix.echo("arsenal: 已清 " + r.name + " 的版本记忆(重装/升级需重输版本)");
+    } else {
+      const n = Object.keys(S.vinputs).length;
+      if (n) {
+        S.vinputs = {};
+        helix.echo("arsenal: 已清全部版本记忆(" + n + " 行)");
+      } else {
+        helix.echo("arsenal: 无版本记忆可清(Shift+C 清选中行记忆,无则清全部)");
+      }
+    }
     return "handled";
   }
   if (k === "x") {
