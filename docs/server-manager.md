@@ -22,8 +22,9 @@ mason 式工具管理器:统一注册表 + 下载安装/升级/卸载(mirror 支
 
 JS API:`helix.server.list/search/install/update/remove/status`(经
 `UiRequest::ServerOp`,单向,结果显示在状态栏)+ `helix.server.rows(cb)`——
-term→JS 行数据回传(面板渲染用;行对象 {name,kind,languages,installed,version,installable},
-一次性回调)。
+term→JS 行数据回传(面板渲染用;一次性回调)。行对象含
+name/kind/languages/installed/local/version/installable/description/homepage/
+upgradable/bin/source/needs_version(完整说明见 arsenal 文档)。
 
 ## arsenal 界面(浮层市场窗)
 

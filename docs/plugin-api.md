@@ -119,7 +119,7 @@
 - 优点:注册表/受管目录单一;浮层市场窗(arsenal)提供即搜/分类/标记批量/版本输入/进度;命令行族可脚本化。
 - 局限:JS 单向调用结果看状态栏;版本需显式输入(下载源含 `{version}` 且未固定 version 时);运行中语言配置需重启加载。
 
-→ 详细见 [`../server-manager.md`](../server-manager.md) 与 [`../arsenal.md`](../arsenal.md)
+→ 详细见 [`server-manager.md`](server-manager.md) 与 [`arsenal.md`](arsenal.md)
 
 ### LSP
 
