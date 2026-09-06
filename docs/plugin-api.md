@@ -114,9 +114,12 @@
 
 ### server 管理(非插件特性;JS 可镜像调用)
 
-`:server list/search/panel/install/update/remove/status`(mason 式 LSP/DAP/linter/formatter 管理器):统一注册表 + mirror/sha256 下载安装,自动写 `languages.toml` 标记段(`# >>> helix-managed`)。JS API `helix.server.list/search/install/update/remove/status`(经 `UiRequest::ServerOp`,单向,结果看状态栏)。
+`:server list/search/panel/install/update/remove/status`(mason 式 LSP/DAP/linter/formatter 管理器):统一注册表 + mirror/sha256 下载安装,自动写 `languages.toml` 标记段(`# >>> helix-managed`)。JS API `helix.server.list/search/install/update/remove/status`(经 `UiRequest::ServerOp`,单向,结果看状态栏)+ `helix.server.rows(cb)`(行回传)/`helix.server.task(items,cb)`(入队后台任务,phase/progress/done 事件泵回)——arsenal 浮层市场窗(见下)即基于 rows/task 的典型用法。
 
-→ 详细见 [`../server-manager.md`](../server-manager.md)
+- 优点:注册表/受管目录单一;浮层市场窗(arsenal)提供即搜/分类/标记批量/版本输入/进度;命令行族可脚本化。
+- 局限:JS 单向调用结果看状态栏;版本需显式输入(下载源含 `{version}` 且未固定 version 时);运行中语言配置需重启加载。
+
+→ 详细见 [`../server-manager.md`](../server-manager.md) 与 [`../arsenal.md`](../arsenal.md)
 
 ### LSP
 

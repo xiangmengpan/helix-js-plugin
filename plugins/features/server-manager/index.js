@@ -1,4 +1,7 @@
 // server-manager.js — :server 管理面板(rail 骨架;数据经 helix.server.rows term→JS 回传)
+// 已废弃(deprecated):功能由浮层市场窗 arsenal 取代(plugins/features/arsenal/index.js,
+//   :arsenal——搜索/分类/标记批量/版本输入/行与批量进度/信息弹窗齐全);本文件仅保留旧键位
+//   (j/k Enter x r q)兼容,新装环境请用 arsenal。
 // 用法:init.js 里 helix.load("features/server-manager/index.js"),:server-manager 开关。
 // 键位:j/k 或 Up/Down 导航;Enter 未装→install / 已装→update;x 移除;r 刷新;q/Esc 关闭。
 // 说明:配方无下载源(installable=false)时 Enter 报错提示;移除无二次确认(先 r 看版本)。

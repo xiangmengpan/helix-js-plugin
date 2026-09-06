@@ -25,6 +25,24 @@ JS API:`helix.server.list/search/install/update/remove/status`(经
 term→JS 行数据回传(面板渲染用;行对象 {name,kind,languages,installed,version,installable},
 一次性回调)。
 
+## arsenal 界面(浮层市场窗)
+
+> `:server` 的数据/动作在 [arsenal.md](arsenal.md) 有浮层市场窗实现(搜索/分类/标记批量/
+> 版本输入/行与批量进度/信息弹窗),取代 `:server panel` 与 `:server-manager` rail 面板。
+> 内置配方 M5 起带中文 description + 官方 homepage,arsenal 行/信息弹窗直接展示。
+
+- 打开:`init.js` 里 `helix.load("features/arsenal/index.js")`,`:arsenal` 切换浮层市场窗。
+- 安装/升级/卸载仍走本页命令族底层(`helix.server.task`,worker 串行 + 进度事件);
+  版本输入弹窗只在配方下载源含 `{version}` 占位且未固定 version(如内置 rust-analyzer)时出现。
+- `description`/`homepage` 亦可用于 config 扩展配方(展示字段,可选):
+
+```toml
+[server-manager.registry.my-ls]
+url = "…"
+description = "我的语言服务器"   # arsenal 行描述列/信息弹窗显示
+homepage = "https://example.com"
+```
+
 ## 本地已装识别(local)
 
 注册表配方按 `bin-name` 在 PATH 中探测(排除受管 bin 目录自身):已存在则标记
