@@ -1,5 +1,7 @@
 // arsenal node 级测试——版本输入/提交链路 + update 重询(e) + 批量 + 汇总 echo 边界(g)
-// 运行:node --test plugins/features/arsenal/tests/(node ≥ 18,内置 node:test,零依赖)
+// 运行:node --test plugins/features/arsenal/tests/arsenal.test.js
+//      (node ≥ 24 不再接受目录参数——会把目录当单个测试文件报错;须指到文件或
+//       用 glob,如 node --test "plugins/features/arsenal/tests/*.test.js";零依赖 node:test)
 // 原理:index.js 底部模块化导出(S + run_action/batch_run/handle_key 等,engine 加载时
 //       module 未定义自动跳过)。node 直接 require 前注入最小 global.helix 桩:
 //       plugin/register_command 空转(engine 接线不需要);echo/open_popup/server.task
@@ -11,7 +13,7 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 // ── helix 最小桩(须在 require 之前就位:index.js 顶层调用 helix.plugin) ──
-const calls = { echo: [], popups: [], tasks: [] };
+const calls = { echo: [], popups: [], tasks: [], rowsFetch: [] };
 let popup_seq = 1;
 global.helix = {
   plugin() {},
@@ -33,7 +35,9 @@ global.helix = {
       calls.tasks.push({ id, items, cb });
       return id;
     },
-    rows() {}, // fetch_rows 桩:测试直接写 S.rows,不回写
+    rows(cb) {
+      calls.rowsFetch.push(cb); // fetch_rows 每次调用登记(fetch_rows 空转不回写)
+    },
   },
 };
 
@@ -88,6 +92,7 @@ function reset() {
   calls.echo.length = 0;
   calls.popups.length = 0;
   calls.tasks.length = 0;
+  calls.rowsFetch.length = 0;
 }
 beforeEach(reset);
 
@@ -251,4 +256,176 @@ test('子弹窗 onClose 自愈:引擎非按键关闭时 S.menu/S.vinput 置 null
   assert.ok(S.vinput);
   popupOn(M.LAYERS.input).opts.onClose();
   assert.equal(S.vinput, null);
+});
+
+// ────────────────────────── I2:过滤非空时字母一律即搜(防误卸载/误弹窗/误关窗) ──────────────────────────
+
+test('I2:过滤非空时 x 进 filter 不触发 remove(不卸载)', () => {
+  S.rows = [{ ...NV_MANAGED }]; // installed 非 local:x 本会 remove
+  S.filter = 'a';
+  M.handle_key({ name: 'x' });
+  assert.equal(S.filter, 'ax', 'x 应追加进过滤');
+  assert.equal(calls.tasks.length, 0, '不得触发 remove');
+  assert.deepEqual(calls.popups, [], '不得开任何弹窗');
+});
+
+test('I2:过滤非空时 u/i 进 filter 不弹版本输入/信息', () => {
+  S.rows = [{ ...NV_MANAGED }]; // u 本会开版本输入(needs_version update),i 本会开信息
+  S.filter = 'n';
+  M.handle_key({ name: 'u' });
+  M.handle_key({ name: 'i' });
+  assert.equal(S.filter, 'nui', 'u/i 均应进过滤');
+  assert.deepEqual(calls.popups, [], '不得弹窗');
+  assert.equal(S.vinput, null);
+});
+
+test('I2:过滤非空时 f/t/j/k/r/q/C 均不触发快捷键', () => {
+  S.rows = [{ ...NV_MANAGED, upgradable: true }];
+  S.vinputs['rust-analyzer'] = '2024-09-16';
+  S.kind = 'all';
+  S.sel = 0;
+  const before_rows = S.rows.length;
+  S.filter = 'q';
+  for (const k of ['f', 't', 'j', 'k', 'r', 'q']) M.handle_key({ name: k });
+  // C(shift)也进搜索
+  M.handle_key({ name: 'C', shift: true });
+  assert.equal(S.filter, 'qftjkrqC', '全字母(含 q/f/t/j/k/r/C)应追加,got: ' + S.filter);
+  assert.equal(S.kind, 'all', 'f 不得循环分类');
+  assert.equal(S.marks.size, 0, 't 不得标记');
+  assert.equal(S.sel, 0, 'j/k 不得移动选中');
+  assert.ok('rust-analyzer' in S.vinputs, 'C 不得清记忆');
+  assert.equal(calls.rowsFetch.length, 0, 'r 不得触发刷新');
+  assert.equal(S.rows.length, before_rows);
+});
+
+test('I2:过滤非空时 q 不关闭(return handled);Esc 清过滤;空过滤 q 才 close', () => {
+  S.filter = 'd';
+  assert.equal(M.handle_key({ name: 'q' }), 'handled', '过滤中 q 是搜索字符');
+  assert.equal(S.filter, 'dq');
+  // Esc 清过滤
+  assert.equal(M.handle_key({ name: 'Esc' }), 'handled');
+  assert.equal(S.filter, '', 'Esc 先清过滤');
+  // 空过滤:q close,Esc close
+  assert.equal(M.handle_key({ name: 'q' }), 'close');
+  assert.equal(M.handle_key({ name: 'Esc' }), 'close');
+});
+
+test('I2:过滤非空时 ↑↓ 仍可移动(导航例外)', () => {
+  S.rows = [FIXED, { ...FIXED, name: 'gopls2' }];
+  S.filter = 'go';
+  M.handle_key({ name: 'Down' });
+  assert.equal(S.sel, 1, 'Down 在过滤中仍导航');
+  assert.equal(S.filter, 'go', 'filter 不变');
+  M.handle_key({ name: 'Up' });
+  assert.equal(S.sel, 0);
+});
+
+test('I2:过滤空时直达快捷键仍生效(x 卸载/u 版本输入/i 信息/f 分类/t 标记/q 关)', () => {
+  S.rows = [{ ...NV_MANAGED }];
+  M.handle_key({ name: 'x' }); // installed 非 local → remove
+  assert.equal(calls.tasks.length, 1, 'x 直发 remove');
+  assert.deepEqual(calls.tasks[0].items, [{ op: 'remove', name: 'rust-analyzer' }]);
+  reset();
+  S.rows = [{ ...NV_MANAGED }];
+  M.handle_key({ name: 'u' });
+  popupOn(M.LAYERS.input); // update needs_version 恒弹输入
+  reset();
+  S.rows = [FIXED];
+  M.handle_key({ name: 'i' });
+  popupOn(M.LAYERS.info);
+  reset();
+  S.rows = [FIXED];
+  S.kind = 'all';
+  M.handle_key({ name: 'f' });
+  assert.equal(S.kind, 'lsp', 'f 循环分类');
+  reset();
+  S.rows = [FIXED];
+  M.handle_key({ name: 't' });
+  assert.deepEqual([...S.marks], ['gopls']);
+  reset();
+  assert.equal(M.handle_key({ name: 'q' }), 'close', '空过滤 q 关闭');
+});
+
+// ────────────────────────── I4:busy 重入守卫 + r 手动刷新 ──────────────────────────
+
+function setBusy() {
+  S.busy = {
+    task_id: 77,
+    items: [{ op: 'install', name: 'gopls' }],
+    idx: 0,
+    done: 0,
+    fail: [],
+    pct: null,
+    cur: { op: 'install', name: 'gopls' },
+  };
+  S.row_busy = {};
+}
+
+test('I4:busy 时 run_action(install) 拒绝并提示任务进行中', () => {
+  S.rows = [FIXED];
+  setBusy();
+  M.run_action('install', 'gopls');
+  assert.equal(calls.tasks.length, 0, 'busy 中不得再提交');
+  assert.ok(calls.echo.some((m) => m.includes('任务进行中')), '应提示任务进行中');
+});
+
+test('I4:busy 时 batch_run 拒绝;解除后可再提交', () => {
+  S.rows = [FIXED];
+  S.marks = new Set(['gopls']);
+  setBusy();
+  M.batch_run();
+  assert.equal(calls.tasks.length, 0, 'busy 中批量不得提交');
+  assert.ok(calls.echo.some((m) => m.includes('任务进行中')));
+  assert.equal(S.marks.size, 1, '守卫不吞标记(提交未发生)');
+  // 解除后恢复
+  S.busy = null;
+  M.batch_run();
+  assert.equal(calls.tasks.length, 1, '解除后批量可提交');
+  assert.equal(S.marks.size, 0, '快照即提交');
+});
+
+test('I4:busy 时版本提交链路被拒(run_action 拦截,不弹输入不提交)', () => {
+  S.rows = [NV_INSTALLABLE];
+  setBusy();
+  M.run_action('install', 'rust-analyzer'); // busy 守卫在弹输入之前
+  assert.equal(calls.tasks.length, 0, 'busy 中不得提交');
+  assert.equal(calls.popups.length, 0, 'busy 中不弹版本输入');
+  assert.equal(S.vinput, null);
+  assert.ok(calls.echo.some((m) => m.includes('任务进行中')), '应提示任务进行中');
+  // 已开的版本输入在 busy 中 Enter 也被拒且保留弹窗(输入不丢)
+  S.busy = null;
+  calls.echo.length = 0;
+  M.run_action('install', 'rust-analyzer');
+  popupOn(M.LAYERS.input).opts.onKey({ name: '2' });
+  popupOn(M.LAYERS.input).opts.onKey({ name: 'Enter' }); // 正常提交成功
+  assert.equal(calls.tasks.length, 1);
+});
+
+test('I4:主窗 r 无过滤时触发 fetch_rows(刷新);过滤时 r 进搜索', () => {
+  S.rows = [FIXED];
+  M.handle_key({ name: 'r' });
+  assert.equal(calls.rowsFetch.length, 1, 'r 应触发一次 fetch_rows');
+  assert.equal(S.filter, '', 'r 不进 filter');
+  S.filter = 'g';
+  M.handle_key({ name: 'r' });
+  assert.equal(S.filter, 'gr', '过滤中 r 是搜索字符');
+  assert.equal(calls.rowsFetch.length, 1, '不再触发刷新');
+});
+
+// ────────────────────────── M-f:批级 panic(name="")补齐剩余项 error 终态,防 busy 卡底栏 ──────────────────────────
+
+test('M-f:批级 error(name 空)对剩余项逐个补 error 终态并收尾 busy', () => {
+  S.rows = [FIXED, { ...FIXED, name: 'black2' }];
+  S.marks = new Set(['gopls', 'black2']);
+  M.batch_run();
+  assert.equal(S.busy.items.length, 2);
+  // 第一项正常 error(具名)→ idx 到 1
+  feed('error', 'gopls', '下载失败');
+  assert.equal(S.busy.idx, 1);
+  // 批级 panic(name=""):worker 不再发剩余事件 → 补齐并收尾
+  feed('error', '', 'batch worker panic: boom');
+  assert.equal(S.busy, null, '批级 panic 后 busy 必须收尾(不再等永不来的事件)');
+  const last = calls.echo[calls.echo.length - 1];
+  assert.ok(last.includes('批量完成 0/2'), '汇总应有: ' + last);
+  assert.ok(last.includes('black2'), '剩余项 black2 应出现在失败名单: ' + last);
 });

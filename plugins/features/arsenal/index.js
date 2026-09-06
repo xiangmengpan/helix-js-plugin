@@ -4,10 +4,12 @@
 //       width:"78%", height:"75%" }),信息/动作菜单/版本输入各自独立 layer 叠于主窗上
 //       (同层再开=替换;子层 Esc 关自己回主窗)。任务 9 实测:JS 侧无 popup 层移除请求,
 //       关闭一律走按键路径——onKey 返回 "close" 由 term 按 layer 移除,onClose 兜底置空。
-// 键位:j/k 或 Up/Down 导航 · 可打印字符即搜(匹配名/语言/描述) · f 分类循环 ·
-//       t 标记(Enter 批量) · Enter 动作菜单/批量 · x/u/i 直达卸载(停挂接)/升级/信息 ·
-//       C(Shift+c) 清版本记忆(选中行有则清该行,否则清全部) · Backspace 删过滤 ·
-//       Esc 先清过滤再关 · q 关闭。菜单内 i 直达该行信息。
+// 键位:j/k 或 Up/Down 导航(过滤非空时 j/k 归搜索,移动用 ↑↓)· 字符即搜(匹配名/语言/描述;
+//       过滤非空时字母一律进搜索——x/u/i/f/t/j/k/q/r/C 不触发命令)· f 分类循环(无过滤时) ·
+//       t 标记(无过滤时;Enter 批量)· Enter 动作菜单/批量(过滤中仍可用)· r 刷新(无过滤时) ·
+//       x/u/i 直达卸载(停挂接)/升级/信息(无过滤时)· C(Shift+c) 清版本记忆(无过滤时) ·
+//       Backspace 删过滤 · Esc 先清过滤再关 · q 无过滤时关闭(过滤中 q 为搜索字符)。
+//       任务运行中(S.busy)拒绝再提交(run_action/batch_run/版本 Enter 入口 echo 提示)。
 // 数据:helix.server.rows(cb) 回传行 {name,kind,languages,installed,local,version,
 //       description,homepage,installable,upgradable,needs_version,bin,source};
 //       upgradable → 状态列 ▲(受管且可升级);needs_version 行:install 无记忆弹输入、
@@ -60,10 +62,21 @@ function on_task_event(ev) {
   if (ev.kind === "done") {
     S.busy.done += 1;
     if (S.busy.fail.length === 0 && ev.msg) helix.echo(ev.msg); // 单项成功可直报(done 事件 msg)
+    S.busy.idx += 1;
   } else if (ev.kind === "error") {
-    S.busy.fail.push(ev.name + (ev.msg ? "(" + ev.msg + ")" : ""));
+    if (ev.name) {
+      S.busy.fail.push(ev.name + (ev.msg ? "(" + ev.msg + ")" : ""));
+      S.busy.idx += 1;
+    } else {
+      // 批级 panic(name="";run_batch catch 兜底事件):worker 已不执行本批剩余 item,
+      // 不会再发事件 → 剩余项逐个补 error 终态,防 busy 卡底栏(done+fail 永不到总量)
+      if (ev.msg) S.busy.fail.push("批量 worker panic: " + ev.msg + "(剩余项已终止)");
+      for (let i = S.busy.idx; i < S.busy.items.length; i++) {
+        S.busy.fail.push(S.busy.items[i].name);
+      }
+      S.busy.idx = S.busy.items.length;
+    }
   }
-  S.busy.idx += 1;
   S.busy.cur = S.busy.items[S.busy.idx] || null;
   fetch_rows(); // done/error 后刷新行状态
   if (S.busy.done + S.busy.fail.length >= S.busy.items.length) {
@@ -80,8 +93,14 @@ function on_task_event(ev) {
   }
 }
 
-// 提交流程任务(单/批量共用):helix.server.task 入队即回;busy 底栏 + 行进度
+// 提交流程任务(单/批量共用):helix.server.task 入队即回;busy 底栏 + 行进度。
+// I4 重入守卫:任务进行中(S.busy 非空)拒绝新提交——run_action/batch_run/版本输入
+// Enter 全部汇到这里,守卫一处覆盖三入口。
 function begin_task(items) {
+  if (S.busy) {
+    helix.echo("arsenal: 任务进行中,请等待完成…");
+    return;
+  }
   const task_items = items.map((it) => {
     const o = { op: it.op, name: it.name };
     if (it.version) o.version = it.version;
@@ -197,10 +216,12 @@ function main_render(focus, ctx) {
       { style: "ui.virtual" }
     );
     const busy = busy_line();
+    const footerText = S.filter
+      ? "过滤中: 字母=搜索字符 · ↑↓ 移动 · Enter 操作 · Backspace 删 · Esc 清过滤"
+      : "j/k ↑↓ 导航 · 即搜 · Enter 动作 · x 卸/u 升/i 信息 · f 分类 · t 标记 · r 刷新 · C 清记忆 · Esc/q 关";
     const footer = helix.el(
       "text",
-      busy ||
-        "j/k ↑↓ · 字符即搜 · Enter 操作 · x/u/i 直达 · f 分类 · t 标记 · C 清版本记忆 · Esc 清过滤再关 · q 关闭",
+      busy || footerText,
       { style: busy ? "ui.popup" : "ui.virtual" }
     );
     return helix.el("col", [title, helix.el("scroll", list, { height: H }), footer]);
@@ -251,6 +272,11 @@ function open_version_input(r, op) {
         return "close";
       }
       if (k === "Enter") {
+        if (S.busy) {
+          // I4:任务进行中拒新提交——保留弹窗与已输内容(不吞输入)
+          helix.echo("arsenal: 任务进行中,请等待完成…");
+          return "handled";
+        }
         const v = (S.vinput.val || "").trim();
         const { op, name } = S.vinput;
         S.vinput = null;
@@ -286,8 +312,9 @@ function open_info(row) {
   const r = row || selected_row();
   if (!r) return;
   const lang = (r.languages || []).join(", ") || "—";
-  const st = status_text(r) + (r.version ? " (" + r.version + ")" : "");
-  const status = r.installed && !r.local && r.upgradable ? "▲ 可升级 · " + st : st;
+  // 状态列与信息弹窗不双份重复:版本只经 status_text 出现一次(可升级以 ▲ 字样 + 括注提示)
+  const st = status_text(r);
+  const status = st + (r.installed && !r.local && r.upgradable ? " (可升级)" : "");
   const lines = [
     r.name + "  [" + r.kind + "]",
     "状态: " + status,
@@ -321,6 +348,11 @@ function run_action(op, name) {
   const r = row_by_name(name) || selected_row();
   if (!r) return;
   if (op === "info") return open_info(r);
+  if (S.busy) {
+    // I4:任务进行中拒新提交(信息查看不受限;写动作全拦)
+    helix.echo("arsenal: 任务进行中,请等待完成…");
+    return;
+  }
   if (op === "install" || op === "update") {
     // e:needs_version 的 update 恒弹输入(升级重询——防记忆把换版入口锁死);install 有记忆才直发(快捷)
     if (r.needs_version && (op === "update" || !S.vinputs[r.name])) return open_version_input(r, op);
@@ -392,6 +424,11 @@ function open_action_menu() {
 
 // 批量:marks 集合快照 → 仅可安装项(未装+installable)install;版本用 vinputs 记忆
 function batch_run() {
+  if (S.busy) {
+    // I4:守卫在清 marks 之前——拒绝时保留标记,可稍后重试
+    helix.echo("arsenal: 任务进行中,请等待完成…");
+    return;
+  }
   const marked = [...S.marks];
   const items = S.rows
     .filter((r) => marked.includes(r.name) && !r.installed && r.installable)
@@ -434,21 +471,13 @@ function toggle_arsenal() {
 function handle_key(key) {
   if (key.ctrl || key.alt) return "handled";
   const k = key.name;
-  if (k === "q") return "close";
+  // 过滤态例外键(不受"字母即搜"影响):Esc 清/关、Backspace 删过滤、Enter 仍执行动作
   if (k === "Esc") {
     if (S.filter) {
       S.filter = "";
       return "handled";
     }
     return "close";
-  }
-  if (k === "j" || k === "Down") {
-    move(1);
-    return "handled";
-  }
-  if (k === "k" || k === "Up") {
-    move(-1);
-    return "handled";
   }
   if (k === "Backspace") {
     S.filter = S.filter.slice(0, -1);
@@ -457,6 +486,33 @@ function handle_key(key) {
   if (k === "Enter") {
     if (S.marks.size) batch_run();
     else open_action_menu();
+    return "handled";
+  }
+  // I2:过滤非空时,可打印字母一律进搜索——x/u/i/f/t/j/k/q/r/C 均不触发
+  // 对应命令/导航(防搜名字里的字母误卸载/误弹窗/误分类/误关窗);↑↓ 仍可移动
+  if (S.filter) {
+    if (k.length === 1) {
+      S.filter += k;
+      return "handled";
+    }
+    if (k === "Down") {
+      move(1);
+      return "handled";
+    }
+    if (k === "Up") {
+      move(-1);
+      return "handled";
+    }
+    return "handled"; // 未映射键消费(模态市场窗)
+  }
+  // ── 以下仅无过滤时生效的快捷键 ──
+  if (k === "q") return "close";
+  if (k === "j" || k === "Down") {
+    move(1);
+    return "handled";
+  }
+  if (k === "k" || k === "Up") {
+    move(-1);
     return "handled";
   }
   if (k === "i") {
@@ -469,6 +525,10 @@ function handle_key(key) {
   }
   if (k === "t") {
     toggle_mark();
+    return "handled";
+  }
+  if (k === "r") {
+    fetch_rows(); // 手动刷新行列表(状态列/可升级标记重新检测)
     return "handled";
   }
   if (k === "C") {
