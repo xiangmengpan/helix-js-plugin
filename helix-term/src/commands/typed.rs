@@ -5323,18 +5323,27 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         // Managed → 受管已装(version=--version 检测串;upgradable 比较;bin=软链路径);
                         // Local(p) → 本机已有(bin=PATH 绝对路径);Missing → 全空。
                         let avail = server_manager::availability(&spec.name);
+                        // 版本串剥 "<bin_name> " 前缀(--version 常输出整行如
+                        // "rust-analyzer 1.82.0")只留版本号:状态列/信息弹窗不再重复拼 bin 名。
+                        // 非该前缀(如裸版本号)原样保留。
+                        let strip_bin_prefix = |v: Option<String>| -> Option<String> {
+                            let core = v
+                                .as_deref()
+                                .and_then(|s| s.strip_prefix(&spec.bin_name)?.strip_prefix(' '));
+                            core.map(str::to_string).or(v)
+                        };
                         let (installed, local, version, upgradable, bin) = match avail {
                             Availability::Managed => (
                                 true,
                                 false,
-                                spec.version_detected(),
+                                strip_bin_prefix(spec.version_detected()),
                                 server_manager::is_upgradable(&spec),
                                 Some(spec.bin_path().to_string_lossy().into_owned()),
                             ),
                             Availability::Local(p) => (
                                 true,
                                 true,
-                                server_manager::detect_version(&p),
+                                strip_bin_prefix(server_manager::detect_version(&p)),
                                 false,
                                 Some(p.to_string_lossy().into_owned()),
                             ),
@@ -5800,6 +5809,9 @@ fn server_panel(cx: &mut compositor::Context) -> anyhow::Result<()> {
                         server_manager::availability(&spec.name),
                         server_manager::Availability::Managed
                     );
+                    // 写互斥:picker Enter 直调 install/update + rewrite,与后台 worker/
+                    // :server 同步写流不交错(整 op 持锁,见 server_manager::OP_LOCK)
+                    let _op = server_manager::op_lock();
                     let result = if already {
                         server_manager::update(&spec.name, &version)
                     } else {
@@ -5952,6 +5964,8 @@ pub(crate) fn server_op(
                 ));
             }
             let version = resolve_version(&spec, arg2)?;
+            // 写互斥(整 op 含 rewrite):与后台 worker / :server 其它写流不交错
+            let _op = server_manager::op_lock();
             server_manager::install(name, &version)?;
             let rw = server_manager::rewrite_languages_toml()?;
             let mut msg = format!(
@@ -5999,6 +6013,8 @@ pub(crate) fn server_op(
                 return Ok(());
             }
             let (mut updated, mut failed) = (0u32, Vec::new());
+            // 写互斥:全量/单个 update(含末尾 rewrite)与后台 worker 写流不交错
+            let _op = server_manager::op_lock();
             for spec in targets {
                 match resolve_version(&spec, None)
                     .and_then(|v| server_manager::update(&spec.name, &v))
@@ -6026,6 +6042,8 @@ pub(crate) fn server_op(
             };
             match server_manager::availability(name) {
                 Availability::Managed => {
+                    // remove 内部含 languages.toml 重写:整 op 持写锁
+                    let _op = server_manager::op_lock();
                     server_manager::remove(name)?;
                     editor.set_status(format!("removed '{name}';若正被 LSP 使用,重启后生效"));
                 }
@@ -6047,6 +6065,8 @@ pub(crate) fn server_op(
             match server_manager::availability(name) {
                 Availability::Local(_) => {
                     let on = !server_manager::ignored_local().contains(&name.to_string());
+                    // set_ignored + rewrite 整 op 持写锁
+                    let _op = server_manager::op_lock();
                     server_manager::set_ignored(name, on)?;
                     let _ = server_manager::rewrite_languages_toml();
                     editor.set_status(if on {

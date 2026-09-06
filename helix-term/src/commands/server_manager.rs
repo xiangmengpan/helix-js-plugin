@@ -29,6 +29,21 @@ pub fn set_mirror(prefix: &str) {
 
 static MIRROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
+/// 写互斥：managed/ + languages.toml 的写流(后台 worker 批次 / :server 同步子命令 /
+/// :server panel Enter)不得交错——两个流同时改写受管目录/标记段会互相踩。
+/// 锁范围 = "整 op 含最终 rewrite_languages_toml"（run_batch 整批、server_op 写臂、
+/// panel Enter 各自在首写前拿锁、尾写后释放）。持锁含下载(分钟级)：后台任务进行中，
+/// 主线程同步 :server 写命令会阻塞到其结束——锁只防坏不防等(文档已注明)。
+/// 单一层级：锁内代码不会再触发 submit/run_batch/同步写(无重入路径)。
+static OP_LOCK: Mutex<()> = Mutex::new(());
+
+/// 取写锁（跨模块：commands/typed.rs、commands/server_tasks.rs 共用）
+pub(crate) fn op_lock() -> std::sync::MutexGuard<'static, ()> {
+    OP_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// URL 经 mirror 改写:file:// 与本地路径原样;https 前加 mirror 前缀(若配置)。
 fn mirror_url(raw: &str) -> String {
     let p = mirror_prefix();

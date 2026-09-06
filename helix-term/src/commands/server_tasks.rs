@@ -83,6 +83,9 @@ fn worker_loop(rx: Receiver<Job>) {
 /// unmanage/下载前报错)不会把残留钩子留在本线程——内联回退发生在主线程时,
 /// 残留钩子会让后续同步 :server install 消费到死 task_id/seq 的幽灵 progress 事件。
 fn run_batch(task_id: u64, items: Vec<(String, String, Option<String>)>) {
+    // 写互斥：整批(含每 item 的 rewrite)与主线程 :server 同步写/picker Enter 不交错。
+    // worker 串行消费时锁多半空闲；与主线程写流同时发生时才是关键串行点。
+    let _op = server_manager::op_lock();
     // seq 每批次自 0：DL 钩子(Box<'static>)与阶段 progress 闭包共享
     let seq = Arc::new(AtomicU32::new(0));
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
