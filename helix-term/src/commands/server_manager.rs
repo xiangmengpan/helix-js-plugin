@@ -874,6 +874,13 @@ pub mod registry {
             }
         }
 
+        /// 补展示数据(description 中文一句 / homepage 官方链接);内置配方用
+        fn describe(mut self, description: &str, homepage: &str) -> Self {
+            self.description = description.to_string();
+            self.homepage = Some(homepage.to_string());
+            self
+        }
+
         /// 已装工具的 bin 绝对路径(managed/bin/<bin_name> 软链)
         pub fn bin_path(&self) -> PathBuf {
             managed_root().join("bin").join(&self.bin_name)
@@ -897,7 +904,8 @@ pub mod registry {
     /// 内置注册表(v1 子集)。配方为"惰性占位":下载源留空 = install 报"未配置"
     /// (避免无校验/误装);真实 URL/版本/校验是 OS 相关数据,经
     /// [server-manager.registry.<name>] config 扩展(T4)提供可跑源。
-    fn builtin_specs() -> Vec<Spec> {
+    /// M5:内置配方补 description(中文一句)/homepage(官方仓库)——arsenal 市场/信息弹窗展示。
+    pub(crate) fn builtin_specs() -> Vec<Spec> {
         vec![
             Spec::archive(
                 "rust-analyzer",
@@ -908,8 +916,13 @@ pub mod registry {
                 "",
                 0,
                 "rust-analyzer",
+            )
+            .describe(
+                "Rust 语言服务器(rust-analyzer)",
+                "https://github.com/rust-lang/rust-analyzer",
             ),
-            Spec::archive("gopls", Kind::Lsp, &["go"], "gopls", "", "", 1, "gopls"),
+            Spec::archive("gopls", Kind::Lsp, &["go"], "gopls", "", "", 1, "gopls")
+                .describe("Go 官方语言服务器(gopls)", "https://github.com/golang/tools"),
             Spec::archive(
                 "pyright",
                 Kind::Lsp,
@@ -919,6 +932,10 @@ pub mod registry {
                 "",
                 1,
                 "pyright-langserver",
+            )
+            .describe(
+                "Python 静态类型检查器/Pylance 内核(pyright)",
+                "https://github.com/microsoft/pyright",
             ),
             Spec::archive(
                 "clangd",
@@ -929,9 +946,19 @@ pub mod registry {
                 "",
                 1,
                 "clangd",
+            )
+            .describe(
+                "C/C++ 语言服务器(clangd, LLVM 官方)",
+                "https://clangd.llvm.org",
             ),
-            Spec::tool("debugpy", Kind::Dap, &["python"], "debugpy", "", &[]),
-            Spec::tool("black", Kind::Formatter, &["python"], "black", "", &[]),
+            Spec::tool("debugpy", Kind::Dap, &["python"], "debugpy", "", &[]).describe(
+                "Python 调试适配器(debugpy, VS Code 内核)",
+                "https://github.com/microsoft/debugpy",
+            ),
+            Spec::tool("black", Kind::Formatter, &["python"], "black", "", &[]).describe(
+                "Python 代码格式化器(black)",
+                "https://github.com/psf/black",
+            ),
             Spec::tool(
                 "prettier",
                 Kind::Formatter,
@@ -946,6 +973,10 @@ pub mod registry {
                 "prettier",
                 "",
                 &[],
+            )
+            .describe(
+                "多语言代码格式化器(prettier)",
+                "https://github.com/prettier/prettier",
             ),
         ]
     }
@@ -2102,6 +2133,27 @@ mod tests {
         assert_eq!(spec.homepage.as_deref(), Some("https://example.com"));
         // 可升级判定:受管已装 && version 有值 && != 检测版本 → true
         let _ = spec;
+    }
+
+    #[test]
+    fn builtin_specs_all_have_description_and_homepage() {
+        // M5:内置 7 配方补展示数据(arsenal 行/信息弹窗显示)——缺描述/主页=遗漏
+        let specs = registry::builtin_specs();
+        assert_eq!(specs.len(), 7, "内置配方数变更需同步测试");
+        for s in &specs {
+            assert!(
+                !s.description.is_empty(),
+                "{} 缺 description(M5 应补中文一句)",
+                s.name
+            );
+            assert!(
+                s.homepage
+                    .as_deref()
+                    .is_some_and(|h| h.starts_with("https://")),
+                "{} 缺 homepage 官方链接",
+                s.name
+            );
+        }
     }
 
     #[test]
