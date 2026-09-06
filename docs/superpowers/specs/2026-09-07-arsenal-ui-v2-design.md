@@ -65,15 +65,20 @@
 - 顶框标题在 SEARCH 态不变;页签条右侧显示 `/query`(超长截断),便于看到输入状态。
 - 默认动作入口(Enter:有标记→批量,无→动作菜单)与现实现一致,SEARCH 内 Enter 同样生效。
 
-### 3.4 行模型(列宽修正)
+### 3.4 行模型(列宽修正,按显示列宽计算)
 
-列 = `mark(2) + glyph(1) + space(1) + name | gap(1) | desc | gap(1) | status`,总宽恒 `W-2`:
+列 = `mark(2) + glyph(1) + space(1) + name | gap(1) | desc | gap(1) | status`,总宽恒 `W-2`(框内正文宽):
 
-- name 列:定宽 `min(24, 0.34*(W-2))`,超长截断(去尾补 `…` 可选,不加)。
-- desc 列:弹性 = 剩余宽度;截断到列宽。
-- status 列:固定 `ST_W=14`,`status_text()` 结果左对齐填槽,槽右缘 = 行右缘(即内容右边界),不再有"状态后空洞"。
+- **全行按显示列宽计算,非字符数**:宽字符(CJK/全角 `[\u1100-\u115F \u2E80-\uA4CF \uAC00-\uD7A3 \uF900-\uFAFF \uFF00-\uFF60]` 等)占 2 列。JS 增两个小 helper:`wc_len(s)`(列宽)、`wc_pad(s, w)` / `wc_trunc(s, w)`(按列宽截断,不足不截)。**截断必须发生在列边界,绝不允许把字符从列中腰斩或让内容超出本列右缘**。
+- 状态列 `ST_W=14` **右锚**:槽右缘 = 内容右缘(行 W-2 边界),状态文本左对齐填槽;填充空格按剩余列宽算。描述列被截断时其末尾由列宽撑开,状态列不被推出、右框线内不溢出(本条即用户反馈的修复:截断后仍超出显示)。
+- name 列:定宽 `min(24, 0.34*(W-2))` 列宽截断,超长省略号 `…`(占 1 列)。
+- desc 列:弹性 = 剩余列宽;截断时以 `…` 收尾(占 1 列,指示被截)。
 - 行选中样式 `ui.selection` 作用于整行文本节点 → 反色条铺满行宽。
 - 空列表:`(no matches — press Esc to clear / q to close)` 样式 `ui.virtual`。
+
+> 背景(2026-09-07 实测):现状 `row_el` 用 `String.slice()` 按字符截断、`" ".repeat` 按字符补齐——中文/全角占 2 列时行实际宽度超 `W`,描述越界、状态列被挤出可视区。改版后 JS 侧先保证每行 ≤ W 列,引擎按 viewport 裁切仅作防线。
+
+> 风险注记:零宽/组合字符(如 emoji 修饰符)未专门处理;内置与 contrib 描述英化后主路径为 ASCII,宽字符路径主要覆盖用户 config 配方描述与多语言场景。
 
 ### 3.5 busy / 错误
 
@@ -119,6 +124,8 @@ busy 中: 写动作拒绝(echo),其余照常
 - **helix-term/tests/test/server_manager.rs** `server_arsenal_ui_smoke` 断言之中文文案改英文:`rust-analyzer 需显式版本`→`requires explicit version` 系、`命令: (未安装)`→`command: (not installed)`、`下载源:`→`source:`、`update 升级`/`remove 卸载`→`update`/`remove`、kind 标题断言 `· lsp ·`→页签激活断言(含 `lsp` 激活样式串/`all` 位置)、`受管/` 类(`:server status`)不动。新增 Tab 切页签、`/` 进搜索、Esc 退搜索断言;既有 `f` 用法按键序列改写(如 `f`→`<tab>`),I2 注释更新。
 - **plugins/features/arsenal/tests/arsenal.test.js**:echo/文案断言同步英文;键位用例覆盖 `handle_key`:NORMAL 字母不再进 filter、`/` 后才可输、SEARCH Esc 清退。
 - **node 级现有行夹具** description 英文化即可,断言不动则删相关断言。
+- **宽字符回归(node)**:`wc_len/wc_pad/wc_trunc` 夹具——CJK 双宽、截断边界不中腰、`…` 收尾;宽字符行拼接后列宽 ≤ W。
+- **宽字符回归(集成)**:`server_arsenal_ui_smoke` 注入 CJK 描述 recipe,渲染断言描述截断不越右缘、状态列仍贴右。
 - 截图验收:渲染无中文、框线/页签/右贴状态可见;`docs/superpowers/specs/2026-09-06-arsenal-design.md` 顶部加指针指向本规格;`docs/arsenal.md` 键位/布局/搜索说明更新(语言:中文文档保留,内容与新键位一致)。
 - 回归:`cargo test --features integration` arsenal 相关 + node --test arsenal + `cargo fmt/clippy` 干净(涉及 Rust 字符串改动)。
 
@@ -128,3 +135,4 @@ busy 中: 写动作拒绝(echo),其余照常
 - 一致性:§3/§4 文案与 §5.1 验收一致;键位表与 §3.3 表一致;不变量(能力零改动)全文未违背。
 - 范围:单一实现计划可覆盖(JS + 2 Rust 文件 + 测试/文档),无需拆分。
 - 歧义收敛:页签集 = 7 项(用户点名 4 项 + all/installed/local 默认保留);`/` SEARCH 内二次 `/` 忽略(不输入字面 `/`);SEARCH 内 `q` 是查询字符——已明示。
+- 用户反馈修复:描述截断后超出显示 → §3.4 按显示列宽截断/补齐、状态列右锚(宽字符不溢出)。
