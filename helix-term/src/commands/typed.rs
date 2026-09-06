@@ -4869,20 +4869,21 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             } => {
                 let lid = layer_id(&layer);
                 // center → 居中浮层(layer 层可叠多张,同层替换);anchor → 现状(参照点/尺寸 hint)
-                let popup = if center {
-                    ui::Popup::new(lid, ui::PluginPopup::new(id, None).with_layer(lid))
-                        .floating(width, height, size_pct)
+                let popup =
+                    if center {
+                        ui::Popup::new(lid, ui::PluginPopup::new(id, None).with_layer(lid))
+                            .floating(width, height, size_pct)
+                            .auto_close(false)
+                    } else {
+                        ui::Popup::new(
+                            lid,
+                            ui::PluginPopup::new(id, width.zip(height)).with_layer(lid),
+                        )
+                        .position(position.map(|(row, col)| {
+                            helix_core::Position::new(row as usize, col as usize)
+                        }))
                         .auto_close(false)
-                } else {
-                    ui::Popup::new(
-                        lid,
-                        ui::PluginPopup::new(id, width.zip(height)).with_layer(lid),
-                    )
-                    .position(position.map(|(row, col)| {
-                        helix_core::Position::new(row as usize, col as usize)
-                    }))
-                    .auto_close(false)
-                };
+                    };
                 // 由事件循环在下一轮推层并渲染。
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.replace_or_push(lid, popup);
@@ -5340,14 +5341,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             Availability::Missing => (false, false, None, false, None),
                         };
                         // 下载源仅供显示:archive 有 url → 原文;Tool/惰性 → None
-                        let source = match &spec.install {
-                            server_manager::registry::Install::Archive { url_template, .. }
-                                if !url_template.is_empty() =>
-                            {
-                                Some(url_template.clone())
-                            }
-                            _ => None,
-                        };
+                        let source =
+                            match &spec.install {
+                                server_manager::registry::Install::Archive {
+                                    url_template, ..
+                                } if !url_template.is_empty() => Some(url_template.clone()),
+                                _ => None,
+                            };
                         let kind = match spec.kind {
                             server_manager::registry::Kind::Lsp => "lsp",
                             server_manager::registry::Kind::Dap => "dap",

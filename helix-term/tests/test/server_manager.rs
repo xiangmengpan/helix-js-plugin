@@ -394,8 +394,8 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
         "managed/bin/demo-bin 应已安装: {}",
         bin.display()
     );
-    let langs_text = std::fs::read_to_string(&langs)
-        .map_err(|e| anyhow::anyhow!("读 languages.toml: {e}"))?;
+    let langs_text =
+        std::fs::read_to_string(&langs).map_err(|e| anyhow::anyhow!("读 languages.toml: {e}"))?;
     assert!(
         langs_text.contains("[language-server.demo-bin]"),
         "languages.toml 应有受管 language-server 段, got: {langs_text}"
@@ -455,19 +455,22 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
         .collect()
 }
 
-/// 左侧 64 列（arsenal 面板区）内容拼接
-fn arsenal_panel_text(app: &mut Application) -> String {
-    render_rows(app, helix_view::graphics::Rect::new(0, 0, 120, 30))
+// ────────────────────────── arsenal M4 冒烟本地辅助（渲染到 buffer 读浮层文本） ──────────────────────────
+
+/// 全宽拼接当前 compositor 渲染文本(浮层居中,64 列切片不再适用;contains 断言跨全行)
+fn arsenal_text(app: &mut Application) -> String {
+    render_rows(app, helix_view::graphics::Rect::new(0, 0, 120, 40))
         .iter()
-        .map(|r| r.chars().take(64).collect::<String>())
+        .map(|r| r.trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-// Arsenal M3 主视图冒烟:插件目录内 :plugin-load arsenal → :arsenal 打开市场窗 →
-// rows 回传渲染(内置配方行可见) → 即搜过滤("ru" 命中 rust-analyzer) → Backspace 清空复原 →
-// 导航/标记/Enter 占位/i 信息弹窗开关 → q 关闭 → 编辑器仍响应。
-// 断言风格与 server_manager_panel_toggle 同:全程无 JS 错误状态;面板文本经渲染 buffer 读取。
+// Arsenal M4 浮层冒烟:主窗 popup v2 居中浮层(78%×75%,layer "arsenal")→
+// 搜索 → Enter 动作链路 → 版本输入(needs_version,内置 rust-analyzer)Esc 取消 →
+// i 信息弹窗(命令路径/下载源占位替换为真实行字段)→ 假源安装收敛(行 ✓)→
+// 改 bin 检测版本重开 → ▲ 可升级标记(upgradable 字段)→ 动作菜单(update/remove)开/关 →
+// q 关闭 → 编辑器仍响应。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
@@ -478,9 +481,19 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
     std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
     std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
-    // 空 config → registry 仅内置 7 配方(rust-analyzer/gopls/pyright/clangd/debugpy/black/prettier)
-    let cfg = dir.path().join("sm-config-empty.toml");
-    std::fs::write(&cfg, "")?;
+
+    // 假 release:file://{dir}/rel/{version}/demo.tar.gz(顶层 demo-bin-1.0.0/,strip=1)
+    let rel_dir = dir.path().join("rel").join("1.0.0");
+    write_fake_tar_gz(&rel_dir.join("demo.tar.gz"), "demo-bin", "1.0.0")?;
+    // 配方注入(SM_SERVER_CONFIG):demo-bin url 含 {version} 但 version 固定 → needs_version false
+    let cfg = dir.path().join("sm-config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\ndescription = \"假 demo 工具\"\nhomepage = \"https://example.invalid/demo\"\n",
+            dir.path().display()
+        ),
+    )?;
     std::env::set_var("SM_SERVER_CONFIG", &cfg);
 
     let plugin = format!(
@@ -493,10 +506,9 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     );
 
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
     let popup_type = std::any::type_name::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>();
 
-    // 1. 加载插件 + 打开市场窗
+    // 1. 加载插件 + 打开市场窗(浮层主窗)
     pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
     assert!(
         !app.editor.is_err(),
@@ -504,71 +516,112 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         app.editor.get_status()
     );
     pump(&mut app, ":arsenal<ret>").await?;
-    assert!(
-        !app.editor.is_err(),
-        ":arsenal 打开不应报错, got: {:?}",
-        app.editor.get_status()
-    );
-    assert!(app.compositor.has_component(panel_type), "市场窗(面板)打开");
-
-    // 2. rows 回传渲染:标题 + 内置配方行可见(证明 fetch_rows→render 链路通)
-    let text = arsenal_panel_text(&mut app);
-    assert!(text.contains("arsenal"), "标题应渲染: {text:?}");
-    assert!(
-        text.contains("rust-analyzer") && text.contains("gopls"),
-        "内置配方行应可见(rust-analyzer/gopls): {text:?}"
-    );
-
-    // 3. 即搜过滤:"pyr" 命中 pyright(name),排除其余内置配方(p/y/r 均无命令键映射,纯入过滤)
-    pump(&mut app, "pyr").await?;
-    assert!(!app.editor.is_err(), "过滤不应报错");
-    let text = arsenal_panel_text(&mut app);
-    assert!(
-        text.contains("pyright"),
-        "过滤 'pyr' 后 pyright 仍在: {text:?}"
-    );
-    for gone in ["rust-analyzer", "gopls", "debugpy", "black"] {
-        assert!(
-            !text.contains(gone),
-            "过滤 'pyr' 后 {gone} 应被滤掉: {text:?}"
-        );
-    }
-
-    // 4. Backspace 清空过滤 → 复原全列表
-    pump(&mut app, "<backspace><backspace><backspace>").await?;
-    let text = arsenal_panel_text(&mut app);
-    assert!(
-        text.contains("gopls"),
-        "清空过滤后 gopls 复现: {text:?}"
-    );
-
-    // 5. 导航/标记/Enter(占位 echo,不真发任务)/i 信息弹窗 → Esc 关闭弹窗,市场仍在
-    pump(&mut app, "j").await?; // sel → 1(gopls)
-    pump(&mut app, "f").await?; // kind 循环 all→lsp(仍含行)
-    pump(&mut app, "k").await?; // sel → 0(rust-analyzer)
-    pump(&mut app, "t").await?; // 标记 rust-analyzer
-    pump(&mut app, "<ret>").await?; // 批量 1 选中 → 占位 echo
-    pump(&mut app, "i").await?; // 信息占位弹窗
+    assert!(!app.editor.is_err(), ":arsenal 打开不应报错");
     assert!(
         app.compositor.has_component(popup_type),
-        "i 应打开信息弹窗"
+        "市场窗应以 popup 浮层打开"
     );
-    assert!(!app.editor.is_err(), "i 弹窗不应报错");
-    pump(&mut app, "<esc>").await?;
+    let text = arsenal_text(&mut app);
+    assert!(text.contains("arsenal"), "浮层标题应渲染: {text:?}");
     assert!(
-        !app.compositor.has_component(popup_type),
-        "Esc 关闭信息弹窗"
-    );
-    assert!(
-        app.compositor.has_component(panel_type),
-        "信息弹窗关闭后市场窗仍在"
+        text.contains("rust-analyzer") && text.contains("demo-bin"),
+        "内置 + 注入配方行可见: {text:?}"
     );
 
-    // 6. q 关闭市场窗;编辑器仍响应
+    // 2. Enter 在 rust-analyzer(sel0;缺失+installable+needs_version)→ 版本输入弹窗(install 单项直达)
+    pump(&mut app, "<ret>").await?;
+    assert!(!app.editor.is_err(), "Enter 版本输入不应报错");
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("rust-analyzer 需显式版本"),
+        "needs_version → 版本输入弹窗应开: {text:?}"
+    );
+    pump(&mut app, "<esc>").await?; // 取消
+    assert!(!app.editor.is_err(), "版本输入 Esc 不应报错");
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("arsenal") && !text.contains("需显式版本"),
+        "Esc 取消版本输入后回主窗: {text:?}"
+    );
+
+    // 3. i 信息弹窗:行字段 bin/source 落地(M3 占位文本替换)
+    pump(&mut app, "i").await?;
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("命令: (未安装)") && text.contains("下载源: https://github.com/rust-lang"),
+        "信息弹窗应显示命令/下载源(行字段): {text:?}"
+    );
+    pump(&mut app, "<esc>").await?;
+    assert!(
+        arsenal_text(&mut app).contains("arsenal"),
+        "信息弹窗关闭后主窗仍在"
+    );
+
+    // 4. 即搜过滤 "demo"(d/e/m/o 均无命令键冲突) → 仅 demo-bin 行
+    pump(&mut app, "demo").await?;
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("demo-bin") && !text.contains("rust-analyzer"),
+        "过滤 'demo' 后仅 demo-bin: {text:?}"
+    );
+
+    // 5. Enter → demo-bin install 单项直达(version 固定,needs_version false,直发 task)→ 安装收敛 ✓
+    pump(&mut app, "<ret>").await?;
+    assert!(!app.editor.is_err(), "install 提交不应报错");
+    // 无害键步撑窗:worker(file:// 假源)事件 + done 后 fetch_rows 渲染收敛
+    for _ in 0..4 {
+        pump(&mut app, "j").await?;
+    }
+    assert!(!app.editor.is_err(), "后台安装不应报错");
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("✓ demo-bin 1.0"),
+        "安装收敛后行状态 ✓: {text:?}"
+    );
+
+    // 6. 改 bin 检测版本 → 重开市场 → ▲ 可升级标记(upgradable 字段驱动)
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let bin = dir.path().join("managed").join("bin").join("demo-bin");
+        std::fs::write(&bin, "#!/bin/sh\necho 'demo-bin 9.9'\n")?;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+    }
+    pump(&mut app, "q").await?; // 关主窗(filter 仍 demo)
+    assert!(
+        !app.compositor.has_component(popup_type),
+        "q 应关闭浮层主窗"
+    );
+    pump(&mut app, ":arsenal<ret>").await?;
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("▲ demo-bin 9.9"),
+        "检测版本 9.9 ≠ 配方 1.0.0 → ▲ 可升级: {text:?}"
+    );
+
+    // 7. Enter → demo-bin 受管已装 → 动作菜单(update/remove 两动作)开/关;主窗仍在
+    pump(&mut app, "<ret>").await?;
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("update 升级") && text.contains("remove 卸载"),
+        "动作菜单应列 update/remove: {text:?}"
+    );
+    pump(&mut app, "<esc>").await?; // 子层 Esc 关自己回主窗
+    assert!(
+        arsenal_text(&mut app).contains("arsenal"),
+        "菜单 Esc 后主窗仍在"
+    );
+    pump(&mut app, "f").await?; // 主窗仍响应:kind 循环
+    assert!(
+        arsenal_text(&mut app).contains("· lsp ·"),
+        "主窗按键仍响应(kind 循环): {:?}",
+        arsenal_text(&mut app)
+    );
+
+    // 8. q 关闭市场窗;编辑器仍响应
     pump(&mut app, "q").await?;
     assert!(
-        !app.compositor.has_component(panel_type),
-        "q 关闭市场窗"
+        !app.compositor.has_component(popup_type),
+        "q 应关闭浮层主窗"
     );
     pump(&mut app, ":server status<ret>").await?;
     {
@@ -580,6 +633,88 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     }
 
     // env 是进程级:清掉 SM_SERVER_CONFIG,避免后续测试读到已删临时 config
+    std::env::remove_var("SM_SERVER_CONFIG");
+    Ok(())
+}
+
+// Arsenal 批量:t 标记两个注入配方(均为未装+可装)→ Enter 直接批量(集合快照)→
+// 单 worker 串行安装两件 → 收敛后两行均 ✓;managed/bin 落盘断言。
+#[tokio::test(flavor = "multi_thread")]
+async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("b.txt");
+    std::fs::write(&file, "x\n")?;
+    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
+    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
+    std::env::set_var("SM_PATH", ""); // 禁用宿主 PATH 本地检测(hermetic)
+
+    let rel_dir = dir.path().join("rel").join("1.0.0");
+    write_fake_tar_gz(&rel_dir.join("demo.tar.gz"), "demo-bin", "1.0.0")?;
+    write_fake_tar_gz(&rel_dir.join("demob.tar.gz"), "demob", "1.0.0")?;
+    let cfg = dir.path().join("sm-config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\n\n[server-manager.registry.demob]\nurl = \"file://{}/rel/{{version}}/demob.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demob\"\nlanguages = [\"demo\"]\n",
+            dir.path().display(),
+            dir.path().display()
+        ),
+    )?;
+    std::env::set_var("SM_SERVER_CONFIG", &cfg);
+
+    let plugin = format!(
+        "{}/plugins/features/arsenal/index.js",
+        std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap()
+            .rsplitn(2, '/')
+            .nth(1)
+            .unwrap_or(".")
+    );
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
+    pump(&mut app, ":arsenal<ret>").await?;
+    assert!(!app.editor.is_err(), "市场窗打开不应报错");
+
+    // 过滤 'demo' 命中 demo-bin + demob 两行;t/j/t 标记两件
+    pump(&mut app, "demo").await?;
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("demo-bin") && text.contains("demob"),
+        "两注入配方应可见: {text:?}"
+    );
+    pump(&mut app, "t").await?; // 标记 demo-bin(sel0)
+    pump(&mut app, "j").await?; // sel → demob
+    pump(&mut app, "t").await?; // 标记 demob
+    pump(&mut app, "<ret>").await?; // 批量 Enter(集合快照)
+    assert!(!app.editor.is_err(), "批量提交不应报错");
+    for _ in 0..4 {
+        pump(&mut app, "j").await?;
+    }
+    assert!(!app.editor.is_err(), "批量安装不应报错");
+    let text = arsenal_text(&mut app);
+    assert!(
+        text.contains("✓ demo-bin 1.0") && text.contains("✓ demob 1.0.0"),
+        "批量收敛后两行均 ✓: {text:?}"
+    );
+    let managed_bin = dir.path().join("managed").join("bin");
+    assert!(
+        managed_bin.join("demo-bin").exists() && managed_bin.join("demob").exists(),
+        "批量安装应落盘两个受管 bin"
+    );
+
+    pump(&mut app, "q").await?;
+    pump(&mut app, ":server status<ret>").await?;
+    {
+        let (status, _) = app.editor.get_status().unwrap();
+        assert!(
+            !app.editor.is_err() && status.as_ref().contains("受管/"),
+            "批量后 :server status 正常, got: {status}"
+        );
+    }
+
     std::env::remove_var("SM_SERVER_CONFIG");
     Ok(())
 }

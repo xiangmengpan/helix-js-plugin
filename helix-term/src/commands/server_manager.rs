@@ -394,7 +394,10 @@ pub fn installed_specs() -> Vec<registry::Spec> {
 /// (如 "rust-analyzer 2024-09-16"),故用"包含"判定同版;不做 semver。
 pub fn is_upgradable(spec: &registry::Spec) -> bool {
     match spec.version_detected() {
-        Some(v) => spec.version.as_deref().is_some_and(|want| !v.contains(want)),
+        Some(v) => spec
+            .version
+            .as_deref()
+            .is_some_and(|want| !v.contains(want)),
         None => false,
     }
 }
@@ -1362,9 +1365,7 @@ pub fn run_task(
                     Availability::Managed => {
                         Err(anyhow!("server '{name}' 是受管安装,用 remove 卸载"))
                     }
-                    Availability::Missing => {
-                        Err(anyhow!("server '{name}' 未安装/不在 PATH"))
-                    }
+                    Availability::Missing => Err(anyhow!("server '{name}' 未安装/不在 PATH")),
                     Availability::Local(_) => {
                         let on = !ignored_local().contains(&name.to_string());
                         set_ignored(name, on)?;
@@ -2152,15 +2153,24 @@ mod tests {
     #[test]
     fn needs_version_archive_template_semantics() {
         // 内置活配方 rust-analyzer:url 含 {version} 且 recipe 无固定 version → 需显式版本
-        let ra = registry::all().into_iter().find(|s| s.name == "rust-analyzer").unwrap();
+        let ra = registry::all()
+            .into_iter()
+            .find(|s| s.name == "rust-analyzer")
+            .unwrap();
         assert!(
             needs_version(&ra),
             "内置 {{version}} 占位 + 无 version → needs_version"
         );
         // 惰性配方(url 空)与 Tool 类(debugpy/black) → false
-        let gopls = registry::all().into_iter().find(|s| s.name == "gopls").unwrap();
+        let gopls = registry::all()
+            .into_iter()
+            .find(|s| s.name == "gopls")
+            .unwrap();
         assert!(!needs_version(&gopls), "url 空(惰性)→ false");
-        let debugpy = registry::all().into_iter().find(|s| s.name == "debugpy").unwrap();
+        let debugpy = registry::all()
+            .into_iter()
+            .find(|s| s.name == "debugpy")
+            .unwrap();
         assert!(!needs_version(&debugpy), "Tool 安装 → false");
         // 手构 Spec 补边界:url 含 {version} + version 固定 → false;url 无 {version} → false
         let mk = |url: &str, version: Option<String>| registry::Spec {
