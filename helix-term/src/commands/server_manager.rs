@@ -63,71 +63,106 @@ fn download_to(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 解压 tar.gz / zip 到 out_dir(可选 strip 顶层目录)
+/// 解压到 out_dir(入口;archive 可为 tar/tar.gz/zip 或单文件 gzip):
+/// 单文件 gzip 需给 single_name(解码后写入 out/single_name 并加可执行位)。
 fn extract_archive(path: &Path, out_dir: &Path, strip: usize) -> Result<()> {
+    let raw = std::fs::read(path)?;
+    extract_bytes(&raw, out_dir, strip, None)
+}
+
+/// install 用载荷落盘:zip/tar 走目录解压;单文件 gzip(rust-analyzer 类 asset)解码为 bin_rel。
+fn install_payload(archive: &Path, out_dir: &Path, strip: usize, bin_rel: &str) -> Result<()> {
+    let raw = std::fs::read(archive)?;
+    extract_bytes(&raw, out_dir, strip, Some(bin_rel))
+}
+
+fn extract_bytes(
+    raw: &[u8],
+    out_dir: &Path,
+    strip: usize,
+    single_name: Option<&str>,
+) -> Result<()> {
+    use std::io::Read as _;
     std::fs::create_dir_all(out_dir)?;
-    let f = std::fs::File::open(path)?;
-    if path.extension().map(|e| e == "zip").unwrap_or(false) {
-        let mut z = zip::ZipArchive::new(f)?;
-        let names: Vec<(String, bool)> = (0..z.len())
-            .map(|i| {
-                let f = z.by_index(i).unwrap();
-                (f.name().to_string(), f.is_dir())
-            })
-            .collect();
-        for (name, is_dir) in names {
-            let rel = strip_path(&name, strip);
-            if rel.is_empty() {
-                continue;
-            }
-            let dest = out_dir.join(&rel);
-            if is_dir {
-                std::fs::create_dir_all(&dest)?;
-            } else {
-                std::fs::create_dir_all(dest.parent().unwrap())?;
-                let mut src = z.by_name(&name)?;
-                let mut out = std::fs::File::create(&dest)?;
-                std::io::copy(&mut src, &mut out)?;
-            }
-        }
-    } else {
-        // tar(.gz)——gzip 由 magic 判定
-        let r = std::io::BufReader::new(f);
-        macro_rules! unpack_tar {
-            ($ar:expr) => {{
-                for entry in $ar.entries()? {
-                    let mut e = entry?;
-                    let path_in = e.path()?.into_owned();
-                    let rel = strip_path(&path_in.to_string_lossy(), strip);
-                    if rel.is_empty() {
-                        continue;
-                    }
-                    let dest = out_dir.join(&rel);
-                    if e.header().entry_type().is_dir() {
-                        std::fs::create_dir_all(&dest)?;
-                    } else {
-                        std::fs::create_dir_all(dest.parent().unwrap())?;
-                        e.unpack(&dest)?;
-                    }
-                }
-            }};
-        }
-        if looks_gzip(path) {
-            let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(r));
-            unpack_tar!(ar);
+    if raw.starts_with(&[0x1f, 0x8b]) {
+        // gzip:先整解再判 tar(单文件 gzip 也是合法 gzip)
+        let mut dec = Vec::new();
+        flate2::read::GzDecoder::new(std::io::Cursor::new(raw))
+            .read_to_end(&mut dec)
+            .with_context(|| "gzip 解压失败")?;
+        if is_tar_bytes(&dec) {
+            extract_tar_bytes(&dec, out_dir, strip)
         } else {
-            let mut ar = tar::Archive::new(r);
-            unpack_tar!(ar);
+            let Some(name) = single_name else {
+                return Err(anyhow!("gzip 内容不是 tar,且未给单文件目标名"));
+            };
+            let dest = out_dir.join(name);
+            if let Some(p) = dest.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::write(&dest, &dec)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+            }
+            Ok(())
+        }
+    } else if raw.starts_with(b"PK") {
+        extract_zip_bytes(raw, out_dir, strip)
+    } else {
+        extract_tar_bytes(raw, out_dir, strip)
+    }
+}
+
+fn is_tar_bytes(b: &[u8]) -> bool {
+    b.len() > 265 && &b[257..262] == b"ustar"
+}
+
+fn extract_zip_bytes(raw: &[u8], out_dir: &Path, strip: usize) -> Result<()> {
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(raw))?;
+    let names: Vec<(String, bool)> = (0..z.len())
+        .map(|i| {
+            let f = z.by_index(i).unwrap();
+            (f.name().to_string(), f.is_dir())
+        })
+        .collect();
+    for (name, is_dir) in names {
+        let rel = strip_path(&name, strip);
+        if rel.is_empty() {
+            continue;
+        }
+        let dest = out_dir.join(&rel);
+        if is_dir {
+            std::fs::create_dir_all(&dest)?;
+        } else {
+            std::fs::create_dir_all(dest.parent().unwrap())?;
+            let mut src = z.by_name(&name)?;
+            let mut out = std::fs::File::create(&dest)?;
+            std::io::copy(&mut src, &mut out)?;
         }
     }
     Ok(())
 }
 
-fn looks_gzip(path: &Path) -> bool {
-    std::fs::read(path)
-        .ok()
-        .map(|b| b.len() > 2 && b[0] == 0x1f && b[1] == 0x8b)
-        .unwrap_or(false)
+fn extract_tar_bytes(raw: &[u8], out_dir: &Path, strip: usize) -> Result<()> {
+    let mut ar = tar::Archive::new(std::io::Cursor::new(raw));
+    for entry in ar.entries()? {
+        let mut e = entry?;
+        let path_in = e.path()?.into_owned();
+        let rel = strip_path(&path_in.to_string_lossy(), strip);
+        if rel.is_empty() {
+            continue;
+        }
+        let dest = out_dir.join(&rel);
+        if e.header().entry_type().is_dir() {
+            std::fs::create_dir_all(&dest)?;
+        } else {
+            std::fs::create_dir_all(dest.parent().unwrap())?;
+            e.unpack(&dest)?;
+        }
+    }
+    Ok(())
 }
 
 fn strip_path(name: &str, strip: usize) -> String {
@@ -601,9 +636,9 @@ pub mod registry {
                 Kind::Lsp,
                 &["rust"],
                 "rust-analyzer",
+                "https://github.com/rust-lang/rust-analyzer/releases/download/{version}/rust-analyzer-{triple}.gz",
                 "",
-                "",
-                1,
+                0,
                 "rust-analyzer",
             ),
             Spec::archive("gopls", Kind::Lsp, &["go"], "gopls", "", "", 1, "gopls"),
@@ -735,6 +770,30 @@ pub mod registry {
     }
 }
 
+/// rust target triple(常用 release asset 命名用);不支持的平台返回空 → 安装时报错
+pub fn rust_triple() -> String {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", "arm") => "arm-unknown-linux-gnueabihf",
+        ("linux", "riscv64") => "riscv64gc-unknown-linux-gnu",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        ("windows", "aarch64") => "aarch64-pc-windows-msvc",
+        _ => "",
+    }
+    .to_string()
+}
+
+/// url_template 占位展开:{version}/{os}/{arch}/{triple}
+fn expand_template(t: &str, version: &str) -> String {
+    t.replace("{version}", version)
+        .replace("{os}", std::env::consts::OS)
+        .replace("{arch}", std::env::consts::ARCH)
+        .replace("{triple}", &rust_triple())
+}
+
 // ============================ 安装/升级/卸载 ============================
 
 /// 安装:按配方类型分发。version 占位(v1:下载源为空 = 报"配方未配置下载源";
@@ -751,7 +810,13 @@ pub fn install(name: &str, version: &str) -> Result<()> {
             if url_template.is_empty() {
                 return Err(anyhow!("server '{name}': 下载源未配置(内置配方待录;或在 [server-manager.registry.{name}] 配 url)"));
             }
-            let url = mirror_url(&url_template.replace("{version}", version));
+            let url = expand_template(url_template, version);
+            if url.contains('{') {
+                return Err(anyhow!(
+                    "server '{name}': url_template 有未支持占位,展开失败 -> {url}(支持 {{version}}/{{os}}/{{arch}}/{{triple}};{{triple}} 需本平台在 rust_triple 表)"
+                ));
+            }
+            let url = mirror_url(&url);
             install_adhoc(name, &spec.bin_name, bin_rel, *strip, &url, sha256)
         }
         registry::Install::Tool { cmd, args } => {
@@ -791,7 +856,8 @@ pub fn install_adhoc(
             ));
         }
     }
-    extract_archive(&tmp_archive, &tmp_dir, strip).with_context(|| format!("extract {name}"))?;
+    install_payload(&tmp_archive, &tmp_dir, strip, bin_rel)
+        .with_context(|| format!("extract {name}"))?;
     let bin_in_tmp = tmp_dir.join(bin_rel);
     if !bin_in_tmp.is_file() {
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -1494,6 +1560,62 @@ mod tests {
         assert_eq!(spec.languages.len(), 0);
         assert_eq!(spec.version.as_deref(), Some("1.0"));
         let _m2 = _m;
+    }
+
+    // ---- 单文件 gzip release(rust-analyzer 类)+ token 展开 ----
+
+    /// 写单文件 gzip 假 release:内容 = bin 脚本;返回 sha256
+    fn make_plain_gz(path: &Path) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let script = b"#!/bin/sh\necho plain-gz 3.2.1\n";
+        let enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(path)?,
+            flate2::Compression::default(),
+        );
+        let mut w = std::io::BufWriter::new(enc);
+        w.write_all(script)?;
+        let enc = w.into_inner().unwrap().finish()?;
+        enc.sync_all()?;
+        let mut h = Sha256::new();
+        h.update(&std::fs::read(path)?);
+        Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    #[test]
+    fn plain_gz_single_binary_installs_and_runs() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let arc = root.join("ra.gz");
+        let sha = make_plain_gz(&arc).unwrap();
+        install_adhoc(
+            "plain-gz-demo",
+            "plain-gz-demo",
+            "plain-gz-demo",
+            0,
+            &format!("file://{}", arc.display()),
+            &sha,
+        )
+        .unwrap();
+        let link = managed_bin("plain-gz-demo");
+        assert!(link.exists(), "单文件 gz 落位并软链");
+        let v = detect_version(&link).unwrap();
+        assert!(v.contains("3.2.1"), "解码产物可执行: {v}");
+        remove_adhoc("plain-gz-demo", "plain-gz-demo").unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn template_tokens_expand_os_arch_triple() {
+        let v = expand_template("{version}/{os}/{arch}/{triple}", "2024-09-16");
+        assert!(!v.contains('{'), "占位全展开: {v}");
+        assert!(v.contains("2024-09-16"));
+        assert!(v.contains(std::env::consts::OS));
+        assert!(v.contains(std::env::consts::ARCH));
+        assert!(!rust_triple().is_empty(), "本机平台应有 triple");
+        assert!(v.contains(&rust_triple()));
+        // mirror_url 仍走 file 原样 / https 前缀
     }
 
     struct EnvGuard(&'static str, String);
