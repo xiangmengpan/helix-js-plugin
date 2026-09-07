@@ -413,6 +413,8 @@ fn is_single_line(node: &CompNode) -> bool {
 }
 
 use helix_view::graphics::Style;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 // ── 脏格增量渲染（方案乙③）──
 
@@ -468,15 +470,18 @@ impl DiffRenderer {
                         .map(|s| theme.get(s))
                         .unwrap_or_default(),
                 );
-                for ch in span.text.chars() {
-                    if x >= width {
+                // 按 grapheme 的显示列宽写格:宽字符(CJK/全角/emoji)占 width 列并重置后续格——
+                // 旧实现逐字符 x+=1,宽字符只占 1 格,含宽字符的行右侧边框/后续列全部错位。
+                for g in span.text.graphemes(true) {
+                    let gw = g.width();
+                    if gw == 0 {
+                        continue;
+                    }
+                    if x + gw > width {
                         break;
                     }
-                    let cell = &mut surface[(area.x + x as u16, area.y + y as u16)];
-                    cell.reset();
-                    cell.set_symbol(&ch.to_string());
-                    cell.set_style(style);
-                    x += 1;
+                    surface.set_grapheme(area.x + x as u16, area.y + y as u16, g, gw, style);
+                    x += gw;
                 }
                 if x >= width {
                     break;
@@ -523,6 +528,28 @@ mod tests {
 
     fn line(t: &str) -> StyledLine {
         StyledLine::plain(t)
+    }
+
+    /// 回归:DiffRenderer 按 grapheme 显示列宽写格——宽字符(此处中)占 2 格,
+    /// 后续内容(竖线)落在其右侧对齐列。旧实现逐字符 x+=1,宽字符只占 1 格,
+    /// 含中文的行右框/后续列全部错位。
+    #[test]
+    fn diff_renderer_wide_grapheme_keeps_following_column_aligned() {
+        use helix_view::graphics::{Rect, Style as _};
+        let mut buf = tui::buffer::Buffer::empty(Rect::new(0, 0, 10, 1));
+        let theme = helix_view::Theme::default();
+        let line = StyledLine {
+            spans: vec![TextSpan {
+                text: "中│".into(),
+                style: None,
+            }],
+        };
+        super::DiffRenderer.render(&[line], Rect::new(0, 0, 10, 1), &mut buf, &theme);
+        let sym = |i: usize| buf.content[i].symbol.as_str().to_string();
+        assert_eq!(sym(0), "中", "宽字符占据首格");
+        assert_eq!(sym(1), " ", "宽字符续格被清空(不携带陈旧符号)");
+        assert_eq!(sym(2), "│", "后续内容落在宽字符之后第 2 列(列对齐)");
+        assert_eq!(sym(3), " ", "其后空白不受影响");
     }
 
     fn line_text(l: &StyledLine) -> String {

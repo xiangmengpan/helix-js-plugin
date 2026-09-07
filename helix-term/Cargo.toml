@@ -86,6 +86,10 @@ grep-matcher = "0.1"
 pulldown-cmark = { version = "0.13", default-features = false }
 thiserror.workspace = true
 
+# 组件树宽字符(plugin 弹窗/面板行渲染按 grapheme 宽度写格)
+unicode-segmentation.workspace = true
+unicode-width = "=0.1.12"
+
 # opening URLs
 open = "5.3.5"
 
