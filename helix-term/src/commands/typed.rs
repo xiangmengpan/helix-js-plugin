@@ -5340,10 +5340,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                                 server_manager::is_upgradable(&spec),
                                 Some(spec.bin_path().to_string_lossy().into_owned()),
                             ),
+                            // Local(本机已有):只做 PATH 存在性判定,不 spawn `--version` 探测——
+                            // 本机工具可能很慢/挂起,rows 快照在主线程同步算,逐工具 spawn 会让
+                            // arsenal 打开/刷新长时间冻结 UI(detect_version 现带 2s 超时+缓存兜底)。
+                            // 状态列本机行显示 `local`,不带检测版本(与初版设计一致)。
                             Availability::Local(p) => (
                                 true,
                                 true,
-                                strip_bin_prefix(server_manager::detect_version(&p)),
+                                None,
                                 false,
                                 Some(p.to_string_lossy().into_owned()),
                             ),

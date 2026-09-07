@@ -286,24 +286,70 @@ fn strip_path(name: &str, strip: usize) -> String {
     parts.join("/")
 }
 
-/// 运行 `<bin> --version` 提取版本串(失败返回 None,视为未安装/不可检测)
+/// 探测超时:单次 `<bin> --version` 超过即杀(防 PATH 上的可疑工具无限挂起阻塞 UI)
+const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 运行 `<bin> --version` 提取版本串(失败返回 None,视为未安装/不可检测)。
+/// 防挂起:超时强杀子进程(曾现 PATH 工具挂起 → arsenal 打开/刷新主线程卡死);
+/// 防重复 spawn:按 (bin 路径, mtime) 缓存结果——rows 快照/可升级判定每次都会
+/// 查版本,mtime 未变时直接命中缓存(安装/卸载改写文件 → mtime 变化 → 自动失效)。
+/// 仅供 UI 展示用版本;受管/本机判定不走这里(availability 只做 PATH 存在性检查)。
 pub fn detect_version(bin: &Path) -> Option<String> {
-    let out = std::process::Command::new(bin)
-        .arg("--version")
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    let s = if s.trim().is_empty() {
-        String::from_utf8_lossy(&out.stderr).to_string()
-    } else {
-        s.to_string()
-    };
-    let t = s.lines().next().unwrap_or("").trim().to_string();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t)
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<
+        Mutex<HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Option<String>)>>,
+    > = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let mtime = std::fs::metadata(bin).ok().and_then(|m| m.modified().ok());
+    if let Ok(guard) = cache.lock() {
+        if let Some((mt, v)) = guard.get(bin) {
+            if *mt == mtime {
+                return v.clone();
+            }
+        }
     }
+    let probe = (|| -> Option<String> {
+        let mut child = std::process::Command::new(bin)
+            .arg("--version")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let started = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if started.elapsed() <= DETECT_TIMEOUT => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                // 超时:杀子进程(等待其退出防僵尸),视为不可检测
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                Err(_) => return None,
+            }
+        }
+        let out = child.wait_with_output().ok()?;
+        let s = String::from_utf8_lossy(&out.stdout);
+        let s = if s.trim().is_empty() {
+            String::from_utf8_lossy(&out.stderr).to_string()
+        } else {
+            s.to_string()
+        };
+        let t = s.lines().next().unwrap_or("").trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    })();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(bin.to_path_buf(), (mtime, probe.clone()));
+    }
+    probe
 }
 
 /// 默认受管根目录:`~/.local/share/helix/managed`
@@ -488,7 +534,34 @@ pub fn availability(name: &str) -> Availability {
 
 /// 在 PATH 中查找可执行文件(不含受管 bin 目录)。
 /// SM_PATH 为测试/开发覆写(空串 = 禁用本地检测;生产不设)。
+/// 按目录一次性 read_dir 缓存:41+ 配方 × 每 PATH 目录逐个 stat 会让 rows 快照在
+/// 含慢速/不可达挂载的 PATH 上卡数秒(arsenal 打开假死主因之一);缓存后每次查询
+/// O(目录数)的 HashSet 命中 + 仅对命中项 stat 确认是文件。
 fn path_in_path(bin: &str) -> Option<PathBuf> {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex, OnceLock};
+    static DIR_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<HashSet<String>>>>> = OnceLock::new();
+    fn dir_names(dir: &Path) -> Arc<HashSet<String>> {
+        let cache = DIR_CACHE.get_or_init(Default::default);
+        if let Ok(guard) = cache.lock() {
+            if let Some(names) = guard.get(dir) {
+                return Arc::clone(names);
+            }
+        }
+        let mut set = HashSet::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if let Some(n) = e.file_name().to_str() {
+                    set.insert(n.to_string());
+                }
+            }
+        }
+        let names = Arc::new(set);
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(dir.to_path_buf(), Arc::clone(&names));
+        }
+        names
+    }
     let managed_bin_dir = managed_root().join("bin");
     let path = std::env::var("SM_PATH")
         .or_else(|_| std::env::var("PATH"))
@@ -497,9 +570,8 @@ fn path_in_path(bin: &str) -> Option<PathBuf> {
         if dir == managed_bin_dir {
             continue;
         }
-        let cand = dir.join(bin);
-        if cand.is_file() {
-            return Some(cand);
+        if dir_names(&dir).contains(bin) && dir.join(bin).is_file() {
+            return Some(dir.join(bin));
         }
     }
     None

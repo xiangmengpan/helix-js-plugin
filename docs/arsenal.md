@@ -83,7 +83,7 @@ helix.load("features/arsenal/index.js");
 `installed local version installable upgradable needs_version bin source
 description homepage`。
 
-- **状态列**:受管 `✓ 版本` / 可升级 `▲ 版本` / 本机 `local 版本` / 未装 `–` /
+- **状态列**:受管 `✓ 版本` / 可升级 `▲ 版本` / 本机 `local`(不检测本机版本——避免打开/刷新时对每个 PATH 工具 spawn `--version` 卡 UI;受管才探测版本,`detect_version` 带 2s 超时 + mtime 缓存)/ 未装 `–` /
   无下载源 `no source`;任务运行中显示该行 `pct% 阶段`。
 - `bin`(命令路径)与 `source`(下载源)在 `i` 信息弹窗展示。
 - `description`/`homepage` 显示在行描述列与信息弹窗。内置 7 配方与独立配方文件
