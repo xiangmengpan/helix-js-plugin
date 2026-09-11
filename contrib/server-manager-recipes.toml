@@ -3,8 +3,10 @@
 # 位置:复制到 ~/.config/helix/server-manager-recipes.toml(测试/开发可用 SM_SERVER_RECIPES 覆写)。
 # 安装方式:
 #   - cmd(npm/pip3/gem/dotnet):包管理器 Tool,产物落 managed/<name>/bin,一键可装(需对应运行时+网络/镜像);
-#   - url="":说明型占位(需官方安装器/平台资产),列表显示 no source,按 description 引导。
-# 内置配方(rust-analyzer/gopls/clangd/black/prettier/debugpy 等)不在此文件,同名条目会覆盖内置。
+#   - cmd="":说明型 Tool 占位(非包管理器安装),列表显示 no source,按 description 引导;
+#   - url="":说明型占位(需官方安装器/平台资产);url 含 {version} 而 version 留空时设 needs-version = true。
+# 内置配方在 runtime/server-manager-builtin.toml(源文件;可在 config_dir/runtime/ 整体覆盖);
+# 本文件同名条目会覆盖内置(不重复)。
 
 [server-manager.registry.typescript-language-server]
 kind = "lsp"

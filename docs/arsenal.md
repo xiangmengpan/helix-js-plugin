@@ -86,8 +86,8 @@ description homepage`。
 - **状态列**:受管 `✓ 版本` / 可升级 `▲ 版本` / 本机 `local`(不检测本机版本——避免打开/刷新时对每个 PATH 工具 spawn `--version` 卡 UI;受管才探测版本,`detect_version` 带 2s 超时 + mtime 缓存)/ 未装 `–` /
   无下载源 `no source`;任务运行中显示该行 `pct% 阶段`。
 - `bin`(命令路径)与 `source`(下载源)在 `i` 信息弹窗展示。
-- `description`/`homepage` 显示在行描述列与信息弹窗。内置 7 配方与独立配方文件
-  (contrib)均带英文描述 + 官方主页;config 扩展配方可选配置:
+- `description`/`homepage` 显示在行描述列与信息弹窗。内置 7 配方(`runtime/server-manager-builtin.toml`,可在
+  `config_dir/runtime/` 整体覆盖)与独立配方文件(contrib)均带英文描述 + 官方主页;config 扩展配方可选配置:
 
 ```toml
 [server-manager.registry.my-ls]
@@ -125,7 +125,7 @@ JS 泵回 → **行内进度**(受管下载行显示 `pct%`)+ **底栏进度条*
 
 ## 配方从哪来(50+ 语言)
 
-arsenal 行 = 内置 registry(7 条)+ config.toml `[server-manager.registry.*]` + 独立配方文件
+arsenal 行 = 内置 registry(`runtime/server-manager-builtin.toml`,7 条)+ config.toml `[server-manager.registry.*]` + 独立配方文件
 (`~/.config/helix/server-manager-recipes.toml`,复制自仓库 `contrib/server-manager-recipes.toml`),
 同名后源覆盖前源。仓库文件覆盖 50+ 语言:包管理器 Tool(npm/pip3/gem/dotnet)一键可装,
 `url=""` 占位条目显示 no source 并按 description 引导。改配方文件即生效(每次操作前重读),零重编译。

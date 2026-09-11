@@ -941,63 +941,6 @@ pub mod registry {
     }
 
     impl Spec {
-        #[allow(clippy::too_many_arguments)]
-        fn archive(
-            name: &str,
-            kind: Kind,
-            languages: &[&str],
-            bin_name: &str,
-            url: &str,
-            sha: &str,
-            strip: usize,
-            bin_rel: &str,
-        ) -> Spec {
-            Spec {
-                name: name.to_string(),
-                kind,
-                languages: languages.iter().map(|s| s.to_string()).collect(),
-                bin_name: bin_name.to_string(),
-                description: String::new(),
-                homepage: None,
-                install: Install::Archive {
-                    url_template: url.to_string(),
-                    sha256: sha.to_string(),
-                    strip,
-                    bin_rel: bin_rel.to_string(),
-                },
-                version: None,
-            }
-        }
-        fn tool(
-            name: &str,
-            kind: Kind,
-            languages: &[&str],
-            bin_name: &str,
-            cmd: &str,
-            args: &[&str],
-        ) -> Spec {
-            Spec {
-                name: name.to_string(),
-                kind,
-                languages: languages.iter().map(|s| s.to_string()).collect(),
-                bin_name: bin_name.to_string(),
-                description: String::new(),
-                homepage: None,
-                install: Install::Tool {
-                    cmd: cmd.to_string(),
-                    args: args.iter().map(|s| s.to_string()).collect(),
-                },
-                version: None,
-            }
-        }
-
-        /// 补展示数据(description 中文一句 / homepage 官方链接);内置配方用
-        fn describe(mut self, description: &str, homepage: &str) -> Self {
-            self.description = description.to_string();
-            self.homepage = Some(homepage.to_string());
-            self
-        }
-
         #[cfg(test)]
         pub fn bin_rel_for_test(&self) -> String {
             match &self.install {
@@ -1035,75 +978,53 @@ pub mod registry {
     /// 内置注册表(v1 子集)。配方为"惰性占位":下载源留空 = install 报"未配置"
     /// (避免无校验/误装);真实 URL/版本/校验是 OS 相关数据,经
     /// [server-manager.registry.<name>] config 扩展(T4)提供可跑源。
-    /// M5:内置配方补 description(中文一句)/homepage(官方仓库)——arsenal 市场/信息弹窗展示。
+    /// M5→数据化:内置配方已迁至 `runtime/server-manager-builtin.toml`(改数据不改代码;
+    /// 可在 config_dir/runtime/ 放同名文件整体覆盖,失败回退嵌入版本)。
     pub(crate) fn builtin_specs() -> Vec<Spec> {
-        vec![
-            Spec::archive(
-                "rust-analyzer",
-                Kind::Lsp,
-                &["rust"],
-                "rust-analyzer",
-                "https://github.com/rust-lang/rust-analyzer/releases/download/{version}/rust-analyzer-{triple}.gz",
-                "",
-                0,
-                "rust-analyzer",
-            )
-            .describe(
-                "Rust language server",
-                "https://github.com/rust-lang/rust-analyzer",
-            ),
-            Spec::archive("gopls", Kind::Lsp, &["go"], "gopls", "", "", 1, "gopls")
-                .describe("Go official language server", "https://github.com/golang/tools"),
-            Spec::archive(
-                "pyright",
-                Kind::Lsp,
-                &["python"],
-                "pyright-langserver",
-                "",
-                "",
-                1,
-                "pyright-langserver",
-            )
-            .describe(
-                "Python static type checker (Pylance core)",
-                "https://github.com/microsoft/pyright",
-            ),
-            Spec::archive(
-                "clangd",
-                Kind::Lsp,
-                &["c", "cpp"],
-                "clangd",
-                "",
-                "",
-                1,
-                "clangd",
-            )
-            .describe("C/C++ language server (clangd, LLVM)", "https://clangd.llvm.org"),
-            Spec::tool("debugpy", Kind::Dap, &["python"], "debugpy", "", &[]).describe(
-                "Python debug adapter (debugpy, VS Code core)",
-                "https://github.com/microsoft/debugpy",
-            ),
-            Spec::tool("black", Kind::Formatter, &["python"], "black", "", &[]).describe(
-                "Python code formatter (black)",
-                "https://github.com/psf/black",
-            ),
-            Spec::tool(
-                "prettier",
-                Kind::Formatter,
-                &[
-                    "javascript",
-                    "typescript",
-                    "html",
-                    "css",
-                    "json",
-                    "markdown",
-                ],
-                "prettier",
-                "",
-                &[],
-            )
-            .describe("Multi-language code formatter (prettier)", "https://github.com/prettier/prettier"),
-        ]
+        // 优先 runtime_dirs 中的可覆盖数据文件;解析失败则回退编译期嵌入。
+        // 单测(cfg(test))只用嵌入副本:避免开发机 config_dir/runtime 的个人覆盖影响断言;
+        // 生产/集成仍允许整体覆盖。
+        let mut text = BUILTIN_RECIPES_TOML.to_string();
+        if !cfg!(test) {
+            for dir in helix_loader::runtime_dirs() {
+                let path = dir.join("server-manager-builtin.toml");
+                if let Ok(t) = std::fs::read_to_string(&path) {
+                    if parse_builtin_recipes(&t).is_ok() {
+                        text = t;
+                        break;
+                    }
+                    log::warn!("{} 解析失败,回退嵌入内置配方", path.to_string_lossy());
+                }
+            }
+        }
+        parse_builtin_recipes(&text).expect("内置配方 TOML 解析失败")
+    }
+
+    /// 内置配方嵌入副本(packaging 兜底:runtime 目录缺失时仍可用)
+    const BUILTIN_RECIPES_TOML: &str = include_str!("../../../runtime/server-manager-builtin.toml");
+
+    /// 解析内置配方文件:按 `order`(缺省向后)排序,保证 arsenal 行序稳定
+    fn parse_builtin_recipes(text: &str) -> Result<Vec<Spec>> {
+        use toml::Value;
+        let v: Value = toml::from_str(text)?;
+        let reg = v
+            .get("server-manager")
+            .and_then(|s| s.get("registry"))
+            .and_then(Value::as_table)
+            .ok_or_else(|| anyhow!("内置配方文件缺 [server-manager.registry.*]"))?;
+        let mut out: Vec<(i64, String, Spec)> = Vec::new();
+        for (name, tv) in reg {
+            let tbl = tv
+                .as_table()
+                .ok_or_else(|| anyhow!("内置配方 '{name}' 需是表"))?;
+            let order = tbl
+                .get("order")
+                .and_then(Value::as_integer)
+                .unwrap_or(i64::MAX);
+            out.push((order, name.clone(), parse_ext_recipe(name, tbl)?));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        Ok(out.into_iter().map(|(_, _, s)| s).collect())
     }
 
     static EXT: OnceLock<Mutex<Vec<Spec>>> = OnceLock::new();
@@ -1112,11 +1033,17 @@ pub mod registry {
         *EXT.get_or_init(Default::default).lock().unwrap() = specs;
     }
 
-    /// 全部配方:内置 + config 扩展(快照)
+    /// 全部配方:内置 + config/配方文件扩展(快照;同名后者覆盖内置,不重复)。
+    /// 覆盖语义与文档/加载链一致:contrib 的 pyright 应替掉内置惰性占位。
+    /// 顺序:内置保持文件 order;扩展按名(apply_server_config 的 BTreeMap)追加。
     pub fn all() -> Vec<Spec> {
         let mut v = builtin_specs();
         if let Some(m) = EXT.get() {
-            v.extend(m.lock().unwrap().clone());
+            let ext = m.lock().unwrap().clone();
+            let names: std::collections::HashSet<&str> =
+                ext.iter().map(|s| s.name.as_str()).collect();
+            v.retain(|s| !names.contains(s.name.as_str()));
+            v.extend(ext);
         }
         v
     }
@@ -1151,6 +1078,14 @@ pub mod registry {
             .and_then(Value::as_str)
             .map(str::to_string)
             .filter(|s| !s.is_empty());
+        // cmd 键存在但为空 = 占位 Tool(无下载源,同 url = "" 占位语义)
+        let cmd_placeholder = cmd.is_none() && tbl.contains_key("cmd");
+        // needs-version = true:允许 url 含 {version} 而 version 留空(动态版本配方,
+        // 安装/升级弹版本输入;内置 rust-analyzer 即此形态)
+        let needs_version_flag = tbl
+            .get("needs-version")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let version = tbl
             .get("version")
             .and_then(Value::as_str)
@@ -1175,9 +1110,9 @@ pub mod registry {
                 Install::Tool { cmd, args }
             }
             (None, Some(url)) => {
-                if url.contains("{version}") && version.is_none() {
+                if url.contains("{version}") && version.is_none() && !needs_version_flag {
                     return Err(anyhow!(
-                        "registry '{name}': url 含 {{version}} 占位则必填 version(安装版本来源)"
+                        "registry '{name}': url 含 {{version}} 占位则必填 version(或设 needs-version = true)"
                     ));
                 }
                 let sha256 = tbl
@@ -1205,6 +1140,19 @@ pub mod registry {
                         sha256: String::new(),
                         strip: 1,
                         bin_rel: bin_name.clone(),
+                    }
+                } else if cmd_placeholder {
+                    // cmd = "" → 占位 Tool(无下载源/包管理器,description 引导)
+                    let args: Vec<String> = match tbl.get("args") {
+                        Some(Value::Array(a)) => a
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    Install::Tool {
+                        cmd: String::new(),
+                        args,
                     }
                 } else {
                     return Err(anyhow!(
@@ -2318,6 +2266,71 @@ mod tests {
                 s.name
             );
         }
+    }
+
+    /// 内置配方数据化:文件加载、order 保序、占位与动态版本标志语义与旧硬编码一致
+    #[test]
+    fn builtin_recipes_loaded_from_toml_keep_semantics() {
+        let specs = registry::builtin_specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "rust-analyzer",
+                "gopls",
+                "pyright",
+                "clangd",
+                "debugpy",
+                "black",
+                "prettier"
+            ],
+            "order 字段保序(rust-analyzer 必须首位:arsenal sel0/导航依赖)"
+        );
+        let ra = registry::get("rust-analyzer").unwrap();
+        assert_eq!(ra.kind, registry::Kind::Lsp);
+        assert_eq!(ra.languages, vec!["rust"]);
+        assert_eq!(ra.bin_name, "rust-analyzer");
+        assert!(ra.is_installable(), "RA url 非空应可装");
+        assert!(ra.version.is_none());
+        assert!(
+            needs_version(&ra),
+            "url 含 {{version}} + 无 version → 需显式版本"
+        );
+        // 占位条目(url = "" / cmd = "")不可装,保留展示数据
+        for n in ["gopls", "pyright", "clangd", "debugpy", "black", "prettier"] {
+            let s = registry::get(n).unwrap();
+            assert!(!s.is_installable(), "{n} 应为占位(no source)");
+            assert!(!s.description.is_empty() && s.homepage.is_some());
+        }
+        // Tool 占位:cmd 空 = Install::Tool(区别于 archive 占位)
+        assert!(matches!(
+            registry::get("debugpy").unwrap().install,
+            registry::Install::Tool { ref cmd, .. } if cmd.is_empty()
+        ));
+    }
+
+    /// 同名覆盖:扩展配方替掉内置(不重复);内置顺序保留,扩展追加
+    #[test]
+    fn ext_overrides_builtin_same_name_without_duplicate() {
+        let _m = ENV_LOCK.lock().unwrap();
+        let tbl: toml::Table = toml::from_str(
+            "cmd = \"npm\"\nargs = [\"install\", \"--prefix\", \"{prefix}\", \"pyright\"]\nbin-name = \"pyright-langserver\"\ndescription = \"overridden\"\n",
+        )
+        .unwrap();
+        let ext = registry::parse_ext_recipe("pyright", &tbl).unwrap();
+        registry::set_ext(vec![ext]);
+        let all = registry::all();
+        assert_eq!(
+            all.iter().filter(|s| s.name == "pyright").count(),
+            1,
+            "同名不应重复出现"
+        );
+        let got = registry::get("pyright").unwrap();
+        assert!(got.is_installable(), "get 应拿到覆盖后的可装配方");
+        assert_eq!(got.description, "overridden");
+        let idx_ra = all.iter().position(|s| s.name == "rust-analyzer").unwrap();
+        assert_eq!(idx_ra, 0, "内置顺序不受覆盖影响");
+        registry::set_ext(Vec::new());
     }
 
     #[test]

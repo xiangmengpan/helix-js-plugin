@@ -72,7 +72,7 @@ homepage = "https://example.com"
 数据与代码解耦:把仓库 `contrib/server-manager-recipes.toml` 复制到
 `~/.config/helix/server-manager-recipes.toml`(测试/开发可用 `SM_SERVER_RECIPES` 覆写),
 `:server`/arsenal 自动加载其配方(结构同 config.toml 的 `[server-manager.registry.<name>]`,
-同名覆盖内置/config;文件在每次 server 操作前重读,改完即生效)。
+同名覆盖内置/config,不重复;文件在每次 server 操作前重读,改完即生效)。
 
 文件含 44 条配方、连同内置共覆盖 **52 种语言**(ts/js/tsx/jsx/bash/json(c)/css/scss/less/
 html/yaml/toml/dockerfile/sql/graphql/vue/svelte/elm/php/astro/prisma/ruby/cmake/fortran/
@@ -122,7 +122,9 @@ languages = ["rust"]   # 挂接的语言(生成 [[language]] 条目引用)
 (运行时语言配置在启动时加载)。已装再 `install` 会报错提示改走 `update`;
 `remove` 正在使用的 server 只删配置,不杀进程,重启后不再启动。
 
-内置注册表(v1:rust-analyzer/gopls/pyright/clangd/debugpy/black/prettier):
+内置注册表(数据文件 `runtime/server-manager-builtin.toml`,可放
+`config_dir/runtime/server-manager-builtin.toml` 整体覆盖;条目:
+rust-analyzer/gopls/pyright/clangd/debugpy/black/prettier):
 **rust-analyzer** 已带真实源模板(`{triple}` 自动展开,version 由 config version
 或 `install <name> <version>` 给;sha256 空 = 跳过校验);其余为**惰性占位**
 (install 报"下载源未配置")——真实 URL 是 OS 相关数据,经

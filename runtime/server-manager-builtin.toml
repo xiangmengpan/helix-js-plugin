@@ -1,0 +1,81 @@
+# server-manager 内置配方(数据与代码解耦;随 runtime 目录分发)。
+#
+# 加载与覆盖链(后者同名覆盖前者):
+#   runtime/server-manager-builtin.toml(本文件,运行时可在 config_dir/runtime/ 放同名文件整体覆盖)
+#   → config.toml [server-manager.registry.*] → server-manager-recipes.toml
+#
+# 字段(同 recipes 文件):
+#   order          展示顺序(仅内置用;arsenal 行序)
+#   kind           lsp|dap|linter|formatter(缺省 lsp)
+#   languages      语言 id 列表
+#   bin-name       可执行名(缺省 = 配方名)
+#   url            release 下载模板({version}/{triple} 占位);url = "" 表示占位条目(no source,按 description 引导)
+#   version        固定版本;留空且 url 含 {version} 时须 needs-version = true(安装/升级弹版本输入)
+#   needs-version  true = 允许 url 含 {version} 而 version 留空(动态版本配方)
+#   strip          解压裁剪层数(默认 1;单文件 gzip 用 0)
+#   bin            解压后链接到 managed/bin 的可执行相对路径(archive 类必填;url="" 时忽略)
+#   cmd / args     包管理器类安装(cmd 与 url 二选一);cmd = "" 表示占位条目
+#   sha256         可选校验
+#   description/homepage  展示数据
+#
+# 内置 7 条此前硬编码在 server_manager.rs;迁出后内置改动=改数据文件(可选 runtime 覆盖),无需改代码。
+[server-manager.registry.rust-analyzer]
+order = 1
+kind = "lsp"
+languages = ["rust"]
+bin-name = "rust-analyzer"
+url = "https://github.com/rust-lang/rust-analyzer/releases/download/{version}/rust-analyzer-{triple}.gz"
+strip = 0
+bin = "rust-analyzer"
+needs-version = true
+description = "Rust language server"
+homepage = "https://github.com/rust-lang/rust-analyzer"
+
+[server-manager.registry.gopls]
+order = 2
+kind = "lsp"
+languages = ["go"]
+url = ""
+description = "Go official language server"
+homepage = "https://github.com/golang/tools"
+
+[server-manager.registry.pyright]
+order = 3
+kind = "lsp"
+languages = ["python"]
+bin-name = "pyright-langserver"
+url = ""
+description = "Python static type checker (Pylance core)"
+homepage = "https://github.com/microsoft/pyright"
+
+[server-manager.registry.clangd]
+order = 4
+kind = "lsp"
+languages = ["c", "cpp"]
+url = ""
+description = "C/C++ language server (clangd, LLVM)"
+homepage = "https://clangd.llvm.org"
+
+[server-manager.registry.debugpy]
+order = 5
+kind = "dap"
+languages = ["python"]
+cmd = ""
+description = "Python debug adapter (debugpy, VS Code core)"
+homepage = "https://github.com/microsoft/debugpy"
+
+[server-manager.registry.black]
+order = 6
+kind = "formatter"
+languages = ["python"]
+cmd = ""
+description = "Python code formatter (black)"
+homepage = "https://github.com/psf/black"
+
+[server-manager.registry.prettier]
+order = 7
+kind = "formatter"
+languages = ["javascript", "typescript", "html", "css", "json", "markdown"]
+cmd = ""
+description = "Multi-language code formatter (prettier)"
+homepage = "https://github.com/prettier/prettier"
