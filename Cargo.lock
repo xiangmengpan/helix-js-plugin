@@ -2245,6 +2245,8 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml",
+ "unicode-segmentation",
+ "unicode-width 0.1.12",
  "ureq",
  "vte",
  "zip",
