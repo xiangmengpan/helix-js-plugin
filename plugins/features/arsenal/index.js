@@ -483,7 +483,10 @@ function open_action_menu() {
   if (!r) return;
   const acts = row_actions(r);
   if (!acts.length) {
-    helix.echo("arsenal: " + r.name + " has no actions (no source / local-only / missing)");
+    // 占位配方(无下载源且未装)无动作:提示原因并回退打开信息弹窗
+    // (info 含 source/description/homepage,解释为何不可直装/如何装)
+    helix.echo("arsenal: " + r.name + " has no download source (placeholder recipe) — showing info; press i anytime");
+    open_info(r);
     return;
   }
   if (acts.length === 1) return run_action(acts[0].op, r.name); // 单项直达

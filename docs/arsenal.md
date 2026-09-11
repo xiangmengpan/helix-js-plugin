@@ -56,6 +56,9 @@ helix.load("features/arsenal/index.js");
 `Enter` 在未装且可装行 = 直接 `install`(单项直达);受管已装行打开
 **update/remove 菜单**(`↑↓`/`j k` 选择,Enter 执行);本机已有行单项 `unmanage`
 直达。菜单内 `i` 可先看该行信息再决定。Esc/q 关菜单回主窗。
+未装且**无下载源**的占位配方(如内置 `gopls/clangd/debugpy/black/prettier` 与 contrib 中
+`url = ""` 的说明型条目)没有可执行动作:Enter 会提示原因并直接打开信息弹窗
+(source/description/homepage 即手动安装引导)。
 
 ## 版本输入(needs_version)
 

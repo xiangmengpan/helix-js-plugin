@@ -370,6 +370,19 @@ test('菜单:两动作行 Enter 开菜单;菜单内 i 直达信息(不关菜单)
   assert.ok(S.menu, '信息叠于菜单上,菜单保留');
 });
 
+// 占位配方(未装 + 无下载源)Enter:提示原因并回退打开信息弹窗(不再只 echo)
+test('无动作行 Enter:echo 原因并打开信息弹窗', () => {
+  const PLACEHOLDER = { ...FIXED, name: 'jdtls', installable: false, source: null };
+  S.rows = [PLACEHOLDER];
+  M.handle_key({ name: 'Enter' });
+  popupOn(M.LAYERS.info); // 回退到信息弹窗(解释/引导)
+  assert.equal(S.menu, null, '不建空菜单');
+  assert.ok(
+    calls.echo.some((m) => m.includes('no download source')),
+    'echo 应说明无下载源: ' + calls.echo
+  );
+});
+
 test('子弹窗 onClose 自愈:引擎非按键关闭时 S.menu/S.vinput 置 null', () => {
   // 菜单
   S.rows = [{ ...NV_MANAGED, upgradable: true }];
