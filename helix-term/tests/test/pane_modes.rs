@@ -28,6 +28,56 @@ async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 渲染 compositor 到 Buffer,返回所有行(用于断言状态栏内容)
+fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
+    let mut buf = tui::buffer::Buffer::empty(area);
+    app.compositor.reset_plugin_diffs();
+    let mut jobs = Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+    };
+    app.compositor.render(area, &mut buf, &mut cx);
+    (0..area.height)
+        .map(|y| {
+            buf.content
+                .iter()
+                .skip(y as usize * area.width as usize)
+                .take(area.width as usize)
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// 状态栏模式指示:图标 + 模式名(只有图标的话 Pane/Resize/Move/Scroll/Locked 区分不出来)
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_statusline_label() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
+    let status = |app: &mut Application| render_rows(app, area).pop().unwrap();
+
+    assert!(!status(&mut app).contains("PANE"), "不在模式里不显示");
+
+    pump(&mut app, "<C-p>").await?;
+    assert!(status(&mut app).contains("PANE"), "Pane 模式标注");
+
+    pump(&mut app, "<C-n>").await?;
+    assert!(
+        status(&mut app).contains("RESIZE"),
+        "切到 Resize 后标注跟着变"
+    );
+    assert!(!status(&mut app).contains("PANE"), "旧标注不残留");
+
+    pump(&mut app, "<C-g>").await?;
+    assert!(status(&mut app).contains("LOCKED"), "Locked 标注");
+
+    pump(&mut app, "<C-g>").await?;
+    assert!(!status(&mut app).contains("LOCKED"), "退出后标注消失");
+    Ok(())
+}
+
 /// 开一个右侧面板叶子(id=1)并把焦点交给它
 fn split_right_panel(app: &mut Application) {
     app.compositor.split_leaf_with_ratio(

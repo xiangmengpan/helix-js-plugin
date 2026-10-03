@@ -1,5 +1,6 @@
 use super::*;
 use helix_term::application::Application;
+use helix_term::compositor::PaneMode;
 use helix_term::job::Jobs;
 use helix_term::ui::layout::SplitDir;
 use helix_term::ui::plugin_panel::PanelSide;
@@ -49,13 +50,21 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_exit_toggles() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;
-    assert!(!app.compositor.window_mode_active(), "初始非模式");
-    pump(&mut app, "<C-w>").await?;
-    assert!(app.compositor.window_mode_active(), "C-w 进模式");
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Normal, "初始非模式");
+    pump(&mut app, "<C-p>").await?;
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Pane,
+        "C-p 进 Pane 模式"
+    );
     pump(&mut app, "<esc>").await?;
-    assert!(!app.compositor.window_mode_active(), "Esc 退模式");
-    pump(&mut app, "<C-w> <C-w>").await?;
-    assert!(!app.compositor.window_mode_active(), "模式内 C-w 退出");
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Normal, "Esc 退模式");
+    pump(&mut app, "<C-p><C-p>").await?;
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Normal,
+        "模式内同键退出"
+    );
     Ok(())
 }
 
@@ -72,13 +81,13 @@ async fn window_mode_directional_focus() -> anyhow::Result<()> {
     );
     let active = app.compositor.layout_tree().active();
     assert_eq!(active, 1, "面板打开后活动叶子=面板");
-    pump(&mut app, "<C-w>h<esc>").await?;
+    pump(&mut app, "<C-p>h<esc>").await?;
     assert_eq!(
         app.compositor.layout_tree().active(),
         0,
         "h → 左邻居(编辑器)"
     );
-    pump(&mut app, "<C-w>l<esc>").await?;
+    pump(&mut app, "<C-p>l<esc>").await?;
     assert_eq!(app.compositor.layout_tree().active(), 1, "l → 右邻居(面板)");
     Ok(())
 }
@@ -95,24 +104,24 @@ async fn window_mode_close_minimize_zoom() -> anyhow::Result<()> {
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     // 最小化往返
-    pump(&mut app, "<C-w>z<esc>").await?;
+    pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
         app.compositor.layout_tree().minimized().is_some(),
         "z 最小化"
     );
-    pump(&mut app, "<C-w>z<esc>").await?;
+    pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
         app.compositor.layout_tree().minimized().is_none(),
         "再 z 还原"
     );
     // 回面板叶子,最大化往返
-    pump(&mut app, "<C-w>l<esc>").await?;
-    pump(&mut app, "<C-w>f<esc>").await?;
+    pump(&mut app, "<C-p>l<esc>").await?;
+    pump(&mut app, "<C-p>f<esc>").await?;
     assert!(app.compositor.layout_tree().zoomed() == Some(1), "f 最大化");
-    pump(&mut app, "<C-w>f<esc>").await?;
+    pump(&mut app, "<C-p>f<esc>").await?;
     assert!(app.compositor.layout_tree().zoomed().is_none(), "再 f 还原");
     // 关闭
-    pump(&mut app, "<C-w>x<esc>").await?;
+    pump(&mut app, "<C-p>x<esc>").await?;
     assert!(!app.compositor.has_component(panel_type), "x 关闭面板叶子");
     Ok(())
 }
@@ -129,7 +138,7 @@ async fn window_mode_swap_and_resize() -> anyhow::Result<()> {
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
     // 活动=面板(1),H + h 与左邻居(编辑器)交换内容;焦点仍在 id=1
-    pump(&mut app, "<C-w>H<esc>").await?;
+    pump(&mut app, "<C-p>H<esc>").await?;
     let types: Vec<_> = app.compositor.layout_tree().leaf_types();
     assert_eq!(types[0], panel_type, "交换后左叶子为面板");
     assert_eq!(
@@ -137,7 +146,7 @@ async fn window_mode_swap_and_resize() -> anyhow::Result<()> {
         "交换后右叶子为编辑器"
     );
     // resize:宽度 +5%,不 panic 且布局仍 2 叶
-    pump(&mut app, "<C-w>C-l<esc>").await?;
+    pump(&mut app, "<C-n>l<esc>").await?;
     assert_eq!(
         app.compositor.layout_tree().leaf_types().len(),
         2,
@@ -146,9 +155,10 @@ async fn window_mode_swap_and_resize() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 编排层裁定:insert 模式 C-w 不进窗口模式,保留删词语义(delete_word_backward)
+/// 拦截规则:insert 里前缀键放行(`C-h` 是删词,不豁免会毁掉退格);
+/// 而 `C-w` 是编辑器原有的删词命令,与模式无关。
 #[tokio::test(flavor = "multi_thread")]
-async fn window_mode_not_entered_in_insert() -> anyhow::Result<()> {
+async fn pane_mode_not_entered_in_insert() -> anyhow::Result<()> {
     // 删词行为与 commands::test_delete_word_backward 同断言
     test((
         "fo#[o|]#ba#(r|)#",
@@ -157,12 +167,13 @@ async fn window_mode_not_entered_in_insert() -> anyhow::Result<()> {
 |]#",
     ))
     .await?;
-    // 且不进入窗口模式
+    // 新前缀 C-h 在 insert 里必须放行(不当模式键)
     let mut app = AppBuilder::new().with_input_text("fo#[o|]#ba(r)").build()?;
-    pump(&mut app, "a<C-w>").await?;
-    assert!(
-        !app.compositor.window_mode_active(),
-        "insert 模式 C-w 不进窗口模式"
+    pump(&mut app, "a<C-h>").await?;
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Normal,
+        "insert 模式 C-h 不进 Move 模式(它是删词)"
     );
     Ok(())
 }
@@ -171,8 +182,8 @@ async fn window_mode_not_entered_in_insert() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_exits_on_popup_open() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, "<C-w>").await?;
-    assert!(app.compositor.window_mode_active(), "C-w 进模式");
+    pump(&mut app, "<C-p>").await?;
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Pane, "C-p 进模式");
     // 打开一个弹窗层(仿 filetree prompt:push popup 类 layer)
     let popup = helix_term::ui::Popup::new(
         "plugin-popup",
@@ -180,7 +191,11 @@ async fn window_mode_exits_on_popup_open() -> anyhow::Result<()> {
     )
     .position(Some(helix_core::Position::new(0, 0)));
     app.compositor.push(Box::new(popup));
-    assert!(!app.compositor.window_mode_active(), "弹窗打开自动退模式");
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Normal,
+        "弹窗打开自动退模式"
+    );
     Ok(())
 }
 
@@ -203,7 +218,7 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
         "fixed 标记生效"
     );
     // 模式内 x 不关闭 fixed 叶子
-    pump(&mut app, "<C-w>x<esc>").await?;
+    pump(&mut app, "<C-p>x<esc>").await?;
     let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
     assert!(
         app.compositor.has_component(panel_type),
@@ -215,13 +230,13 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
     assert!(f.fixed, "dump 含 fixed 字段");
     // 陷阱回归:先最小化后 fixed 的叶子可还原(还原不受 fixed 拦截;否则无恢复路径)
     app.compositor.set_leaf_fixed(fixed_id, false);
-    pump(&mut app, "<C-w>z<esc>").await?;
+    pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
         app.compositor.layout_tree().minimized().is_some(),
         "z 最小化(未 fixed)"
     );
     app.compositor.set_leaf_fixed(fixed_id, true);
-    pump(&mut app, "<C-w>z<esc>").await?;
+    pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
         app.compositor.layout_tree().minimized().is_none(),
         "fixed×minimized 叶子可还原(z 往返)"
@@ -322,7 +337,7 @@ async fn buffer_open_creates_leaf_with_content() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_statusline_indicator() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, "<C-w>").await?;
+    pump(&mut app, "<C-p>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     let status = &rows[29];
     assert!(
@@ -350,9 +365,9 @@ async fn zoom_unzoom_restores_tree_render() -> anyhow::Result<()> {
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
     );
-    pump(&mut app, "<C-w>f<esc>").await?;
+    pump(&mut app, "<C-p>f<esc>").await?;
     assert_eq!(app.compositor.layout_tree().zoomed(), Some(1));
-    pump(&mut app, "<C-w>f<esc>").await?;
+    pump(&mut app, "<C-p>f<esc>").await?;
     assert!(app.compositor.layout_tree().zoomed().is_none());
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     let r0 = &rows[0];
@@ -405,9 +420,9 @@ async fn window_mode_creates_splits_v_s_n() -> anyhow::Result<()> {
     std::fs::write(&a, "AAA\n")?;
     let mut app = AppBuilder::new().with_file(a, None).build()?;
     // v:右分同 doc
-    pump(&mut app, "<C-w>v<esc>").await?;
+    pump(&mut app, "<C-p>r<esc>").await?;
     let types = app.compositor.layout_tree().leaf_types();
-    assert_eq!(types.len(), 2, "C-w v 应 2 叶: {types:?}");
+    assert_eq!(types.len(), 2, "C-p r 应 2 叶: {types:?}");
     assert_eq!(app.editor.documents.len(), 1, "同 doc 不新增");
     assert!(types.contains(&"BufferLeaf"));
     // 右叶活动 → 编辑同 doc
@@ -415,13 +430,13 @@ async fn window_mode_creates_splits_v_s_n() -> anyhow::Result<()> {
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(doc.text().to_string(), "XAAA\n");
     // s:下分同 doc(3 叶)
-    pump(&mut app, "<C-w>s<esc>").await?;
+    pump(&mut app, "<C-p>d<esc>").await?;
     let types = app.compositor.layout_tree().leaf_types();
-    assert_eq!(types.len(), 3, "C-w s 后应 3 叶: {types:?}");
+    assert_eq!(types.len(), 3, "C-p d 后应 3 叶: {types:?}");
     // n:新空 buffer(4 叶)
-    pump(&mut app, "<C-w>n<esc>").await?;
+    pump(&mut app, "<C-p>n<esc>").await?;
     let types = app.compositor.layout_tree().leaf_types();
-    assert_eq!(types.len(), 4, "C-w n 后应 4 叶: {types:?}");
+    assert_eq!(types.len(), 4, "C-p n 后应 4 叶: {types:?}");
     assert_eq!(app.editor.documents.len(), 2, "scratch + a");
     let (_, doc) = current_ref!(app.editor);
     assert!(doc.path().is_none(), "n 创建空 scratch 且活动");

@@ -22,6 +22,8 @@ pub struct RenderContext<'a> {
     pub focused: bool,
     pub spinners: &'a ProgressSpinners,
     pub window_mode: bool,
+    /// 平级模式名(Pane/Resize/Move/Scroll/Locked);`None` = 不在任何模式
+    pub pane_mode: Option<&'static str>,
     /// 活动窗口类型(状态栏窗口图标用):editor/buffer/terminal/panel
     pub active_leaf_type: &'static str,
     /// 活动窗口路径(编辑器/buffer 叶子时为当前文件路径)
@@ -38,6 +40,7 @@ impl<'a> RenderContext<'a> {
         focused: bool,
         spinners: &'a ProgressSpinners,
         window_mode: bool,
+        pane_mode: Option<&'static str>,
         active_leaf_type: &'static str,
         active_leaf_path: Option<String>,
     ) -> Self {
@@ -48,6 +51,7 @@ impl<'a> RenderContext<'a> {
             focused,
             spinners,
             window_mode,
+            pane_mode,
             active_leaf_type,
             active_leaf_path,
             parts: RenderBuffer::default(),
@@ -172,7 +176,12 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
 
     if context.window_mode {
         // 窗口模式指示：窗口图标（与 replace 模式 statusline.js 的 ICONS.mode.window 同款字符）
-        let mut indicator = Span::from("\u{f108} ");
+        // 平级模式（阶段①）在图标后带上模式名，否则 Pane/Resize/Move/Scroll/Locked 无法区分
+        let text = match context.pane_mode {
+            Some(m) => format!("\u{f108} {m} "),
+            None => "\u{f108} ".to_string(),
+        };
+        let mut indicator = Span::from(text);
         indicator.style = context.editor.theme.get("ui.statusline.insert");
         append(&mut context.parts.left, indicator, base_style);
     }

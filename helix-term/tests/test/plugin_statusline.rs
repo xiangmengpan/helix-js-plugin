@@ -50,6 +50,7 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
                         true,
                         &spinners,
                         false,
+                        None,
                         "editor",
                         None,
                     );
@@ -117,6 +118,7 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
             true,
             &spinners,
             false,
+            None,
             "editor",
             None,
         );
@@ -200,6 +202,7 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
             true,
             &spinners,
             false,
+            None,
             "editor",
             None,
         );
@@ -255,6 +258,7 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
             true,
             &spinners,
             false,
+            None,
             "editor",
             None,
         );
@@ -302,6 +306,7 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                         true,
                         &spinners,
                         true,
+                        None,
                         "editor",
                         None, // window_mode=true
                     );
@@ -351,6 +356,7 @@ async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
         true,
         &spinners,
         true, // window_mode
+        None, // pane_mode
         "editor",
         Some("/tmp/a.rs".to_string()),
     );

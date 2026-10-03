@@ -162,6 +162,10 @@ impl Compositor {
         if self.window_mode_active() && layer.id().is_some() {
             self.window_mode = WindowMode::Inactive;
         }
+        // 平级模式同理:不退出的话弹窗按键会被 pane_mode_key 吞掉
+        if self.pane_mode != PaneMode::Normal && layer.id().is_some() {
+            self.pane_mode = PaneMode::Normal;
+        }
         // immediately clear last_picker field to avoid excessive memory
         // consumption for picker with many items
         if layer.id() == Some(picker::ID) {
@@ -514,7 +518,15 @@ impl Compositor {
             view,
             is_focused,
             &spinners,
-            self.window_mode_active(),
+            self.window_mode_active() || self.pane_mode != PaneMode::Normal,
+            match self.pane_mode {
+                PaneMode::Normal => None,
+                PaneMode::Locked => Some("LOCKED"),
+                PaneMode::Pane => Some("PANE"),
+                PaneMode::Resize => Some("RESIZE"),
+                PaneMode::Move => Some("MOVE"),
+                PaneMode::Scroll => Some("SCROLL"),
+            },
             active_leaf_type,
             active_leaf_path,
         );
