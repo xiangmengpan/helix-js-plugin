@@ -759,6 +759,86 @@ impl LayoutTree {
         }
     }
 
+    /// 从 `get_layout()` 的 dump 重建树。
+    ///
+    /// **重建而非重建组件**:终端/面板叶子无法凭空造出来(要 pty / 插件),
+    /// 但组件本来就还在 `components` 里,所以按 id 复用即可。已不存在的叶子
+    /// 连同它占的分支一起收敛;全部叶子都没了则报错(不把树搞空)。
+    pub fn restore(&mut self, dump: &serde_json::Value) -> anyhow::Result<()> {
+        use std::collections::HashSet;
+        let live: HashSet<u64> = self.components.keys().copied().collect();
+
+        fn parse(node: &serde_json::Value, live: &HashSet<u64>) -> Option<LayoutNode> {
+            match node.get("type").and_then(|t| t.as_str()) {
+                Some("leaf") => {
+                    let id = node.get("id")?.as_u64()?;
+                    live.contains(&id).then_some(LayoutNode::Leaf { id })
+                }
+                Some("split") => {
+                    let dir = match node.get("dir").and_then(|d| d.as_str()) {
+                        Some("v") => SplitDir::V,
+                        _ => SplitDir::H,
+                    };
+                    let ratio = node.get("ratio").and_then(|r| r.as_f64()).unwrap_or(0.5) as f32;
+                    let first = parse(node.get("first")?, live);
+                    let second = parse(node.get("second")?, live);
+                    match (first, second) {
+                        (Some(f), Some(s)) => Some(LayoutNode::Split {
+                            dir,
+                            ratio: ratio.clamp(0.05, 0.95),
+                            first: Box::new(f),
+                            second: Box::new(s),
+                        }),
+                        (Some(f), None) => Some(f),
+                        (None, Some(s)) => Some(s),
+                        (None, None) => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        let tree = dump
+            .get("tree")
+            .ok_or_else(|| anyhow::anyhow!("restore_layout: dump 里缺 tree"))?;
+        let root = parse(tree, &live)
+            .ok_or_else(|| anyhow::anyhow!("restore_layout: dump 里没有任何仍存在的叶子"))?;
+
+        self.root = root;
+
+        // fixed / rail 按 dump 的 leafs 重建(只保留仍存在的 id)
+        self.fixed.clear();
+        self.rail = None;
+        if let Some(leafs) = dump.get("leafs").and_then(|l| l.as_array()) {
+            for l in leafs {
+                let Some(id) = l.get("id").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
+                if !live.contains(&id) {
+                    continue;
+                }
+                if l.get("fixed").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    self.fixed.insert(id);
+                }
+                if l.get("rail").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    self.rail = Some(id);
+                }
+            }
+        }
+
+        // active / zoomed / minimized 只接受仍存在的 id,否则回落到树的首叶
+        let live_of = |v: Option<u64>| v.filter(|id| live.contains(id));
+        let first = self.leaf_ids().into_iter().next().unwrap_or(0);
+        self.active = dump
+            .get("active")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| live_of(Some(v)))
+            .unwrap_or(first);
+        self.zoomed = live_of(dump.get("zoomed").and_then(|v| v.as_u64()));
+        self.minimized = live_of(dump.get("minimized").and_then(|v| v.as_u64()));
+        Ok(())
+    }
+
     pub fn dump(&self) -> LayoutDump {
         let fixed = &self.fixed;
         let rail = self.rail;
@@ -1627,6 +1707,91 @@ mod rail_tests {
         assert_eq!(tree.rail_leaf(), None);
         assert!(matches!(tree.root, LayoutNode::Leaf { id: 0 }));
         assert!(!tree.components.contains_key(&r2), "rail 组件已移除");
+    }
+
+    /// `restore_layout` 接线:dump → restore 往返,形状/比例/活动叶子一致
+    #[test]
+    fn restore_roundtrip_keeps_shape() {
+        let mut t = base();
+        let a = t
+            .split_side_ratio(
+                0,
+                SplitDir::H,
+                false,
+                0.3,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+                1,
+            )
+            .unwrap();
+        t.split_side_ratio(
+            a,
+            SplitDir::V,
+            false,
+            0.7,
+            Box::new(PluginTerminal::new(2, 2, 80)),
+            2,
+        )
+        .unwrap();
+        let json = serde_json::to_value(t.dump()).unwrap();
+        let ids = t.leaf_ids();
+        let active = t.active();
+
+        // 同组组件、但形状不同的另一棵树:restore 后应完全对齐 dump
+        let mut t2 = base();
+        let a2 = t2
+            .split_side_ratio(
+                0,
+                SplitDir::H,
+                false,
+                0.9,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+                1,
+            )
+            .unwrap();
+        t2.split_side_ratio(
+            a2,
+            SplitDir::V,
+            true,
+            0.1,
+            Box::new(PluginTerminal::new(2, 2, 80)),
+            2,
+        )
+        .unwrap();
+        t2.restore(&json).unwrap();
+
+        assert_eq!(t2.leaf_ids(), ids, "叶子集合与树序");
+        assert_eq!(t2.active(), active, "活动叶子");
+        assert_eq!(
+            serde_json::to_value(t2.dump()).unwrap()["tree"],
+            json["tree"],
+            "树形状(含 ratio 与 first/second 次序)"
+        );
+    }
+
+    /// 已不存在的叶子应被丢弃、空分支收敛;全空则报错
+    #[test]
+    fn restore_drops_missing_leafs() {
+        let mut t = base();
+        t.split_side_ratio(
+            0,
+            SplitDir::H,
+            false,
+            0.4,
+            Box::new(PluginTerminal::new(1, 1, 80)),
+            1,
+        )
+        .unwrap();
+        let json = serde_json::to_value(t.dump()).unwrap();
+
+        // 新树只有 id=0(1 已不在)→ 退化为单叶
+        let mut t2 = base();
+        t2.restore(&json).unwrap();
+        assert_eq!(t2.leaf_ids(), vec![0]);
+        assert_eq!(t2.active(), 0);
+
+        // 一个活的叶子都没有 → 报错,不把树搞空
+        let mut t3 = LayoutTree::default();
+        assert!(t3.restore(&json).is_err());
     }
 
     #[test]

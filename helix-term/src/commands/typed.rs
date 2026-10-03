@@ -5245,6 +5245,20 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             }
             helix_js::UiRequest::CacheLayout(json) => {
                 helix_js::cache_layout(&json);
+                // restore_layout 的「接线」:不只写缓存,真按 dump 重建树
+                // (复用已有组件;已不存在的叶子收敛掉)
+                job::dispatch_blocking(move |editor, compositor| {
+                    match serde_json::from_str::<serde_json::Value>(&json) {
+                        Ok(v) => {
+                            if let Err(e) = compositor.layout_tree().restore(&v) {
+                                editor.set_error(format!("restore_layout: {e}"));
+                            } else {
+                                compositor.sync_editor_focus(editor);
+                            }
+                        }
+                        Err(e) => editor.set_error(format!("restore_layout: 非法 JSON: {e}")),
+                    }
+                });
             }
             helix_js::UiRequest::SetTheme { name } => {
                 // 复用 :theme Validate 逻辑：加载 + set_theme + 重捕获基准 + 清插件覆盖
