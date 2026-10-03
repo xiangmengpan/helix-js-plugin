@@ -35,7 +35,9 @@ pub struct LayoutTree {
     /// 缩放中的叶子 id（占满全区，其他叶子隐藏）
     zoomed: Option<u64>,
     /// 浮动叶子 id（终端 Floating 模式：不占 split 布局，渲染在视口中央浮窗，最上层）
-    float: Option<u64>,
+    /// 浮动 pane 槽位(阶段②):多窗 + z 序 + 比例几何。
+    /// 旧行为(终端 Floating 模式)= 只有一项、比例居中。
+    floats: Vec<FloatSlot>,
     /// 最小化叶子 id（不占布局，渲染为底部一条标题横条；单例）
     minimized: Option<u64>,
     /// 最近一次渲染的叶子区域（鼠标命中查询；每帧渲染更新）
@@ -47,15 +49,64 @@ pub struct LayoutTree {
     rail: Option<u64>,
 }
 
+/// 浮动 pane 槽位(阶段②)。
+///
+/// 几何用**视口比例**(0..1)而不是绝对格:窗口改尺寸时浮窗跟着缩放,
+/// 不会跑到视口外。旧行为(单个居中浮窗)= `x:0.2, y:0.15, w:0.6, h:0.7`
+/// (与 `float_rect` 的 60%×70% 居中一致)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloatSlot {
+    pub id: u64,
+    /// 左上角比例(相对视口)
+    pub x: f32,
+    pub y: f32,
+    /// 宽高比例(相对视口)
+    pub w: f32,
+    pub h: f32,
+    /// z 序:大者在上(渲染与事件路由都按降序)
+    pub z: i32,
+    /// pinned:置顶(上层语义,渲染只看 z)
+    pub pinned: bool,
+}
+
+impl FloatSlot {
+    /// 默认居中槽位(60%×70%,带旧实现的 40×10 最小尺寸)
+    pub fn centered(id: u64) -> Self {
+        Self {
+            id,
+            x: 0.2,
+            y: 0.15,
+            w: 0.6,
+            h: 0.7,
+            z: 0,
+            pinned: false,
+        }
+    }
+
+    /// 比例 → 实际矩形(与旧 `float_rect` 的尺寸约束一致:宽 ≥40、高 ≥10,不越视口)
+    pub fn rect_of(&self, area: Rect) -> Rect {
+        let max_w = area.width.max(1);
+        let max_h = area.height.max(1);
+        let w = ((area.width as f32 * self.w).round() as u16).clamp(40.min(max_w), max_w);
+        let h = ((area.height as f32 * self.h).round() as u16).clamp(10.min(max_h), max_h);
+        let x = (area.x as f32 + area.width as f32 * self.x).round() as i32;
+        let y = (area.y as f32 + area.height as f32 * self.y).round() as i32;
+        // 夹进视口(改尺寸/移动后不会跑出去)
+        let x = x.clamp(area.x as i32, (area.x + max_w).saturating_sub(w) as i32) as u16;
+        let y = y.clamp(area.y as i32, (area.y + max_h).saturating_sub(h) as i32) as u16;
+        Rect::new(x, y, w, h)
+    }
+}
+
 /// 叶子布局结果：每个叶子的 id + Rect
 /// skip/minimized = 排除布局空间的叶子 id（float 浮窗 / minimized 横条）：
 /// 其所在子树整体让位，其余叶子占满区域
 type LeafRect = (u64, Rect);
 
 /// 子树是否所有叶子都属于排除集合（float/minimized 让位判断）
-fn subtree_all_excluded(node: &LayoutNode, skip: Option<u64>, minimized: Option<u64>) -> bool {
+fn subtree_all_excluded(node: &LayoutNode, skip: &[u64], minimized: Option<u64>) -> bool {
     match node {
-        LayoutNode::Leaf { id } => Some(*id) == skip || Some(*id) == minimized,
+        LayoutNode::Leaf { id } => skip.contains(id) || Some(*id) == minimized,
         LayoutNode::Split { first, second, .. } => {
             subtree_all_excluded(first, skip, minimized)
                 && subtree_all_excluded(second, skip, minimized)
@@ -67,12 +118,12 @@ fn layout_node(
     node: &LayoutNode,
     area: Rect,
     out: &mut Vec<LeafRect>,
-    skip: Option<u64>,
+    skip: &[u64],
     minimized: Option<u64>,
 ) {
     match node {
         LayoutNode::Leaf { id } => {
-            if Some(*id) != skip && Some(*id) != minimized {
+            if !skip.contains(id) && Some(*id) != minimized {
                 out.push((*id, area));
             }
         }
@@ -84,7 +135,7 @@ fn layout_node(
         } => {
             // 排除叶子所在子树整体不占空间：另一侧占满本区域（浮动/最小化时
             // 不留白——否则 dock 位置留白 → 其余叶子出现一块空白）
-            if skip.is_some() || minimized.is_some() {
+            if !skip.is_empty() || minimized.is_some() {
                 let (first_gone, second_gone) = (
                     subtree_all_excluded(first, skip, minimized),
                     subtree_all_excluded(second, skip, minimized),
@@ -154,7 +205,7 @@ impl Default for LayoutTree {
             active: 0,
             next_id: 1,
             zoomed: None,
-            float: None,
+            floats: Vec::new(),
             minimized: None,
             fixed: Default::default(),
             rail: None,
@@ -259,26 +310,64 @@ impl LayoutTree {
         }
     }
 
-    /// 浮动叶子 id
+    /// 最上层浮动叶子的 id(单浮窗时代的 `floating()` 语义)
     pub fn floating(&self) -> Option<u64> {
-        self.float
+        self.floats.iter().max_by_key(|f| f.z).map(|f| f.id)
     }
 
-    /// 把叶子设为浮动（渲染在最上层浮窗；其他叶子照常布局）。仅当组件存在。
+    /// 全部浮动槽位(按 z 升序)
+    pub fn floats(&self) -> Vec<FloatSlot> {
+        let mut v = self.floats.clone();
+        v.sort_by_key(|f| f.z);
+        v
+    }
+
+    fn float_ids(&self) -> Vec<u64> {
+        self.floats.iter().map(|f| f.id).collect()
+    }
+
+    /// 把叶子设为浮动(默认居中槽位;旧单浮窗语义)。仅当组件存在。
     pub fn set_float(&mut self, id: u64) {
         if self.components.contains_key(&id) {
-            self.float = Some(id);
+            self.floats.retain(|f| f.id != id);
+            self.floats.push(FloatSlot::centered(id));
             self.active = id;
         }
     }
 
-    /// 取消浮动（叶子回到其 split 位置）
+    /// 按显式槽位加/替换一个浮动 pane(阶段② 多窗)
+    pub fn add_float(&mut self, slot: FloatSlot) {
+        if self.components.contains_key(&slot.id) {
+            self.floats.retain(|f| f.id != slot.id);
+            self.floats.push(slot);
+        }
+    }
+
+    /// 取槽位可变引用(移动/缩放/pin 用)
+    pub fn float_slot_mut(&mut self, id: u64) -> Option<&mut FloatSlot> {
+        self.floats.iter_mut().find(|f| f.id == id)
+    }
+
+    /// 提到最上层(取当前最大 z + 1)
+    pub fn float_raise(&mut self, id: u64) {
+        let top = self.floats.iter().map(|f| f.z).max().unwrap_or(0);
+        if let Some(f) = self.float_slot_mut(id) {
+            f.z = top + 1;
+        }
+    }
+
+    /// 关闭单个浮动槽位(组件保留,回到其 split 位置)
+    pub fn remove_float(&mut self, id: u64) {
+        self.floats.retain(|f| f.id != id);
+    }
+
+    /// 取消全部浮动(兼容旧 `unfloat()`;叶子回到各自 split 位置)
     pub fn unfloat(&mut self) {
-        self.float = None;
+        self.floats.clear();
     }
 
     pub fn is_float(&self) -> bool {
-        self.float.is_some()
+        !self.floats.is_empty()
     }
 
     /// 浮动浮窗矩形：视口居中，宽 60%、高 70%（带边框），最小 40×10
@@ -429,10 +518,8 @@ impl LayoutTree {
         if self.zoomed == Some(id) {
             self.zoomed = None;
         }
-        if self.float == Some(id) {
-            // 残留会让事件路由指向已删叶子（handle_event 优先 float）→ 全部 Ignored → 程序僵死
-            self.float = None;
-        }
+        // 关闭浮动 pane：残留槽位会让事件路由指向已删叶子 → 全部 Ignored → 程序僵死
+        self.floats.retain(|f| f.id != id);
         if self.minimized == Some(id) {
             self.minimized = None;
         }
@@ -989,9 +1076,10 @@ impl LayoutTree {
         }
         let mut rects = Vec::new();
         // 浮动/最小化叶子不占布局空间（其余叶子占满，无 dock 位置留白）
-        layout_node(&self.root, area, &mut rects, self.float, self.minimized);
+        let floats = self.float_ids();
+        layout_node(&self.root, area, &mut rects, &floats, self.minimized);
         // 活动叶子（事件路由目标）：画高亮边框（内容 inset 1 格；浮窗已有自身边框不重复）
-        let focus = if self.float.is_some() || self.zoomed.is_some() {
+        let focus = if !self.floats.is_empty() || self.zoomed.is_some() {
             None
         } else {
             Some(self.active)
@@ -1032,10 +1120,11 @@ impl LayoutTree {
                 }
             }
         }
-        // 浮动叶子：最上层浮窗（边框 + 内区）
-        if let Some(fid) = self.float {
+        // 浮动 pane(阶段②:多窗,按 z 升序叠画)
+        for slot in self.floats() {
+            let fid = slot.id;
             if let Some(comp) = self.components.get_mut(&fid) {
-                let outer = Self::float_rect(area);
+                let outer = slot.rect_of(area);
                 let inner = Rect::new(
                     outer.x + 1,
                     outer.y + 1,
@@ -1075,7 +1164,12 @@ impl LayoutTree {
 
     /// 事件路由：浮动叶子优先，其次活动叶子；Ignored → 编辑器叶子（id=0）兜底
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        let target = self.float.unwrap_or_else(|| self.active());
+        let target = self
+            .floats
+            .iter()
+            .max_by_key(|f| f.z)
+            .map(|f| f.id)
+            .unwrap_or_else(|| self.active());
         // rail 焦点态:组件优先消费(浏览键);组件未消费时仅 Esc/plain-l 退出回 main,
         // 其余键(如 : 开命令)照旧穿透编辑器——filetree 等面板按"非模态"设计(未映射键穿透)。
         if target != 0 && self.rail == Some(target) {
@@ -1418,14 +1512,20 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         // 未浮动：终端占底部，编辑器只剩上部
         let mut rects = Vec::new();
-        layout_node(&tree.root, area, &mut rects, None, None);
+        layout_node(&tree.root, area, &mut rects, &[], None);
         assert_eq!(rects.len(), 2);
         let editor_rect = rects.iter().find(|(id, _)| *id == 0).unwrap().1;
         assert!(editor_rect.height < area.height, "未浮动时编辑器被切分");
         // 浮动后：编辑器占满整个区域（无底部空白）
         tree.set_float(tid);
         let mut rects = Vec::new();
-        layout_node(&tree.root, area, &mut rects, tree.float, tree.minimized);
+        layout_node(
+            &tree.root,
+            area,
+            &mut rects,
+            &tree.float_ids(),
+            tree.minimized,
+        );
         assert_eq!(rects.len(), 1, "浮动叶子不产生布局 rect");
         assert_eq!(rects[0].0, 0);
         assert_eq!(rects[0].1, area, "编辑器占满整个区域");
@@ -1504,7 +1604,7 @@ mod tests {
         tree.resize_leaf_dir(a, SplitDir::V, 0.2);
         tree.equalize(a);
         let mut rects = Vec::new();
-        layout_node(&tree.root, Rect::new(0, 0, 100, 40), &mut rects, None, None);
+        layout_node(&tree.root, Rect::new(0, 0, 100, 40), &mut rects, &[], None);
         let rect_a = rects.iter().find(|(id, _)| *id == a).unwrap().1;
         let rect_b = rects.iter().find(|(id, _)| *id == b).unwrap().1;
         assert_eq!(rect_a.height, rect_b.height, "equalize 后上下等高");
@@ -1526,7 +1626,7 @@ mod tests {
         // term 增大 0.2：second 侧 → ratio 0.5-0.2=0.3
         assert!(tree.resize_leaf_dir(tid, SplitDir::H, 0.2));
         let mut rects = Vec::new();
-        layout_node(&tree.root, Rect::new(0, 0, 100, 10), &mut rects, None, None);
+        layout_node(&tree.root, Rect::new(0, 0, 100, 10), &mut rects, &[], None);
         let term_rect = rects.iter().find(|(id, _)| *id == tid).unwrap().1;
         assert_eq!(term_rect.x, 30, "term 占 30%");
         // editor 增大 0.1：first 侧 → ratio 0.3+0.1=0.4
@@ -1623,14 +1723,26 @@ mod tests {
         assert_eq!(tree.active(), 0, "最小化时焦点回编辑器");
         let area = Rect::new(0, 0, 80, 24);
         let mut rects = Vec::new();
-        layout_node(&tree.root, area, &mut rects, tree.float, tree.minimized);
+        layout_node(
+            &tree.root,
+            area,
+            &mut rects,
+            &tree.float_ids(),
+            tree.minimized,
+        );
         assert_eq!(rects.len(), 1, "minimized 叶子不产生布局 rect");
         assert_eq!(rects[0].1, area, "其余叶子占满整个区域");
         // 恢复
         tree.set_minimized(tid, false);
         assert_eq!(tree.minimized_leaf(), None);
         let mut rects = Vec::new();
-        layout_node(&tree.root, area, &mut rects, tree.float, tree.minimized);
+        layout_node(
+            &tree.root,
+            area,
+            &mut rects,
+            &tree.float_ids(),
+            tree.minimized,
+        );
         assert_eq!(rects.len(), 2, "恢复后回到原分割");
     }
 }
@@ -1657,8 +1769,8 @@ mod rail_tests {
         // root = Split(rail(1) | main(0))
         match &tree.root {
             LayoutNode::Split { first, second, .. } => {
-                assert_eq!(tree.leaf_ids_of(&*first), vec![rid], "rail 在 first(左侧)");
-                assert!(tree.leaf_ids_of(&*second).contains(&0), "main 含编辑器");
+                assert_eq!(tree.leaf_ids_of(first), vec![rid], "rail 在 first(左侧)");
+                assert!(tree.leaf_ids_of(second).contains(&0), "main 含编辑器");
             }
             _ => panic!("注册 rail 后 root 应为 Split"),
         }
@@ -1697,8 +1809,8 @@ mod rail_tests {
         assert!(!tree.is_rail(r1) || r1 != r2);
         match &tree.root {
             LayoutNode::Split { first, second, .. } => {
-                assert!(tree.leaf_ids_of(&*first).contains(&r2));
-                assert!(tree.leaf_ids_of(&*second).contains(&0));
+                assert!(tree.leaf_ids_of(first).contains(&r2));
+                assert!(tree.leaf_ids_of(second).contains(&0));
             }
             _ => panic!(),
         }
@@ -1794,6 +1906,74 @@ mod rail_tests {
         assert!(t3.restore(&json).is_err());
     }
 
+    /// 阶段②:多个浮动 pane 并存,z 大者在上(渲染与事件路由共用此序)
+    #[test]
+    fn multiple_floats_stack_by_z() {
+        let mut tree = base();
+        let a = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
+            .unwrap();
+        tree.split_side(
+            a,
+            SplitDir::H,
+            false,
+            Box::new(PluginTerminal::new(2, 2, 80)),
+        )
+        .unwrap();
+
+        tree.add_float(FloatSlot {
+            z: 1,
+            ..FloatSlot::centered(1)
+        });
+        tree.add_float(FloatSlot {
+            z: 5,
+            ..FloatSlot::centered(2)
+        });
+        assert_eq!(tree.floats().len(), 2, "两个浮窗并存");
+        assert_eq!(tree.floating(), Some(2), "z 最大的在上");
+
+        // 抬升 → 变最上
+        tree.float_raise(1);
+        assert_eq!(tree.floating(), Some(1), "raise 后成为最上");
+
+        // 关闭单个 → 只少那一个,组件保留在树里
+        tree.remove_float(1);
+        assert_eq!(tree.floats().len(), 1);
+        assert_eq!(tree.floating(), Some(2));
+        assert_eq!(
+            tree.leaf_ids().len(),
+            3,
+            "浮窗叶子仍在树里(不占布局空间而已)"
+        );
+    }
+
+    /// 浮窗几何用比例:任一视口尺寸下都不越界(改窗口不会把浮窗甩出去)
+    #[test]
+    fn float_rect_scales_and_stays_inside_viewport() {
+        let slot = FloatSlot {
+            x: 0.9,
+            y: 0.9,
+            w: 0.6,
+            h: 0.7,
+            ..FloatSlot::centered(7)
+        };
+        for area in [
+            Rect::new(0, 0, 200, 60),
+            Rect::new(3, 2, 80, 24),
+            Rect::new(0, 0, 41, 11),
+        ] {
+            let r = slot.rect_of(area);
+            assert!(r.x >= area.x && r.y >= area.y, "{area:?} 左上不越界");
+            assert!(r.x + r.width <= area.x + area.width, "{area:?} 右不越界");
+            assert!(r.y + r.height <= area.y + area.height, "{area:?} 下不越界");
+        }
+    }
+
     #[test]
     fn rail_immune_to_window_ops() {
         let mut tree = base();
@@ -1810,8 +1990,8 @@ mod rail_tests {
         // 分裂在 main 内:rail 仍在 root first,root 不增层
         match &tree.root {
             LayoutNode::Split { first, second, .. } => {
-                assert!(tree.leaf_ids_of(&*first).contains(&rid));
-                assert!(tree.leaf_ids_of(&*second).contains(&mid), "main 含新分裂叶");
+                assert!(tree.leaf_ids_of(first).contains(&rid));
+                assert!(tree.leaf_ids_of(second).contains(&mid), "main 含新分裂叶");
             }
             _ => panic!(),
         }
@@ -1839,7 +2019,7 @@ mod rail_tests {
         // rail 仍直接贴 root
         match &tree.root {
             LayoutNode::Split { first, .. } => {
-                assert!(tree.leaf_ids_of(&*first).contains(&rid));
+                assert!(tree.leaf_ids_of(first).contains(&rid));
             }
             _ => panic!(),
         }
