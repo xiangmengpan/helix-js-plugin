@@ -1461,7 +1461,9 @@ fn compute_inlay_hints_for_view(
                     };
 
                     let width = label.width();
-                    let limit = limit.get().into();
+                    // 显式类型:alacritty_terminal 带来 `impl PartialOrd<Column> for usize`,
+                    // 使 `usize > 推断值` 在此 crate 内变成歧义(E0283)
+                    let limit: usize = limit.get().into();
                     if width > limit {
                         let mut floor_boundary = 0;
                         let mut acc = 0;

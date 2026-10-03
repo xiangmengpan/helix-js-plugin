@@ -59,6 +59,8 @@ helix-js = { path = "../helix-js" }
 notify = "7"
 
 vte.workspace = true
+# 终端仿真引擎(替代手写 TerminalGrid)
+alacritty_terminal.workspace = true
 
 anyhow = "1"
 once_cell = "1.21"

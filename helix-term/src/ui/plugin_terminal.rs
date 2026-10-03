@@ -1,27 +1,41 @@
-//! 原生终端视图：PTY 输出经 vte 解析成字符网格，渲染到 tui surface。
+//! 原生终端视图:PTY 输出交给 alacritty_terminal 引擎解析,渲染到 tui surface。
 //!
-//! `TerminalGrid` 是纯数据 + vte::Perform 实现（无 helix 依赖，可单测）；
-//! `PluginTerminal` 是 compositor 层：按键直通 pty、尺寸变化实时 TIOCSWINSZ、
-//! Esc 关闭（Drop 时杀 pty）。
+//! `TerminalGrid` 是引擎(alacritty_terminal,与 zellij 的屏幕仿真同源)的薄封装,
+//! `TerminalCell` 退化为取屏时的渲染视图;`PluginTerminal` 是 compositor 层:
+//! 按键直通 pty、尺寸变化实时 TIOCSWINSZ、Esc 关闭(Drop 时杀 pty)。
+//!
+//! 引擎不自己写 pty:DA/DSR/OSC 查询的答复经 `TermSink` 回转,由本层写回(见 `take_replies`)。
 
-use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use helix_view::graphics::{Color, Modifier, Rect, Style};
+use alacritty_terminal::event::{Event as EngineEvent, EventListener};
+use alacritty_terminal::grid::{Dimensions, Grid as EngineGrid, Scroll};
+use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::cell::{Cell as EngineCell, Flags};
+use alacritty_terminal::term::{Config as TermConfig, Term, TermMode as EngineMode};
+use alacritty_terminal::vte::ansi::{Color as EngineColor, NamedColor, Processor, StdSyncHandler};
+
+use helix_view::graphics::{Color, Modifier, Rect, Style, UnderlineStyle};
 use tui::buffer::Buffer as Surface;
-use vte::{Params, Perform};
 
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 
-/// 单个终端网格单元：字符 + SGR 颜色 + 粗体 + 显示宽度。
-/// 宽字符（CJK）：主格 width=2，后续格 width=0 标记占位（render 跳过、背景连续）。
+/// 单个终端网格单元的渲染视图:字符 + 颜色 + 属性 + 显示宽度。
+/// 宽字符(CJK):主格 width=2,后续格 width=0(render 跳过、背景连续)。
+/// 引擎是唯一真源,本类型只在取屏时按需构造。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCell {
     pub ch: char,
-    /// 显示宽度：0 = 被前一个宽字符占用的占位格，1 = 普通，2 = 宽字符主格
+    /// 显示宽度:0 = 被前一个宽字符占用的占位格,1 = 普通,2 = 宽字符主格
     pub width: u8,
     pub fg: Option<Color>,
     pub bg: Option<Color>,
     pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+    pub strikethrough: bool,
 }
 
 impl Default for TerminalCell {
@@ -32,65 +46,116 @@ impl Default for TerminalCell {
             fg: None,
             bg: None,
             bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+            strikethrough: false,
         }
     }
 }
 
-/// 滚回保留的最大行数（只存不显示，PoC）
+/// 引擎历史缓冲上限(可滚回行数)
 const SCROLLBACK_MAX: usize = 1000;
 
-/// vte 解析出的终端网格：cols×rows 单元 + 光标 + 滚回 + alt screen 备份。
-/// 不派生 Debug/Clone：vte::Parser 只有 Default（解析器跨 feed 调用持久，块边界
-/// 切开的 CSI/OSC 序列才不损坏）。
+/// 引擎 → 宿主的回调出口。
+///
+/// 引擎对 DA/DSR/OSC 查询的**答复不是自己写的**:它以 `PtyWrite` 事件交给宿主,
+/// 由宿主写进 pty(忽略它,那些"先问终端再决定"的 TUI 会卡)。OSC 52 写剪贴板
+/// 经 `ClipboardStore` 排队,由宿主接系统剪贴板。
+/// `EventListener::send_event` 取 `&self`,故用 `Arc<Mutex<..>>` 做内部可变性
+/// (该 trait 本身无 `Send + Sync` 约束,但 `PluginTerminal` 要经 `job::dispatch_blocking`
+/// 的 `Send` 闭包构造,所以不能用 `Rc<RefCell<..>>`)。
+#[derive(Clone, Default)]
+struct TermSink {
+    title: Arc<Mutex<Option<String>>>,
+    replies: Arc<Mutex<Vec<u8>>>,
+    clipboard: Arc<Mutex<Vec<String>>>,
+}
+
+/// 取锁但不容忍中毒:send_event 在解析中途被调,panic 掉锁会连带毁掉后续所有输出。
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl EventListener for TermSink {
+    fn send_event(&self, event: EngineEvent) {
+        match event {
+            EngineEvent::Title(t) => *lock(&self.title) = Some(t),
+            EngineEvent::ResetTitle => *lock(&self.title) = None,
+            EngineEvent::PtyWrite(s) => lock(&self.replies).extend_from_slice(s.as_bytes()),
+            EngineEvent::ClipboardStore(_, text) => lock(&self.clipboard).push(text),
+            // ColorRequest / TextAreaSizeRequest / ClipboardLoad:已知未接(见设计文档)
+            _ => {}
+        }
+    }
+}
+
+/// 引擎尺寸:可见区 + 历史。
+/// **必须给历史**:否则 reflow 溢出的内容会被直接丢弃(探路实测过)。
+#[derive(Clone, Copy)]
+struct GridDims {
+    cols: usize,
+    rows: usize,
+    history: usize,
+}
+
+impl Dimensions for GridDims {
+    fn total_lines(&self) -> usize {
+        self.rows + self.history
+    }
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+fn engine_config(history: usize) -> TermConfig {
+    TermConfig {
+        scrolling_history: history,
+        ..TermConfig::default()
+    }
+}
+
+/// 终端网格(引擎支撑)。
+///
+/// 公开方法与旧手写实现同形,调用方(PluginTerminal / 单测)基本不用改;
+/// 差别:`cell()` 返回拥有值而不是引用(引擎的 `Cell` 是另一种类型)。
 pub struct TerminalGrid {
-    /// vte 状态机（一次创建、反复 advance）：块边界落在逃逸序列中间时状态保留到下一块
-    parser: vte::Parser,
+    term: Term<TermSink>,
+    processor: Processor<StdSyncHandler>,
+    dims: GridDims,
     cols: u16,
     rows: u16,
-    cells: Vec<TerminalCell>,
-    cursor: (u16, u16),
-    saved_cursor: (u16, u16),
-    /// 主屏备份：进入 alt screen 时保存（cells + 光标），退出时恢复
-    alt_saved: Option<(Vec<TerminalCell>, (u16, u16))>,
-    /// 是否处于 alt screen（= alt_saved.is_some() 的冗余，便于测试与阅读）
-    alt: bool,
-    /// 滚出屏幕的最后 N 行（顶行/底行滚动时收集；显示未用）
-    scrollback: VecDeque<Vec<TerminalCell>>,
-    /// 累计滚出行数（含被 SCROLLBACK_MAX 裁剪掉的）
-    scrollback_len: usize,
-    /// 终端 normal 模式的滚动查看偏移（0 = 显示活动区；>0 从滚回显示 offset 行）
-    scroll_offset: usize,
-    // 当前 SGR 属性（print 时写到单元格）
-    fg: Option<Color>,
-    bg: Option<Color>,
-    bold: bool,
-    /// OSC 0/2 标题（term-title 钩子消费；feed 后 take 清空）
-    last_title: Option<String>,
-    /// 最近一次 OSC 标题(持久;get_component_state 的 title 字段)
+    sink: TermSink,
+    /// 最近一次 OSC 0/2 标题(持久;`get_component_state` 的 title 字段)
     title: String,
+    /// 已到达但尚未被 `take_title()` 取走的标题(钩子消费用)
+    pending_title: Option<String>,
 }
 
 impl TerminalGrid {
     pub fn new(rows: u16, cols: u16) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
+        let dims = GridDims {
+            cols: cols as usize,
+            rows: rows as usize,
+            history: SCROLLBACK_MAX,
+        };
+        let sink = TermSink::default();
+        let term = Term::new(engine_config(dims.history), &dims, sink.clone());
         Self {
-            parser: vte::Parser::new(),
+            term,
+            processor: Processor::new(),
+            dims,
             cols,
             rows,
-            cells: vec![TerminalCell::default(); rows as usize * cols as usize],
-            cursor: (0, 0),
-            saved_cursor: (0, 0),
-            alt_saved: None,
-            alt: false,
-            scrollback: VecDeque::new(),
-            scrollback_len: 0,
-            scroll_offset: 0,
-            fg: None,
-            bg: None,
-            bold: false,
-            last_title: None,
+            sink,
             title: String::new(),
+            pending_title: None,
         }
     }
 
@@ -102,650 +167,275 @@ impl TerminalGrid {
         self.cols
     }
 
+    /// 可见区内光标位置(0-based)。已随滚回偏移折算并夹取到可见区。
     pub fn cursor(&self) -> (u16, u16) {
-        self.cursor
+        let content = self.term.renderable_content();
+        let off = content.display_offset as i32;
+        let p = content.cursor.point;
+        let row = (p.line.0 + off).clamp(0, self.rows as i32 - 1) as u16;
+        let col = (p.column.0 as u16).min(self.cols - 1);
+        (row, col)
     }
 
-    /// 单元格（行/列越界 → None）
-    pub fn cell(&self, row: u16, col: u16) -> Option<&TerminalCell> {
+    /// 可见区某格(0-based)。宽字符占位格返回 width=0 的视图。
+    pub fn cell(&self, row: u16, col: u16) -> Option<TerminalCell> {
         if row >= self.rows || col >= self.cols {
             return None;
         }
-        Some(&self.cells[row as usize * self.cols as usize + col as usize])
+        let grid = self.term.grid();
+        let line = Line(row as i32 - grid.display_offset() as i32);
+        Some(cell_view(&grid[line][Column(col as usize)]))
     }
 
     pub fn in_alt(&self) -> bool {
-        self.alt
+        self.term.mode().contains(EngineMode::ALT_SCREEN)
     }
 
+    /// 历史缓冲已有行数
     pub fn scrollback_len(&self) -> usize {
-        self.scrollback_len
+        self.term.grid().history_size()
     }
 
-    /// 滚动查看偏移（0 = 活动区底部）；上限为实际保留的滚回行数
+    /// 当前滚回偏移(0 = 显示活动区)
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.term.grid().display_offset()
     }
 
-    /// 设置滚动查看偏移（终端 normal 模式滚动缓冲；clamp 到可用滚回）
     pub fn set_scroll_offset(&mut self, offset: usize) {
-        self.scroll_offset = offset.min(self.scrollback.len());
+        // 引擎的 `Scroll::Delta(+n)` 是**增大**偏移(向上滚入历史),
+        // 所以由当前偏移走到目标偏移要传 `offset - cur`,不是反过来
+        let cur = self.term.grid().display_offset() as i32;
+        let delta = offset as i32 - cur;
+        if delta != 0 {
+            self.term.grid_mut().scroll_display(Scroll::Delta(delta));
+        }
     }
 
-    /// 滚动偏移增加 n（向滚回深处/顶部）；clamp
     pub fn scroll_up_view(&mut self, n: usize) {
-        self.set_scroll_offset(self.scroll_offset.saturating_add(n));
+        self.term.grid_mut().scroll_display(Scroll::Delta(n as i32));
     }
 
-    /// 滚动偏移减少 n（向活动区/底部）；clamp
     pub fn scroll_down_view(&mut self, n: usize) {
-        self.set_scroll_offset(self.scroll_offset.saturating_sub(n));
+        self.term
+            .grid_mut()
+            .scroll_display(Scroll::Delta(-(n as i32)));
     }
 
-    /// 滚回有可见行（normal 模式滚动时判断）
     pub fn has_scrollback(&self) -> bool {
-        !self.scrollback.is_empty()
+        self.term.grid().history_size() > 0
     }
 
-    /// 把一块字节喂进 vte 解析器（复用同一 parser：块边界切开的 CSI/OSC 序列
-    /// 跨 feed 调用保持状态）。chunk 内部字节无需完整——read_stream 只保证
-    /// UTF-8 字符不跨块，逃逸序列跨块由本持久 parser 承接。
-    /// 取走最近一次 OSC 标题（无则 None）
+    /// 取走最近一次 OSC 0/2 标题(取后清空,钩子消费用;pull 语义)
     pub fn take_title(&mut self) -> Option<String> {
-        self.last_title.take()
+        self.pending_title.take()
     }
 
+    /// 最近一次标题(持久;`get_component_state` 用)
+    pub fn title(&self) -> String {
+        self.title.clone()
+    }
+
+    /// 取走引擎要求写回 pty 的字节(DA/DSR/OSC 查询答复)
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut *lock(&self.sink.replies))
+    }
+
+    /// 取走引擎收到的 OSC 52 剪贴板写入请求
+    pub fn take_clipboard(&mut self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.sink.clipboard))
+    }
+
+    /// 喂一块 PTY 输出(字节;多字节 UTF-8 跨块安全)
     pub fn feed(&mut self, bytes: &[u8]) {
-        // parser 与 Perform 实现都借 &mut self：临时取出解析器、喂完放回（vte::Parser: Default）
-        let mut parser = std::mem::take(&mut self.parser);
-        parser.advance(self, bytes);
-        self.parser = parser;
-    }
-
-    fn idx(&self, row: u16, col: u16) -> usize {
-        row as usize * self.cols as usize + col as usize
-    }
-
-    fn cell_mut(&mut self, row: u16, col: u16) -> &mut TerminalCell {
-        let idx = self.idx(row, col);
-        &mut self.cells[idx]
-    }
-
-    /// 把一行（截断到当前宽度）推进滚回
-    fn push_scrollback(&mut self, mut line: Vec<TerminalCell>) {
-        line.truncate(self.cols as usize);
-        self.scrollback_len += 1;
-        self.scrollback.push_back(line);
-        while self.scrollback.len() > SCROLLBACK_MAX {
-            self.scrollback.pop_front();
+        self.processor.advance(&mut self.term, bytes);
+        // 标题由引擎经事件 push 出来:在此汇入持久字段与 pending 槽
+        if let Some(t) = lock(&self.sink.title).take() {
+            self.title = t.clone();
+            self.pending_title = Some(t);
         }
     }
 
-    /// 光标下行；已在底行时整屏上滚（顶行进滚回）
-    fn linefeed(&mut self) {
-        if self.cursor.0 + 1 < self.rows {
-            self.cursor.0 += 1;
-        } else {
-            self.scroll_up(1);
-        }
-    }
-
-    /// 整屏上滚 n 行：顶行依次进滚回，底行补空
-    fn scroll_up(&mut self, n: u16) {
-        let n = (n as usize).min(self.rows as usize);
-        for _ in 0..n {
-            let top: Vec<TerminalCell> = self.cells.drain(..self.cols as usize).collect();
-            self.push_scrollback(top);
-            self.cells
-                .extend(std::iter::repeat_with(TerminalCell::default).take(self.cols as usize));
-        }
-    }
-
-    /// 整屏下滚 n 行：底行依次进滚回，顶行补空（与 SU 对称）
-    fn scroll_down(&mut self, n: u16) {
-        let n = (n as usize).min(self.rows as usize);
-        for _ in 0..n {
-            let bottom: Vec<TerminalCell> =
-                self.cells.split_off(self.cells.len() - self.cols as usize);
-            self.push_scrollback(bottom);
-            self.cells
-                .splice(0..0, vec![TerminalCell::default(); self.cols as usize]);
-        }
-    }
-
-    /// 光标行起插入 n 个空行（内容下移，底行进滚回）
-    fn insert_lines(&mut self, n: u16) {
-        let row = self.cursor.0 as usize;
-        let n = (n as usize).min((self.rows as usize - row).max(1));
-        let mut lines: Vec<Vec<TerminalCell>> = self
-            .cells
-            .chunks(self.cols as usize)
-            .map(|c| c.to_vec())
-            .collect();
-        for _ in 0..n {
-            if let Some(bottom) = lines.pop() {
-                self.push_scrollback(bottom);
-            }
-            lines.insert(row, vec![TerminalCell::default(); self.cols as usize]);
-        }
-        self.cells = lines.into_iter().flatten().collect();
-    }
-
-    /// 光标行起删除 n 行（下方内容上移，底行补空；被删行不进滚回）
-    fn delete_lines(&mut self, n: u16) {
-        let row = self.cursor.0 as usize;
-        let n = (n as usize).min((self.rows as usize - row).max(1));
-        let mut lines: Vec<Vec<TerminalCell>> = self
-            .cells
-            .chunks(self.cols as usize)
-            .map(|c| c.to_vec())
-            .collect();
-        for _ in 0..n {
-            lines.remove(row);
-            lines.push(vec![TerminalCell::default(); self.cols as usize]);
-        }
-        self.cells = lines.into_iter().flatten().collect();
-    }
-
-    /// 光标处插入 n 个空白（行内容右移，行尾丢弃）
-    fn insert_blank(&mut self, n: u16) {
-        let col = self.cursor.1 as usize;
-        let n = (n as usize).min((self.cols as usize - col).max(1));
-        if n == 0 {
-            return;
-        }
-        let start = self.idx(self.cursor.0, 0);
-        let end = start + self.cols as usize;
-        // [col, cols-n) 右移到 [col+n, cols)，丢行尾 n 格
-        self.cells
-            .copy_within(start + col..end - n, start + col + n);
-        for c in &mut self.cells[start + col..start + col + n] {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn clear_screen(&mut self) {
-        for c in &mut self.cells {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn clear_above(&mut self) {
-        let end = self.idx(self.cursor.0, self.cursor.1) + 1;
-        for c in &mut self.cells[..end] {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn clear_below(&mut self) {
-        let start = self.idx(self.cursor.0, self.cursor.1);
-        for c in &mut self.cells[start..] {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn clear_to_eol(&mut self) {
-        let start = self.idx(self.cursor.0, self.cursor.1);
-        let end = self.idx(self.cursor.0, 0) + self.cols as usize;
-        for c in &mut self.cells[start..end] {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn clear_to_bol(&mut self) {
-        let start = self.idx(self.cursor.0, 0);
-        let end = self.idx(self.cursor.0, self.cursor.1) + 1;
-        for c in &mut self.cells[start..end] {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn clear_line(&mut self) {
-        let start = self.idx(self.cursor.0, 0);
-        for c in &mut self.cells[start..start + self.cols as usize] {
-            *c = TerminalCell::default();
-        }
-    }
-
-    fn reset_attrs(&mut self) {
-        self.fg = None;
-        self.bg = None;
-        self.bold = false;
-    }
-
-    fn enter_alt(&mut self) {
-        if !self.alt {
-            // 主屏备份 + 清屏（真实终端进入 alt screen 时清屏）
-            self.alt_saved = Some((std::mem::take(&mut self.cells), self.cursor));
-            self.cells = vec![TerminalCell::default(); self.rows as usize * self.cols as usize];
-            self.cursor = (0, 0);
-            self.alt = true;
-        }
-    }
-
-    fn exit_alt(&mut self) {
-        if self.alt {
-            if let Some((cells, cursor)) = self.alt_saved.take() {
-                self.cells = cells;
-                self.cursor = cursor;
-            }
-            self.alt = false;
-        }
-    }
-
-    /// 尺寸变化：截断/填充网格，光标 clamp，滚回行按新宽度截断。
-    /// alt screen 挂起时主屏备份（alt_saved）也按新尺寸重排——否则 exit_alt
-    /// 把旧尺寸 cells 塞回新网格 → 越界 panic（UI 线程崩溃）。
-    /// 清空网格（保留尺寸与光标位置）
+    /// 清屏并复位解析器(引擎无 in-place 清屏 API,重建;尺寸与历史配置保留)
     pub fn clear(&mut self) {
-        for cell in &mut self.cells {
-            *cell = TerminalCell {
-                ch: ' ',
-                width: 1,
-                fg: None,
-                bg: None,
-                bold: false,
-            };
-        }
-        self.cursor = (0, 0);
+        self.term = Term::new(
+            engine_config(self.dims.history),
+            &self.dims,
+            self.sink.clone(),
+        );
+        self.processor = Processor::new();
+        let _ = self.take_replies();
     }
 
+    /// 改尺寸(引擎带 reflow:长行重排,而不是截断销毁)
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);
         if rows == self.rows && cols == self.cols {
             return;
         }
-        let old_cols = self.cols;
-        let old_rows = self.rows;
-        self.cells = resize_cells(&self.cells, old_rows, old_cols, rows, cols);
-        if let Some((cells, cursor)) = &mut self.alt_saved {
-            // alt_saved 是进 alt 时从 self.cells mem::take 的主屏备份，尺寸同 (old_rows, old_cols)
-            *cells = resize_cells(cells, old_rows, old_cols, rows, cols);
-            cursor.0 = cursor.0.min(rows - 1);
-            cursor.1 = cursor.1.min(cols - 1);
-        }
-        self.cols = cols;
         self.rows = rows;
-        self.cursor.0 = self.cursor.0.min(rows - 1);
-        self.cursor.1 = self.cursor.1.min(cols - 1);
-        for line in &mut self.scrollback {
-            line.truncate(cols as usize);
-        }
+        self.cols = cols;
+        self.dims = GridDims {
+            cols: cols as usize,
+            rows: rows as usize,
+            history: SCROLLBACK_MAX,
+        };
+        self.term.resize(self.dims);
     }
 
-    /// 把网格画到 surface（area 左上角起，逐格写 symbol + style）。
-    /// scroll_offset > 0 时顶部显示滚回行（纯查看，不改 pty 状态），活动区在底部。
+    /// 把可见区画到 surface
     pub fn render(&self, area: Rect, surface: &mut Surface) {
-        let sb = &self.scrollback;
-        let scroll_rows = self.scroll_offset.min(sb.len());
-        let sb_start = sb.len() - scroll_rows;
-        for row in 0..area.height {
-            let display_row = row as usize;
-            let (line, line_row): (&[TerminalCell], usize) = if display_row < scroll_rows {
-                // 滚回区：显示 scrollback[sb_start + display_row]
-                (&sb[sb_start + display_row], display_row)
-            } else {
-                let grid_row = display_row - scroll_rows;
-                if grid_row >= self.rows as usize {
-                    break;
-                }
-                // 活动区：cells[grid_row]
-                let base = grid_row * self.cols as usize;
-                (&self.cells[base..base + self.cols as usize], display_row)
-            };
-            for col in 0..area.width {
-                let grid_col = col as usize;
-                if grid_col >= line.len() {
-                    break;
-                }
-                let cell = line[grid_col];
-                // 占位格（宽字符的第二个半格）：跳过，保持空格/背景连续
-                if cell.width == 0 {
-                    continue;
-                }
-                let Some(surface_cell) = surface.get_mut(area.x + col, area.y + line_row as u16)
-                else {
-                    continue;
-                };
-                let mut style = Style::default();
-                if cell.bold {
-                    style.add_modifier |= Modifier::BOLD;
-                }
-                style.fg = cell.fg;
-                style.bg = cell.bg;
-                surface_cell.set_symbol(&cell.ch.to_string());
-                surface_cell.set_style(style);
+        let content = self.term.renderable_content();
+        let off = content.display_offset as i32;
+        for indexed in content.display_iter {
+            let row = indexed.point.line.0 + off;
+            if row < 0 || row >= area.height as i32 {
+                continue;
             }
+            let col = indexed.point.column.0 as u16;
+            if col >= area.width {
+                continue;
+            }
+            let view = cell_view(indexed.cell);
+            if view.width == 0 {
+                continue; // 宽字符占位格:保持背景连续
+            }
+            let Some(sc) = surface.get_mut(area.x + col, area.y + row as u16) else {
+                continue;
+            };
+            let mut style = Style::default();
+            if view.bold {
+                style.add_modifier |= Modifier::BOLD;
+            }
+            if view.dim {
+                style.add_modifier |= Modifier::DIM;
+            }
+            if view.italic {
+                style.add_modifier |= Modifier::ITALIC;
+            }
+            if view.inverse {
+                style.add_modifier |= Modifier::REVERSED;
+            }
+            if view.strikethrough {
+                style.add_modifier |= Modifier::CROSSED_OUT;
+            }
+            if view.underline {
+                style.underline_style = Some(UnderlineStyle::Line);
+            }
+            style.underline_color = indexed.cell.underline_color().and_then(map_color);
+            style.fg = view.fg;
+            style.bg = view.bg;
+            // 组合字符(零宽)跟在基字符后一并写格
+            let mut symbol = String::new();
+            symbol.push(view.ch);
+            if let Some(zw) = indexed.cell.zerowidth() {
+                symbol.extend(zw.iter());
+            }
+            sc.set_symbol(&symbol);
+            sc.set_style(style);
         }
     }
 
-    /// 可视区纯文本（含滚动偏移带入的滚回行；跳过宽字符占位格、去行尾空白）。
-    /// 终端 normal 模式 y 复制、term-save 用。
+    /// 可视区纯文本(含滚回偏移带入的行;跳过宽字符占位格、去行尾空白)
     pub fn visible_text(&self) -> String {
-        let sb = &self.scrollback;
-        let scroll_rows = self.scroll_offset.min(sb.len());
-        let sb_start = sb.len() - scroll_rows;
+        let grid = self.term.grid();
+        let off = grid.display_offset() as i32;
         let mut out = String::new();
-        for display_row in 0..self.rows as usize {
-            let line: &[TerminalCell] = if display_row < scroll_rows {
-                &sb[sb_start + display_row]
-            } else {
-                let grid_row = display_row - scroll_rows;
-                if grid_row >= self.rows as usize {
-                    break;
-                }
-                &self.cells[grid_row * self.cols as usize..][..self.cols as usize]
-            };
-            let mut text = String::new();
-            for cell in line {
-                if cell.width == 0 {
-                    continue; // 宽字符占位格
-                }
-                text.push(cell.ch);
-            }
-            out.push_str(text.trim_end());
+        for row in 0..self.rows as i32 {
+            out.push_str(&row_text(grid, Line(row - off), self.cols as usize));
             out.push('\n');
         }
         out
     }
 
-    /// 全部内容纯文本（scrollback + 屏幕；跳过宽字符占位格、去行尾空白）。
-    /// term-save 持久化用。
+    /// 全部内容纯文本(历史 + 可见区)
     pub fn full_text(&self) -> String {
+        let grid = self.term.grid();
         let mut out = String::new();
-        for line in &self.scrollback {
-            let mut text = String::new();
-            for cell in line {
-                if cell.width == 0 {
-                    continue;
-                }
-                text.push(cell.ch);
-            }
-            out.push_str(text.trim_end());
-            out.push('\n');
-        }
-        for row in 0..self.rows as usize {
-            let base = row * self.cols as usize;
-            let line = &self.cells[base..base + self.cols as usize];
-            let mut text = String::new();
-            for cell in line {
-                if cell.width == 0 {
-                    continue;
-                }
-                text.push(cell.ch);
-            }
-            out.push_str(text.trim_end());
+        for l in grid.topmost_line().0..=grid.bottommost_line().0 {
+            out.push_str(&row_text(grid, Line(l), self.cols as usize));
             out.push('\n');
         }
         out
     }
 }
 
-/// 网格内容按新尺寸重排：旧区域（min(rows,old_rows)×min(cols,old_cols) 交集）保留，
-/// 新区域填空白，越界截断。resize 主屏与 alt_saved 共用。
-fn resize_cells(
-    old: &[TerminalCell],
-    old_rows: u16,
-    old_cols: u16,
-    rows: u16,
-    cols: u16,
-) -> Vec<TerminalCell> {
-    let mut new_cells = vec![TerminalCell::default(); rows as usize * cols as usize];
-    for r in 0..rows.min(old_rows) {
-        for c in 0..cols.min(old_cols) {
-            new_cells[r as usize * cols as usize + c as usize] =
-                old[r as usize * old_cols as usize + c as usize];
-        }
-    }
-    new_cells
-}
-
-/// ANSI 16 色 → tui Color（0-7 基础色 / 90-97 亮色）
-fn color_from_ansi(idx: u8, bright: bool) -> Color {
-    const BASE: [Color; 8] = [
-        Color::Black,
-        Color::Red,
-        Color::Green,
-        Color::Yellow,
-        Color::Blue,
-        Color::Magenta,
-        Color::Cyan,
-        Color::Gray,
-    ];
-    const BRIGHT: [Color; 8] = [
-        Color::LightGray,
-        Color::LightRed,
-        Color::LightGreen,
-        Color::LightYellow,
-        Color::LightBlue,
-        Color::LightMagenta,
-        Color::LightCyan,
-        Color::White,
-    ];
-    if bright {
-        BRIGHT[idx as usize % 8]
-    } else {
-        BASE[idx as usize % 8]
-    }
-}
-
-impl Perform for TerminalGrid {
-    fn print(&mut self, c: char) {
-        // 行尾延迟换行：光标已在最后一列时，下一个字符先 wrap 再写
-        if self.cursor.1 >= self.cols {
-            self.cursor.1 = 0;
-            self.linefeed();
-        }
-        let (fg, bg, bold) = (self.fg, self.bg, self.bold);
-        // 宽字符（CJK）：主格 + 下一格占位（width 0）；末列时占位格丢弃
-        let w = helix_core::unicode::width::UnicodeWidthChar::width(c).unwrap_or(1) as u8;
-        if w > 1 {
-            let cell = self.cell_mut(self.cursor.0, self.cursor.1);
-            cell.ch = c;
-            cell.width = 2;
-            cell.fg = fg;
-            cell.bg = bg;
-            cell.bold = bold;
-            self.cursor.1 += 1;
-            if self.cursor.1 < self.cols {
-                let next = self.cell_mut(self.cursor.0, self.cursor.1);
-                next.ch = ' ';
-                next.width = 0;
-                next.fg = fg;
-                next.bg = bg;
-                next.bold = bold;
-            }
-            self.cursor.1 += 1;
-            if self.cursor.1 >= self.cols {
-                // 宽字符到达末列：置延迟 wrap（与 print 末列语义一致）
-                self.cursor.1 = self.cols;
-            }
+/// 引擎单元 → 渲染视图
+fn cell_view(c: &EngineCell) -> TerminalCell {
+    let f = c.flags;
+    // 引擎用字面 '\t' 单元格作制表标记(本身不代表一个可见字符):
+    // 渲染上它就是空格,否则 surface 会被写入真制表符而错位。
+    let ch = if c.c == '\t' { ' ' } else { c.c };
+    TerminalCell {
+        ch,
+        width: if f.contains(Flags::WIDE_CHAR) {
+            2
+        } else if f.contains(Flags::WIDE_CHAR_SPACER) {
+            0
         } else {
-            let cell = self.cell_mut(self.cursor.0, self.cursor.1);
-            cell.ch = c;
-            cell.width = 1;
-            cell.fg = fg;
-            cell.bg = bg;
-            cell.bold = bold;
-            self.cursor.1 += 1;
-        }
-    }
-
-    fn execute(&mut self, byte: u8) {
-        match byte {
-            b'\n' | 0x0b => self.linefeed(), // LF / VT
-            b'\r' => self.cursor.1 = 0,      // CR
-            b'\t' => {
-                // 下一个 tab stop（8 格）
-                self.cursor.1 = (self.cursor.1 / 8 + 1) * 8;
-                if self.cursor.1 >= self.cols {
-                    // 目标在/超过末列：光标停末列并置延迟 wrap（下一字符换行，
-                    // 与 print 的末列语义一致；真实 xterm 同行为）
-                    self.cursor.1 = self.cols;
-                }
-            }
-            0x08 => self.cursor.1 = self.cursor.1.saturating_sub(1), // BS
-            0x0c => {
-                // FF：清屏 + 光标归位
-                self.clear_screen();
-                self.cursor = (0, 0);
-            }
-            _ => {} // BEL 等忽略
-        }
-    }
-
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        action: char,
-    ) {
-        // 私有模式仅当带 ? intermediate 才生效（DECSET/DECRST）：CSI ?1049h/l 切
-        // alt screen，其余（?25h/l 光标显隐等）忽略；无 ? 的 CSI 1049h 不是私有模式。
-        if _intermediates.contains(&b'?') {
-            let mode = params
-                .iter()
-                .next()
-                .and_then(|p| p.first())
-                .copied()
-                .unwrap_or(0);
-            match (mode, action) {
-                (1049, 'h') => self.enter_alt(),
-                (1049, 'l') => self.exit_alt(),
-                _ => {}
-            }
-            return;
-        }
-        // 光标移动类 CSI 先清除延迟 wrap 状态（真实终端：任何光标移动都取消待定换行，
-        // 只动行的 A/B 若不处理会让末列待定换行错误地延续到下一字符）
-        if matches!(action, 'A' | 'B' | 'C' | 'D' | 'G' | 'H' | 'f') {
-            self.cursor.1 = self.cursor.1.min(self.cols - 1);
-        }
-        // CSI 参数读取：缺失/0 → 默认值
-        let param = |i: usize, dflt: u16| {
-            params
-                .iter()
-                .nth(i)
-                .and_then(|p| p.first())
-                .copied()
-                .map(|v| if v == 0 { dflt } else { v })
-                .unwrap_or(dflt)
-        };
-        match action {
-            // 光标移动
-            'A' => self.cursor.0 = self.cursor.0.saturating_sub(param(0, 1)), // CUU
-            'B' => self.cursor.0 = (self.cursor.0 + param(0, 1)).min(self.rows - 1), // CUD
-            'C' => self.cursor.1 = (self.cursor.1 + param(0, 1)).min(self.cols - 1), // CUF
-            'D' => self.cursor.1 = self.cursor.1.saturating_sub(param(0, 1)), // CUB
-            'G' => self.cursor.1 = param(0, 1).saturating_sub(1).min(self.cols - 1), // CHA
-            'H' | 'f' => {
-                // CUP：row;col（1-based）
-                self.cursor.0 = param(0, 1).saturating_sub(1).min(self.rows - 1);
-                self.cursor.1 = param(1, 1).saturating_sub(1).min(self.cols - 1);
-            }
-            // 擦除
-            'J' => match param(0, 0) {
-                0 => self.clear_below(),
-                1 => self.clear_above(),
-                2 => self.clear_screen(),
-                3 => self.scrollback.clear(), // ED 3：清滚回
-                _ => {}
-            },
-            'K' => match param(0, 0) {
-                0 => self.clear_to_eol(),
-                1 => self.clear_to_bol(),
-                2 => self.clear_line(),
-                _ => {}
-            },
-            // SGR
-            'm' => self.sgr(params),
-            // 插入/删除
-            '@' => self.insert_blank(param(0, 1)), // ICH
-            'L' => self.insert_lines(param(0, 1)), // IL
-            'M' => self.delete_lines(param(0, 1)), // DL
-            'S' => self.scroll_up(param(0, 1)),    // SU
-            'T' => self.scroll_down(param(0, 1)),  // SD
-            _ => {}                                // 其余（DCH/ECH/REP 等）PoC 忽略
-        }
-    }
-
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
-        match byte {
-            b'7' => self.saved_cursor = self.cursor, // DECSC
-            b'8' => self.cursor = self.saved_cursor, // DECRC
-            _ => {}                                  // 字符集选择等忽略
-        }
-    }
-
-    // OSC（标题等）：0/2 ; <title> 记录到 last_title（渲染不消费，只供 term-title 钩子）
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        if params.len() > 1 && matches!(params[0], b"0" | b"2") {
-            if let Ok(title) = String::from_utf8(params[1].to_vec()) {
-                self.title = title.clone();
-                self.last_title = Some(title);
-            }
-        }
+            1
+        },
+        fg: map_color(c.fg),
+        bg: map_color(c.bg),
+        bold: f.contains(Flags::BOLD),
+        dim: f.contains(Flags::DIM),
+        italic: f.contains(Flags::ITALIC),
+        underline: f.contains(Flags::UNDERLINE),
+        inverse: f.contains(Flags::INVERSE),
+        strikethrough: f.contains(Flags::STRIKEOUT),
     }
 }
 
-impl TerminalGrid {
-    /// SGR 解析：0 重置 / 1 粗体 / 22 去粗 / 30-37·40-47·90-97·100-107 颜色 /
-    /// 38;5;n 256 色 / 38;2;r;g;b 真彩色 / 39·49 默认前景/背景
-    fn sgr(&mut self, params: &Params) {
-        let mut iter = params.iter();
-        // 空参（CSI m）＝ 0 重置
-        let Some(mut cur) = iter.next() else {
-            self.reset_attrs();
-            return;
-        };
-        loop {
-            let v = cur.first().copied().unwrap_or(0);
-            match v {
-                0 => self.reset_attrs(),
-                1 => self.bold = true,
-                22 => self.bold = false,
-                39 => self.fg = None,
-                49 => self.bg = None,
-                30..=37 => self.fg = Some(color_from_ansi(v as u8 - 30, false)),
-                40..=47 => self.bg = Some(color_from_ansi(v as u8 - 40, false)),
-                90..=97 => self.fg = Some(color_from_ansi(v as u8 - 90, true)),
-                100..=107 => self.bg = Some(color_from_ansi(v as u8 - 100, true)),
-                38 | 48 => {
-                    let is_fg = v == 38;
-                    match iter.next().and_then(|p| p.first()).copied() {
-                        Some(5) => {
-                            let idx = iter.next().and_then(|p| p.first()).copied().unwrap_or(0);
-                            let color = Color::Indexed(idx as u8);
-                            if is_fg {
-                                self.fg = Some(color);
-                            } else {
-                                self.bg = Some(color);
-                            }
-                        }
-                        Some(2) => {
-                            let r = iter.next().and_then(|p| p.first()).copied().unwrap_or(0);
-                            let g = iter.next().and_then(|p| p.first()).copied().unwrap_or(0);
-                            let b = iter.next().and_then(|p| p.first()).copied().unwrap_or(0);
-                            let color = Color::Rgb(r as u8, g as u8, b as u8);
-                            if is_fg {
-                                self.fg = Some(color);
-                            } else {
-                                self.bg = Some(color);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {} // 下划线/反转等 PoC 忽略
-            }
-            match iter.next() {
-                Some(p) => cur = p,
-                None => break,
-            }
+/// 一行的纯文本(去行尾空白;宽字符占位格跳过;组合字符带上)
+fn row_text(grid: &EngineGrid<EngineCell>, line: Line, cols: usize) -> String {
+    let mut s = String::new();
+    for col in 0..cols {
+        let c = &grid[line][Column(col)];
+        if c.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        // 制表标记按空格展开:与“所见即所得”一致(复制/导出不再出现真制表符)
+        s.push(if c.c == '\t' { ' ' } else { c.c });
+        if let Some(zw) = c.zerowidth() {
+            s.extend(zw.iter());
         }
     }
+    s.trim_end().to_string()
+}
+
+/// 引擎颜色 → 主题颜色。
+///
+/// 默认前景/背景/光标(`Foreground`/`Background`/`Cursor`/`BrightForeground`/`DimForeground`)
+/// 映射为 `None`,让 helix 主题的默认色生效;调色板 16 色按 ANSI 语义映射
+/// (索引 7 = 白 → `Gray`,8 = 亮黑 → `LightGray`)。
+fn map_color(c: EngineColor) -> Option<Color> {
+    Some(match c {
+        EngineColor::Named(n) => {
+            use NamedColor::*;
+            match n {
+                Black | DimBlack => Color::Black,
+                Red | DimRed => Color::Red,
+                Green | DimGreen => Color::Green,
+                Yellow | DimYellow => Color::Yellow,
+                Blue | DimBlue => Color::Blue,
+                Magenta | DimMagenta => Color::Magenta,
+                Cyan | DimCyan => Color::Cyan,
+                White | DimWhite => Color::Gray,
+                BrightBlack => Color::LightGray,
+                BrightRed => Color::LightRed,
+                BrightGreen => Color::LightGreen,
+                BrightYellow => Color::LightYellow,
+                BrightBlue => Color::LightBlue,
+                BrightMagenta => Color::LightMagenta,
+                BrightCyan => Color::LightCyan,
+                BrightWhite => Color::White,
+                // 默认色 / 光标色:交给主题
+                Foreground | Background | Cursor | BrightForeground | DimForeground => return None,
+            }
+        }
+        EngineColor::Indexed(i) => Color::Indexed(i),
+        EngineColor::Spec(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
+    })
 }
 
 /// 把按键转成发给 pty 的字节序列。
@@ -1090,9 +780,9 @@ impl Component for PluginTerminal {
                 TermInputMode::Insert => "insert",
                 TermInputMode::Normal => "normal",
             },
-            "title": self.grid.title,
+            "title": self.grid.title(),
             "minimized": self.mode == TermMode::Minimized,
-            "scroll_offset": self.grid.scroll_offset,
+            "scroll_offset": self.grid.scroll_offset(),
         })
         .to_string();
         helix_js::register_component_state(self.view_id, move |_| snap.clone());
@@ -1158,7 +848,7 @@ mod tests {
     }
 
     fn cell_at(g: &TerminalGrid, row: u16, col: u16) -> TerminalCell {
-        *g.cell(row, col).unwrap()
+        g.cell(row, col).unwrap()
     }
 
     #[test]
@@ -1297,7 +987,8 @@ mod tests {
                 fg: Some(Color::Green),
                 bg: None,
                 bold: false,
-                width: 1
+                width: 1,
+                ..Default::default()
             }
         );
         assert_eq!(line_text(&g, 0), "X       ");
@@ -1312,7 +1003,8 @@ mod tests {
         let mut g = grid(3, 5);
         g.feed(b"hello");
         assert_eq!(line_text(&g, 0), "hello");
-        assert_eq!(g.cursor(), (0, 5));
+        // 引擎(及 xterm)在末列用"待换行"标记:光标停在本列,下一个字符才换行
+        assert_eq!(g.cursor(), (0, 4));
         // 行尾再写字符 → wrap 到下一行
         g.feed(b"X");
         assert_eq!(line_text(&g, 1), "X    ");
@@ -1375,7 +1067,8 @@ mod tests {
                 fg: Some(Color::Red),
                 bg: None,
                 bold: false,
-                width: 1
+                width: 1,
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -1385,7 +1078,8 @@ mod tests {
                 fg: Some(Color::Green),
                 bg: None,
                 bold: true,
-                width: 1
+                width: 1,
+                ..Default::default()
             }
         );
         // 第 13 个字符（bold-green 的 n）wrap 到第 1 行
@@ -1396,7 +1090,8 @@ mod tests {
                 fg: Some(Color::Green),
                 bg: None,
                 bold: true,
-                width: 1
+                width: 1,
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -1406,7 +1101,8 @@ mod tests {
                 fg: None,
                 bg: None,
                 bold: false,
-                width: 1
+                width: 1,
+                ..Default::default()
             }
         );
         // 256 色与真彩色
@@ -1428,12 +1124,27 @@ mod tests {
         g.feed(b"\x1b[?1049h");
         assert!(g.in_alt());
         assert_eq!(line_text(&g, 0), "    ");
+        // 真实 TUI 进 alt 后都会 home 光标;不 home 时会继承主屏的待换行标记
+        // (见 alt_screen_inherits_pending_wrap)
+        g.feed(b"\x1b[H");
         g.feed(b"alt!");
         assert_eq!(line_text(&g, 0), "alt!");
-        // 退出：主屏恢复
+        // 退出:主屏恢复
         g.feed(b"\x1b[?1049l");
         assert!(!g.in_alt());
         assert_eq!(line_text(&g, 0), "main");
+    }
+
+    /// 进 alt screen 时光标(含"待换行"标记)被继承——xterm 与引擎同此行为。
+    /// 主屏写满末列后进 alt,第一个字符会先换行。
+    #[test]
+    fn alt_screen_inherits_pending_wrap() {
+        let mut g = grid(2, 4);
+        g.feed(b"main"); // 写满首行 → 光标 (0,3) + 待换行
+        g.feed(b"\x1b[?1049h");
+        g.feed(b"a");
+        assert_eq!(line_text(&g, 0), "    ");
+        assert_eq!(line_text(&g, 1), "a   ");
     }
 
     #[test]
@@ -1456,25 +1167,41 @@ mod tests {
         g.resize(2, 4);
         g.feed(b"\x1b[?1049l");
         assert_eq!(line_text(&g, 0), "main");
-        g.feed(b"Z"); // 写字符不 panic
-        assert_eq!(line_text(&g, 0), "maiZ");
+        // "main" 恰好写满 4 列 → 光标带"待换行"标记,Z 换到下一行(不是覆盖 'n')
+        g.feed(b"Z");
+        assert_eq!(line_text(&g, 0), "main");
+        assert_eq!(line_text(&g, 1), "Z   ");
     }
 
+    /// 改尺寸走引擎 reflow:长行重排、字符不丢。
+    /// 旧手写实现是截断销毁(`row.resize` 直接吐掉越出列的内容)——换引擎的主要收益之一。
     #[test]
-    fn resize_truncate_and_fill() {
+    fn resize_reflows_and_conserves_text() {
+        fn text_of(g: &TerminalGrid) -> String {
+            g.full_text()
+                .chars()
+                .filter(|c| *c != '\n' && *c != ' ')
+                .collect()
+        }
         let mut g = grid(3, 5);
-        g.feed(b"abcdefghijklmno"); // 15 字符写满 3×5
-        assert_eq!(line_text(&g, 2), "klmno");
-        assert_eq!(g.cursor(), (2, 5));
-        // 缩到 2×4：内容截断、光标 clamp
+        g.feed(b"abcdefghijklmno"); // 15 字符 = 3×5
+        assert_eq!(g.cursor(), (2, 4)); // 末列:待换行标记
+        assert!(text_of(&g).ends_with("abcdefghijklmno"));
+
+        // 缩到 2×4:重排成 4 行(4/4/4/3),可见区只显示最后 2 行,溢出的进历史
         g.resize(2, 4);
-        assert_eq!(line_text(&g, 0), "abcd");
         assert_eq!(g.rows(), 2);
-        assert_eq!(g.cursor(), (1, 3)); // (2,5) clamp 到 rows-1/cols-1
-                                        // 放大到 4×8：新区域填充空白
+        let after = text_of(&g);
+        assert!(
+            after.ends_with("abcdefghijklmno"),
+            "reflow 后 15 个字符必须全部存活(旧实现会只剩 8 个),实际: {after:?}"
+        );
+
+        // 放大回 4×8:行数生效,内容仍不丢
         g.resize(4, 8);
-        assert_eq!(line_text(&g, 0), "abcd    ");
-        assert_eq!(line_text(&g, 3), "        ");
+        assert_eq!(g.rows(), 4);
+        let again = text_of(&g);
+        assert!(again.ends_with("abcdefghijklmno"), "实际: {again:?}");
     }
 
     #[test]
@@ -1486,7 +1213,8 @@ mod tests {
         assert_eq!(line_text(&g, 0), "aaa ");
         assert_eq!(line_text(&g, 1), "bbb ");
         assert_eq!(line_text(&g, 2), "    ");
-        assert_eq!(g.scrollback_len(), 1);
+        // IL 是"下滚":移出的底行被丢弃,不进历史(历史只在整屏上滚时增长)
+        assert_eq!(g.scrollback_len(), 0);
         // 光标归位后 DL 1：删首行 aaa，内容上移，底行补空
         g.feed(b"\x1b[H\x1b[1M");
         assert_eq!(line_text(&g, 0), "bbb ");
@@ -1499,8 +1227,9 @@ mod tests {
         g.feed(b"\x1b[1S");
         assert_eq!(line_text(&g, 0), "Z   ");
         assert_eq!(line_text(&g, 2), "    ");
-        assert_eq!(g.scrollback_len(), 2); // ccc + XY
-                                           // SD 1：底行(空)进滚回，整体下移，顶行补空
+        // 历史 = DL 整屏上滚移出的 aaa(+1) + SU 移出的 XYb (+1)
+        assert_eq!(g.scrollback_len(), 2);
+        // SD 1：底行(空)进滚回，整体下移，顶行补空
         g.feed(b"\x1b[1T");
         assert_eq!(line_text(&g, 0), "    ");
         assert_eq!(line_text(&g, 1), "Z   ");
@@ -1510,12 +1239,12 @@ mod tests {
     fn tab_and_backspace() {
         let mut g = grid(2, 8);
         g.feed(b"a\tb");
-        // tab 目标第 8 列 = 末列 → 延迟 wrap：'b' 换行到下一行（真实 xterm 同行为）
-        assert_eq!(line_text(&g, 0), "a       ");
-        assert_eq!(line_text(&g, 1), "b       ");
-        assert_eq!(g.cursor(), (1, 1));
+        // tab 到下一制表位;越过右边界时停在末列(xterm 同行为),不触发换行
+        assert_eq!(line_text(&g, 0), "a      b");
+        assert_eq!(line_text(&g, 1), "        ");
+        assert_eq!(g.cursor(), (0, 7)); // 末列:待换行标记
         g.feed(b"\x08\x08");
-        assert_eq!(g.cursor(), (1, 0));
+        assert_eq!(g.cursor(), (0, 5));
     }
 
     #[test]
