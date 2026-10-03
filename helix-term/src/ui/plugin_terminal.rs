@@ -479,9 +479,19 @@ fn push_x10(out: &mut String, v: u16, utf8: bool) -> Option<()> {
 /// 把按键转成发给 pty 的字节序列。
 /// 支持：普通字符、Ctrl 组合（C-a → \x01 等）、Enter/Backspace/Tab、
 /// 方向键/Home/End/PageUp/PageDown/Delete/Insert（xterm 应序）。
-fn key_to_term_bytes(key: &helix_view::input::KeyEvent) -> Option<String> {
+fn key_to_term_bytes(key: &helix_view::input::KeyEvent, mode: EngineMode) -> Option<String> {
     use helix_view::input::{KeyCode, KeyModifiers};
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // 应用光标键模式(DECCKM,`?1h`):方向键/Home/End 发 SS3(`\eOA`)而不是 CSI(`\e[A`)。
+    // vim/less 开了该模式后期望 SS3。
+    let app = mode.contains(EngineMode::APP_CURSOR);
+    let csi = |c: char| {
+        if app {
+            format!("\x1bO{c}")
+        } else {
+            format!("\x1b[{c}")
+        }
+    };
     match key.code {
         KeyCode::Char(c) => {
             if ctrl {
@@ -499,12 +509,12 @@ fn key_to_term_bytes(key: &helix_view::input::KeyEvent) -> Option<String> {
         KeyCode::Enter => Some("\r".into()),
         KeyCode::Backspace => Some("\u{7f}".into()),
         KeyCode::Tab => Some("\t".into()),
-        KeyCode::Up => Some("\x1b[A".into()),
-        KeyCode::Down => Some("\x1b[B".into()),
-        KeyCode::Right => Some("\x1b[C".into()),
-        KeyCode::Left => Some("\x1b[D".into()),
-        KeyCode::Home => Some("\x1b[H".into()),
-        KeyCode::End => Some("\x1b[F".into()),
+        KeyCode::Up => Some(csi('A')),
+        KeyCode::Down => Some(csi('B')),
+        KeyCode::Right => Some(csi('C')),
+        KeyCode::Left => Some(csi('D')),
+        KeyCode::Home => Some(csi('H')),
+        KeyCode::End => Some(csi('F')),
         KeyCode::PageUp => Some("\x1b[5~".into()),
         KeyCode::PageDown => Some("\x1b[6~".into()),
         KeyCode::Delete => Some("\x1b[3~".into()),
@@ -790,7 +800,7 @@ impl Component for PluginTerminal {
         match helix_js::emit_term_key(self.pty_id, &key_desc.0, key_desc.1, key_desc.2, key_desc.3)
         {
             Some(helix_js::TermKeyDecision::Pass) => {
-                if let Some(bytes) = key_to_term_bytes(key) {
+                if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
                     let _ = helix_js::term_write(self.pty_id, &bytes);
                 }
                 return EventResult::Consumed(None);
@@ -893,7 +903,7 @@ impl Component for PluginTerminal {
                 }
                 // 其余键直通 pty（C-c 中断等）
                 _ => {
-                    if let Some(bytes) = key_to_term_bytes(key) {
+                    if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
                         let _ = helix_js::term_write(self.pty_id, &bytes);
                     }
                     EventResult::Consumed(None)
@@ -907,7 +917,7 @@ impl Component for PluginTerminal {
                 helix_js::emit_term_mode(self.pty_id, "normal");
                 return EventResult::Consumed(None);
             }
-            if let Some(bytes) = key_to_term_bytes(key) {
+            if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
                 // 按键直通 pty（非阻塞；worker 已退出时静默）
                 let _ = helix_js::term_write(self.pty_id, &bytes);
             }
@@ -1084,41 +1094,19 @@ mod tests {
                 KeyModifiers::NONE
             },
         };
+        let kb = |code: KeyCode, ctrl: bool| key_to_term_bytes(&k(code, ctrl), EngineMode::empty());
+        assert_eq!(kb(KeyCode::Char('c'), true).as_deref(), Some("\x03"), "C-c");
+        assert_eq!(kb(KeyCode::Char('a'), true).as_deref(), Some("\x01"), "C-a");
+        assert_eq!(kb(KeyCode::Char('x'), false).as_deref(), Some("x"));
+        assert_eq!(kb(KeyCode::Up, false).as_deref(), Some("\x1b[A"), "上箭头");
         assert_eq!(
-            key_to_term_bytes(&k(KeyCode::Char('c'), true)).as_deref(),
-            Some("\x03"),
-            "C-c"
-        );
-        assert_eq!(
-            key_to_term_bytes(&k(KeyCode::Char('a'), true)).as_deref(),
-            Some("\x01"),
-            "C-a"
-        );
-        assert_eq!(
-            key_to_term_bytes(&k(KeyCode::Char('x'), false)).as_deref(),
-            Some("x")
-        );
-        assert_eq!(
-            key_to_term_bytes(&k(KeyCode::Up, false)).as_deref(),
-            Some("\x1b[A"),
-            "上箭头"
-        );
-        assert_eq!(
-            key_to_term_bytes(&k(KeyCode::PageDown, false)).as_deref(),
+            kb(KeyCode::PageDown, false).as_deref(),
             Some("\x1b[6~"),
             "PageDown"
         );
-        assert_eq!(
-            key_to_term_bytes(&k(KeyCode::Home, false)).as_deref(),
-            Some("\x1b[H"),
-            "Home"
-        );
+        assert_eq!(kb(KeyCode::Home, false).as_deref(), Some("\x1b[H"), "Home");
         // C-\ 不在 key_to_term_bytes（handle_event 拦截）
-        assert_eq!(
-            key_to_term_bytes(&k(KeyCode::Char('\\'), true)),
-            None,
-            "C-\\ 应被拦截"
-        );
+        assert_eq!(kb(KeyCode::Char('\\'), true), None, "C-\\ 应被拦截");
     }
 
     #[test]
@@ -1514,6 +1502,34 @@ mod tests {
         );
         // 取走后不重复投递
         assert!(g.take_replies().is_empty());
+    }
+
+    #[test]
+    fn arrow_keys_use_ss3_in_application_cursor_mode() {
+        use helix_view::input::{KeyCode, KeyEvent, KeyModifiers};
+        let ev = |code| KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        };
+        // 默认:CSI
+        assert_eq!(
+            key_to_term_bytes(&ev(KeyCode::Up), EngineMode::empty()).as_deref(),
+            Some("\x1b[A")
+        );
+        // DECCKM(`?1h`):vym/less 期望 SS3
+        assert_eq!(
+            key_to_term_bytes(&ev(KeyCode::Up), EngineMode::APP_CURSOR).as_deref(),
+            Some("\x1bOA")
+        );
+        assert_eq!(
+            key_to_term_bytes(&ev(KeyCode::End), EngineMode::APP_CURSOR).as_deref(),
+            Some("\x1bOF")
+        );
+        // 翻页键不受 DECCKM 影响
+        assert_eq!(
+            key_to_term_bytes(&ev(KeyCode::PageDown), EngineMode::APP_CURSOR).as_deref(),
+            Some("\x1b[6~")
+        );
     }
 
     #[test]
