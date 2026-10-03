@@ -15,16 +15,9 @@ pub enum EventResult {
     Consumed(Option<Callback>),
 }
 
-/// 全局窗口模式(C-w):任何叶子焦点下生效;模式键直调布局树。
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum WindowMode {
-    Inactive,
-    Active,
-}
-
 /// zellij 式平级模式(阶段①)。
 ///
-/// 与旧 `WindowMode`(单一 C-w 模式)的差别:**平级、各有前缀键**。
+/// 与旧的单一 `C-w` 模式(已删)的差别:**平级、各有前缀键**。
 /// 除 `Locked` 外,任一模式内按任一前缀键直接切换,按同一个键回 `Normal`。
 /// 前缀:`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -117,8 +110,7 @@ pub struct Compositor {
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
-    pub(crate) window_mode: WindowMode,
-    /// zellij 式平级模式(阶段①;过渡期与上面的旧 C-w 路径并存)
+    /// zellij 式平级模式(C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll)
     pub(crate) pane_mode: PaneMode,
     /// 标签条脏格 diff 渲染器
     tabbar_diff: crate::ui::comp_layout::DiffRenderer,
@@ -132,15 +124,9 @@ impl Compositor {
             area,
             last_picker: None,
             full_redraw: false,
-            window_mode: WindowMode::Inactive,
             pane_mode: PaneMode::Normal,
             tabbar_diff: Default::default(),
         }
-    }
-
-    /// 测试/状态栏访问:当前是否处于窗口模式
-    pub fn window_mode_active(&self) -> bool {
-        matches!(self.window_mode, WindowMode::Active)
     }
 
     /// 当前平级模式(状态栏指示与集成测试用)
@@ -158,11 +144,7 @@ impl Compositor {
 
     /// Add a layer to be rendered in front of all existing layers.
     pub fn push(&mut self, mut layer: Box<dyn Component>) {
-        // 窗口模式下打开弹窗/菜单:自动退模式(否则弹窗按键被模式键位吞掉)
-        if self.window_mode_active() && layer.id().is_some() {
-            self.window_mode = WindowMode::Inactive;
-        }
-        // 平级模式同理:不退出的话弹窗按键会被 pane_mode_key 吞掉
+        // 打开弹窗/菜单时自动退模式:不退出的话弹窗按键会被 pane_mode_key 吞掉
         if self.pane_mode != PaneMode::Normal && layer.id().is_some() {
             self.pane_mode = PaneMode::Normal;
         }
@@ -255,7 +237,7 @@ impl Compositor {
         }
 
         use helix_view::input::{KeyCode, KeyModifiers};
-        // ── zellij 式平级模式(阶段①;旧 C-w 路径保持原样,过渡期两套共存)──
+        // ── zellij 式平级模式(阶段①)──────────────────────────────
         // 前缀:C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll。
         // 拦截规则(设计 §4.2):`C-g` 在所有状态下都拦(否则从终端 insert 直通里
         // 根本进不了 Locked);其余前缀在 insert / 终端直通时放行给叶子
@@ -273,7 +255,7 @@ impl Compositor {
                     _ => None,
                 };
                 if ch == Some('g') {
-                    self.pane_mode = PaneMode::Locked;
+                    self.set_pane_mode(PaneMode::Locked, cx);
                     return true;
                 }
                 // 输入态层在前(命令行/提示/选择器/菜单/补全)时前缀键归该层:
@@ -291,113 +273,10 @@ impl Compositor {
                         _ => None,
                     };
                     if let Some(m) = next {
-                        self.pane_mode = m;
+                        self.set_pane_mode(m, cx);
                         return true;
                     }
                 }
-            }
-        }
-
-        // 窗口模式:normal/select 模式 C-w 进入;insert 模式 C-w 保留原义(删词,vim 惯例)
-        if self.window_mode_active() {
-            if let Event::Key(key) = event {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let ch = match key.code {
-                    KeyCode::Char(c) => Some(c),
-                    _ => None,
-                };
-                // 键位表:C-hjkl resize > Esc/C-w 退出 > hjkl 聚焦 / HJKL 交换 / x 关闭 / z 最小化 / f 最大化
-                match ch {
-                    Some(c) if ctrl && matches!(c, 'h' | 'j' | 'k' | 'l') => {
-                        self.window_mode_resize(c);
-                        return true;
-                    }
-                    Some(c) if c == 'w' && ctrl => {
-                        self.window_mode = WindowMode::Inactive;
-                        cx.editor.autoinfo = None;
-                        return true;
-                    }
-                    _ if matches!(key.code, KeyCode::Esc) => {
-                        self.window_mode = WindowMode::Inactive;
-                        cx.editor.autoinfo = None;
-                        return true;
-                    }
-                    _ if matches!(key.code, KeyCode::Enter) => {
-                        // Enter:确认当前窗口 → 进入其 buffer 并退出窗口模式回 normal
-                        self.window_mode = WindowMode::Inactive;
-                        cx.editor.autoinfo = None;
-                        return true;
-                    }
-                    Some('v') => {
-                        self.window_mode_split('v', cx);
-                        return true;
-                    }
-                    Some('s') => {
-                        self.window_mode_split('s', cx);
-                        return true;
-                    }
-                    Some('n') => {
-                        self.window_mode_split('n', cx);
-                        return true;
-                    }
-                    Some('h') => {
-                        self.window_mode_focus('h', cx);
-                        return true;
-                    }
-                    Some('j') => {
-                        self.window_mode_focus('j', cx);
-                        return true;
-                    }
-                    Some('k') => {
-                        self.window_mode_focus('k', cx);
-                        return true;
-                    }
-                    Some('l') => {
-                        self.window_mode_focus('l', cx);
-                        return true;
-                    }
-                    Some('H') => {
-                        self.window_mode_swap('h');
-                        return true;
-                    }
-                    Some('J') => {
-                        self.window_mode_swap('j');
-                        return true;
-                    }
-                    Some('K') => {
-                        self.window_mode_swap('k');
-                        return true;
-                    }
-                    Some('L') => {
-                        self.window_mode_swap('l');
-                        return true;
-                    }
-                    Some('x') => {
-                        self.window_mode_close(cx);
-                        return true;
-                    }
-                    Some('z') => {
-                        self.window_mode_minimize();
-                        return true;
-                    }
-                    Some('f') => {
-                        self.window_mode_zoom();
-                        return true;
-                    }
-                    _ => return true, // 模式吞掉未知键(保持模式)
-                }
-            }
-            return true;
-        }
-        if let Event::Key(key) = event {
-            if key.modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(key.code, KeyCode::Char('w'))
-                && cx.editor.mode() != Mode::Insert
-                && !self.terminal_passthrough()
-            {
-                self.window_mode = WindowMode::Active;
-                self.window_mode_hint(cx);
-                return true;
             }
         }
 
@@ -524,7 +403,7 @@ impl Compositor {
             view,
             is_focused,
             &spinners,
-            self.window_mode_active() || self.pane_mode != PaneMode::Normal,
+            self.pane_mode != PaneMode::Normal,
             match self.pane_mode {
                 PaneMode::Normal => None,
                 PaneMode::Locked => Some("LOCKED"),
@@ -994,8 +873,8 @@ impl Compositor {
     }
 
     /// 窗口模式:方向聚焦(h/j/k/l)。委托 focus_leaf_dir(内部 neighbor_leaf+focus,含缓存同步)
-    /// 终端 Insert 直通模式:C-w 放行给 pty(终端内 vim/emacs 需要;基线版本直通,
-    /// 本分支恢复);Normal(滚动)模式的终端/编辑器/面板焦点照常进窗口模式。
+    /// 终端 Insert 直通模式:前缀键放行给 pty(终端内 vim/emacs 需要),
+    /// 模式不在直通态下进入;Normal(滚动)态的终端/编辑器/面板焦点照常进模式。
     fn terminal_passthrough(&mut self) -> bool {
         let active = self.main_tree.active();
         self.find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
@@ -1022,12 +901,8 @@ impl Compositor {
         let _ = self.swap_leaf_dir(a, dir, side);
     }
 
-    /// 窗口模式:方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)。委托 resize_leaf_dir(含缓存同步)
-    fn window_mode_resize(&mut self, c: char) {
-        self.window_mode_resize_signed(c, 1.0);
-    }
-
-    /// 同上,`sign` 取反即反方向(PaneMode::Resize 的 HJKL)
+    /// 方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)。`sign` 取反即反方向。
+    /// 委托 resize_leaf_dir(含缓存同步)
     fn window_mode_resize_signed(&mut self, c: char, sign: f32) {
         let (dir, delta) = match c {
             'h' => (crate::ui::layout::SplitDir::H, -0.05),
@@ -1037,6 +912,83 @@ impl Compositor {
             _ => unreachable!(),
         };
         let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta * sign);
+    }
+
+    /// 切换平级模式:置位 + 显示/清除键位提示(``Normal`` 时清掉)
+    fn set_pane_mode(&mut self, mode: PaneMode, cx: &mut Context) {
+        self.pane_mode = mode;
+        if mode == PaneMode::Normal {
+            cx.editor.autoinfo = None;
+        } else {
+            self.pane_mode_hint(mode, cx);
+        }
+    }
+
+    /// 平级模式的键位提示(经 `keymap_hint` 可由 JS `set_keymap_hint` 接管,
+    /// 缺省用内置文本)。各模式的条目与 `pane_mode_key` 里的键位表一一对应。
+    fn pane_mode_hint(&mut self, mode: PaneMode, cx: &mut Context) {
+        use helix_view::info::Info;
+        let (key, entries): (&str, Vec<(&str, &str)>) = match mode {
+            PaneMode::Normal => return,
+            PaneMode::Locked => ("C-g", vec![("C-g", "退出 locked(其余键原样交给当前窗口)")]),
+            PaneMode::Pane => (
+                "C-p",
+                vec![
+                    ("h j k l", "聚焦(左/下/上/右)"),
+                    ("H J K L", "交换"),
+                    ("n / d / r", "新分屏 / 下分 / 右分"),
+                    ("x", "关闭窗口"),
+                    ("f", "最大化/还原"),
+                    ("z", "最小化/还原"),
+                    ("w / s / e / i", "浮动·堆叠·嵌入·pin(阶段②)"),
+                    ("Esc / C-p", "退出"),
+                ],
+            ),
+            PaneMode::Resize => (
+                "C-n",
+                vec![
+                    ("h j k l", "向该方向增大"),
+                    ("H J K L", "向该方向减小"),
+                    ("Esc / C-n", "退出"),
+                ],
+            ),
+            PaneMode::Move => (
+                "C-h",
+                vec![("h j k l", "与方向邻居交换"), ("Esc / C-h", "退出")],
+            ),
+            PaneMode::Scroll => (
+                "C-y",
+                vec![
+                    ("j / k", "行滚动"),
+                    ("d / u", "半页"),
+                    ("C-f C-b / h l", "整页"),
+                    ("Esc / C-y", "退出"),
+                ],
+            ),
+        };
+        let owned: Vec<(String, String)> = entries
+            .iter()
+            .map(|(k, d)| (k.to_string(), d.to_string()))
+            .collect();
+        let (text, position) = helix_js::keymap_hint(key, &owned).unwrap_or_else(|| {
+            (
+                owned
+                    .iter()
+                    .map(|(k, d)| format!("{k:<20} {d}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "bottom-left".to_string(),
+            )
+        });
+        let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+        let height = text.lines().count() as u16;
+        cx.editor.autoinfo = Some(Info {
+            title: std::borrow::Cow::Borrowed(key),
+            text,
+            width: width.saturating_add(2),
+            height,
+            position: crate::keymap::hint_position(&position),
+        });
     }
 
     /// 是否有"输入态"层在前(命令行/提示/选择器/菜单/补全)。
@@ -1073,11 +1025,14 @@ impl Compositor {
                 if self.pane_mode == PaneMode::Locked && m != PaneMode::Locked {
                     return false;
                 }
-                self.pane_mode = if self.pane_mode == m {
-                    PaneMode::Normal
-                } else {
-                    m
-                };
+                self.set_pane_mode(
+                    if self.pane_mode == m {
+                        PaneMode::Normal
+                    } else {
+                        m
+                    },
+                    cx,
+                );
                 return true;
             }
         }
@@ -1086,7 +1041,7 @@ impl Compositor {
             return false; // 除 C-g 外全部原样交给当前叶子
         }
         if matches!(key.code, KeyCode::Esc) {
-            self.pane_mode = PaneMode::Normal;
+            self.set_pane_mode(PaneMode::Normal, cx);
             return true;
         }
 
@@ -1211,43 +1166,6 @@ impl Compositor {
             }
             self.sync_editor_focus(cx.editor);
         }
-    }
-
-    /// 窗口模式提示:进入时经 keymap_hint(JS set_keymap_hint)或内置文本显示键位表
-    fn window_mode_hint(&mut self, cx: &mut Context) {
-        use helix_view::info::Info;
-        let entries: Vec<(String, String)> = [
-            ("h j k l", "聚焦(左/下/上/右)"),
-            ("v / s / n", "创建(右分/下分/新空 buffer)"),
-            ("H J K L", "交换"),
-            ("C-h C-j C-k C-l", "尺寸 ∓5%"),
-            ("x", "关闭窗口"),
-            ("z", "最小化/还原"),
-            ("f", "最大化/还原"),
-            ("Esc / C-w", "退出"),
-        ]
-        .iter()
-        .map(|(k, d)| (k.to_string(), d.to_string()))
-        .collect();
-        let (text, position) = helix_js::keymap_hint("C-w", &entries).unwrap_or_else(|| {
-            (
-                entries
-                    .iter()
-                    .map(|(k, d)| format!("{k:<20} {d}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                "bottom-left".to_string(),
-            )
-        });
-        let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
-        let height = text.lines().count() as u16;
-        cx.editor.autoinfo = Some(Info {
-            title: std::borrow::Cow::Borrowed("C-w"),
-            text,
-            width: width.saturating_add(2),
-            height,
-            position: crate::keymap::hint_position(&position),
-        });
     }
 
     /// 窗口模式:最小化/还原(z)。已最小化 → 还原;否则最小化活动叶子(编辑器除外)。

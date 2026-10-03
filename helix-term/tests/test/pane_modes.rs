@@ -1,7 +1,6 @@
 //! 阶段①:zellij 式平级模式(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move /
-//! `C-y` Scroll)的集成测试。
-//!
-//! 过渡期说明:旧的全局 `C-w` 单模式仍然并存(`window_*.rs` 覆盖它),本文件只覆盖新模式。
+//! `C-y` Scroll)的集成测试。旧的全局 `C-w` 单模式已在 ①-3 删除,
+//! `C-w` 现仅作 insert 模式的删词命令存在。
 
 use super::*;
 use helix_term::application::Application;
@@ -49,6 +48,33 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
                 .collect::<String>()
         })
         .collect()
+}
+
+/// 新模式必须自带键位提示 —— 这是删掉旧 `C-w` 的前置(否则用户失去指引)。
+#[tokio::test(flavor = "multi_thread")]
+async fn each_pane_mode_shows_its_keymap_hint() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    assert!(app.editor.autoinfo.is_none(), "初始无提示");
+
+    // 前缀键在模式内也能直接切,所以循环即可逐个到达
+    for (keys, title) in [
+        ("<C-p>", "C-p"),
+        ("<C-n>", "C-n"),
+        ("<C-h>", "C-h"),
+        ("<C-y>", "C-y"),
+        ("<C-g>", "C-g"),
+    ] {
+        pump(&mut app, keys).await?;
+        let info = app
+            .editor
+            .autoinfo
+            .as_ref()
+            .unwrap_or_else(|| panic!("{keys} 进入模式后必须有键位提示"));
+        assert_eq!(info.title.as_ref(), title, "{keys} 的提示标题");
+    }
+    pump(&mut app, "<C-g>").await?; // Locked → Normal
+    assert!(app.editor.autoinfo.is_none(), "退出模式后提示消失");
+    Ok(())
 }
 
 /// 回归:`C-n`/`C-p` 是 helix 的**补全键**,不能在有输入态层(命令行/选择器)时被模式抢走。

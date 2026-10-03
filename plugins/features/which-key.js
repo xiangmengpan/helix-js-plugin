@@ -1,7 +1,8 @@
 // features/which-key.js — 快捷键提示(方案 3:set_keymap_hint 接管原生 Info)
 // 依赖:helix.set_keymap_hint(ctx => 多行文本|null)
 // ctx = { title: 前缀名, entries: [{keys, doc}] }
-// 窗口模式(C-w)由 compositor 在进入时调 keymap_hint("C-w", ...) → 本文件返回中文键位表。
+// 平级模式(C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll)由 compositor
+// 在进入时调 keymap_hint("C-p", ...) 等 → 本文件返回对应中文键位表。
 helix.plugin("which-key", { deps: ["lib/icons.js"] });
 
 // 插件配置(方案 C):config.toml [plugins.which-key]
@@ -102,34 +103,53 @@ function current_cfg() {
     "z C-b": "上翻页", "z C-f": "下翻页", "z C-u": "上半页", "z C-d": "下半页",
     "z /": "搜索", "z ?": "反向搜索", "z n": "下一匹配", "z N": "上一匹配",
     // ── 其他 ──
-    "esc": "返回普通模式", "space": "空间模式(命令组)", "C-w": "窗口模式",
+    "esc": "返回普通模式", "space": "空间模式(命令组)",
+    "C-p": "窗口模式(Pane)", "C-n": "调整尺寸", "C-h": "移动窗口",
+    "C-y": "滚动回看", "C-g": "锁定(全部键交给窗口)",
     "C-space": "空间模式",
   };
 
-  // 窗口模式中文键位表(compositor 进入 C-w 时调用)
-  const C_W_HINT = [
-    "h j k l   聚焦(左/下/上/右)",
-    "H J K L   交换窗口",
-    "C-h C-j C-k C-l  尺寸 ∓5%",
-    "x         关闭窗口",
-    "z         最小化/还原",
-    "f         最大化/还原",
-    "Esc / C-w 退出窗口模式",
-  ].join("\n");
+  // 平级模式中文键位表(阶段①)。compositor 进入某模式时以 title=该模式前缀键调用。
+  // 条目与 Rust 侧 pane_mode_hint / pane_mode_key 的键位表一一对应。
+  const PANE_HINTS = {
+    "C-g": ["C-g       退出 locked(其余键原样交给当前窗口)"],
+    "C-p": [
+      "h j k l   聚焦(左/下/上/右)",
+      "H J K L   交换窗口",
+      "n / d / r 新分屏 / 下分 / 右分",
+      "x         关闭窗口",
+      "z         最小化/还原",
+      "f         最大化/还原",
+      "w s e i   浮动·堆叠·嵌入·pin(阶段②)",
+      "Esc / C-p 退出",
+    ],
+    "C-n": [
+      "h j k l   向该方向增大",
+      "H J K L   向该方向减小",
+      "Esc / C-n 退出",
+    ],
+    "C-h": ["h j k l   与方向邻居交换", "Esc / C-h 退出"],
+    "C-y": [
+      "j / k     行滚动",
+      "d / u     半页",
+      "C-f C-b / h l  整页",
+      "Esc / C-y 退出",
+    ],
+  };
 
-  // 前缀名(title) → 前缀键(拼完整键序列用;窗口模式 title="C-w" 单独处理)
+  // 前缀名(title) → 前缀键(拼完整键序列用)
   const PREFIX_KEY = {
     "Goto": "g", "Match": "m",
     "Left bracket": "[", "Right bracket": "]",
-    "Space": "space", "View": "z", "Window": "C-w",
+    "Space": "space", "View": "z",
     "Debug": "space G",
   };
 
   function render(ctx) {
-    // 窗口模式:compositor 传入 title="C-w" → 位置取配置
     const cfg = current_cfg();
-    if (ctx.title === "C-w") {
-      return { text: C_W_HINT, position: cfg.position };
+    // 平级模式:compositor 传入 title=前缀键 → 用对应中文表,位置取配置
+    if (PANE_HINTS[ctx.title]) {
+      return { text: PANE_HINTS[ctx.title].join("\n"), position: cfg.position };
     }
     if (!ctx.entries || ctx.entries.length === 0) return null;
     const prefix = PREFIX_KEY[ctx.title] ? PREFIX_KEY[ctx.title] + " " : "";

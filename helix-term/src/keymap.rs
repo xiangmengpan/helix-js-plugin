@@ -546,10 +546,15 @@ mod tests {
     fn aliased_modes_are_same_in_default_keymap() {
         let keymaps = Keymaps::default().map();
         let root = keymaps.get(&Mode::Normal).unwrap();
-        assert_eq!(
-            root.search(&[key!(' '), key!('w')]).unwrap(),
-            root.search(&["C-w".parse::<KeyEvent>().unwrap()]).unwrap(),
-            "Mismatch for window mode on `Space-w` and `Ctrl-w`"
+        // `C-w` 别名已删(阶段①:窗口操作改走 compositor 层的平级模式 `C-p`),
+        // 上游的 `Space-w` 窗口子树仍在,窗口命令从这里可达。
+        assert!(
+            root.search(&[key!(' '), key!('w')]).is_some(),
+            "Space-w 窗口子树应保留"
+        );
+        assert!(
+            root.search(&["C-w".parse::<KeyEvent>().unwrap()]).is_none(),
+            "C-w 别名已删(阶段①)"
         );
         assert_eq!(
             root.search(&[key!('z')]).unwrap(),

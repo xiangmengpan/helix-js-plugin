@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use helix_term::application::Application;
+use helix_term::compositor::PaneMode;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
 use helix_view::input::parse_macro;
@@ -487,8 +488,6 @@ async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
 }
 
 /// 完整 which-key.js:按 g 前缀 → 中文说明(未命中映射显示原 doc)。
-/// 注意:下面仍用旧 `C-w` —— 该段测的是**旧模式**的 which-key 表,等 ①-3 删 C-w
-/// 时连同新模式提示一起迁移(新模式目前没有 which-key 提示)。
 #[tokio::test(flavor = "multi_thread")]
 async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
@@ -512,29 +511,29 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
         joined.contains("尾") || joined.contains("移"),
         "which-key 中文说明渲染: {joined:?}"
     );
-    // C-w 窗口模式 → 中文键位表
+    // C-p Pane 模式 → 中文键位表
     pump(&mut app, "<esc>").await?;
-    pump(&mut app, "<C-w>").await?;
+    pump(&mut app, "<C-p>").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
     let joined = rows.join("\n");
     assert!(
         joined.contains("焦") && joined.contains("化"),
-        "窗口模式中文键位表: {joined:?}"
+        "Pane 模式中文键位表: {joined:?}"
     );
     Ok(())
 }
 
-/// window 模式 Enter:确认当前窗口 → 退出窗口模式(回 normal)
+/// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
 
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, "<C-w>").await?;
-    assert!(app.compositor.window_mode_active(), "C-w 进模式");
-    pump(&mut app, "<ret>").await?;
-    assert!(!app.compositor.window_mode_active(), "Enter 退出窗口模式");
+    pump(&mut app, "<C-p>").await?;
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Pane, "C-p 进模式");
+    pump(&mut app, "<esc>").await?;
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Normal, "Esc 退出模式");
     // 焦点仍是当前叶子(编辑器 id=0),编辑器 normal
     assert_eq!(app.compositor.layout_tree().active(), 0);
     Ok(())

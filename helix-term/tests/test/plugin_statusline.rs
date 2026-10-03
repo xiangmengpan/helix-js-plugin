@@ -293,7 +293,7 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                 None,
             ),
             (
-                Some("C-w"),
+                Some("C-p"),
                 Some(&|app| {
                     let (view, doc) = current_ref!(app.editor);
                     let area = helix_view::graphics::Rect::new(0, 0, 120, 1);
