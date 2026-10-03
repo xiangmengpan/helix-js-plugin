@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use helix_term::application::Application;
+use helix_term::compositor::PaneMode;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
 use helix_view::input::parse_macro;
@@ -65,7 +66,7 @@ async fn plugin_terminal_modes() -> anyhow::Result<()> {
                 }),
             ),
             // 焦点回编辑器(window 模式导航;esc 不再关闭终端,退出序列 :q! 需要编辑器焦点)
-            (Some("<C-w>h<esc>"), None),
+            (Some("<C-p>h<esc>"), None),
         ],
         false,
     )
@@ -344,23 +345,23 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
     assert!(app.compositor.floating().is_some(), "第一次 :term 应浮动");
     assert_status_not_error(&app.editor);
 
-    // Esc 切 terminal normal → C-w 进 window 模式 → x 关闭叶子(终端关闭唯一途径)
+    // Esc 切 terminal normal → C-p 进 Pane 模式 → x 关闭叶子(终端关闭唯一途径)
     for key_event in parse_macro("<esc>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
     eprintln!(
-        "[dbg] after esc: window={} active={}",
-        app.compositor.window_mode_active(),
+        "[dbg] after esc: mode={:?} active={}",
+        app.compositor.pane_mode(),
         app.compositor.layout_tree().active()
     );
-    for key_event in parse_macro("<C-w>")? {
+    for key_event in parse_macro("<C-p>")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
     app.event_loop_until_idle(&mut rx_stream).await;
     eprintln!(
-        "[dbg] after C-w: window={} active={}",
-        app.compositor.window_mode_active(),
+        "[dbg] after C-p: mode={:?} active={}",
+        app.compositor.pane_mode(),
         app.compositor.layout_tree().active()
     );
     for key_event in parse_macro("x<esc>")? {
@@ -666,7 +667,7 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 活动叶子高亮边框：焦点在终端时边框在右半区，C-w h 回编辑器后边框移到左半区。
+/// 活动叶子高亮边框：焦点在终端时边框在右半区，C-p h 回编辑器后边框移到左半区。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_focus_border() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
@@ -723,7 +724,7 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
     let col = border_col(&mut app).expect("应有 ┌ 边框");
     assert!(col > 60, "焦点在终端：边框在右半区（col {col}）");
 
-    // C-\\ ×2 回编辑器 + C-w h → 边框移到编辑器
+    // C-\\ ×2 回编辑器 + C-p h → 边框移到编辑器
     let ctrl_bs2 = Event::Key(KeyEvent::from(helix_view::input::KeyEvent {
         code: helix_view::input::KeyCode::Char('\\'),
         modifiers: helix_view::input::KeyModifiers::CONTROL,
@@ -751,8 +752,8 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 终端 Insert 直通模式 C-w 放行给 pty(不拦截,终端内 vim/emacs 的 C-w);
-/// C-\ 切到 Normal(滚动)后 C-w 进模式并导航邻居。
+/// 终端 Insert 直通模式 C-p 放行给 pty(不拦截,终端内 vim/emacs 的 C-p);
+/// C-\ 切到 Normal(滚动)后 C-p 进模式并导航邻居。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
@@ -803,21 +804,23 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
         code: helix_view::input::KeyCode::Esc,
         modifiers: helix_view::input::KeyModifiers::NONE,
     }));
-    // 终端 Insert 直通:C-w 放行给 pty(不拦截),窗口模式不进入、焦点仍在终端
-    tx.send(Ok(ctrl('w')))?;
+    // 终端 Insert 直通:C-p 放行给 pty(不拦截),不进 Pane 模式、焦点仍在终端
+    tx.send(Ok(ctrl('p')))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert!(
-        !app.compositor.window_mode_active(),
-        "终端 Insert 直通模式 C-w 放行给 pty,不进窗口模式"
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Normal,
+        "终端 Insert 直通模式 C-p 放行给 pty,不进 Pane 模式"
     );
     assert_eq!(app.compositor.layout_tree().active(), 1, "焦点仍在终端");
-    // C-\ → 终端 Normal(滚动);此焦点下 C-w 照常进窗口模式
+    // C-\ → 终端 Normal(滚动);此焦点下 C-p 照常进 Pane 模式
     tx.send(Ok(ctrl('\\')))?;
-    tx.send(Ok(ctrl('w')))?;
+    tx.send(Ok(ctrl('p')))?;
     app.event_loop_until_idle(&mut rx_stream).await;
-    assert!(
-        app.compositor.window_mode_active(),
-        "终端 Normal(滚动)焦点 C-w 进窗口模式"
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Pane,
+        "终端 Normal(滚动)焦点 C-p 进 Pane 模式"
     );
     // h → 聚焦左邻居(编辑器);Esc 退出
     tx.send(Ok(plain('h')))?;
@@ -826,9 +829,9 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
     assert_eq!(
         app.compositor.layout_tree().active(),
         0,
-        "C-w h 聚焦左邻居(编辑器)"
+        "C-p h 聚焦左邻居(编辑器)"
     );
-    assert!(!app.compositor.window_mode_active(), "Esc 退出窗口模式");
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Normal, "Esc 退出模式");
     Ok(())
 }
 

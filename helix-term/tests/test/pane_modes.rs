@@ -51,6 +51,20 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
         .collect()
 }
 
+/// 回归:`C-n`/`C-p` 是 helix 的**补全键**,不能在有输入态层(命令行/选择器)时被模式抢走。
+/// 曾经漏过:insert 豁免盖不住命令行——那时编辑器不是 `Insert` 模式。
+#[tokio::test(flavor = "multi_thread")]
+async fn completion_keys_not_stolen_by_prefixes() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, ":theme d<C-n>").await?;
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Normal,
+        "命令行里的 C-n 是补全下一个,不得切到 Resize 模式"
+    );
+    Ok(())
+}
+
 /// 状态栏模式指示:图标 + 模式名(只有图标的话 Pane/Resize/Move/Scroll/Locked 区分不出来)
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_mode_statusline_label() -> anyhow::Result<()> {

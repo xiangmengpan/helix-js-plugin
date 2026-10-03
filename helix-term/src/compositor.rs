@@ -276,7 +276,13 @@ impl Compositor {
                     self.pane_mode = PaneMode::Locked;
                     return true;
                 }
-                if cx.editor.mode() != Mode::Insert && !self.terminal_passthrough() {
+                // 输入态层在前(命令行/提示/选择器/菜单/补全)时前缀键归该层:
+                // C-n/C-p 在命令行与补全里是"下一个/上一个",不能被模式抢走。
+                // (insert 豁免盖不住这种情况——命令行时编辑器不是 Insert 模式)
+                if !self.input_layer_active()
+                    && cx.editor.mode() != Mode::Insert
+                    && !self.terminal_passthrough()
+                {
                     let next = match ch {
                         Some('p') => Some(PaneMode::Pane),
                         Some('n') => Some(PaneMode::Resize),
@@ -1031,6 +1037,16 @@ impl Compositor {
             _ => unreachable!(),
         };
         let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta * sign);
+    }
+
+    /// 是否有"输入态"层在前(命令行/提示/选择器/菜单/补全)。
+    /// 终端与面板层不算:它们是叶子式内容,模式要在其焦点下可用。
+    fn input_layer_active(&self) -> bool {
+        self.layers.iter().any(|l| {
+            let t = l.type_name();
+            !t.contains("::plugin_terminal::PluginTerminal")
+                && !t.contains("::plugin_panel::PluginPanel")
+        })
     }
 
     /// 平级模式内的按键。返回 `true` = 已消费;`false` = 放行给叶子(仅 `Locked`)。

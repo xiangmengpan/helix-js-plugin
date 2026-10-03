@@ -169,9 +169,9 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
     // This panicked in the past because the jumplist entry on line 2 of window 2
     // was not updated and after the `kd` step, pointed outside of the document.
     //
-    // Note: 叶=窗口后 :vsplit 产生 BufferLeaf 叶,窗口切换走 window mode(C-w h/l + Esc),
+    // Note: 叶=窗口后 :vsplit 产生 BufferLeaf 叶,窗口切换走 window mode(C-p h/l + Esc),
     // 关闭走模式内 x;不再用 <space>ww/wq(那是 core view-tree 的窗口操作,与叶模型脱钩)。
-    // 叶模型等价:V1=原编辑器叶,V2=BufferLeaf 同 doc。切换走 window mode(C-w h/l + Esc)。
+    // 叶模型等价:V1=原编辑器叶,V2=BufferLeaf 同 doc。切换走 window mode(C-p h/l + Esc)。
     // 断言:无 panic(核心 view 同步不变式),doc 删空,状态无 error。
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
@@ -185,7 +185,7 @@ async fn test_changes_in_splits_apply_to_all_views() -> anyhow::Result<()> {
         assert_eq!(types.len(), 2, "应 2 叶: {types:?}");
     }
     // V2(右,BufferLeaf,刚分裂后活动)光标到末行 → 切 V1 → 删光所有行 → 回 V2(光标越界需同步,核心不 panic)
-    pump(&mut app, "G<C-w>h<esc>%d<C-w>l<esc>").await?;
+    pump(&mut app, "G<C-p>h<esc>%d<C-p>l<esc>").await?;
     helpers::assert_status_not_error(&app.editor);
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(
@@ -239,7 +239,7 @@ async fn test_changes_in_splits_jumplist_sync() -> anyhow::Result<()> {
     // See <https://github.com/helix-editor/helix/issues/9833>
     // 切换窗口时,当前 view 须与另一 view 对同一 doc 的改动同步(否则形成越界 selection panic)。
     // 叶模型等价场景:两叶同 doc;view2 记录越界位置 → view1 删行使 doc 变短 → 切回 view2
-    // (sync 触发)→ 编辑不 panic。旧 <C-w>s/gf/w/q 和弦已被 window mode 语义取代,
+    // (sync 触发)→ 编辑不 panic。旧 <C-p>d/gf/w/q 和弦已被 window mode 语义取代,
     // 由本场景与 apply_to_all/reload 两案共同守护 sync 路径。
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
@@ -247,7 +247,7 @@ async fn test_changes_in_splits_jumplist_sync() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().with_file(a, None).build()?;
     pump(&mut app, ":vsplit<ret>").await?; // 2 叶同 doc
                                            // view1 行下插 NEW,切 view2 再插 YYY:落后 view 聚焦时须先同步;切换/同步不 panic
-    pump(&mut app, "<C-w>h<esc>oNEW<esc><C-w>l<esc>oYYY<esc>").await?;
+    pump(&mut app, "<C-p>h<esc>oNEW<esc><C-p>l<esc>oYYY<esc>").await?;
     helpers::assert_status_not_error(&app.editor);
     let (_, doc) = current_ref!(app.editor);
     let text = doc.text().to_string();
@@ -287,12 +287,12 @@ async fn test_reload_all_with_split_jumplist() -> anyhow::Result<()> {
         .with_file(file.path(), None)
         .build()?;
 
-    // 叶模型:窗口切换/关闭走 window mode;末段 C-w x 关闭 BufferLeaf,
+    // 叶模型:窗口切换/关闭走 window mode;末段 C-p x 关闭 BufferLeaf,
     // 等价原 wq——同样触发被关 view 的 doc_revisions 同步(核心不 panic)。
     pump(&mut app, ":hsplit<ret>]<space>%2Gms/:rla<ret>%J").await?;
     helpers::assert_status_not_error(&app.editor);
     // 关闭 BufferLeaf(活动叶=下侧新叶):触发被关 view 的 doc_revisions 同步
-    pump(&mut app, "<C-w>x<esc>").await?;
+    pump(&mut app, "<C-p>x<esc>").await?;
     helpers::assert_status_not_error(&app.editor);
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(

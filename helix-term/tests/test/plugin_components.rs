@@ -372,9 +372,9 @@ async fn plugin_split_terminal_leaf() -> anyhow::Result<()> {
                     assert!(status.as_ref().starts_with("id:"), "split returns leaf id");
                 }),
             ),
-            // 终端叶子:Esc 切 normal → C-w 进 window 模式 → x 关闭(关闭唯一途径)
+            // 终端叶子:Esc 切 normal → C-p 进 Pane 模式 → x 关闭(关闭唯一途径)
             (
-                Some("<esc><C-w>x<esc>"),
+                Some("<esc><C-p>x<esc>"),
                 Some(&|app| {
                     let has_term = app.compositor.has_component(std::any::type_name::<
                         helix_term::ui::plugin_terminal::PluginTerminal,

@@ -47,7 +47,7 @@ async fn vsplit_creates_controllable_same_doc_leaf() -> anyhow::Result<()> {
     assert_eq!(doc_count, 1, "同 doc 双视图不新增文档: {doc_count}");
 
     // 3) 新叶可编辑(window mode 聚焦右叶 → 输入 → 命中同一 doc)
-    pump(&mut app, "<C-w>l<esc>").await?; // 模式内聚焦右侧新叶,退出模式
+    pump(&mut app, "<C-p>l<esc>").await?; // 模式内聚焦右侧新叶,退出模式
     pump(&mut app, "iXXX<esc>").await?;
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(
@@ -60,7 +60,7 @@ async fn vsplit_creates_controllable_same_doc_leaf() -> anyhow::Result<()> {
     // 4) 回左叶(leaf 0)再编辑 → 同一 doc 继续变(编辑互通)。
     // 注:helix 同 doc 多 view 语义——另一 view 插入后,本 view 光标沿 changeset
     // 映射到插入文本之后,故 YYY 落在 XXX 后。
-    pump(&mut app, "<C-w>h<esc>").await?;
+    pump(&mut app, "<C-p>h<esc>").await?;
     pump(&mut app, "iYYY<esc>").await?;
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(
@@ -72,7 +72,7 @@ async fn vsplit_creates_controllable_same_doc_leaf() -> anyhow::Result<()> {
 
     // 5) 清理:模式内聚焦右叶(l)再 x 关闭 → 回 1 叶;doc 不被关闭(remove_empty_scratch
     //    经 tree.traverse 仍见 leaf0 的 view 显示同一 doc)
-    pump(&mut app, "<C-w>lx<esc>").await?;
+    pump(&mut app, "<C-p>lx<esc>").await?;
     let types = app.compositor.layout_tree().leaf_types();
     assert_eq!(types.len(), 1, "x 关闭 BufferLeaf 后回单叶: {types:?}");
     assert_eq!(app.editor.documents.len(), 1, "关闭一叶不关文档");
@@ -205,9 +205,9 @@ async fn split_close_stress_no_panic() -> anyhow::Result<()> {
     for i in 0..4 {
         pump(&mut app, ":hsplit<ret>").await?;
         pump(&mut app, "i<esc>").await?; // BufferLeaf 活动,进/退 insert 保状态干净
-        pump(&mut app, "<C-w>k<esc>").await?; // 聚焦原叶
+        pump(&mut app, "<C-p>k<esc>").await?; // 聚焦原叶
         pump(&mut app, "gg").await?;
-        pump(&mut app, "<C-w>j<esc>x<esc>").await?; // 聚焦下叶并关闭
+        pump(&mut app, "<C-p>j<esc>x<esc>").await?; // 聚焦下叶并关闭
         let _ = i;
     }
     pump(&mut app, "gg<esc>").await?;
@@ -216,7 +216,7 @@ async fn split_close_stress_no_panic() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 原生 bufferline(按文档数)探针:1/2 文档 + :hsplit 与 C-w v 分屏后顶行渲染差异
+// 原生 bufferline(按文档数)探针:1/2 文档 + :hsplit 与 C-p r 分屏后顶行渲染差异
 // 回归:空 scratch 分屏 → x 关闭 → scratch 文档随窗销毁(ghost buffer/bufferline 残留)
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_scratch_leaf_drops_orphan_scratch_doc() -> anyhow::Result<()> {
@@ -225,21 +225,21 @@ async fn closing_scratch_leaf_drops_orphan_scratch_doc() -> anyhow::Result<()> {
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
     let mut app = AppBuilder::new().with_file(a, None).build()?;
-    // C-w n 新建空 scratch 分屏 → 2 docs
-    pump(&mut app, "<C-w>n<esc>").await?;
+    // C-p n 新建空 scratch 分屏 → 2 docs
+    pump(&mut app, "<C-p>n<esc>").await?;
     assert_eq!(app.editor.documents.len(), 2, "scratch + a.txt");
     // 关闭承载空 scratch 的叶(BufferLeaf 活动)→ scratch 文档应随之销毁(无其他 view 引用)
-    pump(&mut app, "<C-w>x<esc>").await?;
+    pump(&mut app, "<C-p>x<esc>").await?;
     assert_eq!(
         app.editor.documents.len(),
         1,
         "空 scratch 失去最后 view 应销毁,不残留 ghost buffer"
     );
     // 有内容/有路径的文档不受影响:再开一个写内容的 scratch,关闭后保留
-    pump(&mut app, "<C-w>n<esc>").await?;
+    pump(&mut app, "<C-p>n<esc>").await?;
     pump(&mut app, "idata<esc>").await?; // scratch 写内容 → modified
     assert_eq!(app.editor.documents.len(), 2);
-    pump(&mut app, "<C-w>x<esc>").await?;
+    pump(&mut app, "<C-p>x<esc>").await?;
     assert_eq!(
         app.editor.documents.len(),
         2,

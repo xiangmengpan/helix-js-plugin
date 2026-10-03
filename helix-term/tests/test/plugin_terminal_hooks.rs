@@ -260,8 +260,8 @@ async fn window_mode_x_closes_layer_terminal() -> anyhow::Result<()> {
     ));
     let term_type = std::any::type_name::<helix_term::ui::plugin_terminal::PluginTerminal>();
     assert!(app.compositor.has_component(term_type), "层中终端存在");
-    // C-w 进窗口模式(active=0 编辑器,非 insert)→ x 关闭层中终端
-    pump(&mut app, "<C-w>x").await?;
+    // C-p 进 Pane 模式(active=0 编辑器,非 insert)→ x 关闭层中终端
+    pump(&mut app, "<C-p>x").await?;
     assert!(
         !app.compositor.has_component(term_type),
         "窗口模式 x 关闭 layers 中的终端"
@@ -297,7 +297,7 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
     .await?;
     pump(&mut app, ":st-open<ret>").await?;
     // echo 消息经 application 泵 set_status;直接读 editor 状态
-    pump(&mut app, "<esc><C-w>h<esc>:st-dump<ret>").await?;
+    pump(&mut app, "<esc><C-p>h<esc>:st-dump<ret>").await?;
     let status = app
         .editor
         .get_status()
@@ -311,7 +311,7 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
         "get_component_state 状态结构完整: {status:?}"
     );
     // Esc → normal 模式(切模式;仍在终端焦点,先回编辑器再 dump)
-    pump(&mut app, "<esc><C-w>h<esc>").await?;
+    pump(&mut app, "<esc><C-p>h<esc>").await?;
     pump(&mut app, ":st-dump<ret>").await?;
     let status = app
         .editor
@@ -486,7 +486,9 @@ async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 完整 which-key.js:按 g 前缀 → 中文说明(未命中映射显示原 doc);C-w 窗口模式中文表
+/// 完整 which-key.js:按 g 前缀 → 中文说明(未命中映射显示原 doc)。
+/// 注意:下面仍用旧 `C-w` —— 该段测的是**旧模式**的 which-key 表,等 ①-3 删 C-w
+/// 时连同新模式提示一起迁移(新模式目前没有 which-key 提示)。
 #[tokio::test(flavor = "multi_thread")]
 async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
