@@ -313,6 +313,11 @@ impl LayoutTree {
         self.zoomed.unwrap_or(self.active)
     }
 
+    /// 全部叶子 id(树中序:左/上优先)。用于「切到下一个窗口」(Pane 模式 p/Tab)。
+    pub fn leaf_ids(&self) -> Vec<u64> {
+        self.leaf_ids_of(&self.root)
+    }
+
     pub fn focus(&mut self, id: u64) {
         if self.components.contains_key(&id) {
             self.active = id;

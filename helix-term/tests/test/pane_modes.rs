@@ -50,6 +50,46 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
         .collect()
 }
 
+/// Pane 模式:`p` / `P` / `Tab` 按树中序环绕切换焦点(zellij 的切下一个窗口)
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_cycle_focus() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app); // active = 1(右面板)
+
+    pump(&mut app, "<C-p>p").await?;
+    assert_eq!(app.compositor.layout_tree().active(), 0, "p 绕回左叶");
+    pump(&mut app, "p").await?;
+    assert_eq!(app.compositor.layout_tree().active(), 1, "再 p 到右叶");
+    pump(&mut app, "P").await?;
+    assert_eq!(app.compositor.layout_tree().active(), 0, "P 反向");
+    pump(&mut app, "<tab>").await?;
+    assert_eq!(app.compositor.layout_tree().active(), 1, "Tab 同 p");
+    Ok(())
+}
+
+/// Resize 模式:`=`/`-` 也走宽度 ±5%(zellij 的「整体增减」落到宽度)。
+/// 布局树没有对外 ratio 读取口,这里只钉「不崩、留在模式内」二事。
+#[tokio::test(flavor = "multi_thread")]
+async fn resize_mode_equals_and_minus_are_safe() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app);
+
+    pump(&mut app, "<C-n>=").await?;
+    pump(&mut app, "+").await?;
+    pump(&mut app, "-").await?;
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Resize,
+        "操作后仍留在 Resize 模式"
+    );
+    assert_eq!(
+        app.compositor.layout_tree().leaf_types().len(),
+        2,
+        "叶子数不变"
+    );
+    Ok(())
+}
+
 /// 新模式必须自带键位提示 —— 这是删掉旧 `C-w` 的前置(否则用户失去指引)。
 #[tokio::test(flavor = "multi_thread")]
 async fn each_pane_mode_shows_its_keymap_hint() -> anyhow::Result<()> {

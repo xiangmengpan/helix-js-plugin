@@ -116,6 +116,7 @@ function current_cfg() {
     "C-p": [
       "h j k l   聚焦(左/下/上/右)",
       "H J K L   交换窗口",
+      "p / P / Tab 切到下一个/上一个窗口",
       "n / d / r 新分屏 / 下分 / 右分",
       "x         关闭窗口",
       "z         最小化/还原",
@@ -126,6 +127,7 @@ function current_cfg() {
     "C-n": [
       "h j k l   向该方向增大",
       "H J K L   向该方向减小",
+      "= / - / + 宽度 ±5%",
       "Esc / C-n 退出",
     ],
     "C-h": ["h j k l   与方向邻居交换", "Esc / C-h 退出"],

@@ -901,6 +901,23 @@ impl Compositor {
         let _ = self.swap_leaf_dir(a, dir, side);
     }
 
+    /// 切到下一个/上一个叶子(按树中序环绕)。zellij 的 `p` / `Tab`。
+    fn window_mode_cycle_focus(&mut self, forward: bool, cx: &mut Context) {
+        let ids = self.main_tree.leaf_ids();
+        if ids.len() < 2 {
+            return;
+        }
+        let active = self.main_tree.active();
+        let pos = ids.iter().position(|&i| i == active).unwrap_or(0);
+        let next = if forward {
+            (pos + 1) % ids.len()
+        } else {
+            (pos + ids.len() - 1) % ids.len()
+        };
+        self.main_tree.focus(ids[next]);
+        self.sync_editor_focus(cx.editor);
+    }
+
     /// 方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)。`sign` 取反即反方向。
     /// 委托 resize_leaf_dir(含缓存同步)
     fn window_mode_resize_signed(&mut self, c: char, sign: f32) {
@@ -936,6 +953,7 @@ impl Compositor {
                 vec![
                     ("h j k l", "聚焦(左/下/上/右)"),
                     ("H J K L", "交换"),
+                    ("p / P / Tab", "切到下一个/上一个窗口"),
                     ("n / d / r", "新分屏 / 下分 / 右分"),
                     ("x", "关闭窗口"),
                     ("f", "最大化/还原"),
@@ -949,6 +967,7 @@ impl Compositor {
                 vec![
                     ("h j k l", "向该方向增大"),
                     ("H J K L", "向该方向减小"),
+                    ("= / - / +", "宽度 ±5%"),
                     ("Esc / C-n", "退出"),
                 ],
             ),
@@ -1069,6 +1088,10 @@ impl Compositor {
                     cx.editor
                         .set_status(format!("{what} pane 属于阶段②(布局模型)"));
                 }
+                // zellij 的切换焦点:p 下一个、P 上一个、Tab 下一个
+                Some('p') => self.window_mode_cycle_focus(true, cx),
+                Some('P') => self.window_mode_cycle_focus(false, cx),
+                _ if matches!(key.code, KeyCode::Tab) => self.window_mode_cycle_focus(true, cx),
                 _ => {}
             },
             PaneMode::Resize => match ch {
@@ -1076,6 +1099,9 @@ impl Compositor {
                 Some(c @ ('H' | 'J' | 'K' | 'L')) => {
                     self.window_mode_resize_signed(c.to_ascii_lowercase(), -1.0)
                 }
+                // zellij 的 `=`/`-`(整体增减):这里落到宽度 ±5%
+                Some('=') | Some('+') => self.window_mode_resize_signed('l', 1.0),
+                Some('-') => self.window_mode_resize_signed('h', 1.0),
                 _ => {}
             },
             PaneMode::Move => {
