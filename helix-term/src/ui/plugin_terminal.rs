@@ -637,6 +637,15 @@ impl PluginTerminal {
         self.view_id
     }
 
+    /// 按行滚动回看(正值向上滚入历史,负值回底;Scroll 模式用)
+    pub fn scroll_by(&mut self, lines: i32) {
+        if lines >= 0 {
+            self.grid.scroll_up_view(lines as usize);
+        } else {
+            self.grid.scroll_down_view((-lines) as usize);
+        }
+    }
+
     /// 终端输入模式(Insert = 键直通 pty;Normal = 滚动)——窗口模式 C-w 豁免判断用
     pub fn input_mode(&self) -> TermInputMode {
         self.input_mode

@@ -22,6 +22,26 @@ pub enum WindowMode {
     Active,
 }
 
+/// zellij 式平级模式(阶段①)。
+///
+/// 与旧 `WindowMode`(单一 C-w 模式)的差别:**平级、各有前缀键**。
+/// 除 `Locked` 外,任一模式内按任一前缀键直接切换,按同一个键回 `Normal`。
+/// 前缀:`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneMode {
+    Normal,
+    /// 除 `C-g` 外全部放行给当前叶子(`C-p` 等不再被解释)
+    Locked,
+    /// 聚焦 / 分屏 / 关闭 / 全屏 / 最小化
+    Pane,
+    /// 尺寸增减(hjkl 增,HJKL 减)
+    Resize,
+    /// 与方向邻居交换
+    Move,
+    /// 滚动回看缓冲
+    Scroll,
+}
+
 use crate::job::Jobs;
 use crate::ui::picker;
 use crate::ui::plugin_panel::{PanelSide, PluginPanel};
@@ -98,6 +118,8 @@ pub struct Compositor {
     pub(crate) last_picker: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
     pub(crate) window_mode: WindowMode,
+    /// zellij 式平级模式(阶段①;过渡期与上面的旧 C-w 路径并存)
+    pub(crate) pane_mode: PaneMode,
     /// 标签条脏格 diff 渲染器
     tabbar_diff: crate::ui::comp_layout::DiffRenderer,
 }
@@ -111,6 +133,7 @@ impl Compositor {
             last_picker: None,
             full_redraw: false,
             window_mode: WindowMode::Inactive,
+            pane_mode: PaneMode::Normal,
             tabbar_diff: Default::default(),
         }
     }
@@ -118,6 +141,11 @@ impl Compositor {
     /// 测试/状态栏访问:当前是否处于窗口模式
     pub fn window_mode_active(&self) -> bool {
         matches!(self.window_mode, WindowMode::Active)
+    }
+
+    /// 当前平级模式(状态栏指示与集成测试用)
+    pub fn pane_mode(&self) -> PaneMode {
+        self.pane_mode
     }
 
     pub fn size(&self) -> Rect {
@@ -223,6 +251,43 @@ impl Compositor {
         }
 
         use helix_view::input::{KeyCode, KeyModifiers};
+        // ── zellij 式平级模式(阶段①;旧 C-w 路径保持原样,过渡期两套共存)──
+        // 前缀:C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll。
+        // 拦截规则(设计 §4.2):`C-g` 在所有状态下都拦(否则从终端 insert 直通里
+        // 根本进不了 Locked);其余前缀在 insert / 终端直通时放行给叶子
+        // (`C-h` 在 insert 里是删词,不豁免会毁掉退格)。
+        if self.pane_mode != PaneMode::Normal {
+            if let Event::Key(key) = event {
+                return self.pane_mode_key(key, cx);
+            }
+            return false;
+        }
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                let ch = match key.code {
+                    KeyCode::Char(c) => Some(c),
+                    _ => None,
+                };
+                if ch == Some('g') {
+                    self.pane_mode = PaneMode::Locked;
+                    return true;
+                }
+                if cx.editor.mode() != Mode::Insert && !self.terminal_passthrough() {
+                    let next = match ch {
+                        Some('p') => Some(PaneMode::Pane),
+                        Some('n') => Some(PaneMode::Resize),
+                        Some('h') => Some(PaneMode::Move),
+                        Some('y') => Some(PaneMode::Scroll),
+                        _ => None,
+                    };
+                    if let Some(m) = next {
+                        self.pane_mode = m;
+                        return true;
+                    }
+                }
+            }
+        }
+
         // 窗口模式:normal/select 模式 C-w 进入;insert 模式 C-w 保留原义(删词,vim 惯例)
         if self.window_mode_active() {
             if let Event::Key(key) = event {
@@ -941,6 +1006,11 @@ impl Compositor {
 
     /// 窗口模式:方向 resize(C-h/l 宽度 ∓5%;C-j/k 高度 ∓5%)。委托 resize_leaf_dir(含缓存同步)
     fn window_mode_resize(&mut self, c: char) {
+        self.window_mode_resize_signed(c, 1.0);
+    }
+
+    /// 同上,`sign` 取反即反方向(PaneMode::Resize 的 HJKL)
+    fn window_mode_resize_signed(&mut self, c: char, sign: f32) {
         let (dir, delta) = match c {
             'h' => (crate::ui::layout::SplitDir::H, -0.05),
             'l' => (crate::ui::layout::SplitDir::H, 0.05),
@@ -948,7 +1018,117 @@ impl Compositor {
             'k' => (crate::ui::layout::SplitDir::V, 0.05),
             _ => unreachable!(),
         };
-        let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta);
+        let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta * sign);
+    }
+
+    /// 平级模式内的按键。返回 `true` = 已消费;`false` = 放行给叶子(仅 `Locked`)。
+    fn pane_mode_key(&mut self, key: &helix_view::input::KeyEvent, cx: &mut Context) -> bool {
+        use helix_view::input::{KeyCode, KeyModifiers};
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ch = match key.code {
+            KeyCode::Char(c) => Some(c),
+            _ => None,
+        };
+
+        // 前缀键在任一模式下直接切换;按同一个键回 Normal(zellij 语义)
+        if ctrl {
+            let next = match ch {
+                Some('g') => Some(PaneMode::Locked),
+                Some('p') => Some(PaneMode::Pane),
+                Some('n') => Some(PaneMode::Resize),
+                Some('h') => Some(PaneMode::Move),
+                Some('y') => Some(PaneMode::Scroll),
+                _ => None,
+            };
+            if let Some(m) = next {
+                // Locked 只能靠 C-g 进出:其余前缀在 Locked 内不响应(全部放行给叶子)
+                if self.pane_mode == PaneMode::Locked && m != PaneMode::Locked {
+                    return false;
+                }
+                self.pane_mode = if self.pane_mode == m {
+                    PaneMode::Normal
+                } else {
+                    m
+                };
+                return true;
+            }
+        }
+
+        if self.pane_mode == PaneMode::Locked {
+            return false; // 除 C-g 外全部原样交给当前叶子
+        }
+        if matches!(key.code, KeyCode::Esc) {
+            self.pane_mode = PaneMode::Normal;
+            return true;
+        }
+
+        match self.pane_mode {
+            PaneMode::Pane => match ch {
+                Some(c @ ('h' | 'j' | 'k' | 'l')) => self.window_mode_focus(c, cx),
+                Some('H') => self.window_mode_swap('h'),
+                Some('J') => self.window_mode_swap('j'),
+                Some('K') => self.window_mode_swap('k'),
+                Some('L') => self.window_mode_swap('l'),
+                Some('n') => self.window_mode_split('n', cx),
+                Some('d') => self.window_mode_split('s', cx),
+                Some('r') => self.window_mode_split('v', cx),
+                Some('x') => self.window_mode_close(cx),
+                Some('f') => self.window_mode_zoom(),
+                Some('z') => self.window_mode_minimize(),
+                // zellij 的 embed/eject 与 stack/pin:阶段② 才有承载物
+                Some(c @ ('w' | 's' | 'e' | 'i')) => {
+                    let what = match c {
+                        's' => "堆叠",
+                        'w' => "浮动",
+                        'e' => "嵌入/弹出",
+                        _ => "pin",
+                    };
+                    cx.editor
+                        .set_status(format!("{what} pane 属于阶段②(布局模型)"));
+                }
+                _ => {}
+            },
+            PaneMode::Resize => match ch {
+                Some(c @ ('h' | 'j' | 'k' | 'l')) => self.window_mode_resize_signed(c, 1.0),
+                Some(c @ ('H' | 'J' | 'K' | 'L')) => {
+                    self.window_mode_resize_signed(c.to_ascii_lowercase(), -1.0)
+                }
+                _ => {}
+            },
+            PaneMode::Move => {
+                if let Some(c @ ('h' | 'j' | 'k' | 'l')) = ch {
+                    self.window_mode_swap(c);
+                }
+            }
+            PaneMode::Scroll => match ch {
+                Some('j') => self.pane_scroll(3),
+                Some('k') => self.pane_scroll(-3),
+                Some('d') => self.pane_scroll(12),
+                Some('u') => self.pane_scroll(-12),
+                Some('f') | Some('l') => self.pane_scroll(24),
+                Some('b') | Some('h') => self.pane_scroll(-24),
+                _ => match key.code {
+                    KeyCode::Down => self.pane_scroll(3),
+                    KeyCode::Up => self.pane_scroll(-3),
+                    KeyCode::PageDown => self.pane_scroll(24),
+                    KeyCode::PageUp => self.pane_scroll(-24),
+                    _ => {}
+                },
+            },
+            _ => {}
+        }
+        true // 模式内未绑定的键吞掉(不穿透)
+    }
+
+    /// Scroll 模式:滚动当前焦点叶子的回看缓冲。
+    /// 编辑器叶子的视口滚动与 `s` 搜索尚未接(见阶段① 的未完成项)。
+    fn pane_scroll(&mut self, lines: i32) {
+        let active = self.main_tree.active();
+        if let Some(t) =
+            self.find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == active)
+        {
+            t.scroll_by(lines);
+        }
     }
 
     /// 窗口模式:创建新窗(v/s 同 doc 分屏,n 新空 buffer)。创建后保持模式可连续操作。

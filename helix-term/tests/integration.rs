@@ -20,6 +20,7 @@ mod test {
     mod commands;
     mod filetree;
     mod movement;
+    mod pane_modes;
     mod plugin;
     mod plugin_async;
     mod plugin_components;
