@@ -12,7 +12,9 @@ use alacritty_terminal::event::{Event as EngineEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Grid as EngineGrid, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell as EngineCell, Flags};
-use alacritty_terminal::term::{Config as TermConfig, Term, TermMode as EngineMode};
+use alacritty_terminal::term::{
+    ClipboardType as EngineClipboard, Config as TermConfig, Term, TermMode as EngineMode,
+};
 use alacritty_terminal::vte::ansi::{Color as EngineColor, NamedColor, Processor, StdSyncHandler};
 
 use helix_view::graphics::{Color, Modifier, Rect, Style, UnderlineStyle};
@@ -70,7 +72,7 @@ const SCROLLBACK_MAX: usize = 1000;
 struct TermSink {
     title: Arc<Mutex<Option<String>>>,
     replies: Arc<Mutex<Vec<u8>>>,
-    clipboard: Arc<Mutex<Vec<String>>>,
+    clipboard: Arc<Mutex<Vec<(char, String)>>>,
 }
 
 /// 取锁但不容忍中毒:send_event 在解析中途被调,panic 掉锁会连带毁掉后续所有输出。
@@ -84,7 +86,14 @@ impl EventListener for TermSink {
             EngineEvent::Title(t) => *lock(&self.title) = Some(t),
             EngineEvent::ResetTitle => *lock(&self.title) = None,
             EngineEvent::PtyWrite(s) => lock(&self.replies).extend_from_slice(s.as_bytes()),
-            EngineEvent::ClipboardStore(_, text) => lock(&self.clipboard).push(text),
+            EngineEvent::ClipboardStore(kind, text) => {
+                // OSC 52 的选区要保留:clipboard → '+'，primary → '*'
+                let reg = match kind {
+                    EngineClipboard::Selection => '*',
+                    EngineClipboard::Clipboard => '+',
+                };
+                lock(&self.clipboard).push((reg, text));
+            }
             // ColorRequest / TextAreaSizeRequest / ClipboardLoad:已知未接(见设计文档)
             _ => {}
         }
@@ -191,6 +200,11 @@ impl TerminalGrid {
         self.term.mode().contains(EngineMode::ALT_SCREEN)
     }
 
+    /// 引擎当前模式位(写侧判断依据:鼠标上报/括号粘贴/应用光标键等)
+    pub fn engine_mode(&self) -> EngineMode {
+        *self.term.mode()
+    }
+
     /// 历史缓冲已有行数
     pub fn scrollback_len(&self) -> usize {
         self.term.grid().history_size()
@@ -240,8 +254,8 @@ impl TerminalGrid {
         std::mem::take(&mut *lock(&self.sink.replies))
     }
 
-    /// 取走引擎收到的 OSC 52 剪贴板写入请求
-    pub fn take_clipboard(&mut self) -> Vec<String> {
+    /// 取走引擎收到的 OSC 52 剪贴板写入请求(选区寄存器字符 + 文本)
+    pub fn take_clipboard(&mut self) -> Vec<(char, String)> {
         std::mem::take(&mut *lock(&self.sink.clipboard))
     }
 
@@ -438,6 +452,30 @@ fn map_color(c: EngineColor) -> Option<Color> {
     })
 }
 
+/// 鼠标按钮 → X10 按钮码
+fn btn_code(b: helix_view::input::MouseButton) -> u16 {
+    use helix_view::input::MouseButton;
+    match b {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
+/// X10 风格鼠标编码的单字节码位。
+/// 1005(UTF-8)模式直接按码位编;否则必须落在 ASCII 内——超出就放弃(不发出错的报告)。
+fn push_x10(out: &mut String, v: u16, utf8: bool) -> Option<()> {
+    if utf8 {
+        out.push(char::from_u32(v as u32)?);
+        Some(())
+    } else if v < 0x80 {
+        out.push(v as u8 as char);
+        Some(())
+    } else {
+        None
+    }
+}
+
 /// 把按键转成发给 pty 的字节序列。
 /// 支持：普通字符、Ctrl 组合（C-a → \x01 等）、Enter/Backspace/Tab、
 /// 方向键/Home/End/PageUp/PageDown/Delete/Insert（xterm 应序）。
@@ -549,6 +587,8 @@ pub struct PluginTerminal {
     input_mode: TermInputMode,
     /// 上次渲染尺寸（None = 尚未渲染；首次渲染触发 resize + TIOCSWINSZ）
     last_size: Option<(u16, u16)>,
+    /// 上次渲染区域(鼠标坐标换算用:组件不持有 area,只能由 render 记录)
+    last_area: Option<Rect>,
     /// 标题条脏格 diff 渲染器(JS 视图层内容只重绘变化格)
     diff: crate::ui::comp_layout::DiffRenderer,
 }
@@ -566,6 +606,7 @@ impl PluginTerminal {
             mode: TermMode::Dock,
             input_mode: TermInputMode::Insert,
             last_size: None,
+            last_area: None,
             diff: Default::default(),
         }
     }
@@ -602,6 +643,94 @@ impl PluginTerminal {
         if let Some(title) = self.grid.take_title() {
             helix_js::emit_term_title(self.pty_id, &title);
         }
+        // 引擎对 DA/DSR/OSC 查询的答复必须写回 pty(引擎不自己写):
+        // 不接的话,那些“先问终端再决定”的 TUI 会一直等回包
+        let replies = self.grid.take_replies();
+        if !replies.is_empty() {
+            let _ = helix_js::term_write(self.pty_id, &String::from_utf8_lossy(&replies));
+        }
+    }
+
+    /// 粘贴给 pty 的载荷:应用开了括号粘贴(2004)就包上 \e[200~ … \e[201~
+    fn paste_payload(&self, contents: &str) -> String {
+        if self
+            .grid
+            .engine_mode()
+            .contains(EngineMode::BRACKETED_PASTE)
+        {
+            format!("\x1b[200~{contents}\x1b[201~")
+        } else {
+            contents.to_string()
+        }
+    }
+
+    /// 把鼠标事件编码成发给 pty 的 CSI 序列。
+    ///
+    /// 应用未开鼠标上报、该模式不报告此类事件、或坐标超出编码范围时返回 `None`
+    /// (调用方回退到本地滚动回看)。坐标从屏幕坐标换算成 pane 内 1-based。
+    fn mouse_report(&self, mouse: &helix_view::input::MouseEvent) -> Option<String> {
+        use helix_view::input::{KeyModifiers, MouseEventKind};
+
+        let mode = self.grid.engine_mode();
+        if !mode.intersects(EngineMode::MOUSE_MODE) {
+            return None;
+        }
+        let area = self.last_area?;
+        if mouse.column < area.x
+            || mouse.row < area.y
+            || mouse.column >= area.x + area.width
+            || mouse.row >= area.y + area.height
+        {
+            return None;
+        }
+        let col = mouse.column - area.x + 1;
+        let row = mouse.row - area.y + 1;
+
+        // 按钮码:0 左 / 1 中 / 2 右;3 = 释放(X10);拖动 +32;无按钮移动 35;滚轮 64..67
+        let (code, release) = match mouse.kind {
+            MouseEventKind::Down(b) => (btn_code(b), false),
+            MouseEventKind::Up(_) => (3, true),
+            MouseEventKind::Drag(b) => (btn_code(b) + 32, false),
+            MouseEventKind::Moved => (35, false),
+            MouseEventKind::ScrollUp => (64, false),
+            MouseEventKind::ScrollDown => (65, false),
+            MouseEventKind::ScrollLeft => (66, false),
+            MouseEventKind::ScrollRight => (67, false),
+        };
+
+        // 该模式是否报告「移动」类事件:1002 只报按住拖动,1003 报全部移动
+        match mouse.kind {
+            MouseEventKind::Drag(_) if mode.contains(EngineMode::MOUSE_DRAG) => {}
+            MouseEventKind::Drag(_) | MouseEventKind::Moved
+                if mode.contains(EngineMode::MOUSE_MOTION) => {}
+            MouseEventKind::Drag(_) | MouseEventKind::Moved => return None,
+            _ => {}
+        }
+
+        let mut code = code;
+        if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+            code += 4;
+        }
+        if mouse.modifiers.contains(KeyModifiers::ALT) {
+            code += 8;
+        }
+        if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+            code += 16;
+        }
+
+        if mode.contains(EngineMode::SGR_MOUSE) {
+            // 1006:十进制、分号分隔、大坐标无上限;释放用 'm'
+            let end = if release { 'm' } else { 'M' };
+            return Some(format!("\x1b[<{code};{col};{row}{end}"));
+        }
+
+        // X10 风格:ESC [ M + 单字节码位(1005 用 UTF-8 编,否则必须落在 ASCII 内)
+        let utf8 = mode.contains(EngineMode::UTF8_MOUSE);
+        let mut out = String::from("\x1b[M");
+        push_x10(&mut out, 32 + code, utf8)?;
+        push_x10(&mut out, 32 + col, utf8)?;
+        push_x10(&mut out, 32 + row, utf8)?;
+        Some(out)
     }
 
     /// 全部内容纯文本（scrollback + 屏幕；term-save 导出用）
@@ -626,8 +755,12 @@ impl Component for PluginTerminal {
         if self.mode == TermMode::Minimized {
             return EventResult::Ignored(None);
         }
-        // 鼠标滚轮：滚动查看 scrollback（insert/normal 模式均可；其他鼠标事件交给编辑器）
+        // 鼠标：应用开了上报就编码发 pty(优先于本地滚动);否则滚轮走本地滚回
         if let Event::Mouse(mouse) = event {
+            if let Some(report) = self.mouse_report(mouse) {
+                let _ = helix_js::term_write(self.pty_id, &report);
+                return EventResult::Consumed(None);
+            }
             return match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.grid.scroll_up_view(3);
@@ -639,6 +772,15 @@ impl Component for PluginTerminal {
                 }
                 _ => EventResult::Ignored(None),
             };
+        }
+        // 粘贴：直通模式下写给 pty;应用开了括号粘贴(2004)就包上标记
+        if let Event::Paste(contents) = event {
+            if self.input_mode == TermInputMode::Normal {
+                return EventResult::Ignored(None); // 滚动查看态:交给编辑器
+            }
+            let payload = self.paste_payload(contents);
+            let _ = helix_js::term_write(self.pty_id, &payload);
+            return EventResult::Consumed(None);
         }
         let Event::Key(key) = event else {
             return EventResult::Ignored(None);
@@ -774,6 +916,12 @@ impl Component for PluginTerminal {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        self.last_area = Some(area);
+        // OSC 52:引擎收到的剪贴板写入请求在此落地(只有 render 拿得到 editor)。
+        // 走 registers.write 而不是直接碰 config 里的 provider:选区语义与 helix 一致。
+        for (reg, text) in self.grid.take_clipboard() {
+            let _ = cx.editor.registers.write(reg, vec![text]);
+        }
         // 组件状态快照 → get_component_state(view_id)(JS 视图层读)
         let snap = serde_json::json!({
             "mode": match self.input_mode {
@@ -1245,6 +1393,127 @@ mod tests {
         assert_eq!(g.cursor(), (0, 7)); // 末列:待换行标记
         g.feed(b"\x08\x08");
         assert_eq!(g.cursor(), (0, 5));
+    }
+
+    // ── 写侧:鼠标上报 / 括号粘贴 / 查询回包 ──────────────────────────
+
+    use helix_view::input::{KeyModifiers, MouseEventKind};
+
+    fn mouse_term(seq: &str) -> PluginTerminal {
+        let mut t = PluginTerminal::new(0, 0, 80);
+        // 故意偏移的 pane:验证屏幕坐标→pane 内 1-based 坐标的换算
+        t.last_area = Some(Rect::new(10, 2, 70, 20));
+        t.feed(seq);
+        t
+    }
+
+    fn mouse_ev(kind: MouseEventKind) -> helix_view::input::MouseEvent {
+        helix_view::input::MouseEvent {
+            kind,
+            column: 12, // -10 +1 = 3
+            row: 5,     // -2  +1 = 4
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    #[test]
+    fn mouse_report_sgr_press_release_wheel_drag() {
+        use helix_view::input::MouseButton;
+        let t = mouse_term("\x1b[?1002h\x1b[?1006h"); // 按住拖动 + SGR 编码
+        assert_eq!(
+            t.mouse_report(&mouse_ev(MouseEventKind::Down(MouseButton::Left)))
+                .as_deref(),
+            Some("\x1b[<0;3;4M")
+        );
+        assert_eq!(
+            t.mouse_report(&mouse_ev(MouseEventKind::Up(MouseButton::Left)))
+                .as_deref(),
+            Some("\x1b[<3;3;4m"), // 释放用 'm'
+        );
+        assert_eq!(
+            t.mouse_report(&mouse_ev(MouseEventKind::ScrollUp))
+                .as_deref(),
+            Some("\x1b[<64;3;4M")
+        );
+        assert_eq!(
+            t.mouse_report(&mouse_ev(MouseEventKind::Drag(MouseButton::Right)))
+                .as_deref(),
+            Some("\x1b[<34;3;4M"), // 右鍵拖动 = 2+32
+        );
+    }
+
+    #[test]
+    fn mouse_report_gated_by_mode() {
+        use helix_view::input::MouseButton;
+        // 未开上报 → 不接管(调用方回退到本地滚回)
+        assert!(mouse_term("")
+            .mouse_report(&mouse_ev(MouseEventKind::Down(MouseButton::Left)))
+            .is_none());
+        // 1000(仅点击)不报移动
+        let click_only = mouse_term("\x1b[?1000h");
+        assert!(click_only
+            .mouse_report(&mouse_ev(MouseEventKind::Moved))
+            .is_none());
+        assert!(click_only
+            .mouse_report(&mouse_ev(MouseEventKind::Down(MouseButton::Left)))
+            .is_some());
+        // 1002 报拖动、不报单纯移动;1003 报全部
+        let drag = mouse_term("\x1b[?1002h");
+        assert!(drag
+            .mouse_report(&mouse_ev(MouseEventKind::Moved))
+            .is_none());
+        assert!(drag
+            .mouse_report(&mouse_ev(MouseEventKind::Drag(MouseButton::Left)))
+            .is_some());
+        let any = mouse_term("\x1b[?1003h");
+        assert!(any.mouse_report(&mouse_ev(MouseEventKind::Moved)).is_some());
+    }
+
+    #[test]
+    fn mouse_report_x10_ascii_encoding() {
+        use helix_view::input::MouseButton;
+        // 无 1006:ESC [ M + 单字节码位(32+code / 32+col / 32+row)
+        let t = mouse_term("\x1b[?1000h");
+        assert_eq!(
+            t.mouse_report(&mouse_ev(MouseEventKind::Down(MouseButton::Left)))
+                .as_deref(),
+            Some("\x1b[M #$")
+        );
+    }
+
+    #[test]
+    fn mouse_report_ignores_events_outside_pane() {
+        use helix_view::input::MouseButton;
+        let t = mouse_term("\x1b[?1000h");
+        let outside = helix_view::input::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3, // 在 area.x=10 左侧
+            row: 5,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(t.mouse_report(&outside).is_none());
+    }
+
+    #[test]
+    fn paste_payload_wraps_only_when_bracketed() {
+        assert_eq!(mouse_term("").paste_payload("hi"), "hi");
+        assert_eq!(
+            mouse_term("\x1b[?2004h").paste_payload("hi"),
+            "\x1b[200~hi\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn device_query_replies_are_collected_for_pty() {
+        let mut g = grid(2, 8);
+        g.feed(b"\x1b[5n"); // DSR:应用状态查询
+        let replies = g.take_replies();
+        assert!(
+            !replies.is_empty(),
+            "DA/DSR 查询的答复必须经 PtyWrite 交给宿主写回 pty"
+        );
+        // 取走后不重复投递
+        assert!(g.take_replies().is_empty());
     }
 
     #[test]
