@@ -377,6 +377,26 @@ interface Helix {
     equalize(id: number): void;
     fix(id: number, fixed: boolean): void;
   };
+  /** 图标表 —— **核心单一来源**(helix-js/src/icons.rs)。
+   *  所有插件**零依赖**可用,不需要再声明 `deps: ["lib/icons.js"]`。
+   *  字体不支持 nerd font 时用 `enabled(false)` 一处降级(文件类图标变空、目录回退 ▸/▾),
+   *  或在 config.toml 写 `[icons] nerd_font = false`。 */
+  icons: {
+    /** 文件类型图标。优先级:特殊文件名(readme/makefile/.gitignore…)→ 扩展名 → 默认 */
+    file(path: string): string;
+    /** 目录图标(展开/折叠);降级时为 ▾/▸ */
+    dir(expanded: boolean): string;
+    /** 模式图标(normal/insert/select) */
+    mode(mode: string): string;
+    /** 诊断标记的**默认**字形(与 set_diagnostic_icons 的覆盖集是两条通道) */
+    diagnostic(severity: string): string;
+    /** git 状态标记 */
+    git(status: string): string;
+    /** 补全类型图标(LSP kind;传数字会被转成字符串) */
+    completion(kind: string | number): string;
+    /** 总开关:无参时返回当前状态,便于插件自检 */
+    enabled(on?: boolean): boolean;
+  };
   /** 布局序列化 */
   layout: {
     get(): unknown;
