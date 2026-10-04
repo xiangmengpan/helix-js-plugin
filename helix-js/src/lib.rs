@@ -309,6 +309,18 @@ pub fn init() {
                 .build();
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
+            // helix.icons.* —— 图标表的**核心单一来源**(数据在 icons.rs,不再散在 JS 侧)。
+            // 直接返回值,不走 UiRequest:图标是核心数据,没有异步往返的必要。
+            // 必须在 `builder` **之前**构建:`ObjectInitializer::new` 会可变借用 engine,
+            // 同一作用域内只能有一个(现有 pane/layout 等命名空间也都是这个顺序)。
+            let icons_obj = {
+                let mut o = ObjectInitializer::new(engine);
+                for (name, f, arity) in icons::native_fns() {
+                    // `function` 是 `&mut self` 原地改并返回 `&mut Self`,不能赋值回去
+                    o.function(f, JsString::from(name), arity);
+                }
+                o.build()
+            };
             let mut builder = ObjectInitializer::new(engine);
             builder
                 .function(
@@ -740,6 +752,11 @@ pub fn init() {
             builder.property(
                 JsString::from("pane"),
                 pane_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
+                JsString::from("icons"),
+                icons_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             builder.property(
