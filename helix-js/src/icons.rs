@@ -88,15 +88,14 @@ mod tests {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 图标表 —— **核心单一来源**(从 plugins/lib/icons.js 的 ICONS 表迁移而来)
+// 图标表 —— **核心单一来源**(由脚本从 plugins/lib/icons.js 的 ICONS 表迁移而来)
 //
 // 原先这张表在 JS 侧(253 行)。问题是:图标是"看外观的东西"却硬编码在插件里
-// (用户改不了、升级会被覆盖),而且"字体不支持怎么降级"的策略**被每个消费方各写一遍**。
-// 收进核心后数据只有一份、降级策略只有一份、所有插件零依赖可用。
+// (用户改不了、升级被覆盖),而且"字体不支持怎么降级"的策略**被每个消费方各写一遍**。
 //
-// 注:上面那个 `DIAGNOSTIC_ICONS`(JS 经 `helix.set_diagnostic_icons` 设置的覆盖集)
-// 是**给 gutter 渲染用的另一条通道**(`take_diagnostic_icons` 一次性取走),与下表的
-// "默认诊断字形"职责不同,故不合并 —— 合并会让"取走后表就空了"这类隐蔽 bug 出现。
+// 注:上面的 `DIAGNOSTIC_ICONS`(JS 经 `helix.set_diagnostic_icons` 设置的覆盖集,
+// `take_diagnostic_icons` 一次性取走)是**给 gutter 用的另一条通道**,与本文件的
+// "默认诊断字形"职责不同,故不合并 —— 合并会产生"取走后默认表也空了"的隐蔽 bug。
 // ═══════════════════════════════════════════════════════════════
 
 static FILE_ICONS: &[(&str, char)] = &[
@@ -162,6 +161,7 @@ static FILE_ICONS: &[(&str, char)] = &[
     ("tar", '\u{f410}'),
     ("gz", '\u{f410}'),
     ("rar", '\u{f410}'),
+    ("7z", '\u{f410}'),
     ("png", '\u{f1c5}'),
     ("jpg", '\u{f1c5}'),
     ("jpeg", '\u{f1c5}'),
@@ -187,6 +187,26 @@ static FILE_ICONS: &[(&str, char)] = &[
     ("env", '\u{f462}'),
 ];
 
+static SPECIAL_ICONS: &[(&str, char)] = &[
+    ("readme", '\u{f48a}'),
+    ("makefile", '\u{f489}'),
+    ("cmakelists.txt", '\u{e615}'),
+    ("dockerfile", '\u{f308}'),
+    ("justfile", '\u{e615}'),
+    ("license", '\u{f718}'),
+    ("licence", '\u{f718}'),
+    (".gitignore", '\u{f1d3}'),
+    (".gitattributes", '\u{f1d3}'),
+    (".gitmodules", '\u{f1d3}'),
+    ("package.json", '\u{e718}'),
+    ("cargo.toml", '\u{e7a8}'),
+    ("go.mod", '\u{e626}'),
+    ("pyproject.toml", '\u{e606}'),
+    ("requirements.txt", '\u{e606}'),
+    ("config.toml", '\u{e615}'),
+    ("init.js", '\u{e74e}'),
+];
+
 static DIR_ICONS: &[(&str, char)] = &[("closed", '\u{f07b}'), ("open", '\u{f07c}')];
 
 static MODE_ICONS: &[(&str, char)] = &[
@@ -209,6 +229,7 @@ static GIT_ICONS: &[(&str, char)] = &[
     ("R", '\u{f417}'),
     ("C", '\u{f419}'),
     ("U", '\u{f404}'),
+    ("??", '\u{f404}'),
 ];
 
 static COMPLETION_ICONS: &[(&str, char)] = &[
@@ -254,23 +275,33 @@ fn lookup(table: &[(&str, char)], key: &str) -> Option<char> {
     table.iter().find(|(k, _)| *k == key).map(|(_, g)| *g)
 }
 
-/// 扩展名(小写,取最后一段);隐藏文件与无扩展名 → None
-fn ext_of(path: &str) -> Option<String> {
-    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    let (stem, ext) = base.rsplit_once('.')?;
-    if stem.is_empty() || ext.is_empty() {
-        return None;
-    }
-    Some(ext.to_ascii_lowercase())
+/// 取路径最后一段文件名(**小写**,与 JS 原实现一致 —— special 表按小写查)
+fn file_name_lower(path: &str) -> String {
+    path.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase()
 }
 
-/// 文件类型图标。降级时返回空串 —— **不显示图标**,而不是显示错字形。
+/// 文件类型图标。优先级与原 JS 实现一致:
+/// **特殊文件名(special) → 扩展名 → 无扩展名默认(file[""])**。
+/// 关闭图标时返回空串(不显示错字形)。
 pub fn icon_file(path: &str) -> String {
     if !icons_enabled() {
         return String::new();
     }
-    ext_of(path)
-        .and_then(|e| lookup(FILE_ICONS, &e))
+    let name = file_name_lower(path);
+    if let Some(c) = lookup(SPECIAL_ICONS, &name) {
+        return c.to_string();
+    }
+    let ext = if name.contains('.') {
+        name.rsplit('.').next().unwrap_or("")
+    } else {
+        ""
+    };
+    // 源表无 `""` 默认项时 `or_else` 自然落空 → 空串;留着是为了将来加默认项即生效
+    lookup(FILE_ICONS, ext)
+        .or_else(|| lookup(FILE_ICONS, ""))
         .map(|c| c.to_string())
         .unwrap_or_default()
 }
@@ -434,13 +465,17 @@ pub fn native_fns() -> Vec<(&'static str, boa_engine::NativeFunction, usize)> {
 mod table_tests {
     use super::*;
 
-    /// 表非空且关键映射正确(防"生成脚本解析失败留下空表"这类静默问题)
+    /// 表非空且计数与源表一致(防"生成脚本解析失败留下不完整表"—— 实测踩过:
+    /// 第一版正则只认裸键名,**漏掉了所有带引号的键**(special 组整组 + file 组的 "7z" 等))
     #[test]
     fn icon_tables_are_populated() {
-        assert_eq!(FILE_ICONS.len(), 85, "file 组条目数");
-        assert_eq!(MODE_ICONS.len(), 3);
-        assert_eq!(GIT_ICONS.len(), 6);
-        assert_eq!(COMPLETION_ICONS.len(), 25);
+        assert_eq!(FILE_ICONS.len(), 86, "file 组条目数");
+        assert_eq!(SPECIAL_ICONS.len(), 17, "special 组条目数");
+        assert_eq!(DIR_ICONS.len(), 2, "dir 组条目数");
+        assert_eq!(MODE_ICONS.len(), 3, "mode 组条目数");
+        assert_eq!(DIAGNOSTIC_GLYPHS.len(), 4, "diagnostic 组条目数");
+        assert_eq!(GIT_ICONS.len(), 7, "git 组条目数");
+        assert_eq!(COMPLETION_ICONS.len(), 25, "completion 组条目数");
         assert_eq!(
             icon_file("src/main.rs"),
             "\u{e7a8}".to_string(),
@@ -451,8 +486,25 @@ mod table_tests {
             "\u{e7ba}".to_string(),
             "取最后一段扩展名"
         );
-        assert_eq!(icon_file("noext"), "", "无扩展名 → 空(不显示错字形)");
-        assert_eq!(icon_file(".gitignore"), "", "隐藏文件不算扩展名");
+        // 特殊文件名优先于扩展名(与原 JS 实现一致)
+        assert_eq!(
+            icon_file(".gitignore"),
+            "\u{f1d3}".to_string(),
+            "special 组命中"
+        );
+        assert_eq!(
+            icon_file("MAKEFILE"),
+            "\u{f489}".to_string(),
+            "special 按小写查"
+        );
+        assert_eq!(
+            icon_file("README"),
+            "\u{f48a}".to_string(),
+            "readme 在 special 里"
+        );
+        // 无扩展名 → 空串。注意:源表里**没有** `file[""]` 默认项(实测确认),
+        // 所以原 JS 实现返回 `undefined`,渲染即"无图标" —— 与空串等价。
+        assert_eq!(icon_file("noext"), "", "无扩展名 → 空(表里没有默认项)");
         assert_eq!(icon_mode("normal"), "\u{f04b}".to_string());
     }
 
