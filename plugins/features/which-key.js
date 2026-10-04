@@ -153,6 +153,15 @@ function current_cfg() {
     const cfg = current_cfg();
     // 平级模式:compositor 传入 title=前缀键 → 用对应中文表,位置取配置
     if (PANE_HINTS[ctx.title]) {
+      // 优先用引擎推来的键位表(单一来源:compositor 的 pane_mode_entries),
+      // 引擎没给(旧版/未进模式)才退回本文件的内置表。
+      const pm = helix.pane_mode && helix.pane_mode.keymap ? helix.pane_mode.keymap() : null;
+      if (pm && pm.keys && pm.keys.length) {
+        const lines = pm.keys.map(
+          (e) => e.key.padEnd(12) + ` ${e.desc}${e.enabled ? "" : `(${e.reason || "未实现"})`}`
+        );
+        return { text: lines.join("\n"), position: cfg.position };
+      }
       return { text: PANE_HINTS[ctx.title].join("\n"), position: cfg.position };
     }
     if (!ctx.entries || ctx.entries.length === 0) return null;

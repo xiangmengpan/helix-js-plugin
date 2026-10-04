@@ -10,7 +10,7 @@ use boa_engine::{Context, JsError, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-const EVENT_WHITELIST: [&str; 17] = [
+const EVENT_WHITELIST: [&str; 18] = [
     "save",
     "mode-change",
     "buffer-open",
@@ -28,6 +28,7 @@ const EVENT_WHITELIST: [&str; 17] = [
     "lsp-diagnostics",
     "cursor-move",
     "selection-change",
+    "pane-mode-change",
 ];
 
 use crate::state::{
@@ -1113,6 +1114,11 @@ pub fn emit_term_key(
         }
         None
     })
+}
+
+/// 平级模式切换通知(阶段①/②):插件据此显示模式指示/键位表
+pub fn emit_pane_mode_change(mode: &str) {
+    emit_hook("pane-mode-change", &[JsValue::from(JsString::from(mode))]);
 }
 
 /// 通知型终端钩子封装（helix-term 侧不依赖 boa，统一走这里）：

@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "checkJs": false,
+    "allowJs": true,
+    "noEmit": true
+  },
+  "include": ["**/*.js", "helix.d.ts"]
+}

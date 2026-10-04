@@ -934,6 +934,8 @@ impl Compositor {
     /// 切换平级模式:置位 + 显示/清除键位提示(``Normal`` 时清掉)
     fn set_pane_mode(&mut self, mode: PaneMode, cx: &mut Context) {
         self.pane_mode = mode;
+        // 插件侧可见性:helix.pane_mode.* + pane-mode-change 事件(单一来源)
+        Self::publish_pane_mode(mode);
         if mode == PaneMode::Normal {
             cx.editor.autoinfo = None;
         } else {
@@ -941,58 +943,98 @@ impl Compositor {
         }
     }
 
-    /// 平级模式的键位提示(经 `keymap_hint` 可由 JS `set_keymap_hint` 接管,
-    /// 缺省用内置文本)。各模式的条目与 `pane_mode_key` 里的键位表一一对应。
-    fn pane_mode_hint(&mut self, mode: PaneMode, cx: &mut Context) {
-        use helix_view::info::Info;
-        let (key, entries): (&str, Vec<(&str, &str)>) = match mode {
-            PaneMode::Normal => return,
-            PaneMode::Locked => ("C-g", vec![("C-g", "退出 locked(其余键原样交给当前窗口)")]),
+    /// 平级模式的键位表(单一来源):(模式显示名, [(键, 说明, 是否已实现)])。
+    /// 内置提示与 `helix.pane_mode.keymap()` 都从这里取,避免两处硬编码漂移。
+    fn pane_mode_entries(
+        mode: PaneMode,
+    ) -> (&'static str, Vec<(&'static str, &'static str, bool)>) {
+        match mode {
+            PaneMode::Normal => ("Normal", Vec::new()),
+            PaneMode::Locked => (
+                "C-g",
+                vec![("C-g", "退出 locked(其余键原样交给当前窗口)", true)],
+            ),
             PaneMode::Pane => (
                 "C-p",
                 vec![
-                    ("h j k l", "聚焦(左/下/上/右)"),
-                    ("H J K L", "交换"),
-                    ("p / P / Tab", "切到下一个/上一个窗口"),
-                    ("n / d / r", "新分屏 / 下分 / 右分"),
-                    ("x", "关闭窗口"),
-                    ("f", "最大化/还原"),
-                    ("z", "最小化/还原"),
-                    ("w / e", "浮动 / 收回平铺"),
-                    ("i", "pin(浮动时置顶)"),
-                    ("s", "堆叠(阶段② 余下)"),
-                    ("Esc / C-p", "退出"),
+                    ("h j k l", "聚焦(左/下/上/右)", true),
+                    ("H J K L", "交换", true),
+                    ("p / P / Tab", "切到下一个/上一个窗口", true),
+                    ("n / d / r", "新分屏 / 下分 / 右分", true),
+                    ("x", "关闭窗口", true),
+                    ("f", "最大化/还原", true),
+                    ("z", "最小化/还原", true),
+                    ("w / e", "浮动 / 收回平铺", true),
+                    ("i", "pin(浮动时置顶)", true),
+                    ("s", "堆叠", false),
+                    ("Esc / C-p", "退出", true),
                 ],
             ),
             PaneMode::Resize => (
                 "C-n",
                 vec![
-                    ("h j k l", "向该方向增大(浮窗:改尺寸)"),
-                    ("H J K L", "向该方向减小"),
-                    ("= / - / +", "宽度 ±5%"),
-                    ("Esc / C-n", "退出"),
+                    ("h j k l", "向该方向增大(浮窗:改尺寸)", true),
+                    ("H J K L", "向该方向减小", true),
+                    ("= / - / +", "宽度 ±5%", true),
+                    ("Esc / C-n", "退出", true),
                 ],
             ),
             PaneMode::Move => (
                 "C-h",
                 vec![
-                    ("h j k l", "与方向邻居交换(浮窗:搬位置)"),
-                    ("Esc / C-h", "退出"),
+                    ("h j k l", "与方向邻居交换(浮窗:搬位置)", true),
+                    ("Esc / C-h", "退出", true),
                 ],
             ),
             PaneMode::Scroll => (
                 "C-y",
                 vec![
-                    ("j / k", "行滚动"),
-                    ("d / u", "半页"),
-                    ("C-f C-b / h l", "整页"),
-                    ("Esc / C-y", "退出"),
+                    ("j / k", "行滚动", true),
+                    ("d / u", "半页", true),
+                    ("C-f C-b / h l", "整页", true),
+                    ("Esc / C-y", "退出", true),
                 ],
             ),
-        };
+        }
+    }
+
+    /// 把模式快照推给插件:helix.pane_mode.current()/keymap() 读它,
+    /// 同时发 pane-mode-change 事件。单一来源 = pane_mode_entries。
+    fn publish_pane_mode(mode: PaneMode) {
+        let (name, entries) = Self::pane_mode_entries(mode);
+        let keys: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(k, d, enabled)| {
+                let mut o = serde_json::json!({ "key": k, "desc": d, "enabled": enabled });
+                if !enabled {
+                    o["reason"] = serde_json::json!("阶段② 余下");
+                }
+                o
+            })
+            .collect();
+        let json = serde_json::json!({ "mode": name, "keys": keys }).to_string();
+        helix_js::cache_pane_mode(&json);
+        helix_js::emit_pane_mode_change(name);
+    }
+
+    /// 平级模式的键位提示(经 `keymap_hint` 可由 JS `set_keymap_hint` 接管,
+    /// 缺省用内置文本)。各模式的条目与 `pane_mode_key` 里的键位表一一对应。
+    fn pane_mode_hint(&mut self, mode: PaneMode, cx: &mut Context) {
+        use helix_view::info::Info;
+        let (key, entries) = Self::pane_mode_entries(mode);
+        if entries.is_empty() {
+            return;
+        }
         let owned: Vec<(String, String)> = entries
             .iter()
-            .map(|(k, d)| (k.to_string(), d.to_string()))
+            .map(|(k, d, enabled)| {
+                let d = if *enabled {
+                    (*d).to_string()
+                } else {
+                    format!("{d}(阶段② 余下)")
+                };
+                (k.to_string(), d)
+            })
             .collect();
         let (text, position) = helix_js::keymap_hint(key, &owned).unwrap_or_else(|| {
             (

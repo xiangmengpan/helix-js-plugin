@@ -445,6 +445,10 @@ pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 /// 打开文档序列化缓存（helix-term 每帧写入；buffers/current_buffer 读取）
 pub(crate) static BUFFERS: OnceLock<Mutex<String>> = OnceLock::new();
+
+/// 平级模式快照(JSON: `{mode, keys:[{key,desc,enabled,reason?}]}`)。
+/// helix-term 在模式切换时写入;`helix.pane_mode.current()/keymap()` 读。
+pub(crate) static PANE_MODE: OnceLock<Mutex<String>> = OnceLock::new();
 /// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: {"<name>": {...}}
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
 thread_local! {
@@ -628,7 +632,16 @@ pub fn cache_layout(json: &str) {
 /// 写入打开文档序列化缓存(helix-term 每帧更新;buffers/current_buffer 读取)
 pub fn cache_buffers(json: &str) {
     let _ = BUFFERS.get_or_init(Default::default);
+    let _ = PANE_MODE.get_or_init(Default::default);
     if let Some(m) = BUFFERS.get() {
+        *m.lock().unwrap() = json.to_string();
+    }
+}
+
+/// 写入平级模式快照(模式切换时由 helix-term 调用)
+pub fn cache_pane_mode(json: &str) {
+    let _ = PANE_MODE.get_or_init(Default::default);
+    if let Some(m) = PANE_MODE.get() {
         *m.lock().unwrap() = json.to_string();
     }
 }

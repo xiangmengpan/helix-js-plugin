@@ -460,6 +460,47 @@ pub(crate) fn js_get_layout(
     js_json_parse(json, ctx, "get_layout")
 }
 
+/// 当前平级模式:helix.pane_mode.current() → "Normal"|"Locked"|"Pane"|…
+pub(crate) fn js_pane_mode_current(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let json = crate::state::PANE_MODE
+        .get()
+        .map(|m| m.lock().unwrap().clone())
+        .unwrap_or_default();
+    if json.is_empty() {
+        return Ok(JsValue::from(JsString::from("Normal")));
+    }
+    let obj = js_json_parse(json, ctx, "pane_mode.current")?;
+    Ok(obj
+        .as_object()
+        .and_then(|o| o.get(JsString::from("mode"), ctx).ok())
+        .unwrap_or_else(|| JsValue::from(JsString::from("Normal"))))
+}
+
+/// 当前模式的键位表:helix.pane_mode.keymap() → `{mode, keys:[{key,desc,enabled,reason?}]}`。
+/// 条目由 Rust 侧单一来源提供,插件(which-key)不必再硬编码。
+pub(crate) fn js_pane_mode_keymap(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let json = crate::state::PANE_MODE
+        .get()
+        .map(|m| m.lock().unwrap().clone())
+        .unwrap_or_default();
+    if json.is_empty() {
+        return js_json_parse(
+            "{\"mode\":\"Normal\",\"keys\":[]}".to_string(),
+            ctx,
+            "pane_mode.keymap",
+        );
+    }
+    js_json_parse(json, ctx, "pane_mode.keymap")
+}
+
 /// 组件状态只读:helix.get_component_state(id) → 对象(未注册 → null)。
 /// 状态由 Rust 组件经 JSON 字符串提供(register_component_state),JS 视图层据此画外观。
 /// 打开文档列表:helix.buffers() → [{id, path, name, dirty, language}](只读快照)。

@@ -210,6 +210,20 @@ pub fn init() {
                     2,
                 )
                 .build();
+            // helix.pane_mode 命名空间:当前平级模式与它的键位表
+            // (键位表由 Rust 侧单一来源提供,插件不必硬编码)
+            let pane_mode_obj = ObjectInitializer::new(engine)
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_mode_current),
+                    JsString::from("current"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_mode_keymap),
+                    JsString::from("keymap"),
+                    0,
+                )
+                .build();
             // ObjectInitializer 方法取 &mut self，链式必须在一个表达式内；
             // term_resize 是 cfg(unix) 的，拆成两步注册（builder 可变绑定）
             let mut builder = ObjectInitializer::new(engine);
@@ -638,6 +652,11 @@ pub fn init() {
             builder.property(
                 JsString::from("server"),
                 server_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
+                JsString::from("pane_mode"),
+                pane_mode_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             let helix = builder.build();
