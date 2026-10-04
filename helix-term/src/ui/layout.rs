@@ -54,7 +54,7 @@ pub struct LayoutTree {
 /// 几何用**视口比例**(0..1)而不是绝对格:窗口改尺寸时浮窗跟着缩放,
 /// 不会跑到视口外。旧行为(单个居中浮窗)= `x:0.2, y:0.15, w:0.6, h:0.7`
 /// (与 `float_rect` 的 60%×70% 居中一致)。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FloatSlot {
     pub id: u64,
     /// 左上角比例(相对视口)
@@ -963,6 +963,15 @@ impl LayoutTree {
             }
         }
 
+        // 浮窗槽位:几何/z/pin 原样恢复,只保留仍存在的 id
+        self.floats = dump
+            .get("floats")
+            .and_then(|f| serde_json::from_value::<Vec<FloatSlot>>(f.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| live.contains(&f.id))
+            .collect();
+
         // active / zoomed / minimized 只接受仍存在的 id,否则回落到树的首叶
         let live_of = |v: Option<u64>| v.filter(|id| live.contains(id));
         let first = self.leaf_ids().into_iter().next().unwrap_or(0);
@@ -1032,6 +1041,7 @@ impl LayoutTree {
             active: self.active,
             zoomed: self.zoomed,
             minimized: self.minimized,
+            floats: self.floats.clone(),
             leafs,
         }
     }
@@ -1493,6 +1503,8 @@ pub struct LayoutDump {
     pub active: u64,
     pub zoomed: Option<u64>,
     pub minimized: Option<u64>,
+    /// 浮动 pane 槽位(阶段②;空 = 无浮窗)。只含几何/z/pin,组件由 id 复用。
+    pub floats: Vec<FloatSlot>,
     /// 叶子扁平列表（树序；测试/JS 读 fixed 用）
     pub leafs: Vec<LeafInfo>,
 }
@@ -1928,6 +1940,60 @@ mod rail_tests {
             json["tree"],
             "树形状(含 ratio 与 first/second 次序)"
         );
+    }
+
+    /// 浮窗也要随 dump 往返(否则 restore 后浮窗会消失)
+    #[test]
+    fn restore_roundtrip_keeps_floats() {
+        let mut t = base();
+        t.split_side_ratio(
+            0,
+            SplitDir::H,
+            false,
+            0.5,
+            Box::new(PluginTerminal::new(1, 1, 80)),
+            1,
+        )
+        .unwrap();
+        t.add_float(FloatSlot {
+            x: 0.7,
+            y: 0.6,
+            w: 0.25,
+            h: 0.3,
+            z: 3,
+            pinned: true,
+            ..FloatSlot::centered(1)
+        });
+        let json = serde_json::to_value(t.dump()).unwrap();
+
+        let mut t2 = base();
+        t2.split_side_ratio(
+            0,
+            SplitDir::H,
+            false,
+            0.5,
+            Box::new(PluginTerminal::new(1, 1, 80)),
+            1,
+        )
+        .unwrap();
+        assert!(t2.floats().is_empty());
+        t2.restore(&json).unwrap();
+
+        let f = t2.floats();
+        assert_eq!(f.len(), 1, "浮窗槽位回来了");
+        assert_eq!(
+            (f[0].x, f[0].y, f[0].w, f[0].h),
+            (0.7, 0.6, 0.25, 0.3),
+            "几何"
+        );
+        assert_eq!(f[0].z, 3);
+        assert!(f[0].pinned);
+
+        // 组件已不在时,浮窗槽位要被丢掉(否则路由指向已删叶子)
+        let mut t3 = LayoutTree::default();
+        t3.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
+        t3.restore(&json).unwrap();
+        assert!(t3.floats().is_empty(), "id=1 不存活 → 槽位丢弃");
     }
 
     /// 已不存在的叶子应被丢弃、空分支收敛;全空则报错
