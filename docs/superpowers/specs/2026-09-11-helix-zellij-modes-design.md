@@ -438,3 +438,72 @@ helix.buffer.list() · current() · focus(id)   // 从 helix.buffers/focus_buffe
 | R6 | tab 模式(`C-t`)留空,用户若后续要需定义 helix 的"标签页"语义 | 未决,阶段③ 后再议 |
 | R7 | `z`(TogglePaneFrames)阶段①不做 | 未决,阶段② 统一 border 时再定 |
 | R8 | zellij 的 swap-layout 循环(`:layout cycle`)不在本次范围 | 未决,阶段③ 后再议 |
+
+---
+
+## 附录 A:②-4 `Stack` 的实现方案(2026-09-11 追加,含低成本表示法)
+
+§5.4 写的是 `enum Leaf { Pane(PaneId), Stack{members, active} }`。落地时发现这个写法**代价被严重低估**:
+`LayoutNode` 加变体要让 **~67 处匹配点**全部跟进(`replace_leaf` / `split_side` / 邻居计算 /
+rail 逻辑 / `dump` / `restore` / 渲染 / 焦点 / `leaf_ids_of` …),而且 **dump schema 也要改**
+(直接撞上 §5.5 的 `version:1` 迁移问题)。
+
+### A.1 推荐表示法:**旁表**,不动 `LayoutNode`
+
+```rust
+/// 堆叠组:一个"承载叶子"在树里占位,组内只显示 shown 那个。
+/// key = 承载叶子 id(它独占树中位置,布局/交换/分裂语义全不变)
+stacks: HashMap<u64, StackGroup>,
+struct StackGroup { members: Vec<u64>, shown: usize }  // members[0] == 承载者
+```
+
+- 承载叶子的 rect 由 `layout_node` 照常分配(零改动)
+- 渲染:承载叶子位置上改画 `members[shown]` 的组件(组件都在 `components` 里,按 id 取)
+- 事件路由:把 `active`(承载者)映射成 `members[shown]`
+- `C-p s`:把活动叶与**树序的下一个叶子**合并成一组(承载者 = 活动叶)
+- `C-p p/Tab`:在 `members` 内循环 `shown`(与"切到下一个窗口"同键,语义按是否堆叠分派)
+- `C-p x` / `remove(id)`:从组里摘掉;剩 1 个则解散组(与浮窗槽位的清理同理:
+  **残留映射会让路由指向已删叶子 → 全部 Ignored → 程序僵死**)
+- dump:加 `stacks` 字段(与 `floats` 同批),`restore` 只保留仍存活的 id
+
+### A.2 表示法 B 的改动点(约 10 处,vs 方案 A 的 ~67 处)
+
+| 位置 | 改动 |
+|---|---|
+| `LayoutTree` 字段 + `Default` | `stacks` 加入 |
+| `handle_event` | 路由目标由 `active` 改为 `shown_member_of(active)` |
+| `render` | 承载叶子位置上渲染 `shown` 成员；另画一行 header(成员列表 + 当前标记) |
+| `Component::cursor` / `active_component` / `active_type_name` | 同上做一层映射 |
+| `focus(id)` | id 是组内成员时：先把 `shown` 指向它，再聚焦承载者 |
+| `remove(id)` | 从组里摘掉；剩 1 个则解散组(防僵死) |
+| `dump` / `restore` | 增 `stacks` 字段；`restore` 只保留存活 id |
+| `PaneMode::Pane` 的 `s` | 新建堆叠(替换掉现在的“阶段② 余下”桩) |
+| `PaneMode::Pane` 的 `p`/`P`/`Tab` | 活动叶在堆叠组内时先循环 `shown`，否则维持“切下一个窗口” |
+| `pane_mode_entries` | `s` 的 `enabled` 改 true；which-key 镜像同步 |
+
+### A.3 要定下来的语义(实现前先写测试)
+
+1. **`s` 建堆叠**:活动叶 + 树序下一个叶子合并(承载者 = 活动叶)。
+   若下一个叶子已是别组的承载者/成员，则先把它从原组摘出(或拒绝并提示)。
+2. **`shown` 循环**:组内成员顺序 = 合并时决定；`p`/`Tab` 前进、`P` 后退。
+3. **header 行**:占用承载矩形顶部 1 行，显示成员数+当前序号；仅当组内成员 ≥2 时画。
+4. **解散**:成员降到 1 个时，组自动消失(树不动，只是旁表项被删)。
+5. **与浮窗/缩放/最小化交互**:承载者浮动时整组跟着浮动(sh)own 不变)。
+
+### A.4 测试清单(先写，后实现)
+
+- 建堆叠：`C-p s` 后 `pane.list()` 里两个 id `place` 相同(或加 `stack` 标记)，且只有 `shown` 那个拿 rect
+- `p`/`P` 循环 `shown`，光标/事件路由跟着走
+- `C-p x` 关掉 `shown` 后自动显示组内下一个；关到剩 1 个时组解散
+- `dump → restore` 往返保留 `stacks`；成员已不存在时整组丢弃
+- 回归：**没建立堆叠时，`p`/`Tab` 行为与现在完全一致**(不能把“切下一个窗口”弄坏)
+
+### A.5 风险与回退
+
+- 最大的风险不是实现量，而是**路由映射漏掉某一处**(`handle_event`/`cursor`/`active_component`
+  各自独立取 `active`)。漏一处的症状是“键盘忽然不响应”——与 §5.1 浮窗那次同类。
+  缓解：先写一条**不建堆叠也要绿的回归**，再逐处加映射，每加一处跑一次。
+- 回退：全部落在 `LayoutTree` + compositor 的 `pane_mode_key`，可 **单个 commit revert**。
+- 若旁表方案后续证明不够(例如需要把堆叠当作可交换/可分裂的一级对象)，再升级到
+  `LayoutNode::Stack` 变体；那时 §5.4 的原文才需要生效。**先旁表，后变体**。
+
