@@ -4,10 +4,23 @@
 // 目录分层：plugins/lib（共享层）· plugins/features（功能插件）。
 // 图标配置模块([icons] nerd_font 的 define_config 在它里面)——显式加载一次。
 // 各功能插件已不再依赖它:需要图标直接用 helix.icons.*(核心单一来源)。
-helix.load("lib/icons.js");
-helix.load("features/terminal.js");
-helix.load("features/statusline.js");
-helix.load("features/filetree/index.js");
+// ── 插件加载包装:单个插件失败**不应**拖垮整个 init.js ──
+// (实测事故:某条 load 抛错 → init.js 整体失败 → 下面所有插件都不加载,
+//  于是一次版本错配变成"插件全灭"。Neovim 也不会因一个插件报错就让其余全不加载。)
+// 报错到状态栏,然后继续。
+function safe_load(p) {
+  try {
+    return helix.load(p);   // 内部必须用原生 helix.load(否则自己调自己 → 栈溢出)
+  } catch (e) {
+    helix.echo("插件 " + p + " 加载失败: " + (e && e.message ? e.message : e));
+    return null;
+  }
+}
+
+safe_load("lib/icons.js");
+safe_load("features/terminal.js");
+safe_load("features/statusline.js");
+safe_load("features/filetree/index.js");
 
 // 方案 3 可选：状态栏 mode 图标（整行替换默认状态栏，默认不启用）
 // const icons = helix.load("lib/icons.js");

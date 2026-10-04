@@ -76,7 +76,12 @@ fn plugins_init_template_loads_resolve() {
         if t.starts_with("//") {
             continue; // 注释行不算(模板里有大量被注释掉的可选项)
         }
-        let Some(rest) = t.strip_prefix("helix.load(\"") else {
+        // 入口既可能用 helix.load(,也可能用 init.js 里的 safe_load( 包装
+        // (safe_load = 失败只报错并继续,不让一个插件拖垮整个 init.js)
+        let Some(rest) = t
+            .strip_prefix("helix.load(\"")
+            .or_else(|| t.strip_prefix("safe_load(\""))
+        else {
             continue;
         };
         let Some(rel) = rest.split('"').next() else {

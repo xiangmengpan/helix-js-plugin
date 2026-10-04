@@ -38,7 +38,9 @@ helix.define_config("icons", {
 });
 
 // 应用配置(在核心侧设置,所以 Rust 侧消费方(bufferline/gutter)同样受益)
-{
+// 旧二进制没有 helix.icons(本 API 是本会话新增)—— 缺了就跳过,不要抛错:
+// 抛错会让 safe_load 报一条错并跳过本文件(可接受),但**更好的行为是静默降级**。
+if (helix.icons && helix.icons.enabled) {
   const cfg = helix.get_config("icons") || {};
   helix.icons.enabled(cfg.nerd_font !== false);
 }
@@ -47,23 +49,28 @@ helix.define_config("icons", {
 // 而旧实现靠 JS 对象的隐式键强制转换(number/undefined 都能当键用)。
 // 这几个 `String(...)` 就是补上那层转换。
 function getFileIcon(path) {
-  return helix.icons.file(String(path ?? ""));
+  // helix.icons 缺失(旧二进制)时降级为空串,不抛错
+  return helix.icons ? helix.icons.file(String(path ?? "")) : "";
 }
 function getDirIcon(expanded) {
-  return helix.icons.dir(!!expanded);
+  // helix.icons 缺失(旧二进制)时降级为空串,不抛错
+  return helix.icons ? helix.icons.dir(!!expanded) : "";
 }
 function getModeIcon(mode) {
-  return helix.icons.mode(String(mode ?? ""));
+  // helix.icons 缺失(旧二进制)时降级为空串,不抛错
+  return helix.icons ? helix.icons.mode(String(mode ?? "")) : "";
 }
 function getDiagnosticIcon(severity) {
-  return helix.icons.diagnostic(String(severity ?? ""));
+  // helix.icons 缺失(旧二进制)时降级为空串,不抛错
+  return helix.icons ? helix.icons.diagnostic(String(severity ?? "")) : "";
 }
 function getGitIcon(status) {
-  return helix.icons.git(String(status ?? ""));
+  // helix.icons 缺失(旧二进制)时降级为空串,不抛错
+  return helix.icons ? helix.icons.git(String(status ?? "")) : "";
 }
 function getCompletionKindIcon(kind) {
   // LSP kind 是**数字**,旧实现靠 `obj[42]` 的隐式转换;这里显式转字符串
-  return helix.icons.completion(String(kind ?? ""));
+  return helix.icons ? helix.icons.completion(String(kind ?? "")) : "";
 }
 
 if (typeof helix !== "undefined") {
