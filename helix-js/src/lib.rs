@@ -211,6 +211,8 @@ pub fn init() {
                 )
                 .build();
             // helix.pane 命名空间:pane 清单(③ 会在此基础上加 open/set_place/…)
+            // helix.pane.*(③ 的最终命名)。这些操作与旧 API 是**同一批 UiRequest**,
+            // 所以直接复用同一批原生函数 —— 零重复实现,旧名删掉后新名照常工作。
             let pane_obj = ObjectInitializer::new(engine)
                 .function(
                     NativeFunction::from_fn_ptr(layout::js_pane_list),
@@ -225,6 +227,69 @@ pub fn init() {
                 .function(
                     NativeFunction::from_fn_ptr(layout::js_pane_embed),
                     JsString::from("embed"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_close_leaf),
+                    JsString::from("close"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_focus_leaf),
+                    JsString::from("focus"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir),
+                    JsString::from("focus_dir"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir),
+                    JsString::from("move"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_resize_leaf),
+                    JsString::from("resize"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_zoom_leaf),
+                    JsString::from("zoom"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_unzoom),
+                    JsString::from("unzoom"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_minimize_leaf),
+                    JsString::from("minimize"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_equalize_leaf),
+                    JsString::from("equalize"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_layout_fix),
+                    JsString::from("fix"),
+                    2,
+                )
+                .build();
+            // helix.layout.*(序列化;get/restore 已接线,save/load 待 ②-5 的 :layout 命令)
+            let layout_obj = ObjectInitializer::new(engine)
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_get_layout),
+                    JsString::from("get"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_restore_layout),
+                    JsString::from("restore"),
                     1,
                 )
                 .build();
@@ -678,6 +743,11 @@ pub fn init() {
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             builder.property(
+                JsString::from("layout"),
+                layout_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
                 JsString::from("pane_mode"),
                 pane_mode_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
@@ -840,6 +910,45 @@ pub(crate) mod tests {
             matches!(&reqs[1], UiRequest::PaneEmbed { id } if *id == 4),
             "pane.embed(4) → PaneEmbed{{id:4}}"
         );
+    }
+
+    /// `helix.pane.*` / `helix.layout.*` —— ③ 的最终命名。
+    /// 这些是**同一批 UiRequest 的新名字**(旧名删除后照常工作),所以这里只验
+    /// 名字齐全 + 调用真的入队(各 variant 的行为已由旧名测试覆盖)。
+    #[test]
+    fn pane_namespace_is_wired() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("pn", () => {
+            const need = ["list","float","embed","close","focus","focus_dir",
+                          "move","resize","zoom","unzoom","minimize","equalize","fix"];
+            const missing = need.filter((n) => typeof helix.pane[n] !== "function");
+            helix.echo("missing:" + missing.join(","));
+            helix.pane.close(5);
+            helix.pane.focus(6);
+            helix.echo("lg:" + typeof helix.layout.get + "/" + typeof helix.layout.restore);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("pn", &ctx).unwrap());
+        let msgs = take_messages();
+        assert_eq!(msgs[0], "missing:", "pane.* 名字必须齐全");
+        assert_eq!(
+            msgs[1], "lg:function/function",
+            "layout.get/restore 必须存在"
+        );
+        let reqs = take_ui_requests();
+        assert_eq!(reqs.len(), 2, "close/focus 各入队一个请求");
     }
 
     #[test]
