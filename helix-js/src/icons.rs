@@ -99,6 +99,7 @@ mod tests {
 // ═══════════════════════════════════════════════════════════════
 
 static FILE_ICONS: &[(&str, char)] = &[
+    ("", '\u{f016}'),
     ("rs", '\u{e7a8}'),
     ("js", '\u{e74e}'),
     ("mjs", '\u{e74e}'),
@@ -299,7 +300,7 @@ pub fn icon_file(path: &str) -> String {
     } else {
         ""
     };
-    // 源表无 `""` 默认项时 `or_else` 自然落空 → 空串;留着是为了将来加默认项即生效
+    // 源表**有** `"": "\uf016"` 默认项(无扩展名/未知扩展名都回退到它)
     lookup(FILE_ICONS, ext)
         .or_else(|| lookup(FILE_ICONS, ""))
         .map(|c| c.to_string())
@@ -469,7 +470,7 @@ mod table_tests {
     /// 第一版正则只认裸键名,**漏掉了所有带引号的键**(special 组整组 + file 组的 "7z" 等))
     #[test]
     fn icon_tables_are_populated() {
-        assert_eq!(FILE_ICONS.len(), 86, "file 组条目数");
+        assert_eq!(FILE_ICONS.len(), 87, "file 组条目数");
         assert_eq!(SPECIAL_ICONS.len(), 17, "special 组条目数");
         assert_eq!(DIR_ICONS.len(), 2, "dir 组条目数");
         assert_eq!(MODE_ICONS.len(), 3, "mode 组条目数");
@@ -502,9 +503,17 @@ mod table_tests {
             "\u{f48a}".to_string(),
             "readme 在 special 里"
         );
-        // 无扩展名 → 空串。注意:源表里**没有** `file[""]` 默认项(实测确认),
-        // 所以原 JS 实现返回 `undefined`,渲染即"无图标" —— 与空串等价。
-        assert_eq!(icon_file("noext"), "", "无扩展名 → 空(表里没有默认项)");
+        // 无扩展名 / 未知扩展名 → 回退到 `file[""]` 默认项(源表第 102 行确实有)
+        assert_eq!(
+            icon_file("noext"),
+            "\u{f016}".to_string(),
+            "无扩展名 → 默认文件图标"
+        );
+        assert_eq!(
+            icon_file("a.zzz-unknown"),
+            "\u{f016}".to_string(),
+            "未知扩展名也回退到默认"
+        );
         assert_eq!(icon_mode("normal"), "\u{f04b}".to_string());
     }
 
