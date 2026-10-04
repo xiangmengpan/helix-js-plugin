@@ -33,7 +33,7 @@ const EVENT_WHITELIST: [&str; 18] = [
 
 use crate::state::{
     with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_popups,
-    with_registry, with_script_exports, with_statusline_hook, MESSAGES, PLUGINS_DIR, UI_REQUESTS,
+    with_registry, with_script_exports, with_statusline_hook, MESSAGES, UI_REQUESTS,
 };
 
 use crate::types::*;
@@ -66,7 +66,8 @@ pub(crate) fn js_register_command(
 
 /// 设置插件目录（js_load 相对名解析用）。OnceLock 只生效一次：helix-term 启动时调用。
 pub fn set_plugins_dir(dir: PathBuf) {
-    let _ = PLUGINS_DIR.set(dir);
+    // 单一目录 = 只有一个根(保留这个入口:测试与旧调用点都用它)
+    crate::state::set_plugin_roots(vec![dir]);
 }
 
 /// helix.load(name)：从插件目录加载脚本（相对名或绝对路径），返回其 helix.export 的值；
@@ -128,7 +129,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         let path = if Path::new(&key).is_absolute() {
             PathBuf::from(&key)
         } else {
-            PLUGINS_DIR.get().map(|d| d.join(&key)).ok_or_else(|| {
+            crate::state::resolve_plugin_path(&key).ok_or_else(|| {
                 JsError::from_opaque(JsValue::from(JsString::from(
                     "helix.load: plugins dir not set",
                 )))
@@ -1889,14 +1890,13 @@ pub fn reload_all() -> Result<()> {
     // 错误汇总返回;成功脚本照常注册(命令/钩子/状态栏/键位都恢复)。
     let mut errors: Vec<String> = Vec::new();
     for (name, src) in &scripts {
-        // 按名重读磁盘：js_load 记录的模块文件更新生效（相对名解析 PLUGINS_DIR，
+        // 按名重读磁盘：js_load 记录的模块文件更新生效（相对名走多根解析，
         // 绝对路径直接用）；读不到（load_script_named 的字符串脚本/目录已删）用记录 src 兜底
         let disk_src = if Path::new(name).is_absolute() {
             std::fs::read_to_string(name).ok()
         } else {
-            PLUGINS_DIR
-                .get()
-                .map(|d| d.join(name))
+            // 多根解析:后加的根覆盖先加的(用户覆盖内置)
+            crate::state::resolve_plugin_path(name)
                 .filter(|p| p.is_file())
                 .and_then(|p| std::fs::read_to_string(p).ok())
         };

@@ -5,7 +5,7 @@ use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::types::{
@@ -440,7 +440,41 @@ pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
 pub(crate) static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
 /// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
-pub(crate) static PLUGINS_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// 插件根目录(**有序**)。语义对齐 Neovim 的 `runtimepath`:自带 runtime 在前、
+/// 用户目录在后,于是**后加的根覆盖先加的**(同名相对名取"最后一个存在的")。
+/// 这是"把功能做成随软件分发的内置插件"的地基:内置放前、用户放后即可覆盖。
+pub(crate) static PLUGIN_ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+/// 设置插件根(只生效一次;已有则忽略 —— 与原先 `PLUGINS_DIR` 的语义一致)
+pub(crate) fn set_plugin_roots(roots: Vec<PathBuf>) {
+    let _ = PLUGIN_ROOTS.set(roots);
+}
+
+pub(crate) fn plugin_roots() -> &'static [PathBuf] {
+    PLUGIN_ROOTS.get().map(|v| v.as_slice()).unwrap_or(&[])
+}
+
+/// 相对名 → 绝对路径的**纯函数**(便于单测,不碰全局)。
+///
+/// 从**后往前**找第一个存在的:后加的根覆盖先加的(用户覆盖内置)。
+/// 一个都不存在时回落到**最后一个根** —— 报错信息指向用户目录,更贴近实际。
+pub(crate) fn resolve_in(roots: &[PathBuf], key: &str) -> Option<PathBuf> {
+    if Path::new(key).is_absolute() {
+        return Some(PathBuf::from(key));
+    }
+    for r in roots.iter().rev() {
+        let p = r.join(key);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    roots.last().map(|r| r.join(key))
+}
+
+/// 相对名 → 绝对路径(用当前插件根)
+pub fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
+    resolve_in(plugin_roots(), key)
+}
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 /// 打开文档序列化缓存（helix-term 每帧写入；buffers/current_buffer 读取）

@@ -951,6 +951,48 @@ pub(crate) mod tests {
         assert_eq!(reqs.len(), 2, "close/focus 各入队一个请求");
     }
 
+    /// 多根查找(对齐 Neovim runtimepath 语义):**后加的根覆盖先加的**。
+    /// 这是"把功能做成随软件分发的内置插件"的地基 —— 内置放前、用户放后即可覆盖。
+    #[test]
+    fn plugin_roots_resolve_with_later_overriding_earlier() {
+        let bundled = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let mk = |dir: &std::path::Path, rel: &str, tag: &str| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, tag).unwrap();
+        };
+        // 两边都有同名:应取 user 那份
+        mk(bundled.path(), "features/x/index.js", "bundled");
+        mk(user.path(), "features/x/index.js", "user");
+        // 只有内置有:应能找到
+        mk(bundled.path(), "lib/only_bundled.js", "b");
+        let roots = vec![bundled.path().to_path_buf(), user.path().to_path_buf()];
+
+        let got = crate::state::resolve_in(&roots, "features/x/index.js").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&got).unwrap(),
+            "user",
+            "后加的根(user)必须覆盖先加的(bundled)"
+        );
+        assert!(
+            crate::state::resolve_in(&roots, "lib/only_bundled.js").is_some(),
+            "只在前面根里的相对名也要能找到"
+        );
+        // 都不存在 → 回落到**最后一个根**(报错信息贴近用户目录)
+        let miss = crate::state::resolve_in(&roots, "nope.js").unwrap();
+        assert!(
+            miss.starts_with(user.path()),
+            "回落应指向最后一个根: {miss:?}"
+        );
+        // 绝对路径原样透传
+        let abs = bundled.path().join("lib/only_bundled.js");
+        assert_eq!(
+            crate::state::resolve_in(&roots, abs.to_str().unwrap()).unwrap(),
+            abs
+        );
+    }
+
     #[test]
     fn open_terminal_api() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -2192,7 +2234,7 @@ pub(crate) mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
         // PLUGINS_DIR 被占则相对名解析失效——跳过(核心行为由其他 reload 测试覆盖)
-        if crate::state::PLUGINS_DIR.get().is_some() {
+        if crate::state::PLUGIN_ROOTS.get().is_some() {
             return;
         }
         let home = std::env::var("HOME").unwrap_or_default();
@@ -2255,7 +2297,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         // → 后续注册的闭包可能被 boa 嵌套 eval 污染。验证命令回调结果。
         let _guard = TEST_LOCK.lock().unwrap();
         init();
-        if crate::state::PLUGINS_DIR.get().is_some() {
+        if crate::state::PLUGIN_ROOTS.get().is_some() {
             return; // 需要独占 PLUGINS_DIR(相对名解析)
         }
         let dir = tempfile::tempdir().unwrap();
@@ -2421,7 +2463,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         init();
         // PLUGINS_DIR 是全局 OnceLock:被其他测试(如 plugin_deps_auto_load,字母序在前)占住后
         // 本测试的相对名解析失效——跳过(核心 reload 行为由 reload_keeps/reload_failed 覆盖)
-        if crate::state::PLUGINS_DIR.get().is_some() {
+        if crate::state::PLUGIN_ROOTS.get().is_some() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -2486,7 +2528,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         // 用户场景:statusline.js 依赖 icons,reload 后 render(状态栏渲染)不应抛错/返回空
         let _guard = TEST_LOCK.lock().unwrap();
         init();
-        if crate::state::PLUGINS_DIR.get().is_some() {
+        if crate::state::PLUGIN_ROOTS.get().is_some() {
             return; // 需要独占 PLUGINS_DIR(相对名 icons)
         }
         let dir = tempfile::tempdir().unwrap();
