@@ -309,6 +309,45 @@ impl LayoutTree {
         Some(rid)
     }
 
+    /// 取出 rail 组件(**不丢弃**),用于换边后重新注册。
+    /// 与 `take_rail` 的差别:后者移除并丢弃组件。
+    pub fn take_rail_component(&mut self) -> Option<Box<dyn Component>> {
+        let rid = self.rail.take()?;
+        let comp = self.components.remove(&rid);
+        if comp.is_some() {
+            prune(&mut self.root, rid);
+        }
+        if self.active == rid {
+            self.active = 0;
+        }
+        comp
+    }
+
+    /// 当前 rail **自身**的宽度比例(无 rail → None)。换边时保住宽度用。
+    ///
+    /// 注意 `Split.ratio` 是"**第一个子**的比例",所以 rail 在 second 侧时要取 `1 - ratio`
+    /// —— 否则换边后读到的会是编辑器那一侧的比例(实测踩过:0.83 变成 0.17)。
+    pub fn rail_ratio(&self) -> Option<f32> {
+        let rid = self.rail?;
+        match &self.root {
+            LayoutNode::Split {
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                if matches!(&**first, LayoutNode::Leaf { id } if *id == rid) {
+                    Some(*ratio)
+                } else if matches!(&**second, LayoutNode::Leaf { id } if *id == rid) {
+                    Some(1.0 - *ratio)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// main 子树的首个叶(跳过 rail);退化(整树只有 rail)回退 0
     fn main_first_leaf(&self) -> u64 {
         match &self.root {

@@ -84,7 +84,6 @@ impl PluginPanel {
                         compositor.remove_leaf(leaf);
                     }
                 }
-                compositor.remove_panel(id);
                 cx.editor.set_error(format!(
                     "面板 {id} 状态丢失，已自动关闭（:plugin-reload 后需重新打开）"
                 ));
@@ -305,7 +304,7 @@ impl Component for PluginPanel {
                 EventResult::Consumed(Some(Box::new(
                     move |compositor: &mut Compositor, cx: &mut Context| {
                         let _ = helix_js::close_popup(id);
-                        compositor.remove_panel(id);
+                        compositor.close_panel_by_id(id);
                         let msgs = helix_js::take_messages();
                         if !msgs.is_empty() {
                             cx.editor.set_status(msgs.join(" "));

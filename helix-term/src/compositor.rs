@@ -37,7 +37,7 @@ pub enum PaneMode {
 
 use crate::job::Jobs;
 use crate::ui::picker;
-use crate::ui::plugin_panel::{PanelSide, PluginPanel};
+use crate::ui::plugin_panel::PanelSide;
 use helix_view::Editor;
 
 use helix_view::document::Mode;
@@ -190,42 +190,57 @@ impl Compositor {
         self.sync_layout_cache();
     }
 
-    /// 按面板实例 id（PluginPanel::id，open_panel 分配的 u64）移除对应层；
-    /// 多面板并存时各层以 u64 实例 id 区分（静态 id 只适用于单面板）。
-    pub fn remove_panel(&mut self, id: u64) -> Option<Box<dyn Component>> {
-        let panel_type = std::any::type_name::<PluginPanel>();
-        let idx = self.layers.iter().position(|layer| {
-            layer.type_name() == panel_type
-                && layer
-                    .as_any()
-                    .downcast_ref::<PluginPanel>()
-                    .map(|panel| panel.id() == id)
-                    .unwrap_or(false)
-        })?;
-        Some(self.layers.remove(idx))
-    }
-
-    /// 按面板实例 id 改停靠边（move_panel 请求；找不到该 id 返回 false）
-    pub fn set_panel_side(&mut self, id: u64, side: PanelSide) -> bool {
-        let panel_type = std::any::type_name::<PluginPanel>();
-        let Some(layer) = self.layers.iter_mut().find(|layer| {
-            layer.type_name() == panel_type
-                && layer
-                    .as_any()
-                    .downcast_ref::<PluginPanel>()
-                    .map(|panel| panel.id() == id)
-                    .unwrap_or(false)
-        }) else {
+    /// 按插件面板实例 id 关闭面板(布局树路径)。
+    /// 面板住在树里(rail 叶子或普通叶子),所以先找叶子再关 ——
+    /// `close_panel` / 面板状态自愈 / Esc 关闭三条路径共用这一处。
+    pub fn close_panel_by_id(&mut self, id: u64) -> bool {
+        use crate::ui::plugin_panel::PluginPanel;
+        let Some(leaf) = self.main_tree.find_leaf_id::<PluginPanel>(|p| p.id() == id) else {
             return false;
         };
-        layer
-            .as_any_mut()
-            .downcast_mut::<PluginPanel>()
-            .map(|panel| {
-                panel.set_side(side);
-                true
-            })
-            .unwrap_or(false)
+        // rail 面板要走 close_rail(remove 对 rail 免疫)
+        if !self.close_rail(leaf) {
+            self.remove_leaf(leaf);
+        }
+        self.sync_layout_cache();
+        true
+    }
+
+    /// 按面板实例 id 改停靠边(move_panel 请求)。**面板住在布局树里**,
+    /// 所以走树:rail 叶子换边 = 取出组件→按新边重新注册(保住宽度比例)。
+    /// 旧实现查 `compositor.layers`,而面板不在那儿 → 恒 false,
+    /// 于是 `move_panel` 永远报 "no panel with id"(见 plugin_panel.rs 的钉住测试)。
+    pub fn set_panel_side(&mut self, id: u64, side: PanelSide) -> bool {
+        use crate::ui::plugin_panel::PluginPanel;
+        let Some(leaf) = self.main_tree.find_leaf_id::<PluginPanel>(|p| p.id() == id) else {
+            return false;
+        };
+        // 只有 rail 面板支持换边:非 rail 面板是普通叶分裂,换边会牵动布局树结构
+        if !self.main_tree.is_rail(leaf) {
+            return false;
+        }
+        let left = match side {
+            PanelSide::Left => true,
+            PanelSide::Right => false,
+            // rail 只有左右两侧(register_panel 也只对 left/right 生效)
+            PanelSide::Bottom => return false,
+        };
+        let ratio = self.main_tree.rail_ratio().unwrap_or(0.2);
+        let Some(mut comp) = self.main_tree.take_rail_component() else {
+            return false;
+        };
+        if let Some(panel) = comp.as_any_mut().downcast_mut::<PluginPanel>() {
+            panel.set_side(side);
+        } else {
+            return false;
+        }
+        self.main_tree.register_rail(comp, left, ratio);
+        self.sync_layout_cache();
+        // 焦点跟到新的 rail 叶(旧 id 已被 prune 掉)
+        if let Some(new_leaf) = self.main_tree.rail_leaf() {
+            self.main_tree.focus(new_leaf);
+        }
+        true
     }
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> bool {
         // If it is a key event, a macro is being recorded, and a macro isn't being replayed,

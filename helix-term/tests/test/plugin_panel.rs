@@ -33,11 +33,14 @@ async fn panel_lives_in_layout_tree_not_layers() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// ②-3 要删的两条陈旧路径(在 `layers` 里找面板 → 恒失败)
+/// ②-3 收尾:`move_panel` 现在**真的能用**。
+/// 旧实现(`set_panel_side` 查 `compositor.layers`)恒失败,`move_panel` 永远报
+/// "no panel with id";面板其实住在布局树里。现在改走树:rail 换边 = 取出组件 →
+/// 按新边重新注册(并保住宽度比例)。
 #[tokio::test(flavor = "multi_thread")]
-async fn layer_based_panel_paths_are_dead() -> anyhow::Result<()> {
-    let mut app = AppBuilder::new().build()?;
+async fn rail_panel_can_move_to_other_side() -> anyhow::Result<()> {
     use helix_term::ui::plugin_panel::PanelSide;
+    let mut app = AppBuilder::new().build()?;
     let leaf = app
         .compositor
         .register_panel(
@@ -46,17 +49,54 @@ async fn layer_based_panel_paths_are_dead() -> anyhow::Result<()> {
             20,
         )
         .expect("register_panel 应返回叶子 id");
-
-    // 面板确实在(树里),但 layer 路径找不到它 → 返回 None/false
     assert!(app.compositor.layout_tree().is_rail(leaf));
+    let ratio_before = app
+        .compositor
+        .layout_tree()
+        .rail_ratio()
+        .expect("rail 有比例");
+
     assert!(
-        app.compositor.remove_panel(7).is_none(),
-        "remove_panel 查 layers,找不到树里的面板(死路径)"
+        app.compositor.set_panel_side(7, PanelSide::Right),
+        "rail 面板换边应成功(旧实现在这里恒 false)"
     );
+
+    let dump = app.compositor.layout_tree().dump();
+    assert_eq!(
+        dump.leafs.iter().filter(|l| l.rail).count(),
+        1,
+        "仍恰一条 rail"
+    );
+    assert_eq!(dump.leafs.len(), 2, "rail + 编辑器");
+    // 宽度比例保住(经 1.0-ratio 往返,用容差比 f32 精确相等)
+    let ratio_after = app
+        .compositor
+        .layout_tree()
+        .rail_ratio()
+        .expect("rail 有比例");
     assert!(
-        !app.compositor.set_panel_side(7, PanelSide::Right),
-        "set_panel_side 查 layers → move_panel 永远失败(已知 bug,②-3 修)"
+        (ratio_after - ratio_before).abs() < 1e-4,
+        "换边保住宽度比例({ratio_before} -> {ratio_after})"
     );
+
+    // 非 rail 面板(普通叶分裂)不支持换边 —— 明确拒绝而不是静默失败
+    let plain = app.compositor.split_leaf_with_ratio(
+        helix_term::ui::layout::SplitDir::V,
+        false,
+        10,
+        Box::new(helix_term::ui::PluginPanel::new(
+            9,
+            PanelSide::Bottom,
+            false,
+        )),
+    );
+    if let Some(plain) = plain {
+        assert!(
+            !app.compositor.set_panel_side(9, PanelSide::Right),
+            "非 rail 面板不支持换边"
+        );
+        let _ = plain;
+    }
     Ok(())
 }
 

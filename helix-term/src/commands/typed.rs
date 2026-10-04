@@ -4921,19 +4921,10 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             }
             helix_js::UiRequest::ClosePanel { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
-                    // popup id ≠ 布局树 leaf id（split 分配）：按 popup id 找面板 leaf 再移除
-                    use crate::ui::plugin_panel::PluginPanel;
-                    let found = compositor
-                        .layout_tree()
-                        .find_leaf_id::<PluginPanel>(|p| p.id() == id);
-                    if let Some(leaf) = found {
-                        if !compositor.close_rail(leaf) {
-                            compositor.remove_leaf(leaf);
-                        }
-                    }
-                    // 先清 render 注册表（幂等），再按实例 id 移除对应层（多面板并存）
+                    // popup id ≠ 布局树 leaf id（split 分配）：由 close_panel_by_id 按它找叶
+                    // 先清 render 注册表（幂等），再按实例 id 关掉树里的面板叶
                     let _ = helix_js::close_popup(id);
-                    compositor.remove_panel(id);
+                    compositor.close_panel_by_id(id);
                 });
             }
             helix_js::UiRequest::OpenFile { path, row, col } => {
