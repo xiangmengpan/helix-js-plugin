@@ -773,8 +773,8 @@ pub(crate) mod tests {
         // 推入一份含浮窗的快照后应能读到 place/pinned/focused
         crate::state::cache_panes(
             r#"{"panes":[
-                {"id":0,"place":"tiled","focused":false,"fixed":false,"pinned":false},
-                {"id":7,"place":"float","focused":true,"fixed":false,"pinned":true,"z":2,
+                {"id":0,"kind":"EditorView","place":"tiled","focused":false,"fixed":false,"pinned":false},
+                {"id":7,"kind":"PluginTerminal","place":"float","focused":true,"fixed":false,"pinned":true,"z":2,
                  "rect":{"x":0.2,"y":0.2,"w":0.5,"h":0.5}}
             ]}"#,
         );
@@ -784,14 +784,17 @@ pub(crate) mod tests {
             const l = helix.pane.list();
             helix.echo(
                 "n:" + l.length + " p:" + l[1].place + " pin:" + l[1].pinned +
-                " foc:" + l[1].focused + " tx:" + l[0].place
+                " foc:" + l[1].focused + " tx:" + l[0].place + " k:" + l[1].kind + "/" + l[0].kind
             );
         });
         "#,
         )
         .unwrap();
         assert!(run_command("pl1", &ctx).unwrap());
-        assert_eq!(take_messages()[0], "n:2 p:float pin:true foc:true tx:tiled");
+        assert_eq!(
+            take_messages()[0],
+            "n:2 p:float pin:true foc:true tx:tiled k:PluginTerminal/EditorView"
+        );
     }
 
     #[test]

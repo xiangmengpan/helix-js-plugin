@@ -457,6 +457,15 @@ impl LayoutTree {
         self.leaf_ids_of(&self.root)
     }
 
+    /// 某叶子的组件类型名(取末段,如 `PluginTerminal`/`PluginPanel`/`EditorView`)。
+    /// 给 `helix.pane.list()` 的 `kind` 字段用 —— 插件拿到 id 得能区分是哪类 pane。
+    pub fn component_kind_of(&self, id: u64) -> Option<&'static str> {
+        self.components.get(&id).map(|c| {
+            let t = c.type_name();
+            t.rsplit("::").next().unwrap_or(t)
+        })
+    }
+
     pub fn focus(&mut self, id: u64) {
         if self.components.contains_key(&id) {
             self.active = id;
@@ -1848,10 +1857,10 @@ mod rail_tests {
         match &tree2.root {
             LayoutNode::Split { first, second, .. } => {
                 assert!(
-                    tree2.leaf_ids_of(&*second).contains(&rid2),
+                    tree2.leaf_ids_of(second).contains(&rid2),
                     "rail 在 second(右侧)"
                 );
-                assert!(tree2.leaf_ids_of(&*first).contains(&0));
+                assert!(tree2.leaf_ids_of(first).contains(&0));
             }
             _ => panic!(),
         }
@@ -2020,6 +2029,25 @@ mod rail_tests {
         // 一个活的叶子都没有 → 报错,不把树搞空
         let mut t3 = LayoutTree::default();
         assert!(t3.restore(&json).is_err());
+    }
+
+    /// `component_kind_of`:给 `pane.list()` 的 kind 用(取类型名末段)
+    #[test]
+    fn component_kind_of_short_name() {
+        use crate::ui::plugin_panel::PanelSide;
+        use crate::ui::PluginPanel;
+        let mut tree = base();
+        assert_eq!(tree.component_kind_of(0), Some("PluginTerminal"));
+        let id = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginPanel::new(9, PanelSide::Left, false)),
+            )
+            .expect("split_side 应返回新叶 id");
+        assert_eq!(tree.component_kind_of(id), Some("PluginPanel"));
+        assert_eq!(tree.component_kind_of(9999), None, "不存在的 id → None");
     }
 
     /// 阶段②:多个浮动 pane 并存,z 大者在上(渲染与事件路由共用此序)

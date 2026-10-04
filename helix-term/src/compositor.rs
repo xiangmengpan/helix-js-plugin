@@ -1341,6 +1341,7 @@ impl Compositor {
             .map(|l| {
                 serde_json::json!({
                     "id": l.id,
+                    "kind": self.main_tree.component_kind_of(l.id).unwrap_or(""),
                     "place": if l.rail { "rail" } else { "tiled" },
                     "focused": l.id == active,
                     "fixed": l.fixed,
@@ -1351,6 +1352,7 @@ impl Compositor {
         for f in &dump.floats {
             panes.push(serde_json::json!({
                 "id": f.id,
+                "kind": self.main_tree.component_kind_of(f.id).unwrap_or(""),
                 "place": "float",
                 "focused": f.id == active,
                 "fixed": false,
