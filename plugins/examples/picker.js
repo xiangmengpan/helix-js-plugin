@@ -1,7 +1,7 @@
 // picker.js — helix.picker 内置源（files/grep/buffers/symbols）
 // 依赖清单：无（只用 helix 核心 API）
 helix.plugin("picker", { deps: [] });
-// 用法：init.js 里 helix.load("features/picker.js")；然后用 helix.map 绑键位：
+// 用法：helix.load("examples/picker.js")(或 :plugin-load <该路径>)；然后 helix.map 绑键位：
 //   helix.map("normal", "space-f", () => helix.picker.run("files"));
 //   helix.map("normal", "space-g", () => helix.picker.run("grep"));
 // 复制本文件即可自定义源（改 items/preview/action；行格式见 plugin-api §10）。

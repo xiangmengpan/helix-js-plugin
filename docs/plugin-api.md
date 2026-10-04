@@ -87,7 +87,7 @@
 
 ### Picker 与主题
 
-`helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/键位全核心;行格式数组或 `{cells, payload}` 分离;内置插件 `plugins/features/picker.js` 提供 files/grep/buffers/symbols);`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
+`helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/键位全核心;行格式数组或 `{cells, payload}` 分离;四个内置源 files/grep/buffers/symbols 由**核心**提供 —— 自定义源的模板见 `plugins/examples/picker.js`(它自己不注册任何源));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
 
 - 优点:picker 性能原生 + 插件可定义任意源;主题覆盖即时生效。
 - 局限:picker 候选一次性返回;无旋钮透传;预览仅文件;主题颜色不支持引用 scope。

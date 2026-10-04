@@ -1,6 +1,6 @@
 // lsp-hover — LSP 主动请求 demo：:lsp-hover 光标处 hover 弹窗；:lsp-goto 跳转定义。
 // 依赖 helix.lsp.*（4 方法均返回 Promise，透传 LSP 原始 JSON；goto_definition 附 path）。
-// 加载：helix.load("features/lsp-hover/index.js") 或 :plugin-load plugins/features/lsp-hover/index.js
+// 加载：helix.load("examples/lsp-hover.js") 或 :plugin-load plugins/examples/lsp-hover.js
 // 无 server / 不支持该功能时 resolve null → echo 提示；调用出错 reject → catch 内 echo 错误。
 
 // :lsp-hover 光标处 hover 弹窗

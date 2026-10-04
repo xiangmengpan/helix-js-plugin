@@ -19,7 +19,7 @@ helix.picker.run("files");
 - **行格式**:数组 `[c1, c2]`(cells = payload)或 `{ cells: [...], payload: [...] }`(cells 展示,payload 传给 preview/action——如 buffers 源藏 buffer id)。
 - `items` 支持 Promise:`helix.read_tree(".")` / `helix.run_async("rg ...")` 直接返回。
 - 回退语义:源未定义/行宽不匹配 → 状态栏报错;items 空 → 打开空列表;action/preview 抛错 → 忽略;preview null → 无预览。
-- 内置插件 `plugins/features/picker.js` 提供 files/grep/buffers/symbols 四源,复制即可自定义。
+- 四个内置源(files/grep/buffers/symbols)由**核心**提供;自定义源的模板见 `plugins/examples/picker.js`。
 
 ```js
 // grep 源(排除 target/.git;无匹配 exit 1 → 空列表)

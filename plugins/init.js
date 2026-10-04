@@ -16,6 +16,6 @@ helix.load("features/filetree/index.js");
 // helix.map("normal", "C-e", "filetree");
 
 // 可选：picker.js 内置选择器源（files/grep/buffers/symbols）——默认不加载，需要时取消注释：
-// helix.load("features/picker.js");
+// helix.load("examples/picker.js");   // 模板,非功能插件
 // helix.map("normal", "space-f", () => helix.picker.run("files"));  // 文件选择
 // helix.map("normal", "space-g", () => helix.picker.run("grep"));   // 全文搜索

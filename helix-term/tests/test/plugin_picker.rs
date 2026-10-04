@@ -133,7 +133,7 @@ async fn plugin_picker_run_unknown_source_errors() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 内置插件冒烟：加载仓库 plugins/features/picker.js（4 源 define 全部执行，捕获 API 拼写/形状错误），
+// 模板冒烟：加载仓库 plugins/examples/picker.js（4 源 define 全部执行，捕获 API 拼写/形状错误），
 // 经 helper 命令跑 buffers 源（唯一不依赖 cwd 的源——files/grep 走 read_tree(".")/rg，测 cwd 扫仓库不可控）：
 // items → OpenPicker 推层 → Enter → action focus_buffer → 层关闭；全程无 Error 状态。
 #[tokio::test(flavor = "multi_thread")]
@@ -150,7 +150,7 @@ async fn plugin_picker_builtin_plugin_buffers_source() -> anyhow::Result<()> {
         r#"helix.register_command("pick-buffers", () => helix.picker.run("buffers"));"#,
     )?;
     let picker_js =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/features/picker.js");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/examples/picker.js");
     let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,

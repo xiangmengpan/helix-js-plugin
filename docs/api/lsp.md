@@ -51,7 +51,7 @@ await helix.lsp.execute_code_action(actions[0]); // → { applied: true } 或 nu
 
 ### 示例:hover 弹窗 + 跳转定义
 
-完整 demo 见 `plugins/features/lsp-hover/index.js`:
+完整 demo 见 `plugins/examples/lsp-hover.js`(示例,不随内置 init.js 加载):
 
 ```js
 helix.register_command("lsp-hover", async () => {
