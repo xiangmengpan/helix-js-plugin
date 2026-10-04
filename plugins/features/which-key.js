@@ -3,7 +3,8 @@
 // ctx = { title: 前缀名, entries: [{keys, doc}] }
 // 平级模式(C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll)由 compositor
 // 在进入时调 keymap_hint("C-p", ...) 等 → 本文件返回对应中文键位表。
-helix.plugin("which-key", { deps: ["lib/icons.js"] });
+helix.plugin("which-key", { deps: [] }); // 曾声明 deps: ["lib/icons.js"],但本文件根本不用图标
+// (图标已收进核心:需要时直接用 helix.icons.*,零依赖)
 
 // 插件配置(方案 C):config.toml [plugins.which-key]
 helix.define_config("which-key", {

@@ -1,7 +1,7 @@
 // features/tabbar.js — 布局标签条示范组件（JS 视图层）
 // 依赖:helix.TABBAR_ID(compositor 顶部槽位)、helix.get_layout()、helix.get_component_state()
 // 效果:屏幕顶部 1 行显示各叶子标签,活动高亮;点击标签聚焦。
-helix.plugin("tabbar", { deps: ["lib/icons.js"] });
+helix.plugin("tabbar", { deps: [] }); // 图标已收进核心,不再需要 deps
 
 // 插件配置(方案 C):config.toml [plugins.tabbar]
 helix.define_config("tabbar", {
@@ -11,17 +11,17 @@ helix.define_config("tabbar", {
 const CFG = helix.get_config("tabbar") || {};
 
 (function () {
-  const ICONS = helix.load("lib/icons.js") || null;
+  // 图标:直接用核心 API(原先 `helix.load("lib/icons.js") || null` + 各处 `ICONS ? … : 回退` 已删)
 
   // 最近一次渲染的标签边界 [{id, x0, x1}](点击命中用)
   let boundaries = [];
 
   // 叶子图标:编辑器=文件图标(无路径回退);终端=终端图标;其他=面板
   function leaf_icon(leaf, layout) {
-    if (leaf.id === 0) return ICONS ? ICONS.getFileIcon("") : "\uf15b";
+    if (leaf.id === 0) return helix.icons.file("");
     const st = helix.get_component_state(leaf.id);
-    if (st && st.mode) return ICONS ? ICONS.getFileIcon("term.sh") : "\uf489"; // 终端
-    return ICONS ? ICONS.getDirIcon(false) : "\uf115"; // 面板
+    if (st && st.mode) return helix.icons.file("term.sh"); // 终端
+    return helix.icons.dir(false); // 面板
   }
 
   function leaf_label(leaf) {
