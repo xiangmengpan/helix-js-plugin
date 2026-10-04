@@ -1,5 +1,65 @@
 use super::*;
 
+/// ②-3 前置:把面板当前的**存放位置**与两条**陈旧路径**钉住。
+///
+/// 现状(2026-09-11 实测):`open_panel` 已经走布局树(rail:true → rail 叶子;
+/// 否则 → 普通叶子),`close_panel` 也在树上找。但 `remove_panel` / `set_panel_side`
+/// 仍查 `compositor.layers` —— 面板不在那儿,所以**恒失败**(死路径)。
+/// 后果:`move_panel` 永遠报 "no panel with id",且无任何测试覆盖。
+///
+/// 这两个测试就是 ②-3 的验收开关:删掉死路径、修好 move_panel 后,
+/// 它们会失败 —— 那时应改成断言新行为,而不是删掉了事。
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_lives_in_layout_tree_not_layers() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    let side = helix_term::ui::plugin_panel::PanelSide::Left;
+    let leaf = app
+        .compositor
+        .register_panel(helix_term::ui::PluginPanel::new(7, side, false), side, 20)
+        .expect("register_panel 应返回叶子 id");
+
+    // 在布局树里(rail 叶子),不在 compositor.layers
+    assert!(
+        app.compositor
+            .layout_tree()
+            .find_leaf_id::<helix_term::ui::PluginPanel>(|_| true)
+            .is_some(),
+        "面板应在布局树里"
+    );
+    assert!(
+        app.compositor.layout_tree().is_rail(leaf),
+        "rail:true → rail 叶子"
+    );
+    Ok(())
+}
+
+/// ②-3 要删的两条陈旧路径(在 `layers` 里找面板 → 恒失败)
+#[tokio::test(flavor = "multi_thread")]
+async fn layer_based_panel_paths_are_dead() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    use helix_term::ui::plugin_panel::PanelSide;
+    let leaf = app
+        .compositor
+        .register_panel(
+            helix_term::ui::PluginPanel::new(7, PanelSide::Left, false),
+            PanelSide::Left,
+            20,
+        )
+        .expect("register_panel 应返回叶子 id");
+
+    // 面板确实在(树里),但 layer 路径找不到它 → 返回 None/false
+    assert!(app.compositor.layout_tree().is_rail(leaf));
+    assert!(
+        app.compositor.remove_panel(7).is_none(),
+        "remove_panel 查 layers,找不到树里的面板(死路径)"
+    );
+    assert!(
+        !app.compositor.set_panel_side(7, PanelSide::Right),
+        "set_panel_side 查 layers → move_panel 永远失败(已知 bug,②-3 修)"
+    );
+    Ok(())
+}
+
 use helix_view::current_ref;
 
 #[tokio::test(flavor = "multi_thread")]

@@ -187,6 +187,7 @@ helix.register_command("filetree", () => {
 | **终端视图非完整仿真器** | 引擎已给 reflow/鼠标上报/括号粘贴/CJK/组合字符;**仍缺**:OSC 4/10/11 查颜色、OSC52 读剪贴板、DECKPAM 应用小键盘、Kitty 键盘协议 |
 | **Shift-Tab 不可用** | `KeyCode` 无 BackTab,焦点只能 Tab 正向循环 |
 | **面板无节点焦点** | 面板 render 固定收到 `focus = null`(节点焦点只在弹窗生效) |
+| **`move_panel` 失效** | 面板已住在布局树里(`open_panel` → rail 叶子或普通叶子),但 `move_panel` 仍走 `compositor.layers` 查找(恒找不到)→ 永远报 `no panel with id`;同源的 `remove_panel`/`set_panel_side` 也是死路径。待 ②-3 清理(验收开关见 `plugin_panel.rs` 的两条测试) |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |
 | **堆叠未持久化** | `C-p s` 建的堆叠组未进 `get_layout`/`restore_layout`(浮窗已进),重启后不保留;也无 header 行 |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
