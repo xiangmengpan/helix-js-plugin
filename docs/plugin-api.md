@@ -96,10 +96,10 @@
 
 ### 终端与布局树
 
-`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`close_leaf`/`zoom`/`unzoom`/`resize_leaf`/`layout_*`/`focus`/`get_layout`/`restore_layout` + `C-w` 窗口模式(叶=窗口:创建 v/s/n、聚焦、交换、缩放、关闭;`tree.focus` 随活动叶同步,任意叶可编辑)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;filetree 即此模式;`get_layout` 叶子带 `rail` 标记)。
+`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`close_leaf`/`zoom`/`unzoom`/`resize_leaf`/`layout_*`/`focus`/`get_layout`/`restore_layout`;窗口管理走 compositor 层的**zellij 式平级模式**(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll;旧 `C-w` 已删),模式与键位表对插件可见:`helix.pane_mode.current()/keymap()` + `pane-mode-change` 事件;`helix.pane.list()` 给出统一 pane 清单(含浮窗)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;filetree 即此模式;`get_layout` 叶子带 `rail` 标记)。
 
-- 优点:原生 pty;四种显示模式;滚动缓冲;zellij 式窗口管理;layout_fix。
-- 局限:组合字符/鼠标/选择复制不支持;restore_layout 未接线;PTY 仅 Unix。
+- 优点:原生 pty(引擎为 `alacritty_terminal`:真实 reflow、鼠标上报、括号粘贴、CJK/组合字符);四种显示模式;滚动缓冲;zellij 式平级模式 + 多浮窗;layout_fix;布局可还原。
+- 局限:堆叠组未进 dump(重启不保留);OSC 4/10/11 查颜色与 OSC52 **读**剪贴板未接;PTY 仅 Unix。
 
 → 详细见 [`api/terminal-layout.md`](api/terminal-layout.md)
 
@@ -184,11 +184,11 @@ helix.register_command("filetree", () => {
 |------|------|
 | **无异步语言特性** | boa 无 `setTimeout`/网络/事件循环;异步只来自 `run_async`/`spawn`/`*_async` 的 Promise(await/.then) |
 | **同步阻塞** | `helix.run` 阻塞主线程;`spawn` 无超时(挂死命令一直占着 worker) |
-| **终端视图非完整仿真器** | 宽字符/组合字符、鼠标、选择复制不支持;滚回只存不显示(上限 1000 行) |
+| **终端视图非完整仿真器** | 引擎已给 reflow/鼠标上报/括号粘贴/CJK/组合字符;**仍缺**:OSC 4/10/11 查颜色、OSC52 读剪贴板、DECKPAM 应用小键盘、Kitty 键盘协议 |
 | **Shift-Tab 不可用** | `KeyCode` 无 BackTab,焦点只能 Tab 正向循环 |
 | **面板无节点焦点** | 面板 render 固定收到 `focus = null`(节点焦点只在弹窗生效) |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |
-| **restore_layout 未接线** | `get_layout`/`restore_layout` 目前只读写缓存,布局树重建未实现 |
+| **堆叠未持久化** | `C-p s` 建的堆叠组未进 `get_layout`/`restore_layout`(浮窗已进),重启后不保留;也无 header 行 |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
 | **事件 ctx 范围** | 事件只带当前文档(其他分屏文档不触发) |
 | **无多光标** | 选区/光标 API 只操作主光标 |

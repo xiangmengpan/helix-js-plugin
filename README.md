@@ -19,36 +19,40 @@
 A deeply modified fork of [Helix editor](https://github.com/helix-editor/helix) (a Kakoune/Neovim-inspired editor written in Rust). Core changes:
 
 1. **JS plugin system**: embedded boa JavaScript engine — plugins can register commands, render UI components, listen to events, and take over keymap hints
-2. **zellij-style window mode**: global `C-w` window management (focus/swap/resize/minimize/close) available from any leaf focus
-3. **Terminal enhancements**: native terminal panels (Esc → scroll mode, scrollback buffer, yank, hook APIs, state persistence)
+2. **zellij-style flat modes**: five sibling modes (`C-g`/`C-p`/`C-n`/`C-h`/`C-y`) available from any leaf focus — replaces the old single global `C-w` mode
+3. **Terminal enhancements**: native terminal panels (engine is now `alacritty_terminal`: real reflow, mouse reporting, bracketed paste, CJK/combining chars; Esc → scroll mode, scrollback buffer, yank, hook APIs, state persistence)
 4. **Pluginized keymap hints**: which-key Chinese hints, configurable position, replacing the built-in Info
 
 Upstream Helix docs: [Website](https://helix-editor.com) · [Documentation](https://docs.helix-editor.com/) · [Keymap](https://docs.helix-editor.com/keymap.html)
 
 ## ✨ New features
 
-### Global window mode (compositor layer, Rust)
+### zellij-style flat modes (compositor layer, Rust)
 
-Press `C-w` from any focus (editor/terminal/panel) in normal mode:
+From any focus (editor/terminal/panel) in normal mode, press the prefix of a mode.
+**Inside any mode, pressing another prefix switches straight to that mode; pressing the
+mode's own prefix returns to Normal.**
 
-| Key | Action |
-|---|---|
-| `h` `j` `k` `l` | Focus direction (left/down/up/right) |
-| `H` `J` `K` `L` | Swap windows |
-| `C-h` `C-j` `C-k` `C-l` | Resize ∓5% |
-| `v` / `s` | Create same-doc split (right / below) |
-| `n` | Create new empty buffer split |
-| `x` | Close window |
-| `z` | Minimize/restore |
-| `f` | Maximize/restore |
-| `Enter` | Confirm current window & exit |
-| `Esc` / `C-w` | Exit |
+| Mode | Prefix | Keys inside |
+|---|---|---|
+| **Pane** | `C-p` | `h j k l` focus · `H J K L` swap · `p`/`P`/`Tab` next/prev pane · `n` new split, `d` down, `r` right · `x` close · `f` fullscreen · `z` minimize · `w`/`e` float/unfloat · `i` pin · `s` stack with sibling |
+| **Resize** | `C-n` | `h j k l` grow that way · `H J K L` shrink · `=`/`-` width ∓5% (adjusts the float's size when the active pane floats) |
+| **Move** | `C-h` | `h j k l` swap with the directional neighbour (moves the float when floating) |
+| **Scroll** | `C-y` | `j`/`k` line · `d`/`u` half page · `C-f`/`C-b`, `h`/`l` page |
+| **Locked** | `C-g` | every key except `C-g` goes straight to the focused pane |
 
-**Sidebar rail** — `open_panel({ side:"left"|"right", rail:true })` pins a panel (e.g. filetree) to the screen edge at full height; window-mode splits/swap/minimize/zoom never touch it (`C-w h/l` focuses it, browsing keys go to the panel, `Esc`/`C-\`/`C-w h/l` return to the editor area).
+- `Esc` exits a mode; the statusline shows `PANE`/`RESIZE`/`MOVE`/`SCROLL`/`LOCKED` plus a Chinese keymap hint
+- Interception rule: prefixes **pass through** in insert mode / terminal passthrough (`C-h` is delete-word in insert).
+  The one exception is `C-g` — always intercepted, otherwise you could never enter Locked from a terminal passthrough
+- The old global `C-w` is **deleted** (`C-w` in insert mode is still the editor's delete-word);
+  upstream's `Space w` window subtree remains
+- Closing a terminal goes through Pane mode's `x` (Esc switches to normal scroll mode, `i` back to insert)
+
+**Sidebar rail** — `open_panel({ side:"left"|"right", rail:true })` pins a panel (e.g. filetree) to the screen edge at full height; window-mode splits/swap/minimize/zoom never touch it (`C-p h/l` focuses it, browsing keys go to the panel, `Esc`/`C-\`/`C-p h/l` return to the editor area).
 
 - **Window = leaf** (LayoutTree): every window is a leaf showing one view of a buffer; terminal/panel/BufferLeaf are all leaves under the same window mode. The leaf that owns the view routes editing to it (`tree.focus` follows leaf focus), so same-doc multi-leaf editing stays in sync.
 - `:vsplit`/`:hsplit` (with or without a path), `gf`, `:vsplit-new`/`:hsplit-new` all create **new leaves** (the old helix view-tree splitting is retired; startup leftovers are auto-adopted into leaves).
-- `C-w` in insert mode keeps delete-word; terminal Insert passthrough lets `C-w` through to the pty (vim/emacs inside terminal)
+- `C-w` in insert mode keeps delete-word; terminal Insert passthrough lets prefixes through to the pty (vim/emacs inside terminal)
 - Closing a terminal goes through window-mode `x` (Esc switches to normal scroll mode, `i` back to insert)
 
 ### JS plugin system

@@ -19,31 +19,33 @@
 基于 [Helix 编辑器](https://github.com/helix-editor/helix)(Rust 编写的 Kakoune/Neovim 风格编辑器)的深度魔改分支,核心变化:
 
 1. **JS 插件系统**:内置 boa 嵌入式 JS 引擎,插件可以注册命令、渲染 UI 组件、监听事件、接管快捷键提示
-2. **zellij 式窗口模式**:全局 C-w 窗口管理(聚焦/交换/缩放/最小化/关闭),任何叶子焦点下可用
-3. **终端增强**:原生终端面板(Esc 切滚动模式、滚动缓冲、复制、钩子 API、状态持久化)
+2. **zellij 式平级模式**:五个平级模式(`C-g`/`C-p`/`C-n`/`C-h`/`C-y`),任意叶子焦点下可用;已取代旧的全局 `C-w` 单模式
+3. **终端增强**:原生终端面板(引擎换成 `alacritty_terminal`:真实 reflow、鼠标上报、括号粘贴、CJK/组合字符;Esc 切滚动模式、滚动缓冲、复制、钩子 API、状态持久化)
 4. **快捷键提示插件化**:which-key 中文提示,位置可配置,替代内置 Info
 
 原版 Helix 文档:[官网](https://helix-editor.com) · [文档](https://docs.helix-editor.com/) · [键位表](https://docs.helix-editor.com/keymap.html)
 
 ## ✨ 新特性
 
-### 全局窗口模式(compositor 层,Rust)
+### zellij 式平级模式(compositor 层,Rust)
 
-任何焦点(编辑器/终端/面板)normal 模式按 `C-w` 进入;模式内:
+任何焦点(编辑器/终端/面板)normal 模式按各模式自己的前缀键进入;
+**任一模式内按任一前缀键可直接切到那个模式,按同一个键回 Normal**。
 
-| 键 | 动作 |
-|---|---|
-| `h` `j` `k` `l` | 方向聚焦(左/下/上/右) |
-| `H` `J` `K` `L` | 方向交换 |
-| `C-h` `C-j` `C-k` `C-l` | 尺寸 ∓5% |
-| `x` | 关闭窗口 |
-| `z` | 最小化/还原 |
-| `f` | 最大化/还原 |
-| `Enter` | 确认当前窗口并退出 |
-| `Esc` / `C-w` | 退出 |
+| 模式 | 前缀 | 模式内键 |
+|---|---|---|
+| **Pane** | `C-p` | `h j k l` 聚焦 · `H J K L` 交换 · `p`/`P`/`Tab` 切下一个/上一个窗 · `n`新分屏 `d`下分 `r`右分 · `x` 关闭 · `f` 全屏 · `z` 最小化 · `w`/`e` 浮动/收回 · `i` pin · `s` 与兄弟窗堆叠 |
+| **Resize** | `C-n` | `h j k l` 向该方向增大 · `H J K L` 减小 · `=`/`-` 宽度 ∓5%(活动窗是浮窗时则改浮窗尺寸) |
+| **Move** | `C-h` | `h j k l` 与方向邻居交换(浮窗则搬位置) |
+| **Scroll** | `C-y` | `j`/`k` 行 · `d`/`u` 半页 · `C-f`/`C-b`、`h`/`l` 整页 |
+| **Locked** | `C-g` | 除 `C-g` 外全部按键原样交给当前窗口 |
 
-- insert 模式 `C-w` 保留删词原义;终端 Insert 直通模式 `C-w` 放行给 pty(vim/emacs 内 C-w)
-- 终端关闭统一走窗口模式 `x`(Esc 切 normal 滚动模式,i 回 insert)
+- `Esc` 退模式;状态栏显示 `PANE`/`RESIZE`/`MOVE`/`SCROLL`/`LOCKED`,并有中文键位提示
+- 拦截规则:前缀键在 insert / 终端直通时**放行给叶子**(`C-h` 在 insert 里是删词);
+  唯一例外是 `C-g` —— 它在所有状态下都拦,否则从终端直通里进不了 Locked
+- 旧的全局 `C-w` **已删除**(insert 模式的 `C-w` 仍是编辑器删词命令);
+  上游的 `Space w` 窗口子树保留
+- 终端关闭统一走 Pane 模式 `x`(Esc 切 normal 滚动模式,i 回 insert)
 
 ### JS 插件系统
 
