@@ -50,6 +50,65 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
         .collect()
 }
 
+/// Pane 模式:`w`/`e` 切换浮动态(阶段② 接通),`i` 对浮窗 pin
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_float_toggle_and_pin() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app); // active = 1
+    assert_eq!(app.compositor.layout_tree().floating(), None, "初始不浮动");
+
+    pump(&mut app, "<C-p>w").await?;
+    assert_eq!(
+        app.compositor.layout_tree().floating(),
+        Some(1),
+        "w 把活动叶浮动起来"
+    );
+    pump(&mut app, "i").await?;
+    assert!(app.compositor.layout_tree().float_is_pinned(1), "i 置 pin");
+    pump(&mut app, "i").await?;
+    assert!(
+        !app.compositor.layout_tree().float_is_pinned(1),
+        "再 i 取消 pin"
+    );
+
+    pump(&mut app, "e").await?;
+    assert_eq!(app.compositor.layout_tree().floating(), None, "e 收回平铺");
+    // 非浮动时 i 只给提示,不改状态
+    pump(&mut app, "i").await?;
+    assert!(!app.compositor.layout_tree().float_is_pinned(1));
+    Ok(())
+}
+
+/// 浮动的活动叶:Resize 调浮窗尺寸、Move 搬位置(而不是调分界/交换邻居)
+#[tokio::test(flavor = "multi_thread")]
+async fn float_keys_resize_and_move_the_float() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app);
+    pump(&mut app, "<C-p>w").await?;
+
+    let before = app.compositor.layout_tree().floats();
+    let (w0, h0, x0, y0) = (before[0].w, before[0].h, before[0].x, before[0].y);
+
+    pump(&mut app, "<C-n>l").await?; // Resize:宽 +
+    let resized = app.compositor.layout_tree().floats();
+    assert!(
+        resized[0].w > w0,
+        "Resize 的 l 加宽浮窗({w0} -> {})",
+        resized[0].w
+    );
+    assert_eq!(resized[0].h, h0, "高度不受 l 影响");
+
+    pump(&mut app, "<C-h>l").await?; // Move:右移
+    let moved = app.compositor.layout_tree().floats();
+    assert!(
+        moved[0].x > x0,
+        "Move 的 l 右移浮窗({x0} -> {})",
+        moved[0].x
+    );
+    assert_eq!(moved[0].y, y0, "纵向不受 l 影响");
+    Ok(())
+}
+
 /// Pane 模式:`p` / `P` / `Tab` 按树中序环绕切换焦点(zellij 的切下一个窗口)
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_mode_cycle_focus() -> anyhow::Result<()> {

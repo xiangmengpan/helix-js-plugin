@@ -958,14 +958,16 @@ impl Compositor {
                     ("x", "关闭窗口"),
                     ("f", "最大化/还原"),
                     ("z", "最小化/还原"),
-                    ("w / s / e / i", "浮动·堆叠·嵌入·pin(阶段②)"),
+                    ("w / e", "浮动 / 收回平铺"),
+                    ("i", "pin(浮动时置顶)"),
+                    ("s", "堆叠(阶段② 余下)"),
                     ("Esc / C-p", "退出"),
                 ],
             ),
             PaneMode::Resize => (
                 "C-n",
                 vec![
-                    ("h j k l", "向该方向增大"),
+                    ("h j k l", "向该方向增大(浮窗:改尺寸)"),
                     ("H J K L", "向该方向减小"),
                     ("= / - / +", "宽度 ±5%"),
                     ("Esc / C-n", "退出"),
@@ -973,7 +975,10 @@ impl Compositor {
             ),
             PaneMode::Move => (
                 "C-h",
-                vec![("h j k l", "与方向邻居交换"), ("Esc / C-h", "退出")],
+                vec![
+                    ("h j k l", "与方向邻居交换(浮窗:搬位置)"),
+                    ("Esc / C-h", "退出"),
+                ],
             ),
             PaneMode::Scroll => (
                 "C-y",
@@ -1077,16 +1082,34 @@ impl Compositor {
                 Some('x') => self.window_mode_close(cx),
                 Some('f') => self.window_mode_zoom(),
                 Some('z') => self.window_mode_minimize(),
-                // zellij 的 embed/eject 与 stack/pin:阶段② 才有承载物
-                Some(c @ ('w' | 's' | 'e' | 'i')) => {
-                    let what = match c {
-                        's' => "堆叠",
-                        'w' => "浮动",
-                        'e' => "嵌入/弹出",
-                        _ => "pin",
-                    };
+                // zellij 的浮动/嵌入/stack/pin(阶段②:浮动已接通,stack 待布局模型)
+                Some('w') | Some('e') => {
+                    let id = self.main_tree.active();
+                    self.main_tree.float_toggle(id);
+                    let now = self.main_tree.is_leaf_floating(id);
+                    cx.editor.set_status(if now {
+                        "浮动 pane(再按 w/e 收回平铺)".to_string()
+                    } else {
+                        "已收回平铺".to_string()
+                    });
+                }
+                Some('i') => {
+                    let id = self.main_tree.active();
+                    if self.main_tree.is_leaf_floating(id) {
+                        let now = !self.main_tree.float_is_pinned(id);
+                        self.main_tree.float_set_pinned(id, now);
+                        cx.editor.set_status(if now {
+                            "已 pin(置顶)"
+                        } else {
+                            "已取消 pin"
+                        });
+                    } else {
+                        cx.editor.set_status("pin 只对浮动 pane 有意义(w/e 先浮动)");
+                    }
+                }
+                Some('s') => {
                     cx.editor
-                        .set_status(format!("{what} pane 属于阶段②(布局模型)"));
+                        .set_status("堆叠 pane 属于阶段② 余下部分(LayoutTree::Stack 未做)");
                 }
                 // zellij 的切换焦点:p 下一个、P 上一个、Tab 下一个
                 Some('p') => self.window_mode_cycle_focus(true, cx),
@@ -1094,18 +1117,54 @@ impl Compositor {
                 _ if matches!(key.code, KeyCode::Tab) => self.window_mode_cycle_focus(true, cx),
                 _ => {}
             },
-            PaneMode::Resize => match ch {
-                Some(c @ ('h' | 'j' | 'k' | 'l')) => self.window_mode_resize_signed(c, 1.0),
-                Some(c @ ('H' | 'J' | 'K' | 'L')) => {
-                    self.window_mode_resize_signed(c.to_ascii_lowercase(), -1.0)
+            PaneMode::Resize => {
+                // 浮动的活动叶:调浮窗尺寸;否则调分界比例
+                let id = self.main_tree.active();
+                if self.main_tree.is_leaf_floating(id) {
+                    if let Some(c) = ch {
+                        let (dw, dh) = match c {
+                            'h' => (-0.02, 0.0),
+                            'l' => (0.02, 0.0),
+                            'j' => (0.0, -0.02),
+                            'k' => (0.0, 0.02),
+                            'H' => (0.02, 0.0),
+                            'L' => (-0.02, 0.0),
+                            'J' => (0.0, 0.02),
+                            'K' => (0.0, -0.02),
+                            '=' | '+' => (0.02, 0.02),
+                            '-' => (-0.02, -0.02),
+                            _ => (0.0, 0.0),
+                        };
+                        self.main_tree.float_scale(id, dw, dh);
+                    }
+                } else {
+                    match ch {
+                        Some(c @ ('h' | 'j' | 'k' | 'l')) => self.window_mode_resize_signed(c, 1.0),
+                        Some(c @ ('H' | 'J' | 'K' | 'L')) => {
+                            self.window_mode_resize_signed(c.to_ascii_lowercase(), -1.0)
+                        }
+                        // zellij 的 `=`/`-`(整体增减):这里落到宽度 ±5%
+                        Some('=') | Some('+') => self.window_mode_resize_signed('l', 1.0),
+                        Some('-') => self.window_mode_resize_signed('h', 1.0),
+                        _ => {}
+                    }
                 }
-                // zellij 的 `=`/`-`(整体增减):这里落到宽度 ±5%
-                Some('=') | Some('+') => self.window_mode_resize_signed('l', 1.0),
-                Some('-') => self.window_mode_resize_signed('h', 1.0),
-                _ => {}
-            },
+            }
             PaneMode::Move => {
-                if let Some(c @ ('h' | 'j' | 'k' | 'l')) = ch {
+                let id = self.main_tree.active();
+                if self.main_tree.is_leaf_floating(id) {
+                    // 浮动的:按方向平移浮窗(zellij 的 Move 模式对浮窗就是搬位置)
+                    if let Some(c) = ch {
+                        let (dx, dy) = match c {
+                            'h' => (-0.02, 0.0),
+                            'l' => (0.02, 0.0),
+                            'j' => (0.0, 0.02),
+                            'k' => (0.0, -0.02),
+                            _ => (0.0, 0.0),
+                        };
+                        self.main_tree.float_nudge(id, dx, dy);
+                    }
+                } else if let Some(c @ ('h' | 'j' | 'k' | 'l')) = ch {
                     self.window_mode_swap(c);
                 }
             }

@@ -366,6 +366,56 @@ impl LayoutTree {
         self.floats.clear();
     }
 
+    /// 该叶子当前是否浮动
+    pub fn is_leaf_floating(&self, id: u64) -> bool {
+        self.floats.iter().any(|f| f.id == id)
+    }
+
+    /// 切换浮动态:浮动 → 回平铺;平铺 → 浮动(默认居中槽位)。
+    /// zellij 的 `w`(ToggleFloating)/`e`(EmbedOrFloating)落到这里。
+    pub fn float_toggle(&mut self, id: u64) {
+        if self.is_leaf_floating(id) {
+            self.remove_float(id);
+        } else {
+            self.set_float(id);
+        }
+    }
+
+    /// 浮动 pane 按比例平移(增量为视口比例;夹在视口内)
+    pub fn float_nudge(&mut self, id: u64, dx: f32, dy: f32) {
+        if let Some(f) = self.float_slot_mut(id) {
+            f.x = (f.x + dx).clamp(0.0, (1.0 - f.w).max(0.0));
+            f.y = (f.y + dy).clamp(0.0, (1.0 - f.h).max(0.0));
+        }
+    }
+
+    /// 浮动 pane 按比例改尺寸(增量为视口比例;不小于 10%,不越视口)
+    pub fn float_scale(&mut self, id: u64, dw: f32, dh: f32) {
+        if let Some(f) = self.float_slot_mut(id) {
+            f.w = (f.w + dw).clamp(0.1, (1.0 - f.x).max(0.1));
+            f.h = (f.h + dh).clamp(0.1, (1.0 - f.y).max(0.1));
+        }
+    }
+
+    pub fn float_is_pinned(&self, id: u64) -> bool {
+        self.floats
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| f.pinned)
+            .unwrap_or(false)
+    }
+
+    /// pin 开关(zellij 的 `i`):置顶且不被焦点变化降级
+    pub fn float_set_pinned(&mut self, id: u64, pinned: bool) {
+        let top = self.floats.iter().map(|f| f.z).max().unwrap_or(0);
+        if let Some(f) = self.float_slot_mut(id) {
+            f.pinned = pinned;
+            if pinned {
+                f.z = top + 1;
+            }
+        }
+    }
+
     pub fn is_float(&self) -> bool {
         !self.floats.is_empty()
     }
