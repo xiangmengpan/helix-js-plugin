@@ -339,11 +339,58 @@ interface Helix {
   layout_equalize(id?: number): void;
   layout_fix(dir: SplitDir, id?: number): void;
   focus(id: number): void;
-  get_layout(): { tree: unknown; active: unknown; zoomed: boolean } | null;
-  restore_layout(layout: unknown): void; // 仅写缓存,重建未接线
+  get_layout(): {
+    tree: unknown; active: unknown; zoomed: unknown; minimized: unknown;
+    floats: unknown[]; leafs: unknown[];
+  } | null;
+  restore_layout(layout: unknown): void; // 真重建:按 dump 重塑布局树 + 浮窗槽位
   buffers(): BufferInfo[];
   current_buffer(): BufferInfo | null;
   focus_buffer(id: number): void;
+  // ── ③ 新命名空间(与上面扁平 API 等价;扁平名待删) ──
+  /** pane 操作 —— 词汇对齐 zellij 插件 API(`float` / `embed`) */
+  pane: {
+    /** 统一 pane 清单(含浮窗;字段取自 Rust 侧推来的快照) */
+    list(): {
+      id: number;
+      kind: string; // 类型名末段:"EditorView" / "PluginTerminal" / "PluginPanel" / …
+      place: "tiled" | "float" | "minimized";
+      focused: boolean;
+      fixed: boolean;
+      pinned: boolean;
+      z?: number; // 浮窗层序
+      rect?: { x: number; y: number; w: number; h: number }; // 浮窗比例几何
+    }[];
+    /** 平铺 → 浮窗 */
+    float(id: number): void;
+    /** 浮窗 → 平铺 */
+    embed(id: number): void;
+    close(id: number): void;
+    focus(id: number): void;
+    focus_dir(id: number, dir: SplitDir): void;
+    /** 与方向邻居交换(浮窗则搬位置) */
+    move(id: number, dir: SplitDir): void;
+    resize(id: number, ratio: number): void;
+    zoom(id: number): void;
+    unzoom(): void;
+    minimize(id: number, on?: boolean): void;
+    equalize(id: number): void;
+    fix(id: number, fixed: boolean): void;
+  };
+  /** 布局序列化 */
+  layout: {
+    get(): unknown;
+    restore(layout: unknown): void;
+  };
+  /** compositor 的平级模式 —— 键位表的**唯一来源**(插件不要自建第二份) */
+  pane_mode: {
+    /** 当前模式,如 "C-p";Normal 时 null */
+    current(): string | null;
+    /** 当前模式的键位表(中文说明 + enabled/reason) */
+    keymap(): {
+      keys: { key: string; desc: string; enabled: boolean; reason?: string }[];
+    } | null;
+  };
 
   // ── 其他 ──
   watch(path: string, fn: (event: unknown) => void): void;
