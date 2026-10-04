@@ -111,36 +111,6 @@ function current_cfg() {
 
   // 平级模式中文键位表(阶段①)。compositor 进入某模式时以 title=该模式前缀键调用。
   // 条目与 Rust 侧 pane_mode_hint / pane_mode_key 的键位表一一对应。
-  const PANE_HINTS = {
-    "C-g": ["C-g       退出 locked(其余键原样交给当前窗口)"],
-    "C-p": [
-      "h j k l   聚焦(左/下/上/右)",
-      "H J K L   交换窗口",
-      "p / P / Tab 切到下一个/上一个窗口",
-      "n / d / r 新分屏 / 下分 / 右分",
-      "x         关闭窗口",
-      "z         最小化/还原",
-      "f         最大化/还原",
-      "w / e     浮动 / 收回平铺",
-      "i         pin(浮动时置顶)",
-      "s         堆叠(与兄弟窗合并)",
-      "Esc / C-p 退出",
-    ],
-    "C-n": [
-      "h j k l   向该方向增大(浮窗:改尺寸)",
-      "H J K L   向该方向减小",
-      "= / - / + 宽度 ±5%",
-      "Esc / C-n 退出",
-    ],
-    "C-h": ["h j k l   与方向邻居交换(浮窗:搬位置)", "Esc / C-h 退出"],
-    "C-y": [
-      "j / k     行滚动",
-      "d / u     半页",
-      "C-f C-b / h l  整页",
-      "Esc / C-y 退出",
-    ],
-  };
-
   // 前缀名(title) → 前缀键(拼完整键序列用)
   const PREFIX_KEY = {
     "Goto": "g", "Match": "m",
@@ -151,8 +121,10 @@ function current_cfg() {
 
   function render(ctx) {
     const cfg = current_cfg();
-    // 平级模式:compositor 传入 title=前缀键 → 用对应中文表,位置取配置
-    if (PANE_HINTS[ctx.title]) {
+    // 平级模式:键位表的**唯一来源是引擎** —— helix.pane_mode.keymap() 由 compositor
+    // 的 pane_mode_entries 推出。本文件**不再维护第二份**键位表(早先那份 PANE_HINTS
+    // 硬编码表已删):两处维护必然漂移。引擎不在模式里时自然落到下面的普通 entries 路径。
+    {
       // 优先用引擎推来的键位表(单一来源:compositor 的 pane_mode_entries),
       // 引擎没给(旧版/未进模式)才退回本文件的内置表。
       const pm = helix.pane_mode && helix.pane_mode.keymap ? helix.pane_mode.keymap() : null;
@@ -162,7 +134,6 @@ function current_cfg() {
         );
         return { text: lines.join("\n"), position: cfg.position };
       }
-      return { text: PANE_HINTS[ctx.title].join("\n"), position: cfg.position };
     }
     if (!ctx.entries || ctx.entries.length === 0) return null;
     const prefix = PREFIX_KEY[ctx.title] ? PREFIX_KEY[ctx.title] + " " : "";
