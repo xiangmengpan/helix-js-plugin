@@ -1,3 +1,8 @@
+> **已废弃(2026-09-11)**:`plugins/features/server-manager/index.js` 已**删除**。
+> 功能由浮层市场窗 **arsenal**(`:arsenal`)取代。
+> 本文档保留作**后端**说明 —— 注册表(`[server-manager.registry.*]`)与安装/更新/版本
+> 求解这套后端**仍在使用**,arsenal 复用的就是它(相关测试仍在 `server_manager.rs`)。
+
 # Server Manager(`:server`)——LSP/DAP/linter/formatter 统一管理
 
 > 实现计划:docs/superpowers/plans/2026-09-05-server-manager.md
