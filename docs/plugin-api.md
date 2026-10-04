@@ -87,6 +87,14 @@
 
 ### Picker 与主题
 
+**图标(`helix.icons.*`)**:`file(path)` / `dir(expanded)` / `mode(mode)` / `diagnostic(sev)` /
+`git(status)` / `completion(kind)` / `enabled(on?)`。图标表在**核心**(`helix-js/src/icons.rs`,7 组 145 条),
+所以**所有插件零依赖可用** —— 不需要再声明 `deps: ["lib/icons.js"]`(那 4 处已删)。
+`enabled(false)` 一处降级:文件类图标变空、目录回退 `▸/▾`,或写 `config.toml` 的
+`[icons] nerd_font = false`。**已知时序**:该配置在 `plugins/lib/icons.js` 加载时应用一次,
+`:config-reload` 不重推(再 `:plugin-reload` 即可);终态是把 `[icons]` 收进 `helix-view`
+的 Config、启动时由 Rust 直接设置,届时那个薄壳与 init 里的显式加载都可删。
+
 `helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/键位全核心;行格式数组或 `{cells, payload}` 分离;四个内置源 files/grep/buffers/symbols 由**核心**提供 —— 自定义源的模板见 `plugins/examples/picker.js`(它自己不注册任何源));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
 
 - 优点:picker 性能原生 + 插件可定义任意源;主题覆盖即时生效。
