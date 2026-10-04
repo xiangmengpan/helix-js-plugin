@@ -460,6 +460,29 @@ pub(crate) fn js_get_layout(
     js_json_parse(json, ctx, "get_layout")
 }
 
+/// pane 清单:helix.pane.list() → `[{id, place, focused, fixed, pinned, z?, rect?}]`。
+/// place 取 `tiled` / `rail` / `float` —— 浮窗在这里也能看到了(之前 get_layout 看不到)。
+pub(crate) fn js_pane_list(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let json = crate::state::PANES
+        .get()
+        .map(|m| m.lock().unwrap().clone())
+        .unwrap_or_default();
+    if json.is_empty() {
+        return js_json_parse("{\"panes\":[]}".to_string(), ctx, "pane.list")
+            .and_then(|o| o.as_object().unwrap().get(JsString::from("panes"), ctx))
+            .map_err(|_| {
+                JsError::from_opaque(JsValue::from(JsString::from("pane.list: 解析失败")))
+            });
+    }
+    js_json_parse(json, ctx, "pane.list")
+        .and_then(|o| o.as_object().unwrap().get(JsString::from("panes"), ctx))
+        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("pane.list: 解析失败"))))
+}
+
 /// 当前平级模式:helix.pane_mode.current() → "Normal"|"Locked"|"Pane"|…
 pub(crate) fn js_pane_mode_current(
     _this: &JsValue,

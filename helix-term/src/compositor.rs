@@ -1331,7 +1331,36 @@ impl Compositor {
 
     /// 布局树变更后同步 dump 缓存（get_layout 实时性；否则返回 null/旧值）
     fn sync_layout_cache(&mut self) {
-        let json = serde_json::to_string(&self.main_tree.dump()).unwrap_or_default();
+        let dump = self.main_tree.dump();
+        // pane.list():把树叶子与浮窗统一成"pane"视角(place/focused/pinned)。
+        // ③ 会在此加 kind/rect 等字段;这里先把"看得见浮窗"这个缺口补上。
+        let active = dump.active;
+        let mut panes: Vec<serde_json::Value> = dump
+            .leafs
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "id": l.id,
+                    "place": if l.rail { "rail" } else { "tiled" },
+                    "focused": l.id == active,
+                    "fixed": l.fixed,
+                    "pinned": false,
+                })
+            })
+            .collect();
+        for f in &dump.floats {
+            panes.push(serde_json::json!({
+                "id": f.id,
+                "place": "float",
+                "focused": f.id == active,
+                "fixed": false,
+                "pinned": f.pinned,
+                "z": f.z,
+                "rect": { "x": f.x, "y": f.y, "w": f.w, "h": f.h },
+            }));
+        }
+        helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
+        let json = serde_json::to_string(&dump).unwrap_or_default();
         helix_js::cache_layout(&json);
     }
 

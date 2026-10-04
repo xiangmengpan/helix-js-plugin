@@ -210,6 +210,14 @@ pub fn init() {
                     2,
                 )
                 .build();
+            // helix.pane 命名空间:pane 清单(③ 会在此基础上加 open/set_place/…)
+            let pane_obj = ObjectInitializer::new(engine)
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_list),
+                    JsString::from("list"),
+                    0,
+                )
+                .build();
             // helix.pane_mode 命名空间:当前平级模式与它的键位表
             // (键位表由 Rust 侧单一来源提供,插件不必硬编码)
             let pane_mode_obj = ObjectInitializer::new(engine)
@@ -655,6 +663,11 @@ pub fn init() {
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             builder.property(
+                JsString::from("pane"),
+                pane_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
                 JsString::from("pane_mode"),
                 pane_mode_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
@@ -729,6 +742,56 @@ pub(crate) mod tests {
             fired.load(std::sync::atomic::Ordering::SeqCst),
             "wake should fire on event send"
         );
+    }
+
+    /// `helix.pane.list()` 读 Rust 侧推来的 pane 清单(含浮窗)。
+    /// 之前 `get_layout()` 看不到浮窗,插件因此完全不知道浮窗存在。
+    #[test]
+    fn pane_list_api_reads_snapshot() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+
+        // 未推送时:空数组(不报错)
+        load_script(
+            r#"
+        helix.register_command("pl0", () => {
+            helix.echo("n:" + helix.pane.list().length);
+        });
+        "#,
+        )
+        .unwrap();
+        assert!(run_command("pl0", &ctx).unwrap());
+        assert_eq!(take_messages()[0], "n:0");
+
+        // 推入一份含浮窗的快照后应能读到 place/pinned/focused
+        crate::state::cache_panes(
+            r#"{"panes":[
+                {"id":0,"place":"tiled","focused":false,"fixed":false,"pinned":false},
+                {"id":7,"place":"float","focused":true,"fixed":false,"pinned":true,"z":2,
+                 "rect":{"x":0.2,"y":0.2,"w":0.5,"h":0.5}}
+            ]}"#,
+        );
+        load_script(
+            r#"
+        helix.register_command("pl1", () => {
+            const l = helix.pane.list();
+            helix.echo(
+                "n:" + l.length + " p:" + l[1].place + " pin:" + l[1].pinned +
+                " foc:" + l[1].focused + " tx:" + l[0].place
+            );
+        });
+        "#,
+        )
+        .unwrap();
+        assert!(run_command("pl1", &ctx).unwrap());
+        assert_eq!(take_messages()[0], "n:2 p:float pin:true foc:true tx:tiled");
     }
 
     #[test]
