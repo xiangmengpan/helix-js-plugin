@@ -5149,6 +5149,19 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.close_leaf_clean(editor, id);
                 });
             }
+            helix_js::UiRequest::PaneFloat { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    // 复用 ②-1 的浮窗模型:set_float 给默认居中槽位
+                    compositor.set_float(id);
+                    compositor.sync_layout_cache();
+                });
+            }
+            helix_js::UiRequest::PaneEmbed { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.layout_tree().remove_float(id);
+                    compositor.sync_layout_cache();
+                });
+            }
             helix_js::UiRequest::ZoomLeaf { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.zoom_leaf(id);

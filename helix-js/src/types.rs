@@ -97,6 +97,14 @@ pub enum UiRequest {
     ZoomLeaf {
         id: u64,
     },
+    /// 把叶子浮动起来(plan ③;词汇取自 zellij 插件 API 的 `float_multiple_panes`)
+    PaneFloat {
+        id: u64,
+    },
+    /// 把浮动的叶子收回平铺(对应 zellij 的 `embed_multiple_panes`)
+    PaneEmbed {
+        id: u64,
+    },
     Unzoom,
     ResizeLeaf {
         id: u64,

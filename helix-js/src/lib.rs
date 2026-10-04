@@ -217,6 +217,16 @@ pub fn init() {
                     JsString::from("list"),
                     0,
                 )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_float),
+                    JsString::from("float"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_embed),
+                    JsString::from("embed"),
+                    1,
+                )
                 .build();
             // helix.pane_mode 命名空间:当前平级模式与它的键位表
             // (键位表由 Rust 侧单一来源提供,插件不必硬编码)
@@ -794,6 +804,41 @@ pub(crate) mod tests {
         assert_eq!(
             take_messages()[0],
             "n:2 p:float pin:true foc:true tx:tiled k:PluginTerminal/EditorView"
+        );
+    }
+
+    /// `helix.pane.float` / `helix.pane.embed` —— 平铺 ↔ 浮窗。
+    /// 词汇取自 zellij 插件 API 的 `float_multiple_panes` / `embed_multiple_panes`
+    /// (它的词汇是 float / embed),而不是自造的 `set_place`。
+    #[test]
+    fn pane_float_and_embed_push_requests() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("pf", () => {
+            helix.pane.float(3);
+            helix.pane.embed(4);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("pf", &ctx).unwrap());
+        let reqs = take_ui_requests();
+        assert!(
+            matches!(&reqs[0], UiRequest::PaneFloat { id } if *id == 3),
+            "pane.float(3) → PaneFloat{{id:3}}"
+        );
+        assert!(
+            matches!(&reqs[1], UiRequest::PaneEmbed { id } if *id == 4),
+            "pane.embed(4) → PaneEmbed{{id:4}}"
         );
     }
 

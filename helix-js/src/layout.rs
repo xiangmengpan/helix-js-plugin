@@ -460,6 +460,47 @@ pub(crate) fn js_get_layout(
     js_json_parse(json, ctx, "get_layout")
 }
 
+/// `helix.pane.float(id)` —— 把叶子浮动起来(平铺 → 浮窗)。
+/// 命名取自 zellij 插件 API 的 `float_multiple_panes` / `embed_multiple_panes`:
+/// 它的词汇是 float / embed,比自造的 "set_place" 更贴用户预期。
+pub(crate) fn js_pane_float(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    pane_place_req(args, ctx, "pane.float", true)
+}
+
+/// `helix.pane.embed(id)` —— 把浮动的叶子收回平铺(浮窗 → 平铺)。
+pub(crate) fn js_pane_embed(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    pane_place_req(args, ctx, "pane.embed", false)
+}
+
+/// float/embed 共用的参数解析 + 请求入队
+fn pane_place_req(
+    args: &[JsValue],
+    ctx: &mut Context,
+    who: &str,
+    float: bool,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    let req = if float {
+        UiRequest::PaneFloat { id }
+    } else {
+        UiRequest::PaneEmbed { id }
+    };
+    let _ = who;
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(req);
+    Ok(JsValue::undefined())
+}
+
 /// pane 清单:helix.pane.list() → `[{id, place, focused, fixed, pinned, z?, rect?}]`。
 /// place 取 `tiled` / `rail` / `float` —— 浮窗在这里也能看到了(之前 get_layout 看不到)。
 pub(crate) fn js_pane_list(

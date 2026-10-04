@@ -1370,7 +1370,7 @@ impl Compositor {
     }
 
     /// 布局树变更后同步 dump 缓存（get_layout 实时性；否则返回 null/旧值）
-    fn sync_layout_cache(&mut self) {
+    pub(crate) fn sync_layout_cache(&mut self) {
         let dump = self.main_tree.dump();
         // pane.list():把树叶子与浮窗统一成"pane"视角(place/focused/pinned)。
         // ③ 会在此加 kind/rect 等字段;这里先把"看得见浮窗"这个缺口补上。
