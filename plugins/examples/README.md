@@ -13,3 +13,14 @@
 只是**不会**被内置 `init.js` 加载。
 
 功能插件在 `plugins/features/`;共享库在 `plugins/lib/`。
+
+## 移动插件文件时注意
+
+移动/重命名插件文件后,必须同步**所有**引用它的地方 —— 实测踩过:
+
+1. `plugins/init.js`(仓库模板)—— 有测试 `plugins_init_template_loads_resolve` 守着
+2. **用户 live 的 `~/.config/helix/init.js`** —— **仓库里没有,测试也够不到**,只能人工查
+   (2026-09-11:picker.js 从 `features/` 移到 `examples/` 时漏了这条,导致启动时该 load 失败)
+3. `helix.plugin({deps})` 里声明过它的插件
+4. 集成测试里按路径加载它的用例
+5. 文档 / 示例文件自己的头注释

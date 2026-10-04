@@ -55,3 +55,42 @@ async fn plugin_entry_import_and_lazy() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+/// `plugins/init.js`(模板)里每个 `helix.load("...")` 的相对路径都必须**解析得到**。
+///
+/// 为什么需要(实测发生过的坑):我把 `features/picker.js` 移到 `examples/picker.js` 时,
+/// 只检查了**仓库模板**(那里 picker 那行是注释掉的)和测试引用(没有),据此判断"可自由移动"。
+/// 但**用户 live 的 `~/.config/helix/init.js` 引用了它** —— 结果那条 load 在启动时失败。
+/// 移动/删除插件文件时最容易漏的就是 `init.js` 里的引用。
+///
+/// 覆盖边界:这个测试只能守**仓库模板**(用户 live 配置不在仓库里,CI 也读不到)。
+/// 但模板漂移正是同类事故的一半,而且这一半是可以自动挡住的。
+#[test]
+fn plugins_init_template_loads_resolve() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins");
+    let src = std::fs::read_to_string(dir.join("init.js"))
+        .unwrap_or_else(|e| panic!("读不到 {}: {e}", dir.join("init.js").display()));
+    let mut checked = 0;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("//") {
+            continue; // 注释行不算(模板里有大量被注释掉的可选项)
+        }
+        let Some(rest) = t.strip_prefix("helix.load(\"") else {
+            continue;
+        };
+        let Some(rel) = rest.split('"').next() else {
+            continue;
+        };
+        assert!(
+            dir.join(rel).is_file(),
+            "plugins/init.js 引用了不存在的文件:{rel}(移动/删除插件时漏改 init.js?)"
+        );
+        checked += 1;
+    }
+    // 防空过:解析逻辑若失效(比如 heli.load 写法变了),checked 会是 0,测试就失去意义
+    assert!(
+        checked >= 3,
+        "只检查到 {checked} 个引用 —— 解析逻辑可能失效,这个测试已失去意义"
+    );
+}
