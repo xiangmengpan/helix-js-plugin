@@ -267,7 +267,7 @@ pub(crate) fn js_swap_leaves(
     Ok(JsValue::undefined())
 }
 
-/// helix.layout_minimize(id, minimized)：最小化/恢复叶子（不占布局，渲染为底部标题横条）
+/// helix.pane.minimize(id, minimized)：最小化/恢复叶子（不占布局，渲染为底部标题横条）
 pub(crate) fn js_minimize_leaf(
     _this: &JsValue,
     args: &[JsValue],
@@ -301,7 +301,7 @@ fn parse_dir(dir: &str) -> Option<(String, bool)> {
     }
 }
 
-/// helix.layout_focus(id, "left"|"right"|"up"|"down")：聚焦方向邻居
+/// helix.pane.focus_dir(id, "left"|"right"|"up"|"down")：聚焦方向邻居
 pub(crate) fn js_focus_leaf_dir(
     _this: &JsValue,
     args: &[JsValue],
@@ -329,7 +329,7 @@ pub(crate) fn js_focus_leaf_dir(
     Ok(JsValue::undefined())
 }
 
-/// helix.layout_swap_dir(id, "left"|...)：与方向邻居交换内容
+/// helix.pane.move(id, "left"|...)：与方向邻居交换内容
 pub(crate) fn js_swap_leaf_dir(
     _this: &JsValue,
     args: &[JsValue],
@@ -357,7 +357,7 @@ pub(crate) fn js_swap_leaf_dir(
     Ok(JsValue::undefined())
 }
 
-/// helix.layout_equalize(id)：叶子所在 Split 恢复 50/50
+/// helix.pane.equalize(id)：叶子所在 Split 恢复 50/50
 pub(crate) fn js_equalize_leaf(
     _this: &JsValue,
     args: &[JsValue],
@@ -376,7 +376,7 @@ pub(crate) fn js_equalize_leaf(
     Ok(JsValue::undefined())
 }
 
-/// helix.layout_fix(id, fixed)：设置/取消叶子 fixed 标记
+/// helix.pane.fix(id, fixed)：设置/取消叶子 fixed 标记
 /// （fixed 叶子不被 swap/resize/close/minimize/equalize，可被焦点穿过）
 pub(crate) fn js_layout_fix(
     _this: &JsValue,
@@ -567,7 +567,7 @@ pub(crate) fn js_pane_mode_keymap(
 
 /// 组件状态只读:helix.get_component_state(id) → 对象(未注册 → null)。
 /// 状态由 Rust 组件经 JSON 字符串提供(register_component_state),JS 视图层据此画外观。
-/// 打开文档列表:helix.buffers() → [{id, path, name, dirty, language}](只读快照)。
+/// 打开文档列表:helix.buffer.list() → [{id, path, name, dirty, language}](只读快照)。
 /// BUFFERS JSON 形如 {"current": id, "buffers": [...]}
 pub(crate) fn js_buffers(
     _this: &JsValue,
@@ -588,7 +588,7 @@ pub(crate) fn js_buffers(
     obj.get(JsString::from("buffers"), ctx)
 }
 
-/// 当前文档 id:helix.current_buffer()
+/// 当前文档 id:helix.buffer.current()
 pub(crate) fn js_current_buffer(
     _this: &JsValue,
     _args: &[JsValue],
@@ -608,7 +608,7 @@ pub(crate) fn js_current_buffer(
     obj.get(JsString::from("current"), ctx)
 }
 
-/// 聚焦指定文档:helix.focus_buffer(id) — 当前 view 切换到该文档
+/// 聚焦指定文档:helix.buffer.focus(id) — 当前 view 切换到该文档
 pub(crate) fn js_focus_buffer(
     _this: &JsValue,
     args: &[JsValue],

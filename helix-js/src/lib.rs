@@ -583,26 +583,6 @@ pub fn init() {
                     2,
                 )
                 .function(
-                    NativeFunction::from_fn_ptr(layout::js_close_leaf),
-                    JsString::from("close_leaf"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_zoom_leaf),
-                    JsString::from("zoom"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_unzoom),
-                    JsString::from("unzoom"),
-                    0,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_resize_leaf),
-                    JsString::from("resize_leaf"),
-                    2,
-                )
-                .function(
                     NativeFunction::from_fn_ptr(layout::js_resize_leaf_dir),
                     JsString::from("layout_resize"),
                     3,
@@ -613,58 +593,8 @@ pub fn init() {
                     2,
                 )
                 .function(
-                    NativeFunction::from_fn_ptr(layout::js_minimize_leaf),
-                    JsString::from("layout_minimize"),
-                    2,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir),
-                    JsString::from("layout_focus"),
-                    2,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir),
-                    JsString::from("layout_swap_dir"),
-                    2,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_equalize_leaf),
-                    JsString::from("layout_equalize"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_layout_fix),
-                    JsString::from("layout_fix"),
-                    2,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_focus_leaf),
-                    JsString::from("focus"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_get_layout),
-                    JsString::from("get_layout"),
-                    0,
-                )
-                .function(
                     NativeFunction::from_fn_ptr(layout::js_get_component_state),
                     JsString::from("get_component_state"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_buffers),
-                    JsString::from("buffers"),
-                    0,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_current_buffer),
-                    JsString::from("current_buffer"),
-                    0,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_focus_buffer),
-                    JsString::from("focus_buffer"),
                     1,
                 )
                 .function(
@@ -695,11 +625,6 @@ pub fn init() {
                 .function(
                     NativeFunction::from_fn_ptr(config::js_get_config_docs),
                     JsString::from("get_config_docs"),
-                    1,
-                )
-                .function(
-                    NativeFunction::from_fn_ptr(layout::js_restore_layout),
-                    JsString::from("restore_layout"),
                     1,
                 )
                 .function(
@@ -3985,7 +3910,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         init();
         // 无缓存 → null/undefined
         load_script(
-            r#"globalThis.__b = helix.buffers(); globalThis.__c = helix.current_buffer();"#,
+            r#"globalThis.__b = helix.buffer.list(); globalThis.__c = helix.buffer.current();"#,
         )
         .unwrap();
         crate::state::with_engine(|engine| {
@@ -4001,9 +3926,9 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         );
         load_script(
             r#"
-            globalThis.__bs = helix.buffers();
-            globalThis.__cur = helix.current_buffer();
-            helix.focus_buffer(7);
+            globalThis.__bs = helix.buffer.list();
+            globalThis.__cur = helix.buffer.current();
+            helix.buffer.focus(7);
             "#,
         )
         .unwrap();

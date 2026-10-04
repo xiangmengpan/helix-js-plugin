@@ -47,11 +47,11 @@ const leafId2 = helix.split("bottom", {
   panel: { render: () => helix.el("col", [helix.el("text", "hi")]), onKey: (k) => "handled" },
 });
 
-helix.close_leaf(id);              // 移除叶子(终端进程被杀、面板回调清掉)
-helix.zoom(id);                    // 缩放指定叶子到全屏
-helix.unzoom();                    // 恢复
-helix.resize_leaf(id, 0.3);        // 调整分界比例(0~1)
-helix.focus(id);                   // 聚焦叶子
+helix.pane.close(id);              // 移除叶子(终端进程被杀、面板回调清掉)
+helix.pane.zoom(id);                    // 缩放指定叶子到全屏
+helix.pane.unzoom();                    // 恢复
+helix.pane.resize(id, 0.3);        // 调整分界比例(0~1)
+helix.pane.focus(id);                   // 聚焦叶子
 ```
 
 窗口管理走 compositor 层的 **zellij 式平级模式**(任意叶子焦点可用,详见
@@ -62,8 +62,8 @@ helix.focus(id);                   // 聚焦叶子
 ### 布局序列化
 
 ```js
-const layout = helix.get_layout();  // { tree, active, zoomed, minimized, floats, leafs } | null
-helix.restore_layout(layout);       // 真重建:按 dump 重塑布局树 + 浮窗槽位
+const layout = helix.layout.get();  // { tree, active, zoomed, minimized, floats, leafs } | null
+helix.layout.restore(layout);       // 真重建:按 dump 重塑布局树 + 浮窗槽位
 ```
 
 `tree` 为嵌套 JSON:`{ "type": "leaf", "id": N }` 或
