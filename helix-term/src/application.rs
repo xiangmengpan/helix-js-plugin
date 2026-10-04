@@ -161,19 +161,39 @@ impl Application {
         #[cfg(not(feature = "integration"))]
         {
             let plugin_dir = helix_loader::config_dir().join("plugins");
-            // js_load 相对名解析用：init.js 里 helix.load("xxx.js") 落到插件目录
-            helix_js::set_plugins_dir(plugin_dir.clone());
+            // 相对名解析用**有序多根**(对齐 Neovim 的 runtimepath):
+            // **自带 runtime 在前、用户目录在后** → 同名相对名取最后一个存在的,
+            // 即"用户可覆盖内置插件"。runtime_dirs() 是 helix 既有的自带 runtime
+            // 有序列表(HELIX_RUNTIME + exe 相对 + 系统路径),在此挂 plugins/ 子目录。
+            // 这一步是"把功能拆成随软件分发的内置插件"的前置:内置放在自带 runtime 里,
+            // 用户仍可用同名文件覆盖它。
+            let mut roots: Vec<std::path::PathBuf> = helix_loader::runtime_dirs()
+                .iter()
+                .map(|d| d.join("plugins"))
+                .collect();
+            roots.push(plugin_dir.clone());
+            helix_js::set_plugin_roots(roots);
             // 跨线程唤醒：worker 发事件 → request_redraw → 事件循环 33ms 内重绘。
             // 这是终端/异步输出即时上屏的关键（chunk 到达不等 idle）。
             helix_js::set_term_wake(Box::new(helix_event::request_redraw));
             // 入口 init.js 位于配置根（~/.config/helix/init.js）；
             // 回退兼容旧位置 plugins/init.js
-            let init_path = helix_loader::config_dir().join("init.js");
-            let init_path = if init_path.is_file() {
-                init_path
-            } else {
-                plugin_dir.join("init.js")
-            };
+            // 入口 init.js 的查找顺序:**用户优先** ——
+            // ~/.config/helix/init.js → 用户 plugins/init.js → 自带 runtime 的
+            // plugins/init.js(内置插件的入口,将来放这里;用户写了自己的就覆盖它)
+            let mut candidates = vec![
+                helix_loader::config_dir().join("init.js"),
+                plugin_dir.join("init.js"),
+            ];
+            candidates.extend(
+                helix_loader::runtime_dirs()
+                    .iter()
+                    .map(|d| d.join("plugins").join("init.js")),
+            );
+            let init_path = candidates
+                .into_iter()
+                .find(|p| p.is_file())
+                .unwrap_or_else(|| plugin_dir.join("init.js"));
             if init_path.is_file() {
                 match std::fs::read_to_string(&init_path).and_then(|src| {
                     helix_js::load_script_named(&init_path.display().to_string(), &src)

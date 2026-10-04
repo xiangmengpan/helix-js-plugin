@@ -446,7 +446,7 @@ pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new()
 pub(crate) static PLUGIN_ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 
 /// 设置插件根(只生效一次;已有则忽略 —— 与原先 `PLUGINS_DIR` 的语义一致)
-pub(crate) fn set_plugin_roots(roots: Vec<PathBuf>) {
+pub fn set_plugin_roots(roots: Vec<PathBuf>) {
     let _ = PLUGIN_ROOTS.set(roots);
 }
 
