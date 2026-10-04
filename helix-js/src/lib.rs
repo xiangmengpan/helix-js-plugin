@@ -321,6 +321,25 @@ pub fn init() {
                 }
                 o.build()
             };
+            // helix.buffer.*(③ 最终命名;与旧扁平 `buffers`/`current_buffer`/`focus_buffer`
+            // 是同一批原生函数 —— 零重复实现,旧名删掉后新名照常工作)
+            let buffer_obj = ObjectInitializer::new(engine)
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_buffers),
+                    JsString::from("list"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_current_buffer),
+                    JsString::from("current"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_focus_buffer),
+                    JsString::from("focus"),
+                    1,
+                )
+                .build();
             let mut builder = ObjectInitializer::new(engine);
             builder
                 .function(
@@ -760,6 +779,11 @@ pub fn init() {
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             builder.property(
+                JsString::from("buffer"),
+                buffer_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
                 JsString::from("layout"),
                 layout_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
@@ -941,7 +965,9 @@ pub(crate) mod tests {
         helix.register_command("pn", () => {
             const need = ["list","float","embed","close","focus","focus_dir",
                           "move","resize","zoom","unzoom","minimize","equalize","fix"];
-            const missing = need.filter((n) => typeof helix.pane[n] !== "function");
+            const needBuf = ["list","current","focus"];
+            const missingBuf = needBuf.filter((n) => typeof helix.buffer[n] !== "function");
+            const missing = need.filter((n) => typeof helix.pane[n] !== "function").concat(missingBuf);
             helix.echo("missing:" + missing.join(","));
             helix.pane.close(5);
             helix.pane.focus(6);

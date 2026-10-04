@@ -1,5 +1,5 @@
 // features/tabbar.js — 布局标签条示范组件（JS 视图层）
-// 依赖:helix.TABBAR_ID(compositor 顶部槽位)、helix.get_layout()、helix.get_component_state()
+// 依赖:helix.TABBAR_ID(compositor 顶部槽位)、helix.layout.get()、helix.get_component_state()
 // 效果:屏幕顶部 1 行显示各叶子标签,活动高亮;点击标签聚焦。
 helix.plugin("tabbar", { deps: [] }); // 图标已收进核心,不再需要 deps
 
@@ -38,7 +38,7 @@ const CFG = helix.get_config("tabbar") || {};
   }
 
   helix.set_component_render(TABBAR_ID, (ctx) => {
-    const layout = helix.get_layout();
+    const layout = helix.layout.get();
     if (!layout || !layout.leafs || layout.leafs.length === 0) {
       // 无布局数据时兜底:显示编辑器标签(active=0)
       boundaries = [{ id: 0, x0: 0, x1: 10 }];
@@ -64,7 +64,7 @@ const CFG = helix.get_config("tabbar") || {};
     if (id !== TABBAR_ID || ev.kind !== "click") return false;
     const hit = boundaries.find((b) => ev.x >= b.x0 && ev.x < b.x1);
     if (!hit) return false;
-    helix.focus(hit.id);
+    helix.pane.focus(hit.id);
     return true;
   });
 })();

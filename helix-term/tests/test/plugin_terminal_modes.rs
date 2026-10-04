@@ -506,7 +506,7 @@ async fn plugin_layout_ops_api() -> anyhow::Result<()> {
         });
         helix.register_command("lw-resize", () => { helix.layout_resize(tid, "h", 0.1); });
         helix.register_command("lw-swap", () => { helix.layout_swap(0, tid); });
-        helix.register_command("lw-min", () => { helix.layout_minimize(tid, true); });
+        helix.register_command("lw-min", () => { helix.pane.minimize(tid, true); });
         "#,
     )?;
 

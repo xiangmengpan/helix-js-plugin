@@ -196,7 +196,7 @@ function open_selected() {
   } else {
     helix.open_file(hit.node.path);
     // 打开后聚焦编辑器叶子(该文件所在),面板保留
-    helix.focus(0);
+    helix.pane.focus(0);
   }
 }
 
@@ -480,7 +480,7 @@ function remove() {
 function handle_key(key) {
   // C-\ 回编辑器（保留面板；与终端 C-\ 语义统一）
   if (key.ctrl && key.name === "\\") {
-    helix.focus(0);
+    helix.pane.focus(0);
     return "handled";
   }
   // 修饰键组合（C-x / M-x）不处理，穿透

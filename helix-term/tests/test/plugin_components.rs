@@ -350,7 +350,7 @@ async fn plugin_split_terminal_leaf() -> anyhow::Result<()> {
         let lid = null;
         helix.register_command("sp-open", () => { lid = helix.split("right", { terminal: { cmd: "cat", size: 20 } }); helix.echo("id:" + lid); });
         helix.register_command("sp-panel", () => { lid = helix.split("right", { panel: { render: () => ["P"], size: 20 } }); });
-        helix.register_command("sp-close", () => { helix.close_leaf(lid); });
+        helix.register_command("sp-close", () => { helix.pane.close(lid); });
         "#,
     )?;
 

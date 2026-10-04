@@ -40,8 +40,8 @@ helix.picker.define("grep", {
 // buffers：打开缓冲切换（payload = [id]）
 helix.picker.define("buffers", {
   columns: ["name", "path"],
-  items: () => helix.buffers().map((b) => ({ cells: [b.name, b.path || ""], payload: [String(b.id)] })),
-  action: (row) => helix.focus_buffer(Number(row[0])),
+  items: () => helix.buffer.list().map((b) => ({ cells: [b.name, b.path || ""], payload: [String(b.id)] })),
+  action: (row) => helix.buffer.focus(Number(row[0])),
 });
 
 // symbols：文档符号跳转（需 LSP；payload = [name, 起始行 0-based]）

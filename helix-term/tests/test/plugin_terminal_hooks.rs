@@ -371,7 +371,7 @@ async fn tabbar_renders_top_row_from_js_view() -> anyhow::Result<()> {
         &plugin_path,
         r#"
         helix.set_component_render(TABBAR_ID, () => {
-            const layout = helix.get_layout();
+            const layout = helix.layout.get();
             const n = layout && layout.leafs ? layout.leafs.length : 0;
             return [{ type: "text", text: "TAB-" + n }];
         });
@@ -658,7 +658,7 @@ async fn keymap_hint_position_bottom_left() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// buffer 遍历:helix.buffers() 列出文档;focus_buffer 切换当前 view
+/// buffer 遍历:helix.buffer.list() 列出文档;buffer.focus 切换当前 view
 #[tokio::test(flavor = "multi_thread")]
 async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
@@ -674,15 +674,15 @@ async fn buffer_traversal_and_focus() -> anyhow::Result<()> {
         &plugin_path,
         r#"
         helix.register_command("bt-dump", (ctx) => {
-            const bs = helix.buffers();
-            const cur = helix.current_buffer();
+            const bs = helix.buffer.list();
+            const cur = helix.buffer.current();
             helix.echo("n:" + (bs ? bs.length : 0) + " cur:" + cur + " names:" + (bs ? bs.map((b) => b.name).join(",") : ""));
         });
         helix.register_command("bt-focus-b", () => {
-            const bs = helix.buffers();
+            const bs = helix.buffer.list();
             if (bs) {
                 const b = bs.find((x) => x.name === "b.txt");
-                if (b) helix.focus_buffer(b.id);
+                if (b) helix.buffer.focus(b.id);
             }
         });
         "#,
