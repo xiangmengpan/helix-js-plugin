@@ -171,6 +171,9 @@ impl Application {
                 helix_loader::runtime_dirs(),
                 &helix_loader::config_dir(),
             ));
+
+            // 布局文件目录(`:layout save/load` 与 helix.layout.save/load 用)
+            helix_js::set_layouts_dir(helix_loader::config_dir().join("layouts"));
             // 跨线程唤醒：worker 发事件 → request_redraw → 事件循环 33ms 内重绘。
             // 这是终端/异步输出即时上屏的关键（chunk 到达不等 idle）。
             helix_js::set_term_wake(Box::new(helix_event::request_redraw));

@@ -681,3 +681,181 @@ pub(crate) fn js_restore_layout(
         .push(UiRequest::CacheLayout(json));
     Ok(JsValue::undefined())
 }
+
+// ══════════════════════════════════════════════════════════════
+// 布局文件持久化(`helix.layout.save/load/list/delete`,规格 ③)
+//
+// 纯函数内核 + 薄 JS 包装:内核只吃 `dir`,所以单测能用 tempdir 直接构造,
+// 不必碰全局 OnceLock(同 `resolve_in` / `plugin_roots_for` 的做法)。
+// ══════════════════════════════════════════════════════════════
+
+/// 名字 → 文件路径。**只允许 `[A-Za-z0-9_-]`** —— 否则 `../x` 能写出目录外。
+fn layout_path_in(dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf, String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "非法的布局名 {name:?}:只允许字母/数字/下划线/连字符"
+        ));
+    }
+    Ok(dir.join(format!("{name}.json")))
+}
+
+fn layout_save_in(dir: &std::path::Path, name: &str, json: &str) -> Result<(), String> {
+    let path = layout_path_in(dir, name)?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("建目录 {}: {e}", dir.display()))?;
+    std::fs::write(&path, json).map_err(|e| format!("写 {}: {e}", path.display()))
+}
+
+fn layout_load_in(dir: &std::path::Path, name: &str) -> Result<String, String> {
+    let path = layout_path_in(dir, name)?;
+    std::fs::read_to_string(&path).map_err(|e| format!("读 {}: {e}", path.display()))
+}
+
+/// 列出已保存的布局名(按字典序;目录不存在 → 空)
+fn layout_list_in(dir: &std::path::Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                return None;
+            }
+            p.file_stem().and_then(|s| s.to_str()).map(str::to_string)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn layout_delete_in(dir: &std::path::Path, name: &str) -> Result<bool, String> {
+    let path = layout_path_in(dir, name)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("删 {}: {e}", path.display())),
+    }
+}
+
+fn js_err(msg: String) -> JsError {
+    JsError::from_opaque(JsValue::from(JsString::from(msg)))
+}
+
+fn want_dir() -> Result<&'static std::path::Path, JsError> {
+    crate::state::layouts_dir()
+        .map(|p| p.as_path())
+        .ok_or_else(|| js_err("布局目录未设置(helix-term 启动时应设置)".into()))
+}
+
+fn arg_name(args: &[JsValue], ctx: &mut Context, who: &str) -> Result<String, JsError> {
+    args.first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| js_err(format!("{who}: name must be a string")))
+}
+
+/// `helix.layout.save(name)` —— 把当前布局快照写成 `<config>/layouts/<name>.json`
+pub(crate) fn js_layout_save(
+    _t: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name = arg_name(args, ctx, "helix.layout.save")?;
+    let json = crate::state::layout_json();
+    if json.is_empty() {
+        return Err(js_err(
+            "helix.layout.save: 还没有布局快照(需编辑器先渲染过至少一帧)".into(),
+        ));
+    }
+    layout_save_in(want_dir()?, &name, &json).map_err(js_err)?;
+    Ok(JsValue::from(true))
+}
+
+/// `helix.layout.load(name)` —— 读文件并应用(与 `restore` 同一条通道)
+pub(crate) fn js_layout_load(
+    _t: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name = arg_name(args, ctx, "helix.layout.load")?;
+    let json = layout_load_in(want_dir()?, &name).map_err(js_err)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::CacheLayout(json));
+    Ok(JsValue::from(true))
+}
+
+/// `helix.layout.list()` —— 已保存的布局名
+pub(crate) fn js_layout_list(
+    _t: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let names = match crate::state::layouts_dir() {
+        Some(dir) => layout_list_in(dir),
+        None => Vec::new(),
+    };
+    let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
+    for (i, n) in names.iter().enumerate() {
+        let _ = arr.set(i, JsValue::from(JsString::from(n.as_str())), false, ctx);
+    }
+    Ok(arr.into())
+}
+
+/// `helix.layout.delete(name)` —— 删除;不存在返回 false
+pub(crate) fn js_layout_delete(
+    _t: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name = arg_name(args, ctx, "helix.layout.delete")?;
+    Ok(JsValue::from(
+        layout_delete_in(want_dir()?, &name).map_err(js_err)?,
+    ))
+}
+
+#[cfg(test)]
+mod layout_file_tests {
+    use super::*;
+
+    /// save → list → load → delete 全程(用 tempdir,不碰全局)
+    #[test]
+    fn save_list_load_delete_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        assert!(layout_list_in(d).is_empty(), "空目录 → 空列表");
+
+        layout_save_in(d, "dev", r#"{"tree":{"type":"leaf","id":0}}"#).unwrap();
+        layout_save_in(d, "aaa", r#"{"tree":{"type":"leaf","id":1}}"#).unwrap();
+        assert_eq!(layout_list_in(d), vec!["aaa", "dev"], "按字典序");
+        assert!(layout_load_in(d, "dev").unwrap().contains("\"id\":0"));
+
+        assert!(layout_delete_in(d, "dev").unwrap(), "删除已存在 → true");
+        assert!(!layout_delete_in(d, "dev").unwrap(), "再删 → false");
+        assert_eq!(layout_list_in(d), vec!["aaa"]);
+    }
+
+    /// 名字校验:路径穿越必须被挡住(否则能写出目录外)
+    #[test]
+    fn rejects_path_traversal_and_bad_names() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../escape", "a/b", "", "a b", "a.b", ".."] {
+            assert!(
+                layout_save_in(dir.path(), bad, "{}").is_err(),
+                "应拒绝坏名字: {bad:?}"
+            );
+        }
+        // 合法的都接受
+        for ok in ["dev", "my-layout", "layout_1", "A9"] {
+            assert!(layout_save_in(dir.path(), ok, "{}").is_ok(), "应接受: {ok}");
+        }
+    }
+}

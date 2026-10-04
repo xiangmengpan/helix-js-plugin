@@ -292,6 +292,26 @@ pub fn init() {
                     JsString::from("restore"),
                     1,
                 )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_layout_save),
+                    JsString::from("save"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_layout_load),
+                    JsString::from("load"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_layout_list),
+                    JsString::from("list"),
+                    0,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_layout_delete),
+                    JsString::from("delete"),
+                    1,
+                )
                 .build();
             // helix.pane_mode 命名空间:当前平级模式与它的键位表
             // (键位表由 Rust 侧单一来源提供,插件不必硬编码)

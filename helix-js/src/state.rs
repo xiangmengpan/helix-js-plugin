@@ -660,6 +660,25 @@ pub fn take_messages() -> Vec<String> {
     )
 }
 
+/// 布局文件目录(`<config>/layouts`)。由 helix-term 启动时设置(同 PLUGIN_ROOTS 的做法)。
+pub(crate) static LAYOUTS_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_layouts_dir(dir: PathBuf) {
+    let _ = LAYOUTS_DIR.set(dir);
+}
+
+pub(crate) fn layouts_dir() -> Option<&'static PathBuf> {
+    LAYOUTS_DIR.get()
+}
+
+/// 读当前布局 dump(还没缓存过 → 空串)
+pub fn layout_json() -> String {
+    LAST_LAYOUT
+        .get()
+        .map(|m| m.lock().unwrap().clone())
+        .unwrap_or_default()
+}
+
 pub fn cache_layout(json: &str) {
     let _ = LAST_LAYOUT.get_or_init(Default::default);
     if let Some(m) = LAST_LAYOUT.get() {
