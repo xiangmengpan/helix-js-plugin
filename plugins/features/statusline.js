@@ -1,6 +1,6 @@
 // statusline.js — 状态栏美化（lazyvim 风格三段分栏）
 // 依赖清单：icons（统一图标映射，自动先加载）
-helix.plugin("statusline", { deps: ["lib/icons.js"] });
+helix.plugin("statusline", { deps: [] }); // 图标已收进核心,不再需要 deps
 
 // 插件配置(方案 C):config.toml [plugins.statusline]
 helix.define_config("statusline", {
@@ -17,7 +17,7 @@ function current_cfg() {
 
 // ============================ 状态 ============================
 
-let ICONS = null;
+// 图标已收进核心:直接用 `helix.icons.*`(原先的懒加载 + 逐处 `ICONS ? … : 回退` 已删)
 let gitBranch = "";      // 当前 git 分支（异步查询缓存）
 
 async function refreshGit(path) {
@@ -42,29 +42,22 @@ function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 // 三段分栏：zone 默认 left；诊断走 center；位置/百分比/行数走 right。
 function render(ctx) {
   ctx = ctx || {};
-  // ICONS 懒加载;加载失败/缺失 → null(后续全部有 ?: 保护)
-  if (!ICONS) {
-    try {
-      ICONS = helix.load("lib/icons.js") || null;
-    } catch (e) {
-      ICONS = null;
-    }
-  }
   const mode = ctx.mode || "normal";
   const parts = [];
 
-  // ── 窗口模式指示：当前窗口图标（全部从 ICONS 引入，不新增 ICONS 条目）──
+  // ── 窗口模式指示：当前窗口图标 ──
   if (ctx.window_mode) {
-    let winIcon = ICONS ? ICONS.getFileIcon(ctx.active_leaf_path || "") : "";
-    if (ctx.active_leaf_type === "terminal") winIcon = ICONS ? ICONS.getFileIcon("term.sh") : "";
-    else if (ctx.active_leaf_type === "panel") winIcon = ICONS ? ICONS.getDirIcon(false) : "";
+    let winIcon = helix.icons.file(ctx.active_leaf_path || "");
+    if (ctx.active_leaf_type === "terminal") winIcon = helix.icons.file("term.sh");
+    else if (ctx.active_leaf_type === "panel") winIcon = helix.icons.dir(false);
     parts.push({ text: " " + winIcon + " ", style: "ui.statusline.insert" });
   }
 
   // ── 左区：mode 色块 + 文件名（类型图标）+ git 分支 ──
-  parts.push({ text: " " + (ICONS ? ICONS.getModeIcon(mode) : mode.charAt(0).toUpperCase()) + " ", style: "ui.statusline." + mode });
+  // 关掉图标时**不能**变空:用模式首字母回退(保留信息,与旧行为一致)
+  parts.push({ text: " " + (helix.icons.mode(mode) || mode.charAt(0).toUpperCase()) + " ", style: "ui.statusline." + mode });
   const name = ctx.path ? ctx.path.split("/").pop() : "[scratch]";
-  const fileIcon = ICONS ? ICONS.getFileIcon(ctx.path || "") : "";
+  const fileIcon = helix.icons.file(ctx.path || "");
   parts.push({ text: fileIcon + " " + name, style: null });
   const cfg = current_cfg();
   if (cfg.show_git_branch && gitBranch) {
@@ -73,10 +66,10 @@ function render(ctx) {
 
   // ── 中区：诊断计数（error 红 / warning 黄；0 不显示）──
   if (cfg.show_diagnostics && (ctx.diagnostics_error || 0) > 0) {
-    parts.push({ text: (ICONS ? ICONS.getDiagnosticIcon("error") : "✗") + " " + ctx.diagnostics_error, style: "error", zone: "center" });
+    parts.push({ text: (helix.icons.diagnostic("error") || "✗") + " " + ctx.diagnostics_error, style: "error", zone: "center" });
   }
   if (cfg.show_diagnostics && (ctx.diagnostics_warning || 0) > 0) {
-    parts.push({ text: (ICONS ? ICONS.getDiagnosticIcon("warning") : "!") + " " + ctx.diagnostics_warning, style: "warning", zone: "center" });
+    parts.push({ text: (helix.icons.diagnostic("warning") || "!") + " " + ctx.diagnostics_warning, style: "warning", zone: "center" });
   }
 
   // ── 右区：位置 + 百分比 + 总行数（右对齐贴最右）──

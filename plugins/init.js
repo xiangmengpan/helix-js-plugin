@@ -1,6 +1,10 @@
 // helix 插件入口（启动文件，helix 自动加载 ~/.config/helix/init.js）：
-// 只列功能插件；共享依赖（icons）由各插件 helix.plugin deps 清单自动加载。
+// 只列功能插件。图标表已收进核心(helix.icons.*,零依赖);lib/icons.js 只剩 [icons] 配置,
+// 所以在这显式加载一次 —— 各插件**不再**需要 deps: ["lib/icons.js"]。
 // 目录分层：plugins/lib（共享层）· plugins/features（功能插件）。
+// 图标配置模块([icons] nerd_font 的 define_config 在它里面)——显式加载一次。
+// 各功能插件已不再依赖它:需要图标直接用 helix.icons.*(核心单一来源)。
+helix.load("lib/icons.js");
 helix.load("features/terminal.js");
 helix.load("features/statusline.js");
 helix.load("features/filetree/index.js");
