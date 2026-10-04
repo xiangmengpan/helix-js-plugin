@@ -523,6 +523,33 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 键位表的**单一来源**不变量:which-key.js 不得内嵌第二份模式键位表。
+///
+/// 背景:该文件早先有一份 30 行 `PANE_HINTS`,与 compositor 的 `pane_mode_entries`
+/// 重复(同一份键位表两处维护,必然漂移),已删。模式提示的**行为**由
+/// `which_key_plugin_zh_hints` 覆盖;这条钉住"只有一份"。
+///
+/// 为什么不用内容断言:引擎表与删掉的那份**文案几乎逐行相同**,且渲染时 CJK 会被
+/// 逐字符处理(插入空格,如「交 换」),所以按内容判别既脆弱又不可靠 —— 实测就挂过一次。
+/// 直接断言"插件里不存在第二份表"才是这个不变量本身。
+#[test]
+fn which_key_has_no_hardcoded_pane_hints_table() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/features/which-key.js");
+    // 刻意**不**静默跳过:这份文件在仓库里必然存在,读不到就是路径写错了 ——
+    // 静默 return 会让测试空过(那正是这类"读文件"测试最常见的假绿)。
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+    assert!(
+        !src.contains("PANE_HINTS = {"),
+        "which-key.js 又出现了硬编码的 PANE_HINTS 表 —— 键位表必须只在引擎里有一份"
+    );
+    assert!(
+        !src.contains("交换窗口"),
+        "which-key.js 出现旧回退表的文案「交换窗口」—— 说明回退表复活了"
+    );
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
