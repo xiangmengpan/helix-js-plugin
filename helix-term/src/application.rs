@@ -167,12 +167,10 @@ impl Application {
             // 有序列表(HELIX_RUNTIME + exe 相对 + 系统路径),在此挂 plugins/ 子目录。
             // 这一步是"把功能拆成随软件分发的内置插件"的前置:内置放在自带 runtime 里,
             // 用户仍可用同名文件覆盖它。
-            let mut roots: Vec<std::path::PathBuf> = helix_loader::runtime_dirs()
-                .iter()
-                .map(|d| d.join("plugins"))
-                .collect();
-            roots.push(plugin_dir.clone());
-            helix_js::set_plugin_roots(roots);
+            helix_js::set_plugin_roots(plugin_roots_for(
+                helix_loader::runtime_dirs(),
+                &helix_loader::config_dir(),
+            ));
             // 跨线程唤醒：worker 发事件 → request_redraw → 事件循环 33ms 内重绘。
             // 这是终端/异步输出即时上屏的关键（chunk 到达不等 idle）。
             helix_js::set_term_wake(Box::new(helix_event::request_redraw));
@@ -2238,5 +2236,61 @@ mod tests {
         // 有序断言:二分结果保持输入升序(渲染端分组合并依赖该不变量)
         let out = slice_range(&items, |x| *x, 0, usize::MAX);
         assert!(out.windows(2).all(|w| w[0] <= w[1]));
+    }
+}
+
+/// 计算插件根(**有序**)。
+///
+/// **自带 runtime 在前、用户配置目录殿后** —— `helix_js::state::resolve_in` 是
+/// "从后往前找第一个存在的",所以用户目录殿后 ⇒ **用户可覆盖内置插件**
+/// (对齐 Neovim 的 runtimepath 语义)。这是"把功能做成随软件分发的内置插件"的前提。
+///
+/// 为什么抽成纯函数:调用点位于 `#[cfg(not(feature = "integration"))]` 块内
+/// (集成测试**故意**不加载开发机的用户插件目录,否则注册的命令/事件跨测试残留),
+/// 所以那处接线**集成测试够不到** —— 只能靠这里的单测保证。这曾是覆盖盲区。
+fn plugin_roots_for(
+    runtime_dirs: &[std::path::PathBuf],
+    config_dir: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> =
+        runtime_dirs.iter().map(|d| d.join("plugins")).collect();
+    roots.push(config_dir.join("plugins"));
+    roots
+}
+
+#[cfg(test)]
+mod plugin_roots_tests {
+    use super::plugin_roots_for;
+    use std::path::{Path, PathBuf};
+
+    /// 用户目录必须**殿后**:`resolve_in` 从后往前找 → 用户覆盖内置。
+    #[test]
+    fn bundled_first_and_user_last_so_user_overrides() {
+        let rt = vec![PathBuf::from("/rt/a"), PathBuf::from("/rt/b")];
+        let roots = plugin_roots_for(&rt, Path::new("/cfg"));
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/rt/a/plugins"),
+                PathBuf::from("/rt/b/plugins"),
+                PathBuf::from("/cfg/plugins"),
+            ],
+            "自带 runtime 按序在前,用户目录殿后"
+        );
+        assert_eq!(
+            roots.last().unwrap(),
+            &PathBuf::from("/cfg/plugins"),
+            "最后一个根必须是用户目录 —— 否则用户无法覆盖内置插件"
+        );
+        assert!(roots.len() >= 2, "至少要有 自带 + 用户 两个根");
+    }
+
+    /// 没有自带 runtime 时也不能退化成空(否则相对名全部解析失败)
+    #[test]
+    fn falls_back_to_user_dir_when_no_runtime() {
+        assert_eq!(
+            plugin_roots_for(&[], Path::new("/cfg")),
+            vec![PathBuf::from("/cfg/plugins")]
+        );
     }
 }
