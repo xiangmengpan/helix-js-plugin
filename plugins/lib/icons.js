@@ -10,6 +10,25 @@
 // 已删除:旧的原始表导出 `ICONS`(经查**无任何消费方**使用,它们只用下面 6 个函数)。
 helix.plugin("icons", { deps: [], version: "2.0" });
 
+// ── 用户配置(官方 config.toml 通道,不需要改代码)──
+// 用法:config.toml 里写
+//     [icons]
+//     nerd_font = false
+// 图标是**外观**,本该跟配置走 —— 之前它硬编码在插件里,用户既改不了、升级还会被覆盖。
+helix.define_config("icons", {
+  nerd_font: {
+    type: "boolean",
+    default: true,
+    doc: "终端字体是否含 nerd font 字形;关掉后文件类图标不显示,目录回退为 ▸/▾",
+  },
+});
+
+// 应用配置(在核心侧设置,所以 Rust 侧消费方(bufferline/gutter)同样受益)
+{
+  const cfg = helix.get_config("icons") || {};
+  helix.icons.enabled(cfg.nerd_font !== false);
+}
+
 // 参数一律先归一为字符串/布尔:Rust 侧绑定要求正确类型,
 // 而旧实现靠 JS 对象的隐式键强制转换(number/undefined 都能当键用)。
 // 这几个 `String(...)` 就是补上那层转换。
