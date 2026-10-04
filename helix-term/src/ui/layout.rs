@@ -1129,6 +1129,22 @@ impl LayoutTree {
             .filter(|f| live.contains(&f.id))
             .collect();
 
+        // 堆叠组:只保留仍存活的成员;成员少于 2 个则整组丢弃(兄弟约束下组恒 2 人)
+        self.stacks.clear();
+        if let Some(groups) = dump
+            .get("stacks")
+            .and_then(|v| serde_json::from_value::<Vec<StackGroup>>(v.clone()).ok())
+        {
+            for g in groups {
+                let members: Vec<u64> =
+                    g.members.into_iter().filter(|m| live.contains(m)).collect();
+                if members.len() >= 2 {
+                    let anchor = members[0];
+                    self.stacks.insert(anchor, StackGroup { members });
+                }
+            }
+        }
+
         // active / zoomed / minimized 只接受仍存在的 id,否则回落到树的首叶
         let live_of = |v: Option<u64>| v.filter(|id| live.contains(id));
         let first = self.leaf_ids().into_iter().next().unwrap_or(0);
@@ -1199,6 +1215,7 @@ impl LayoutTree {
             zoomed: self.zoomed,
             minimized: self.minimized,
             floats: self.floats.clone(),
+            stacks: self.stacks.values().cloned().collect(),
             leafs,
         }
     }
@@ -1306,6 +1323,42 @@ impl LayoutTree {
             self.leaf_rects.insert(*id, *rect);
         }
         for (id, rect) in rects {
+            // 堆叠:占顶部 1 行作 header(成员列表,▶ 标记当前显示的那个),
+            // 内容画在剩下的区域。锚 = members[0] = 当前显示的那个(A.6 不变量)。
+            let group = self.stacks.get(&id).cloned();
+            let rect = match &group {
+                Some(g) if rect.height >= 3 => {
+                    let names: Vec<String> = g
+                        .members
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| {
+                            let kind = self
+                                .components
+                                .get(m)
+                                .map(|c| short_type_name(c.type_name()).to_string())
+                                .unwrap_or_default();
+                            if i == 0 {
+                                format!("▶{kind}")
+                            } else {
+                                kind
+                            }
+                        })
+                        .collect();
+                    let text = format!("▸ {}", names.join("  "));
+                    let style = cx.editor.theme.get("ui.statusline");
+                    let chars: Vec<char> = text.chars().collect();
+                    for x in 0..rect.width {
+                        let ch = chars.get(x as usize).copied().unwrap_or(' ');
+                        if let Some(cell) = surface.get_mut(rect.x + x, rect.y) {
+                            cell.set_symbol(&ch.to_string());
+                            cell.set_style(style);
+                        }
+                    }
+                    Rect::new(rect.x, rect.y + 1, rect.width, rect.height - 1)
+                }
+                _ => rect,
+            };
             if let Some(comp) = self.components.get_mut(&id) {
                 if focus == Some(id) && rect.width >= 4 && rect.height >= 4 {
                     let inner = Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
@@ -1662,6 +1715,8 @@ pub struct LayoutDump {
     pub minimized: Option<u64>,
     /// 浮动 pane 槽位(阶段②;空 = 无浮窗)。只含几何/z/pin,组件由 id 复用。
     pub floats: Vec<FloatSlot>,
+    /// 堆叠组(阶段②)。每组 `members[0]` 是锚(持有槽位、也是当前显示的)。
+    pub stacks: Vec<StackGroup>,
     /// 叶子扁平列表（树序；测试/JS 读 fixed 用）
     pub leafs: Vec<LeafInfo>,
 }
@@ -2096,6 +2151,46 @@ mod rail_tests {
             serde_json::to_value(t2.dump()).unwrap()["tree"],
             json["tree"],
             "树形状(含 ratio 与 first/second 次序)"
+        );
+    }
+
+    /// 堆叠组也要随 dump 往返(否则重启/restore 后堆叠丢失,两个 pane 变回独立)
+    #[test]
+    fn restore_roundtrip_keeps_stacks() {
+        let mut t = base();
+        let b = t
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
+            .unwrap();
+        t.stack_new_with_sibling(0).unwrap();
+        t.stack_rotate(0, true).unwrap(); // 锚换成 b,考验顺序也被保留
+        let json = serde_json::to_value(t.dump()).unwrap();
+
+        let mut t2 = base();
+        t2.split_side(
+            0,
+            SplitDir::H,
+            false,
+            Box::new(PluginTerminal::new(1, 1, 80)),
+        )
+        .unwrap();
+        assert!(!t2.is_stacked(0) && !t2.is_stacked(b), "重建前无堆叠");
+        t2.restore(&json).unwrap();
+
+        assert!(t2.is_stacked(b), "锚(轮转后的)回来了");
+        assert_eq!(t2.stack_members(b), vec![b, 0], "成员顺序也保留");
+        assert_eq!(t2.stack_anchor_of(0), Some(b));
+
+        // 成员已不存在 → 整组丢弃(否则 skip 集会指向已删叶子)
+        let mut t3 = base();
+        t3.restore(&json).unwrap();
+        assert!(
+            !t3.is_stacked(0) && !t3.is_stacked(b),
+            "仅剩一个存活成员 → 组丢弃"
         );
     }
 
