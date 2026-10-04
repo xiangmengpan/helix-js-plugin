@@ -109,6 +109,56 @@ async fn float_keys_resize_and_move_the_float() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pane 模式 `s`:与兄弟窗建堆叠;`p`/`P`/`Tab` 在组内轮转(而不是切下一个窗口)
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_stack_and_rotate() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app); // 0 与 1 是兄弟叶子;活动叶 = 1(面板)
+    assert_eq!(app.compositor.layout_tree().active(), 1);
+
+    // 锚 = 活动叶(1),所以组是 [1, 0]
+    pump(&mut app, "<C-p>s").await?;
+    assert!(
+        app.compositor.layout_tree().is_stacked(1),
+        "s 建组,锚 = 活动叶"
+    );
+    assert_eq!(app.compositor.layout_tree().stack_members(1), vec![1, 0]);
+
+    // 轮转:锚换成兄弟,活动叶跟着走
+    pump(&mut app, "p").await?;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "轮转后活动叶 = 新锚"
+    );
+    assert_eq!(app.compositor.layout_tree().stack_members(0), vec![0, 1]);
+
+    pump(&mut app, "P").await?;
+    assert_eq!(app.compositor.layout_tree().active(), 1, "反向轮转回 1");
+    assert_eq!(app.compositor.layout_tree().stack_members(1), vec![1, 0]);
+
+    // 已在组里 → 幂等
+    pump(&mut app, "s").await?;
+    assert_eq!(
+        app.compositor.layout_tree().stack_members(1),
+        vec![1, 0],
+        "不重复入组"
+    );
+
+    // 关掉锚 → 组解散,剩余成员恢复为普通 pane
+    pump(&mut app, "<C-p>x").await?;
+    assert!(
+        !app.compositor.layout_tree().is_stacked(0),
+        "摘掉成员 → 组解散"
+    );
+    assert_eq!(
+        app.compositor.layout_tree().leaf_ids().len(),
+        1,
+        "只剩一个叶子"
+    );
+    Ok(())
+}
+
 /// Pane 模式:`p` / `P` / `Tab` 按树中序环绕切换焦点(zellij 的切下一个窗口)
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_mode_cycle_focus() -> anyhow::Result<()> {

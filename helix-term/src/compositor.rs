@@ -901,6 +901,22 @@ impl Compositor {
         let _ = self.swap_leaf_dir(a, dir, side);
     }
 
+    /// `p` / `P` / `Tab`:活动叶在堆叠组里 → **轮转堆叠**(组内容就地切换);
+    /// 否则维持"切下一个/上一个窗口"。轮转后活动叶跟着新锚走
+    /// (零映射:兄弟成员覆盖同一区域 —— 规格 A.6/A.7)。
+    fn pane_cycle_or_stack(&mut self, forward: bool, cx: &mut Context) {
+        let active = self.main_tree.active();
+        if self.main_tree.is_stacked(active) {
+            if let Some(new_anchor) = self.main_tree.stack_rotate(active, forward) {
+                self.main_tree.focus(new_anchor);
+                self.sync_editor_focus(cx.editor);
+                self.sync_layout_cache();
+                return;
+            }
+        }
+        self.window_mode_cycle_focus(forward, cx);
+    }
+
     /// 切到下一个/上一个叶子(按树中序环绕)。zellij 的 `p` / `Tab`。
     fn window_mode_cycle_focus(&mut self, forward: bool, cx: &mut Context) {
         let ids = self.main_tree.leaf_ids();
@@ -966,7 +982,7 @@ impl Compositor {
                     ("z", "最小化/还原", true),
                     ("w / e", "浮动 / 收回平铺", true),
                     ("i", "pin(浮动时置顶)", true),
-                    ("s", "堆叠", false),
+                    ("s", "堆叠(与兄弟窗合并)", true),
                     ("Esc / C-p", "退出", true),
                 ],
             ),
@@ -1150,13 +1166,22 @@ impl Compositor {
                     }
                 }
                 Some('s') => {
-                    cx.editor
-                        .set_status("堆叠 pane 属于阶段② 余下部分(LayoutTree::Stack 未做)");
+                    let id = self.main_tree.active();
+                    if self.main_tree.stack_new_with_sibling(id).is_some() {
+                        self.sync_layout_cache();
+                        cx.editor
+                            .set_status("已堆叠(p / P / Tab 在组内切换;再按 s 无效)");
+                    } else if self.main_tree.is_stacked(id) {
+                        cx.editor.set_status("已在堆叠组里(p / P / Tab 切换)");
+                    } else {
+                        cx.editor
+                            .set_status("堆叠需要两个相邻的叶子窗(兄弟):当前无法堆叠");
+                    }
                 }
                 // zellij 的切换焦点:p 下一个、P 上一个、Tab 下一个
-                Some('p') => self.window_mode_cycle_focus(true, cx),
-                Some('P') => self.window_mode_cycle_focus(false, cx),
-                _ if matches!(key.code, KeyCode::Tab) => self.window_mode_cycle_focus(true, cx),
+                Some('p') => self.pane_cycle_or_stack(true, cx),
+                Some('P') => self.pane_cycle_or_stack(false, cx),
+                _ if matches!(key.code, KeyCode::Tab) => self.pane_cycle_or_stack(true, cx),
                 _ => {}
             },
             PaneMode::Resize => {

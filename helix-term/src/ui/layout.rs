@@ -38,6 +38,10 @@ pub struct LayoutTree {
     /// 浮动 pane 槽位(阶段②):多窗 + z 序 + 比例几何。
     /// 旧行为(终端 Floating 模式)= 只有一项、比例居中。
     floats: Vec<FloatSlot>,
+    /// 堆叠组(阶段②)。key = 锚成员 id(= `members[0]` = 当前显示的那个)。
+    /// 不变量:锚持有槽位且**就是 shown**;循环 = 轮转 `members`;成员必须是**兄弟**
+    /// (否则被排除的成员不会把空间让给锚,轮转会跳位置 —— 见规格 A.7)。
+    stacks: std::collections::HashMap<u64, StackGroup>,
     /// 最小化叶子 id（不占布局，渲染为底部一条标题横条；单例）
     minimized: Option<u64>,
     /// 最近一次渲染的叶子区域（鼠标命中查询；每帧渲染更新）
@@ -47,6 +51,25 @@ pub struct LayoutTree {
     /// rail(侧栏轨道)叶子:恒为 root 的直接子叶(H 分屏边缘侧,占全高)。
     /// 不参与分裂/换位/最小化/放大等窗口操作;窗口操作只发生在 main 子树。
     rail: Option<u64>,
+}
+
+/// 堆叠组(阶段②)。
+///
+/// 不变量:`members[0]` 是**锚** —— 它持有树里的槽位,且它就是当前显示的那个;
+/// `members[1..]` 被排除出布局(它们的位置空间由锚吸收),但它们**仍各自持有树位置**,
+/// 所以解散/关闭时不需要重定键、也不会产生孤儿组件。
+///
+/// **成员必须是兄弟**(同一父 Split 的两个子):只有这样,排除一个才会让另一个占满
+/// 同一块区域,循环时 rect 不变 —— 零映射的前提(规格 A.7)。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StackGroup {
+    pub members: Vec<u64>,
+}
+
+impl StackGroup {
+    pub fn anchor(&self) -> Option<u64> {
+        self.members.first().copied()
+    }
 }
 
 /// 浮动 pane 槽位(阶段②)。
@@ -206,6 +229,7 @@ impl Default for LayoutTree {
             next_id: 1,
             zoomed: None,
             floats: Vec::new(),
+            stacks: std::collections::HashMap::new(),
             minimized: None,
             fixed: Default::default(),
             rail: None,
@@ -308,6 +332,128 @@ impl LayoutTree {
         } else {
             self.active
         }
+    }
+
+    // ── 堆叠(阶段②)──────────────────────────────────────────
+
+    /// 该 id 所属堆叠组的锚(不在组里 → None)
+    pub fn stack_anchor_of(&self, id: u64) -> Option<u64> {
+        self.stacks
+            .iter()
+            .find(|(_, g)| g.members.contains(&id))
+            .map(|(a, _)| *a)
+    }
+
+    /// 组内成员(不在组里 → 只含它自己)
+    pub fn stack_members(&self, id: u64) -> Vec<u64> {
+        match self.stack_anchor_of(id).and_then(|a| self.stacks.get(&a)) {
+            Some(g) => g.members.clone(),
+            None => vec![id],
+        }
+    }
+
+    pub fn is_stacked(&self, id: u64) -> bool {
+        self.stack_anchor_of(id).is_some()
+    }
+
+    /// `id` 的最小父 Split 里的**叶子**兄弟。堆叠 v1 只支持兄弟合并(A.7)。
+    pub fn leaf_sibling_of(&self, id: u64) -> Option<u64> {
+        fn go(node: &LayoutNode, id: u64) -> Option<u64> {
+            let LayoutNode::Split { first, second, .. } = node else {
+                return None;
+            };
+            let first_is = matches!(&**first, LayoutNode::Leaf { id: x } if *x == id);
+            let second_is = matches!(&**second, LayoutNode::Leaf { id: x } if *x == id);
+            if first_is {
+                if let LayoutNode::Leaf { id: sib } = &**second {
+                    return Some(*sib);
+                }
+            }
+            if second_is {
+                if let LayoutNode::Leaf { id: sib } = &**first {
+                    return Some(*sib);
+                }
+            }
+            go(first, id).or_else(|| go(second, id))
+        }
+        go(&self.root, id)
+    }
+
+    /// 建堆叠组:`id` 与其叶子兄弟组成 `[id, sibling]`(锚 = `id`)。
+    /// 任一方已在组里 → 拒绝(避免把两个区域的成员塞进同一组,破坏不变量)。
+    pub fn stack_new_with_sibling(&mut self, id: u64) -> Option<u64> {
+        if !self.components.contains_key(&id) || self.is_stacked(id) {
+            return None;
+        }
+        let sib = self.leaf_sibling_of(id)?;
+        if self.is_stacked(sib) {
+            return None;
+        }
+        self.stacks.insert(
+            id,
+            StackGroup {
+                members: vec![id, sib],
+            },
+        );
+        Some(id)
+    }
+
+    /// 轮转组内成员:新的 shown 成为新锚(换 key)。返回新锚。
+    /// 兄弟成员覆盖同一区域,所以换 key 后 rect 不变 —— 零映射的前提。
+    pub fn stack_rotate(&mut self, id: u64, forward: bool) -> Option<u64> {
+        let anchor = self.stack_anchor_of(id)?;
+        let mut g = self.stacks.remove(&anchor)?;
+        if g.members.len() < 2 {
+            self.stacks.insert(anchor, g);
+            return None;
+        }
+        if forward {
+            g.members.rotate_left(1);
+        } else {
+            g.members.rotate_right(1);
+        }
+        let new_anchor = g.members[0];
+        self.stacks.insert(new_anchor, g);
+        Some(new_anchor)
+    }
+
+    /// 从堆叠组里摘掉一个成员(关闭叶子时调用)。
+    /// 锚被摘→换 key 到新首位;剩 1 个→解散(该成员恢复为普通 pane)。
+    ///
+    /// 注:在 v1 的**兄弟约束**下,一个 Split 只有两个子,所以组恒为 2 人 ——
+    /// 摘任意一个都走"解散"分支;下面的换 key 分支是为将来支持 >2 成员留的(当前不可达)。
+    pub fn stack_remove_member(&mut self, id: u64) {
+        let anchors: Vec<u64> = self.stacks.keys().copied().collect();
+        for a in anchors {
+            let pos = self
+                .stacks
+                .get(&a)
+                .and_then(|g| g.members.iter().position(|m| *m == id));
+            let Some(pos) = pos else { continue };
+            if let Some(g) = self.stacks.get_mut(&a) {
+                g.members.remove(pos);
+            }
+            let len = self.stacks.get(&a).map(|g| g.members.len()).unwrap_or(0);
+            if len <= 1 {
+                self.stacks.remove(&a);
+            } else if pos == 0 {
+                if let Some(g) = self.stacks.remove(&a) {
+                    let new_anchor = g.members[0];
+                    self.stacks.insert(new_anchor, g);
+                }
+            }
+            break;
+        }
+    }
+
+    /// 不参与布局空间的 id:浮窗 + 堆叠组里**非锚**的成员
+    /// (非锚成员的位置空间由锚吸收 —— 所以堆叠始终占满同一块区域)
+    pub fn layout_skip_ids(&self) -> Vec<u64> {
+        let mut v = self.float_ids();
+        for g in self.stacks.values() {
+            v.extend(g.members.iter().skip(1).copied());
+        }
+        v
     }
 
     /// 最上层浮动叶子的 id(单浮窗时代的 `floating()` 语义)
@@ -579,6 +725,8 @@ impl LayoutTree {
         }
         // 关闭浮动 pane：残留槽位会让事件路由指向已删叶子 → 全部 Ignored → 程序僵死
         self.floats.retain(|f| f.id != id);
+        // 堆叠：摘掉成员；锚被摘则换 key，剩 1 个则解散（该成员恢复为普通 pane）
+        self.stack_remove_member(id);
         if self.minimized == Some(id) {
             self.minimized = None;
         }
@@ -1145,8 +1293,8 @@ impl LayoutTree {
         }
         let mut rects = Vec::new();
         // 浮动/最小化叶子不占布局空间（其余叶子占满，无 dock 位置留白）
-        let floats = self.float_ids();
-        layout_node(&self.root, area, &mut rects, &floats, self.minimized);
+        let skip = self.layout_skip_ids();
+        layout_node(&self.root, area, &mut rects, &skip, self.minimized);
         // 活动叶子（事件路由目标）：画高亮边框（内容 inset 1 格；浮窗已有自身边框不重复）
         let focus = if !self.floats.is_empty() || self.zoomed.is_some() {
             None
@@ -2048,6 +2196,127 @@ mod rail_tests {
             .expect("split_side 应返回新叶 id");
         assert_eq!(tree.component_kind_of(id), Some("PluginPanel"));
         assert_eq!(tree.component_kind_of(9999), None, "不存在的 id → None");
+    }
+
+    /// A.7 指定的第一件事:兄弟合并 + 轮转前后锚的 rect 必须完全相同。
+    /// 这条同时验证 A.6 的整个零映射论证 —— 不过就不要往下写。
+    #[test]
+    fn stack_siblings_keep_rect_across_rotation() {
+        let mut tree = base(); // 编辑器 id=0
+        let b = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
+            .unwrap();
+        assert_eq!(tree.leaf_sibling_of(0), Some(b), "0 与 b 是叶子兄弟");
+
+        assert_eq!(tree.stack_new_with_sibling(0), Some(0), "建组,锚 = 0");
+        assert_eq!(tree.stack_members(0), vec![0, b]);
+        assert!(tree.is_stacked(b), "b 也算在组内");
+
+        let area = Rect::new(0, 0, 100, 30);
+        let rects_of = |t: &LayoutTree| -> std::collections::HashMap<u64, Rect> {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &t.layout_skip_ids(), t.minimized);
+            v.into_iter().collect()
+        };
+        let before = rects_of(&tree);
+        assert!(
+            before.contains_key(&0) && !before.contains_key(&b),
+            "只有锚占布局空间(非锚被吸收)"
+        );
+        let anchor_rect = before[&0];
+        assert_eq!(
+            anchor_rect.width, area.width,
+            "兄弟被排除后锚占满整个 split 区域"
+        );
+
+        // 轮转 → 新锚 = b,被排除的变成 0
+        let new_anchor = tree.stack_rotate(0, true).unwrap();
+        assert_eq!(new_anchor, b, "轮转后新锚 = 兄弟");
+        let after = rects_of(&tree);
+        assert!(
+            after.contains_key(&b) && !after.contains_key(&0),
+            "新锚独占空间"
+        );
+        assert_eq!(
+            after[&b], anchor_rect,
+            "A.7:轮转前后锚的 rect 必须相同 —— 零映射的前提"
+        );
+
+        // 反向轮转回到原状
+        assert_eq!(tree.stack_rotate(b, false).unwrap(), 0);
+        assert_eq!(rects_of(&tree)[&0], anchor_rect);
+    }
+
+    /// A.7 的硬约束:非兄弟(另一子是 Split)不能合并;已在组里不重复建组
+    #[test]
+    fn stack_rejects_non_siblings_and_is_idempotent() {
+        let mut tree = base();
+        let b = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
+            .unwrap();
+        // 再把 b 劈开 → 0 的兄弟变成一个 Split,不再是叶子
+        let c = tree
+            .split_side(
+                b,
+                SplitDir::V,
+                false,
+                Box::new(PluginTerminal::new(2, 2, 80)),
+            )
+            .unwrap();
+        assert_eq!(tree.leaf_sibling_of(0), None, "非叶兄弟 → 不认");
+        assert_eq!(tree.stack_new_with_sibling(0), None, "非兄弟 → 拒绝建组");
+        assert!(!tree.is_stacked(0));
+
+        // b 与 c 是叶子兄弟 → 可以建组
+        assert_eq!(tree.stack_new_with_sibling(b), Some(b));
+        assert_eq!(tree.stack_members(c), vec![b, c]);
+        assert_eq!(
+            tree.stack_new_with_sibling(b),
+            None,
+            "已在组里 → 幂等拒绝,不重复入组"
+        );
+
+        // 摘掉非锚成员 → 组解散(该成员恢复为普通 pane)
+        tree.stack_remove_member(c);
+        assert!(!tree.is_stacked(b) && !tree.is_stacked(c), "剩 1 个 → 解散");
+    }
+
+    /// 摘成员:兄弟约束下组恒为 2 人,所以摘掉任意一个都必然解散
+    /// (该成员各自恢复为普通 pane —— 它本来就有自己的树位置,不会成孤儿)
+    #[test]
+    fn stack_removing_member_dissolves_two_member_group() {
+        let mut tree = base();
+        let b = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
+            .unwrap();
+        tree.stack_new_with_sibling(0).unwrap();
+        tree.stack_remove_member(0); // 摘掉锚
+        assert!(!tree.is_stacked(0) && !tree.is_stacked(b), "剩 1 个 → 解散");
+        // 解散后两个叶子都重新占布局空间
+        let mut v = Vec::new();
+        layout_node(
+            &tree.root,
+            Rect::new(0, 0, 100, 30),
+            &mut v,
+            &tree.layout_skip_ids(),
+            tree.minimized,
+        );
+        assert_eq!(v.len(), 2, "解散后两叶各占自己的位置");
     }
 
     /// 阶段②:多个浮动 pane 并存,z 大者在上(渲染与事件路由共用此序)
