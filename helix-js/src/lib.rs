@@ -386,6 +386,21 @@ pub fn init() {
                     JsString::from("list"),
                     0,
                 )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_stack_create),
+                    JsString::from("create"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_stack_activate),
+                    JsString::from("activate"),
+                    2,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_stack_remove),
+                    JsString::from("remove"),
+                    1,
+                )
                 .build();
             let mut builder = ObjectInitializer::new(engine);
             builder
@@ -1135,6 +1150,52 @@ pub(crate) mod tests {
         assert_eq!(m[2], "t:function");
         // 复原全局缓存(本测试注入过 panes;不清会让依赖"空快照"的测试挂)
         crate::state::cache_panes(r#"{"panes":[]}"#);
+    }
+
+    /// `helix.stack.*` —— 名字齐全 + 三个写操作各入队对应请求。
+    /// 注意:本套 API 只支持**2 人组**(规格 A.7 兄弟约束),所以**没有 `add`**
+    /// —— 一个 Split 只有两个子,组不可能多于 2 人。这条注释就是"为什么没有 add"的答案。
+    #[test]
+    fn stack_namespace_and_write_ops() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("sw", () => {
+            const need = ["list","create","activate","remove"];
+            const missing = need.filter((n) => typeof helix.stack[n] !== "function");
+            helix.echo("missing:" + missing.join(","));
+            helix.echo("add:" + typeof helix.stack.add);
+            helix.stack.create(3);
+            helix.stack.activate(3, 9);
+            helix.stack.remove(3);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("sw", &ctx).unwrap());
+        let m = take_messages();
+        assert_eq!(m[0], "missing:", "四个名字必须齐全");
+        assert_eq!(m[1], "add:undefined", "**没有 add** —— 2 人组的模型约束");
+        let reqs = take_ui_requests();
+        assert!(matches!(&reqs[0], UiRequest::StackCreate { id } if *id == 3));
+        assert!(
+            matches!(&reqs[1], UiRequest::StackActivate { id, member } if *id == 3 && *member == 9)
+        );
+        assert!(matches!(&reqs[2], UiRequest::StackRemove { id } if *id == 3));
+
+        // activate 缺 member → 报错(要显式说清"显示哪个")
+        assert!(
+            load_script(r#"helix.stack.activate(3);"#).is_err(),
+            "缺 member 应报错"
+        );
     }
 
     #[test]

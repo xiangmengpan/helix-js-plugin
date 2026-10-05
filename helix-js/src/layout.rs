@@ -571,6 +571,73 @@ pub(crate) fn js_pane_pin(
     Ok(JsValue::undefined())
 }
 
+/// `helix.stack.create(id)` —— 与**兄弟窗**建组(锚 = `id`)。
+/// 规格 A.7:非兄弟无法堆叠(排除一个不会让另一个占满原区域,轮转会跳位置),
+/// 所以这是"无效操作"而不是"报错" —— 结果在下一帧可见(与 float/close 等一致)。
+pub(crate) fn js_stack_create(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::StackCreate { id });
+    Ok(JsValue::undefined())
+}
+
+/// `helix.stack.activate(id, member)` —— 让 `member` 成为当前显示的那个(轮转)。
+pub(crate) fn js_stack_activate(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    let member: u64 = args
+        .get(1)
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.stack.activate: 需要 member(要显示的那个成员)",
+            )))
+        })?
+        .try_js_into(ctx)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::StackActivate { id, member });
+    Ok(JsValue::undefined())
+}
+
+/// `helix.stack.remove(id)` —— 把叶子摘出组(组剩 1 个则解散)
+pub(crate) fn js_stack_remove(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::StackRemove { id });
+    Ok(JsValue::undefined())
+}
+
 /// `helix.stack.list()` —— 当前所有堆叠组:`[{anchor, members}]`。
 /// 复用 `pane.list()` 的同一份快照(其中每个平铺叶带 `stack` 成员数组),
 /// 所以与 pane 视图永不失配;按锚 id 去重(组内每个成员都会报同一份 members)。

@@ -114,6 +114,19 @@ pub enum UiRequest {
         id: u64,
         on: bool,
     },
+    /// 与**兄弟窗**建堆叠组(锚 = `id`)。规格 A.7:只有兄弟能堆叠,否则是无效操作
+    StackCreate {
+        id: u64,
+    },
+    /// 轮转到指定成员成为"当前显示的那个"。`member` 必须在同一组内
+    StackActivate {
+        id: u64,
+        member: u64,
+    },
+    /// 把叶子摘出堆叠组(组剩 1 个则解散)
+    StackRemove {
+        id: u64,
+    },
     Unzoom,
     ResizeLeaf {
         id: u64,

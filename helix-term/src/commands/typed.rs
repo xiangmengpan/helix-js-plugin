@@ -5167,6 +5167,40 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.sync_layout_cache();
                 });
             }
+            helix_js::UiRequest::StackCreate { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    // 非兄弟 → None(无效操作);成功才刷新缓存
+                    if compositor
+                        .layout_tree()
+                        .stack_new_with_sibling(id)
+                        .is_some()
+                    {
+                        compositor.sync_layout_cache();
+                    }
+                });
+            }
+            helix_js::UiRequest::StackActivate { id, member } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    let lt = compositor.layout_tree();
+                    if lt.is_stacked(id) {
+                        // 轮转到 member 成为锚(= 当前显示)。2 人组最多一次;
+                        // 上限用成员数,便于将来 >2 成员时不改这里。
+                        for _ in 0..lt.stack_members(id).len() {
+                            if lt.stack_anchor_of(id) == Some(member) {
+                                break;
+                            }
+                            lt.stack_rotate(id, true);
+                        }
+                        compositor.sync_layout_cache();
+                    }
+                });
+            }
+            helix_js::UiRequest::StackRemove { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.layout_tree().stack_remove_member(id);
+                    compositor.sync_layout_cache();
+                });
+            }
             helix_js::UiRequest::PaneRaise { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().float_raise(id);
