@@ -95,7 +95,7 @@
 `:config-reload` 不重推(再 `:plugin-reload` 即可);终态是把 `[icons]` 收进 `helix-view`
 的 Config、启动时由 Rust 直接设置,届时那个薄壳与 init 里的显式加载都可删。
 
-`helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/键位全核心;行格式数组或 `{cells, payload}` 分离;四个内置源 files/grep/buffers/symbols 由**核心**提供 —— 自定义源的模板见 `plugins/examples/picker.js`(它自己不注册任何源));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
+`helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/键位全核心;行格式数组或 `{cells, payload}` 分离;四个常用源 files/grep/buffers/symbols **本身就是 JS**(`plugins/examples/picker.js` 用 `helix.picker.define` 定义);核心只提供**注册表 + 分发**与**原生 UI**(nucleo 模糊匹配/滚动/预览/键位));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
 
 - 优点:picker 性能原生 + 插件可定义任意源;主题覆盖即时生效。
 - 局限:picker 候选一次性返回;无旋钮透传;预览仅文件;主题颜色不支持引用 scope。
