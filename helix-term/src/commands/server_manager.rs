@@ -1661,6 +1661,60 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    /// **端到端**:逐平台资产配方的**真实安装**。
+    /// 此前只测了解析/选择/消费点 —— 而"选了资产之后能不能装、bin 能不能链上"没测过。
+    /// 用 `file://` 假源(现成的 `make_tar_gz`)避免依赖网络。
+    #[test]
+    fn archive_assets_install_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let arc = dir.path().join("ra.tar.gz");
+        // 假包结构:顶层 <bin>-1.0.0/<bin> → strip=1 后落在 <out>/<bin>
+        make_tar_gz(&arc, "asset-ra").unwrap();
+        let target = registry::platform_targets()
+            .first()
+            .copied()
+            .unwrap_or("linux_x64_gnu");
+        let cfg = format!(
+            r#"
+[server-manager.registry.asset-ra]
+kind = "lsp"
+languages = ["rust"]
+description = "d"
+homepage = "h"
+bin = "asset-ra"
+version = "1.0.0"
+[[server-manager.registry.asset-ra.asset]]
+target = "{target}"
+url = "file://{}"
+"#,
+            arc.display()
+        );
+        let tbl: toml::Table = toml::from_str(&cfg).unwrap();
+        let sm = tbl
+            .get("server-manager")
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .clone();
+        apply_server_config(Some(&sm)).unwrap();
+
+        let spec = registry::get("asset-ra").expect("asset 配方可查");
+        assert!(
+            spec.is_installable(),
+            "只有 asset[] 没有 url_template 的配方也应判为可装"
+        );
+        assert!(
+            !needs_version(&spec),
+            "本条资产 url 不含 {{version}} → 不需要版本"
+        );
+
+        install("asset-ra", "1.0.0").unwrap();
+        assert!(
+            managed_bin("asset-ra").exists(),
+            "经逐平台资产安装后,bin 软链必须建成"
+        );
+    }
+
     /// 逐平台资产表(Mason `asset[]` 形状):解析 + 平台选择 + 两个消费点。
     ///
     /// 补这条测试的原因:能力先落地、测试后补 —— 当时只改了既有测试的构造,
