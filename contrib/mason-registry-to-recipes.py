@@ -59,9 +59,26 @@ source:
 | 资产名可含**解压前缀**(`file: libexec/`) | `strip` 是**数字**(剥几层) | 语义不同,需手工核 |
 | target 粒度更细(`linux_x64` vs `linux_x64_musl`) | 只有 `(os, arch)` | 同平台多资产表达不了 |
 
-### 所以要做的是先扩 schema(有界改动)
+### 所以要做的是先扩 schema —— **改动点已逐行定位**
 
-给配方加一个**逐平台资产表**(照 Mason 的形状),例如:
+全部在 `helix-term/src/commands/server_manager.rs`(共 7 处生产点 + 3 处测试点):
+
+| # | 位置 | 改什么 |
+|---|---|---|
+| 1 | `:898-910` `enum Install::Archive` | 加 `assets: Vec<ArchiveAsset>`(`{target, url, bin_rel}`);**空 = 沿用现有单模板简写**(向后兼容) |
+| 2 | `:1058` 一带(`tbl.get("url")` 附近) | 解析 `[[server-manager.registry.<n>.asset]]` 数组 |
+| 3 | `:1111-1122` 构造 `Install::Archive` | 带上 `assets` |
+| 4 | `:1207`(安装时构造 `url`) | **按当前平台选 asset**(无匹配则回落单模板);命中后用条目自己的 `url`/`bin_rel` |
+| 5 | `:493` `has_source` · `:930` `bin_rel` · `:948` `is_empty` · `:956` `needs_version` | 逐个处理新字段 —— **漏掉任一处,该工具在 arsenal 列表里就会显示错**(这是最易漏的部分) |
+| 6 | `:1192` `expand_template` + `rust_triple()` | 扩 musl 等变体;`{triple}` 表需与 Mason 的命名对齐 |
+| 7 | 测试 `:2395` / `:2531` / `:2556` | 补"逐平台资产"的解析 + 平台选择测试 |
+
+**为什么没有直接做**:它同时动 **schema 与安装路径**,且消费点分散(第 5 项漏一处就静默显示错)。
+这类改动必须**端到端验证**,预算不足时开它容易留下"半改的 schema" —— 那比没做更糟。
+
+### 目标形状(照 Mason)
+
+给配方加一个**逐平台资产表**,例如:
 
 ```toml
 [[server-manager.registry.ruff.asset]]
