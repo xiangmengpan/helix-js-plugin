@@ -147,7 +147,7 @@ async fn rail_focused_can_type_colon_commands() -> anyhow::Result<()> {
 async fn probe_key_dispatch_under_rail() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let home = std::env::var("HOME").unwrap_or_default();
-    let fp = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let fp = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("readme.md"), "hi\n").unwrap();
     let plugin = dir.path().join("filetree.js");

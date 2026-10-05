@@ -8,7 +8,7 @@ helix.define_config("filetree", {
   refresh_ms: { type: "number", default: 1000, doc: "自动刷新间隔(ms;0 = 关闭)" },
 });
 const CFG = helix.get_config("filetree") || {};
-// 用法：init.js 里 helix.load("features/filetree/index.js")，:filetree 开关面板。
+// 用法:init.js 里 helix.load("filetree")(裸名 → filetree/plugin.js),:filetree 开关面板。
 // 键位：Enter/o 打开或展开，h/l 折叠/进入，Up/Down 导航，H 隐藏文件，
 //       R 刷新，a/A 新建文件/目录，m 重命名，d 删除，P 上级目录，F 跟随当前文件，q/Esc 关闭。
 // 说明：面板无节点点击命中（helix 限制），选中行由 JS 维护行号；纯键盘操作。

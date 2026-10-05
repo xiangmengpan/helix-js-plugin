@@ -1,5 +1,5 @@
 // arsenal.js — mason 式工具市场窗(M3 主视图;M4 动作菜单/版本输入/信息/批量进度)
-// 用法:init.js 里 helix.load("features/arsenal/index.js"),:arsenal 打开市场窗。
+// 用法:init.js 里 helix.load("arsenal")(裸名 → arsenal/plugin.js),:arsenal 打开市场窗。
 // UI 改版 v2(spec 2026-09-07):自绘窗框(顶框嵌标题/底框) · 分类页签条(Tab/Shift+Tab
 // 切换,all/lsp/dap/linter/formatter/installed/local)· `/` 模态搜索(SEARCH 内一切
 // 可打印字符进查询,Backspace 删尾,↑↓ 移动,Esc 清查询回 NORMAL)· 全英文文案 ·

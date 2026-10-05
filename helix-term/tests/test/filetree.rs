@@ -66,9 +66,7 @@ async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
     std::fs::write(dir.path().join("readme.md"), "hi\n")?;
     std::fs::write(dir.path().join(".secret.txt"), "s\n")?;
     let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME unset"))?;
-    let src = std::fs::read_to_string(format!(
-        "{home}/.config/helix/plugins/features/filetree/index.js"
-    ))?;
+    let src = std::fs::read_to_string(format!("{home}/.config/helix/plugins/filetree/plugin.js"))?;
     let plugin = dir.path().join("filetree.js");
     std::fs::write(&plugin, src)?;
     let mut app = AppBuilder::new().build()?;

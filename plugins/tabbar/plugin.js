@@ -1,4 +1,4 @@
-// features/tabbar.js — 布局标签条示范组件（JS 视图层）
+// tabbar/plugin.js — 布局标签条示范组件（JS 视图层）
 // 依赖:helix.TABBAR_ID(compositor 顶部槽位)、helix.layout.get()、helix.get_component_state()
 // 效果:屏幕顶部 1 行显示各叶子标签,活动高亮;点击标签聚焦。
 helix.plugin("tabbar", { deps: [] }); // 图标已收进核心,不再需要 deps

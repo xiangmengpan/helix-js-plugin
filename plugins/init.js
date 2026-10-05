@@ -1,6 +1,6 @@
 // helix 插件入口（启动文件，helix 自动加载 ~/.config/helix/init.js）：
-// 只列功能插件。图标表已收进核心(helix.icons.*,零依赖);lib/icons.js 只剩 [icons] 配置,
-// 所以在这显式加载一次 —— 各插件**不再**需要 deps: ["lib/icons.js"]。
+// 只列功能插件,**全部按名字点名**(裸名 → <name>/plugin.js,见 docs/plugin-layout.md §3.3)。
+// icons 只剩 [icons] 的 define_config,所以在这显式加载一次;各功能插件用 helix.icons.* 零依赖。
 // 目录分层：plugins/lib（共享层）· plugins/features（功能插件）。
 // 图标配置模块([icons] nerd_font 的 define_config 在它里面)——显式加载一次。
 // 各功能插件已不再依赖它:需要图标直接用 helix.icons.*(核心单一来源)。
@@ -17,13 +17,13 @@ function safe_load(p) {
   }
 }
 
-safe_load("lib/icons.js");
+safe_load("icons");
 safe_load("terminal");
 safe_load("statusline");
 safe_load("filetree");
 
 // 方案 3 可选：状态栏 mode 图标（整行替换默认状态栏，默认不启用）
-// const icons = helix.load("lib/icons.js");
+// const icons = helix.load("icons");
 // helix.set_statusline(({ mode, path }) => {
 //   const name = path ? path.split("/").pop() : "";
 //   return (icons.getModeIcon(mode) + " " + name).trim();
