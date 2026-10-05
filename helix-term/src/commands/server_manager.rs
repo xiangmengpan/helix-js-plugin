@@ -177,6 +177,7 @@ fn download_to(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64>
 
 /// 解压到 out_dir(入口;archive 可为 tar/tar.gz/zip 或单文件 gzip):
 /// 单文件 gzip 需给 single_name(解码后写入 out/single_name 并加可执行位)。
+#[cfg(test)] // 只有测试用(clippy --lib 看不见测试目标,所以它会报 never used)
 fn extract_archive(path: &Path, out_dir: &Path, strip: usize) -> Result<()> {
     let raw = std::fs::read(path)?;
     extract_bytes(&raw, out_dir, strip, None)
@@ -471,15 +472,6 @@ pub fn lang_config_file() -> PathBuf {
 }
 
 /// 已安装的 registry 配方(managed/bin 在位)
-pub fn installed_specs() -> Vec<registry::Spec> {
-    let mut v: Vec<_> = registry::all()
-        .into_iter()
-        .filter(|s| is_installed(&s.name))
-        .collect();
-    v.sort_by(|a, b| a.name.cmp(&b.name));
-    v
-}
-
 /// 受管已装且 detected 版本串不含配方 version → 可升级。
 /// detect_version 返回 `<bin> --version` 首行整串,常带工具名前缀
 /// (如 "rust-analyzer 2024-09-16"),故用"包含"判定同版;不做 semver。
@@ -578,15 +570,6 @@ fn path_in_path(bin: &str) -> Option<PathBuf> {
 }
 
 /// 本地可用(非受管、未被忽略)的配方
-pub fn local_specs() -> Vec<registry::Spec> {
-    let mut v: Vec<_> = registry::all()
-        .into_iter()
-        .filter(|s| matches!(availability(&s.name), Availability::Local(_)) && !is_ignored(&s.name))
-        .collect();
-    v.sort_by(|a, b| a.name.cmp(&b.name));
-    v
-}
-
 /// 本地停用挂接名单(managed_root/ignored.txt,每行一个配方名)
 fn ignored_path() -> PathBuf {
     managed_root().join("ignored.txt")
