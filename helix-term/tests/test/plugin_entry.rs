@@ -99,3 +99,38 @@ fn plugins_init_template_loads_resolve() {
         "只检查到 {checked} 个引用 —— 解析逻辑可能失效,这个测试已失去意义"
     );
 }
+
+/// **布局约定的端到端验收**:`helix.load("<name>")` 真的加载 `<name>/plugin.js`。
+///
+/// 为什么放在集成测试而不是 helix-js 单测:它必须设置**进程级**插件根
+/// (`set_plugin_roots`,OnceLock 不可重置)。放在共享的单测进程里会污染其他测试
+/// —— 实测连带弄挂 5 个无关测试。集成测试各自独立进程,全局互不干扰。
+#[test]
+fn bare_plugin_name_loads_plugin_entry_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("myplug")).unwrap();
+    std::fs::write(
+        dir.path().join("myplug").join("plugin.js"),
+        r#"
+        helix.plugin("myplug", { deps: [] });
+        helix.register_command("myplug-cmd", () => helix.echo("from-plugin-entry"));
+        helix.export({ ok: true });
+        "#,
+    )
+    .unwrap();
+    helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]);
+
+    // 裸名 → <name>/plugin.js,加载成功
+    helix_js::load_script(r#"helix.load("myplug");"#).expect("裸名应解析到 myplug/plugin.js");
+
+    // 反证:不存在的名字必须报错(否则上面的成功可能只是"什么都没做")
+    assert!(
+        helix_js::load_script(r#"helix.load("no-such-plugin");"#).is_err(),
+        "不存在的插件名应报错"
+    );
+
+    // 旧式 `<name>.js` 仍然可加载(**向后兼容**:约定是新增第二条路,不是替换)
+    std::fs::write(dir.path().join("legacy.js"), r#"helix.echo("legacy-ok");"#).unwrap();
+    helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]); // 幂等(已设则忽略)
+    helix_js::load_script(r#"helix.load("legacy");"#).expect("旧式 <name>.js 必须仍可加载");
+}

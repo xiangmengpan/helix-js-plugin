@@ -82,9 +82,9 @@ helix.plugin("filetree", { deps: ["icons"] });   // ✅ 名字
 
 | # | 改动 | 现状 |
 |---|---|---|
-| 1 | **名字 → 目录**解析:`load("filetree")` → `<root>/filetree/plugin.js` | 现在只按文件路径解析 |
-| 2 | **目录级覆盖**:命中用户的 `<name>/` 后,不再回落自带的同名目录 | 现在是**文件级**(`resolve_in` 从后往前找第一个存在的文件) |
-| 3 | `deps` 接受**插件名**(内部转成 `<name>/plugin.js`) | 现在只接受文件 key |
+| 1 | ~~**名字 → 目录**解析~~ | ✅ **已实现**(`state::entry_keys` + `load_script_checked`;`<name>.js` 仍可加载,向后兼容;集成测试 `bare_plugin_name_loads_plugin_entry_file` 端到端验收) |
+| 2 | **目录级覆盖**:命中用户的 `<name>/` 后,不再回落自带的同名目录 | ⬜ 仍是**文件级**(`resolve_in` 从后往前找第一个存在的文件) |
+| 3 | `deps` 接受**插件名**(内部转成 `<name>/plugin.js`) | ⬜ 现只接受文件 key(但**裸名现在已能解析到插件入口**,所以主要差在文档与校验) |
 
 改动集中在 `state::resolve_in` 与 `commands::load_script_checked` 两处 —— 都是纯函数/小函数,
 且 `resolve_in` 已有 4 种情形的单测可直接扩展。

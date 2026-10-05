@@ -103,11 +103,19 @@ pub(crate) fn js_load(
 /// 加载栈为跨脚本共享的 thread_local（LOAD_STACK）：js_load 不再每次新建空栈，
 /// 嵌套 helix.load（运行时/依赖递归）都能看到祖先——循环依赖报错而非栈溢出崩溃。
 fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<JsValue> {
-    let key = if name.ends_with(".js") {
-        name.to_string()
-    } else {
-        format!("{name}.js")
-    };
+    // 加载参数 → 候选 key:裸名先找 `<name>/plugin.js`(插件布局约定),再回退 `<name>.js`。
+    // 选中"第一个**能解析到文件**的候选",以此作为缓存/依赖/循环检测的 key(必须稳定)。
+    let candidates = crate::state::entry_keys(name);
+    let roots = crate::state::plugin_roots();
+    let key = candidates
+        .iter()
+        .find(|k| {
+            crate::state::resolve_in(roots, k)
+                .map(|p| p.exists())
+                .unwrap_or(false)
+        })
+        .unwrap_or(&candidates[0])
+        .clone();
     if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
         return Ok(cached);
     }

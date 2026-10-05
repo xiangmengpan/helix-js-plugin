@@ -454,6 +454,23 @@ pub(crate) fn plugin_roots() -> &'static [PathBuf] {
     PLUGIN_ROOTS.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
+/// 加载参数 → **候选 key(按序尝试)**。
+///
+/// 约定见 `docs/plugin-layout.md` §3.3:
+/// - 带 `.js` → 按**文件路径**(后门:一次性脚本/调试/共享库)
+/// - 含 `/` 但没 `.js` → 补 `.js`(旧行为,共享库走这类)
+/// - **裸名** → 先按约定找**插件入口** `<name>/plugin.js`,找不到再回退旧的 `<name>.js`
+///   (回退这一条是为了**不破坏**任何现有加载:约定是新增的第二条路,不是替换)
+pub(crate) fn entry_keys(name: &str) -> Vec<String> {
+    if name.ends_with(".js") {
+        return vec![name.to_string()];
+    }
+    if name.contains('/') {
+        return vec![format!("{name}.js")];
+    }
+    vec![format!("{name}/plugin.js"), format!("{name}.js")]
+}
+
 /// 相对名 → 绝对路径的**纯函数**(便于单测,不碰全局)。
 ///
 /// 从**后往前**找第一个存在的:后加的根覆盖先加的(用户覆盖内置)。
@@ -730,4 +747,63 @@ pub fn take_ui_requests() -> Vec<UiRequest> {
             .lock()
             .expect("ui requests lock"),
     )
+}
+
+#[cfg(test)]
+mod entry_key_tests {
+    use super::*;
+
+    /// 加载参数 → 候选 key:三种形态各自的分支(约定 §3.3)
+    #[test]
+    fn entry_keys_follow_layout_convention() {
+        // 裸名 → 先插件入口,再回退旧式 .js
+        assert_eq!(
+            entry_keys("filetree"),
+            vec!["filetree/plugin.js".to_string(), "filetree.js".to_string()],
+            "裸名:约定优先,旧式回退"
+        );
+        // 带 .js → 原样(文件路径后门)
+        assert_eq!(entry_keys("lib/icons.js"), vec!["lib/icons.js".to_string()]);
+        // 含 / 无 .js → 补 .js(旧行为)
+        assert_eq!(
+            entry_keys("features/terminal"),
+            vec!["features/terminal.js".to_string()]
+        );
+    }
+
+    /// 裸名解析真的落到 `<name>/plugin.js`(且**用户根覆盖内置根**)
+    #[test]
+    fn bare_name_resolves_to_plugin_entry_with_user_override() {
+        let bundled = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let mk = |dir: &std::path::Path, rel: &str, tag: &str| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, tag).unwrap();
+        };
+        mk(bundled.path(), "filetree/plugin.js", "bundled");
+        mk(user.path(), "filetree/plugin.js", "user");
+        mk(bundled.path(), "only-bundled/plugin.js", "b");
+        let roots = vec![bundled.path().to_path_buf(), user.path().to_path_buf()];
+
+        let key = entry_keys("filetree")[0].clone();
+        let got = resolve_in(&roots, &key).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&got).unwrap(),
+            "user",
+            "用户根必须覆盖内置根"
+        );
+
+        // 旧式 `<name>.js` 仍可用(只有它存在时回退到它)
+        mk(bundled.path(), "legacy.js", "old");
+        assert!(resolve_in(&roots, &entry_keys("legacy")[1])
+            .unwrap()
+            .exists());
+        assert!(
+            !resolve_in(&roots, &entry_keys("legacy")[0])
+                .unwrap()
+                .exists(),
+            "legacy 没有 <name>/plugin.js,所以候选 0 不存在 → 加载器会回退候选 1"
+        );
+    }
 }
