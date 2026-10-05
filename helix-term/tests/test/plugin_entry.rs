@@ -122,20 +122,28 @@ fn plugins_init_template_loads_resolve() {
 /// —— 实测连带弄挂 5 个无关测试。集成测试各自独立进程,全局互不干扰。
 #[test]
 fn bare_plugin_name_loads_plugin_entry_file() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("myplug")).unwrap();
-    std::fs::write(
-        dir.path().join("myplug").join("plugin.js"),
-        r#"
-        helix.plugin("myplug", { deps: [] });
-        helix.register_command("myplug-cmd", () => helix.echo("from-plugin-entry"));
-        helix.export({ ok: true });
-        "#,
-    )
-    .unwrap();
-    helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]);
+    // 两个临时根,一次 `set_plugin_roots` 覆盖本测试的全部子场景
+    // (进程级 OnceLock 只能设一次 → 多场景必须共用一个根集合)
+    let bundled = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let mk = |d: &std::path::Path, rel: &str, body: &str| {
+        let p = d.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, body).unwrap();
+    };
 
-    // 裸名 → <name>/plugin.js,加载成功
+    // ── 1. 裸名 → <name>/plugin.js(约定 §3.3)──────────────────────────
+    mk(
+        user.path(),
+        "myplug/plugin.js",
+        r#"helix.plugin("myplug", { deps: [] });
+           helix.register_command("myplug-cmd", () => helix.echo("from-plugin-entry"));
+           helix.export({ ok: true });"#,
+    );
+    helix_js::set_plugin_roots(vec![
+        bundled.path().to_path_buf(),
+        user.path().to_path_buf(),
+    ]);
     helix_js::load_script(r#"helix.load("myplug");"#).expect("裸名应解析到 myplug/plugin.js");
 
     // 反证:不存在的名字必须报错(否则上面的成功可能只是"什么都没做")
@@ -144,33 +152,74 @@ fn bare_plugin_name_loads_plugin_entry_file() {
         "不存在的插件名应报错"
     );
 
-    // 旧式 `<name>.js` 仍然可加载(**向后兼容**:约定是新增第二条路,不是替换)
-    std::fs::write(dir.path().join("legacy.js"), r#"helix.echo("legacy-ok");"#).unwrap();
-    helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]); // 幂等(已设则忽略)
+    // ── 2. 旧式 `<name>.js` 仍可加载(向后兼容)─────────────────────────
+    mk(user.path(), "legacy.js", r#"helix.echo("legacy-ok");"#);
     helix_js::load_script(r#"helix.load("legacy");"#).expect("旧式 <name>.js 必须仍可加载");
 
-    // ── §4-3:deps 可以写**插件名**(而不只是文件 key)──────────────────
-    // 依赖走的是同一个 load_script_checked → 同一个 entry_keys 解析规则,
-    // 所以 `deps: ["mydep"]` 应解析到 `mydep/plugin.js`。这里同时钉住**顺序**:
-    // 依赖必须先于声明它的脚本被加载。
-    // 自证式:依赖设全局标记;**主脚本在校验失败时直接抛错** ——
-    // 于是"加载成功"本身就证明了依赖已先加载,不依赖消息管道是否有货
-    // (实测:load 期的 helix.echo 不会进 take_messages(),用消息断言会假失败)。
-    std::fs::create_dir_all(dir.path().join("mydep")).unwrap();
-    std::fs::write(
-        dir.path().join("mydep").join("plugin.js"),
-        r#"helix.plugin("mydep", { deps: [] }); globalThis.__depLoaded = true;"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(dir.path().join("myplug")).unwrap();
-    std::fs::write(
-        dir.path().join("myplug").join("plugin.js"),
+    // ── 3. §4-3:deps 可写**插件名**───────────────────────────────────
+    // 注意:这里不断言「依赖先于主脚本执行」—— 现场核对代码是
+    //   eval_wrapped(脚本) -> take(deps) -> 再递归加载依赖(commands.rs),
+    // 与那句旧注释「加载目标前先递归加载依赖」**矛盾**。顺序语义未定之前,
+    // 不该把断言建在它上面。本场景只钉 §4-3 真正的主张:**依赖名能被解析并加载**。
+    mk(
+        user.path(),
+        "mydep/plugin.js",
+        r#"helix.plugin("mydep", { deps: [] }); helix.export({ ok: true });"#,
+    );
+    mk(
+        user.path(),
+        "myplug2/plugin.js",
+        r#"helix.plugin("myplug2", { deps: ["mydep"] }); helix.export({ main: true });"#,
+    );
+    helix_js::load_script(
         r#"
-        helix.plugin("myplug", { deps: ["mydep"] });
-        if (!globalThis.__depLoaded) { throw new Error("依赖 mydep 未先加载"); }
+        helix.load("myplug2");
+        // 依赖若真的被拉过,这里按名再加载会命中缓存并返回它的 export
+        const d = helix.load("mydep");
+        if (!d || d.ok !== true) {
+            throw new Error("deps by name not resolved: " + JSON.stringify(d));
+        }
         "#,
     )
-    .unwrap();
-    helix_js::load_script(r#"helix.load("myplug");"#)
-        .expect("deps 用插件名应能加载,且依赖必须先于主脚本");
+    .expect("deps 用插件名应能解析并加载(其 export 可被后续加载读到)");
+
+    // ── 4. §4-2 目录级覆盖:入口来自**内置层**,而用户层有同名 sibling ──
+    // 没有 §4-2 时:入口取内置(用户没有 plugin.js),helper 却按"后加的根优先"
+    // 取到**用户层** → 造出"内置的 main + 用户的 helper"这种混合体。
+    // 有 §4-2(prefer 提供根)时:helper 与入口同层 → 恒为内置。
+    mk(
+        bundled.path(),
+        "plug/plugin.js",
+        r#"helix.plugin("plug", { deps: [] });
+           helix.load("plug/helper.js");
+           if (globalThis.__from !== "bundled") {
+               throw new Error("混合体:helper 来自 " + globalThis.__from);
+           }"#,
+    );
+    mk(
+        bundled.path(),
+        "plug/helper.js",
+        r#"globalThis.__from = "bundled";"#,
+    );
+    mk(
+        user.path(),
+        "plug/helper.js",
+        r#"globalThis.__from = "user";"#,
+    );
+    // ⚠️ 这里**如实钉住当前行为(混合体仍会发生)**,而不是断言"已修好"。
+    // 原因(现场查明):插件**脚本体是延迟执行的** —— 它不在 `load_script_checked`
+    // 的 push/pop 窗口内运行,所以那时 `current_load_root()` 已是 None,
+    // §4-2 的"提供根优先"根本没被用上。
+    // (这条发现同时解释了另一个反常:上一轮"依赖先于主脚本"的断言为何通过 ——
+    //  脚本体确实晚于依赖执行,但那是因为**延迟执行**,不是因为加载器先拉依赖。)
+    //
+    // 要做成 §4-2,需要把"提供根"**按插件记录**(而不是挂在加载调用栈上),
+    // 并在脚本体真正执行时查询。那是下一轮的事。
+    // 断言方向:**现在必须失败**,修好后这条会挂 → 那时把它翻转成 expect(...)。
+    let err = helix_js::load_script(r#"helix.load("plug");"#)
+        .expect_err("§4-2 尚未生效:混合体(内置 main + 用户 helper)仍会出现");
+    assert!(
+        format!("{err}").contains("混合体"),
+        "失败原因应是混合体,而不是别的: {err}"
+    );
 }

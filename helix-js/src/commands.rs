@@ -100,7 +100,11 @@ pub(crate) fn js_load(
 /// 加载脚本（含依赖递归）。依赖在脚本内 helix.plugin(name, { deps }) 声明：
 /// deps 是**加载参数数组** —— 写**插件名**（如 `["icons"]` → `icons/plugin.js`，见 docs/plugin-layout.md §3.4）
 /// 或文件 key（如 `["lib/x.js"]`）。两者都经 `entry_keys` 解析，所以规则一致。
-/// 加载目标前先递归加载依赖；
+///
+/// **注意顺序**(现场核对代码,而非照抄旧注释):先 `eval_wrapped(脚本)` 收走它声明的 deps,
+/// **然后**才递归加载依赖。所以脚本**顶层的代码不能假定依赖已经执行**(要延迟到
+/// 回调/命令里用)。旧注释写的是"加载目标前先递归加载依赖",与代码不符,已改。
+
 /// 已加载的跳过（with_script_exports 缓存），循环依赖报错。
 /// 加载栈为跨脚本共享的 thread_local（LOAD_STACK）：js_load 不再每次新建空栈，
 /// 嵌套 helix.load（运行时/依赖递归）都能看到祖先——循环依赖报错而非栈溢出崩溃。
@@ -109,15 +113,16 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     // 选中"第一个**能解析到文件**的候选",以此作为缓存/依赖/循环检测的 key(必须稳定)。
     let candidates = crate::state::entry_keys(name);
     let roots = crate::state::plugin_roots();
-    let key = candidates
+    // 选中候选的**同时**记下"由哪个根提供"(§4-2 目录级覆盖:该插件自身的相对加载
+    // 会优先在这个根内解析,避免造出"用户的 plugin.js + 内置的同名 sibling"的混合体)
+    let (key, providing_root) = candidates
         .iter()
-        .find(|k| {
-            crate::state::resolve_in(roots, k)
-                .map(|p| p.exists())
-                .unwrap_or(false)
+        .find_map(|k| {
+            crate::state::resolve_in_with_root(roots, k)
+                .filter(|(p, _)| p.exists())
+                .map(|(_, r)| (k.clone(), r))
         })
-        .unwrap_or(&candidates[0])
-        .clone();
+        .unwrap_or_else(|| (candidates[0].clone(), std::path::PathBuf::new()));
     if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
         return Ok(cached);
     }
@@ -135,6 +140,8 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     }
     // eval 前入栈（嵌套 load 期间本 key 保持可见）；借用即刻释放，不跨 eval 持有。
     crate::state::with_load_stack(|s| s.push(key.clone()));
+    // 与 key **同一处** push/pop,两栈因此始终等长(见 state::LOAD_ROOTS 注释)
+    crate::state::push_load_root(providing_root);
     let result = (|| -> boa_engine::JsResult<JsValue> {
         let path = if Path::new(&key).is_absolute() {
             PathBuf::from(&key)
@@ -174,6 +181,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     crate::state::with_load_stack(|s| {
         s.pop();
     });
+    crate::state::pop_load_root();
     result
 }
 
@@ -1861,6 +1869,7 @@ fn reset_plugin_state() {
     with_script_exports(|m| m.clear());
     // 加载栈防御性清空（正常路径已 pop；防止异常残留影响后续 reload）
     crate::state::with_load_stack(|s| s.clear());
+    crate::state::clear_load_roots();
     with_last_export(|l| *l = None);
     // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
     crate::state::with_theme_overrides(|o| o.clear());

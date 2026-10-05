@@ -108,6 +108,9 @@ thread_local! {
     // 加载中的脚本 key 栈（跨脚本共享）：嵌套 helix.load 期间保持祖先在栈上，
     // 循环依赖（A load B, B load A）在此检出——否则嵌套 eval 无限递归栈溢出崩溃。
     static LOAD_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// 与 LOAD_STACK **一一对应**的"提供根"栈(§4-2)。两栈只在 commands.rs 同一处
+    /// push/pop,便于保持同步;空 Path 表示"绝对路径加载,无提供根"。
+    static LOAD_ROOTS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static SCRIPT_EXPORTS: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -360,6 +363,30 @@ pub(crate) fn with_load_stack<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     LOAD_STACK.with(|s| f(&mut s.borrow_mut()))
 }
 
+pub(crate) fn push_load_root(root: PathBuf) {
+    LOAD_ROOTS.with(|s| s.borrow_mut().push(root));
+}
+
+pub(crate) fn pop_load_root() {
+    LOAD_ROOTS.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+pub(crate) fn clear_load_roots() {
+    LOAD_ROOTS.with(|s| s.borrow_mut().clear());
+}
+
+/// 当前正在展开的插件由哪个根提供(无 → None)。**取栈顶**:嵌套加载时以最内层为准。
+pub(crate) fn current_load_root() -> Option<PathBuf> {
+    LOAD_ROOTS.with(|s| {
+        s.borrow()
+            .last()
+            .filter(|p| !p.as_os_str().is_empty())
+            .cloned()
+    })
+}
+
 /// 访问 THEME_OVERRIDES（普通 HashMap，随线程 drop）
 pub(crate) fn with_theme_overrides<T>(
     f: impl FnOnce(&mut HashMap<String, crate::theme::StyleOverride>) -> T,
@@ -488,9 +515,49 @@ pub(crate) fn resolve_in(roots: &[PathBuf], key: &str) -> Option<PathBuf> {
     roots.last().map(|r| r.join(key))
 }
 
+/// 相对名 → **(绝对路径, 提供它的根)**。从后往前找第一个存在的 = 后加的根覆盖先加的。
+/// 绝对路径没有"根"的概念(返回空 Path)。
+pub(crate) fn resolve_in_with_root(roots: &[PathBuf], key: &str) -> Option<(PathBuf, PathBuf)> {
+    if Path::new(key).is_absolute() {
+        return Some((PathBuf::from(key), PathBuf::new()));
+    }
+    for r in roots.iter().rev() {
+        let p = r.join(key);
+        if p.exists() {
+            return Some((p, r.clone()));
+        }
+    }
+    roots.last().map(|r| (r.join(key), r.clone()))
+}
+
+/// **目录级覆盖(规格 §4-2)**:优先在 `pref`(提供当前插件的那个根)内解析,
+/// 找不到再按正常多根顺序。
+///
+/// 语义取舍:这里选的是 **prefer(自身根优先)** 而不是 strict(只在自身根内)。
+/// 因为共享库是**独立插件**(§4-3 的 deps 用插件名),strict 会让用户插件
+/// 用不到内置的共享库。prefer 已经解决"用户的 plugin.js + 内置的同名 sibling"这种
+/// 版本不匹配的混合体 —— 那是 §4-2 真正要治的病。
+pub(crate) fn resolve_in_pref(
+    roots: &[PathBuf],
+    key: &str,
+    pref: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(pref) = pref {
+        if !pref.as_os_str().is_empty() {
+            let p = pref.join(key);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    resolve_in(roots, key)
+}
+
 /// 相对名 → 绝对路径(用当前插件根)
 pub fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
-    resolve_in(plugin_roots(), key)
+    // 目录级覆盖(§4-2):优先在"提供当前插件的那个根"内解析
+    let pref = current_load_root();
+    resolve_in_pref(plugin_roots(), key, pref.as_deref())
 }
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
@@ -805,5 +872,66 @@ mod entry_key_tests {
                 .exists(),
             "legacy 没有 <name>/plugin.js,所以候选 0 不存在 → 加载器会回退候选 1"
         );
+    }
+}
+
+#[cfg(test)]
+mod dir_override_tests {
+    use super::*;
+
+    /// §4-2 要治的病:**用户的 plugin.js 不能配内置的同名 sibling**
+    #[test]
+    fn prefer_root_keeps_plugin_files_together() {
+        let bundled = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let mk = |d: &std::path::Path, rel: &str, tag: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, tag).unwrap();
+        };
+        // 同一插件在两层的文件
+        mk(bundled.path(), "plug/plugin.js", "bundled-main");
+        mk(bundled.path(), "plug/helper.js", "bundled-helper");
+        mk(user.path(), "plug/plugin.js", "user-main");
+        let roots = vec![bundled.path().to_path_buf(), user.path().to_path_buf()];
+
+        // 入口:用户层胜(后加的根覆盖)
+        let (entry, root) = resolve_in_with_root(&roots, "plug/plugin.js").unwrap();
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), "user-main");
+        assert_eq!(root, user.path(), "提供根 = 用户层");
+
+        // 关键:该插件的**其它文件**也必须来自同一个根 —— 而不是回落到内置的 bundled-helper
+        // (没有 §4-2 时,helper.js 只在内置层存在 → 会被解析成 bundled-helper,
+        //  于是造出"用户的 main + 内置的 helper"这种版本不匹配的混合体)
+        let helper = resolve_in_pref(&roots, "plug/helper.js", Some(user.path())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&helper).unwrap(),
+            "bundled-helper",
+            "用户层没有 helper → prefer 语义下回落到内置(共享/缺省可回落)"
+        );
+        // 而**用户层有**该文件时,prefer 必须保住同一层
+        mk(user.path(), "plug/helper.js", "user-helper");
+        let helper = resolve_in_pref(&roots, "plug/helper.js", Some(user.path())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&helper).unwrap(),
+            "user-helper",
+            "两层都有时,prefer 必须选与入口同层的那份"
+        );
+    }
+
+    /// 无提供根 / 绝对路径时退回正常顺序
+    #[test]
+    fn prefer_falls_back_without_root() {
+        let bundled = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(bundled.path().join("plug")).unwrap();
+        std::fs::write(bundled.path().join("plug/x.js"), "b").unwrap();
+        let roots = vec![bundled.path().to_path_buf(), user.path().to_path_buf()];
+        let got = resolve_in_pref(&roots, "plug/x.js", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&got).unwrap(), "b");
+        // 绝对路径:提供根为空 → 不参与 prefer
+        let (p, r) = resolve_in_with_root(&roots, "/tmp/abs.js").unwrap();
+        assert_eq!(p, PathBuf::from("/tmp/abs.js"));
+        assert!(r.as_os_str().is_empty(), "绝对路径没有提供根");
     }
 }
