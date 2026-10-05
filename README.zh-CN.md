@@ -323,11 +323,12 @@ cargo build --release
 
 ## 📄 文档
 
+- **全部文档**:[`docs/README.md`](docs/README.md)(索引:使用手册 / 历史归档)
 - **插件布局与命名**:[`docs/plugin-layout.md`](docs/plugin-layout.md)(目录 · 入口 · 依赖 · 两层覆盖 · 分发)
 - **插件 API**:[`docs/plugin-api.md`](docs/plugin-api.md)(总览与索引)· [`docs/api/`](docs/api/)(分域详细:说明/示例/优缺点)
 - **类型定义**:[`plugins/helix.d.ts`](plugins/helix.d.ts)(编辑器补全用)
 - 本 fork 设计文档:`docs/superpowers/specs/2026-08-15-js-ui-rendering-design.md`(JS 视图层分层)
-- 交接记录:`docs/handoff-2026-08-14.md`(窗口模式/终端/插件演进)
+- 交接记录:[`docs/superpowers/handoff/2026-08-14.md`](docs/superpowers/handoff/2026-08-14.md)(窗口模式/终端/插件演进)
 - 原版 Helix 文档:[官网](https://helix-editor.com) · [文档](https://docs.helix-editor.com/) · [键位表](https://docs.helix-editor.com/keymap.html)
 
 ## 🙏 致谢

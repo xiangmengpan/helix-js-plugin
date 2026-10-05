@@ -342,11 +342,12 @@ cargo build --release
 
 ## 📄 Docs
 
+- **All docs**: [`docs/README.md`](docs/README.md) (index: usage manual vs. historical archive)
 - **Plugin layout & naming**: [`docs/plugin-layout.md`](docs/plugin-layout.md) (folders · entry point · deps · the two-layer override · distribution)
 - **Plugin API**: [`docs/plugin-api.md`](docs/plugin-api.md) (overview & index) · [`docs/api/`](docs/api/) (per-domain detail: signatures/examples/pros & cons)
 - **Type definitions**: [`plugins/helix.d.ts`](plugins/helix.d.ts) (for editor autocomplete)
 - JS view-layer design: `docs/superpowers/specs/2026-08-15-js-ui-rendering-design.md`
-- Handoff log: `docs/handoff-2026-08-14.md` (window mode / terminal / plugin evolution)
+- Handoff log: [`docs/superpowers/handoff/2026-08-14.md`](docs/superpowers/handoff/2026-08-14.md) (window mode / terminal / plugin evolution)
 - Upstream Helix docs: [Website](https://helix-editor.com) · [Documentation](https://docs.helix-editor.com/) · [Keymap](https://docs.helix-editor.com/keymap.html)
 
 ## 🙏 Credits
