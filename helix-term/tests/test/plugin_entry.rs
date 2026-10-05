@@ -148,4 +148,29 @@ fn bare_plugin_name_loads_plugin_entry_file() {
     std::fs::write(dir.path().join("legacy.js"), r#"helix.echo("legacy-ok");"#).unwrap();
     helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]); // 幂等(已设则忽略)
     helix_js::load_script(r#"helix.load("legacy");"#).expect("旧式 <name>.js 必须仍可加载");
+
+    // ── §4-3:deps 可以写**插件名**(而不只是文件 key)──────────────────
+    // 依赖走的是同一个 load_script_checked → 同一个 entry_keys 解析规则,
+    // 所以 `deps: ["mydep"]` 应解析到 `mydep/plugin.js`。这里同时钉住**顺序**:
+    // 依赖必须先于声明它的脚本被加载。
+    // 自证式:依赖设全局标记;**主脚本在校验失败时直接抛错** ——
+    // 于是"加载成功"本身就证明了依赖已先加载,不依赖消息管道是否有货
+    // (实测:load 期的 helix.echo 不会进 take_messages(),用消息断言会假失败)。
+    std::fs::create_dir_all(dir.path().join("mydep")).unwrap();
+    std::fs::write(
+        dir.path().join("mydep").join("plugin.js"),
+        r#"helix.plugin("mydep", { deps: [] }); globalThis.__depLoaded = true;"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("myplug")).unwrap();
+    std::fs::write(
+        dir.path().join("myplug").join("plugin.js"),
+        r#"
+        helix.plugin("myplug", { deps: ["mydep"] });
+        if (!globalThis.__depLoaded) { throw new Error("依赖 mydep 未先加载"); }
+        "#,
+    )
+    .unwrap();
+    helix_js::load_script(r#"helix.load("myplug");"#)
+        .expect("deps 用插件名应能加载,且依赖必须先于主脚本");
 }

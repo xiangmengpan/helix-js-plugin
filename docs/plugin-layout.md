@@ -84,7 +84,7 @@ helix.plugin("filetree", { deps: ["icons"] });   // ✅ 名字
 |---|---|---|
 | 1 | ~~**名字 → 目录**解析~~ | ✅ **已实现**(`state::entry_keys` + `load_script_checked`;`<name>.js` 仍可加载,向后兼容;集成测试 `bare_plugin_name_loads_plugin_entry_file` 端到端验收) |
 | 2 | **目录级覆盖**:命中用户的 `<name>/` 后,不再回落自带的同名目录 | ⬜ 仍是**文件级**(`resolve_in` 从后往前找第一个存在的文件) |
-| 3 | `deps` 接受**插件名**(内部转成 `<name>/plugin.js`) | ⬜ 现只接受文件 key(但**裸名现在已能解析到插件入口**,所以主要差在文档与校验) |
+| 3 | ~~`deps` 接受**插件名**~~ | ✅ **已确认可用**:依赖走同一个 `load_script_checked` → 同一套 `entry_keys` 解析,所以 `deps: ["icons"]` 直接解析到 `icons/plugin.js`。已补集成测试(自证式:主脚本在被依赖未先加载时抛错)并把 `commands.rs` 里"deps 是文件 key"的过时注释改掉 |
 
 > 另:**分发步骤已落地** —— `contrib/install-plugins.sh` 把 `plugins/` 装进 `<runtime>/plugins`(见 §8)。
 

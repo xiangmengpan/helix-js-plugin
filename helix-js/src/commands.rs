@@ -98,7 +98,9 @@ pub(crate) fn js_load(
 }
 
 /// 加载脚本（含依赖递归）。依赖在脚本内 helix.plugin(name, { deps }) 声明：
-/// deps 是文件 key（load 参数，如 "lib/icons.js"），加载目标前先递归加载依赖；
+/// deps 是**加载参数数组** —— 写**插件名**（如 `["icons"]` → `icons/plugin.js`，见 docs/plugin-layout.md §3.4）
+/// 或文件 key（如 `["lib/x.js"]`）。两者都经 `entry_keys` 解析，所以规则一致。
+/// 加载目标前先递归加载依赖；
 /// 已加载的跳过（with_script_exports 缓存），循环依赖报错。
 /// 加载栈为跨脚本共享的 thread_local（LOAD_STACK）：js_load 不再每次新建空栈，
 /// 嵌套 helix.load（运行时/依赖递归）都能看到祖先——循环依赖报错而非栈溢出崩溃。
@@ -176,7 +178,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
 }
 
 /// helix.plugin(name, { deps, version })：声明当前脚本的依赖清单（方案 2）。
-/// deps 是文件 key 数组（load 参数，如 ["lib/icons.js"]），helix.load 自动拓扑加载。
+/// deps 是**加载参数数组**（插件名如 ["icons"]，或文件 key 如 ["lib/x.js"]），helix.load 自动拓扑加载。
 pub(crate) fn js_plugin(
     _this: &JsValue,
     args: &[JsValue],
