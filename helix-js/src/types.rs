@@ -105,6 +105,15 @@ pub enum UiRequest {
     PaneEmbed {
         id: u64,
     },
+    /// 把浮动 pane 提到最上层(浮窗 z 序;`LayoutTree::float_raise`)
+    PaneRaise {
+        id: u64,
+    },
+    /// pin / 取消 pin 浮动 pane(`on` 显式给出,不做隐式取反 —— 避免与快照不同步)
+    PanePin {
+        id: u64,
+        on: bool,
+    },
     Unzoom,
     ResizeLeaf {
         id: u64,

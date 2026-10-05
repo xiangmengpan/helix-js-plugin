@@ -227,6 +227,16 @@ pub fn init() {
                     1,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_raise),
+                    JsString::from("raise"),
+                    1,
+                )
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_pin),
+                    JsString::from("pin"),
+                    2,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(layout::js_pane_float),
                     JsString::from("float"),
                     1,
@@ -916,7 +926,8 @@ pub(crate) mod tests {
             r#"
         helix.register_command("pn", () => {
             const need = ["list","float","embed","close","focus","focus_dir",
-                          "move","resize","zoom","unzoom","minimize","equalize","fix"];
+                          "move","resize","zoom","unzoom","minimize","equalize","fix",
+                          "info","raise","pin"];
             const needBuf = ["list","current","focus"];
             const missingBuf = needBuf.filter((n) => typeof helix.buffer[n] !== "function");
             const missing = need.filter((n) => typeof helix.pane[n] !== "function").concat(missingBuf);
@@ -1029,6 +1040,45 @@ pub(crate) mod tests {
         // **复原全局缓存**:本测试注入过 panes,不清掉会让后续依赖"空缓存"的测试失败
         // (实测:不清时有 4 个无关测试挂了)
         crate::state::cache_panes(r#"{"panes":[]}"#);
+    }
+
+    /// `pane.raise` / `pane.pin` —— 入队对应请求;`pin` **必须显式 on**。
+    #[test]
+    fn pane_raise_and_pin_push_requests() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("pr", () => {
+            helix.pane.raise(7);
+            helix.pane.pin(7, true);
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("pr", &ctx).unwrap());
+        let reqs = take_ui_requests();
+        assert!(
+            matches!(&reqs[0], UiRequest::PaneRaise { id } if *id == 7),
+            "pane.raise(7) → PaneRaise{{id:7}}"
+        );
+        assert!(
+            matches!(&reqs[1], UiRequest::PanePin { id, on } if *id == 7 && *on),
+            "pane.pin(7,true) → PanePin{{id:7,on:true}}"
+        );
+
+        // 不显式给 on → 报错(而不是隐式取反:快照可能落后一帧,取反会抖动)
+        assert!(
+            load_script(r#"helix.pane.pin(7);"#).is_err(),
+            "pin 缺 on 应当报错"
+        );
     }
 
     #[test]

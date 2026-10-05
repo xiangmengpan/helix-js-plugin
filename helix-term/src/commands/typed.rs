@@ -5167,6 +5167,18 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.sync_layout_cache();
                 });
             }
+            helix_js::UiRequest::PaneRaise { id } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.layout_tree().float_raise(id);
+                    compositor.sync_layout_cache();
+                });
+            }
+            helix_js::UiRequest::PanePin { id, on } => {
+                job::dispatch_blocking(move |_editor, compositor| {
+                    compositor.layout_tree().float_set_pinned(id, on);
+                    compositor.sync_layout_cache();
+                });
+            }
             helix_js::UiRequest::PaneEmbed { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().remove_float(id);

@@ -524,6 +524,53 @@ pub(crate) fn js_pane_list(
         .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("pane.list: 解析失败"))))
 }
 
+/// `helix.pane.raise(id)` —— 把浮动 pane 提到最上层(仅浮窗有意义;非浮窗是无操作)
+pub(crate) fn js_pane_raise(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::PaneRaise { id });
+    Ok(JsValue::undefined())
+}
+
+/// `helix.pane.pin(id, on)` —— pin(置顶)/取消。**`on` 必须显式给出**:
+/// 隐式取反要先读快照,而快照可能落后一帧 → 连续调用会抖动。
+pub(crate) fn js_pane_pin(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    let on: bool = args
+        .get(1)
+        .ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.pane.pin: 需要显式 on(true/false);不隐式取反",
+            )))
+        })?
+        .try_js_into(ctx)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::PanePin { id, on });
+    Ok(JsValue::undefined())
+}
+
 /// `helix.pane.info(id)` —— 单个 pane 的信息(找不到 → `null`)。
 /// **复用 `pane.list()` 的同一份快照**,不新增任何 Rust 侧状态、不等下一帧。
 pub(crate) fn js_pane_info(
