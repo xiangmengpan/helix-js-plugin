@@ -1661,6 +1661,87 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    /// 逐平台资产表(Mason `asset[]` 形状):解析 + 平台选择 + 两个消费点。
+    ///
+    /// 补这条测试的原因:能力先落地、测试后补 —— 当时只改了既有测试的构造,
+    /// 解析/选择/消费点**三条都无覆盖**。
+    #[test]
+    fn archive_assets_per_platform() {
+        let tbl: toml::Table = r#"
+            [ra]
+            kind = "lsp"
+            languages = ["rust"]
+            description = "d"
+            homepage = "h"
+            bin = "ra"
+            [[ra.asset]]
+            target = "linux_x64_musl"
+            url = "https://e/{version}/ra-x86_64-unknown-linux-musl.tar.gz"
+            [[ra.asset]]
+            target = "linux_x64_gnu"
+            url = "https://e/{version}/ra-x86_64-linux-gnu.tar.gz"
+            bin = "nested/ra"
+        "#
+        .parse()
+        .unwrap();
+        let specs = parse_registry_table(&tbl).unwrap();
+        assert_eq!(specs.len(), 1, "应解析出 1 个配方");
+        let spec = &specs[0].1;
+
+        let registry::Install::Archive { assets, .. } = &spec.install else {
+            panic!("带 asset[] 的配方应解析为 Archive");
+        };
+        assert_eq!(assets.len(), 2, "两个平台条目都要解析出来");
+        assert_eq!(assets[0].target, "linux_x64_musl");
+        assert_eq!(assets[1].bin_rel, "nested/ra", "条目自带 bin");
+        assert_eq!(assets[0].bin_rel, "", "未写 bin → 空(安装时回落到外层)");
+
+        // 消费点①:有资产 = 可装 —— 即使没有 url_template(这正是"只有 asset[]"的配方)
+        assert!(spec.is_installable(), "assets 非空应判为可装");
+        // 消费点②:资产 url 含 {version} → 需要用户给版本
+        assert!(
+            needs_version(spec),
+            "资产 url 含 {{version}} 且未固定版本 → 需要版本"
+        );
+
+        // 平台选择:选中的必须是**当前平台**的候选之一(不能跨平台误选)
+        if let Some(a) = registry::pick_asset(assets) {
+            assert!(
+                registry::platform_targets().contains(&a.target.as_str()),
+                "选中的 target 必须是当前平台的候选之一,实得 {}",
+                a.target
+            );
+        } else {
+            // 当前平台不在候选里(如 CI 上的其它架构)→ 必须回落 None(由调用方用单模板)
+            assert!(
+                !assets
+                    .iter()
+                    .any(|a| registry::platform_targets().contains(&a.target.as_str())),
+                "若候选里有当前平台,就不该选不出来"
+            );
+        }
+
+        // 反证:不含 {version} 的资产不算"需要版本"
+        let tbl2: toml::Table = r#"
+            [fixed]
+            kind = "lsp"
+            languages = ["x"]
+            description = "d"
+            homepage = "h"
+            bin = "x"
+            [[fixed.asset]]
+            target = "linux_x64_gnu"
+            url = "https://e/latest/x.tar.gz"
+        "#
+        .parse()
+        .unwrap();
+        let specs2 = parse_registry_table(&tbl2).unwrap();
+        assert!(
+            !needs_version(&specs2[0].1),
+            "资产 url 不含 {{version}} → 不需要版本"
+        );
+    }
+
     /// 写一个含 bin 的 tar.gz 到 path(供 file:// 假源)
     fn make_tar_gz(path: &Path, bin_name: &str) -> Result<String> {
         std::fs::create_dir_all(path.parent().unwrap())?;
