@@ -474,7 +474,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
     let plugin = format!(
-        "{}/plugins/features/arsenal/index.js",
+        "{}/plugins/arsenal/plugin.js",
         std::env::var("CARGO_MANIFEST_DIR")
             .unwrap()
             .rsplitn(2, '/')
@@ -644,7 +644,7 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
     let plugin = format!(
-        "{}/plugins/features/arsenal/index.js",
+        "{}/plugins/arsenal/plugin.js",
         std::env::var("CARGO_MANIFEST_DIR")
             .unwrap()
             .rsplitn(2, '/')
@@ -711,7 +711,7 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
     let plugin = format!(
-        "{}/plugins/features/arsenal/index.js",
+        "{}/plugins/arsenal/plugin.js",
         std::env::var("CARGO_MANIFEST_DIR")
             .unwrap()
             .rsplitn(2, '/')

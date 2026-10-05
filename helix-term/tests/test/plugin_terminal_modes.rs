@@ -555,7 +555,7 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
     let file = dir.path().join("fr.txt");
     std::fs::write(&file, "abc\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let filetree_plugin = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     if !std::path::Path::new(&filetree_plugin).exists() {
         return Ok(());
     }
@@ -843,7 +843,7 @@ async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
     let file = dir.path().join("z.txt");
     std::fs::write(&file, "x\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let filetree_plugin = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     let layout_plugin = format!("{home}/.config/helix/plugins/lib/layout.js");
     if !std::path::Path::new(&filetree_plugin).exists()
         || !std::path::Path::new(&layout_plugin).exists()
@@ -920,7 +920,7 @@ async fn plugin_panel_zombie_selfheal() -> anyhow::Result<()> {
     let file = dir.path().join("zh.txt");
     std::fs::write(&file, "x\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let filetree_plugin = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     if !std::path::Path::new(&filetree_plugin).exists() {
         return Ok(());
     }
@@ -978,7 +978,7 @@ async fn plugin_multi_panel_reload_all_closed() -> anyhow::Result<()> {
     let file = dir.path().join("mp.txt");
     std::fs::write(&file, "x\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let filetree_plugin = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     if !std::path::Path::new(&filetree_plugin).exists() {
         return Ok(());
     }

@@ -106,9 +106,9 @@ helix.plugin("filetree", { deps: ["icons"] });   // ✅ 名字
 
 | 现状 | 迁到 |
 |---|---|
-| `features/tabbar.js` `statusline.js` `terminal.js` | `<name>/plugin.js`(**待迁**) |
+| `features/{tabbar,statusline,terminal}.js` | ✅ **已迁** → `<name>/plugin.js` |
 | `features/which-key.js` | ✅ **已迁** → `which-key/plugin.js`,init 改为 `helix.load("which-key")` |
-| `features/arsenal/index.js` `filetree/index.js` | 改名 `index.js` → `plugin.js` |
+| `features/{arsenal,filetree}/index.js` | ✅ **已迁** → `<name>/plugin.js`(目录整体 `git mv`,含 `tests/`) |
 | `examples/lsp-hover.js` `picker.js` | 保持(已在 `examples/`) |
 | `lib/icons.js` | 保持(它是根级共享库;等 §6.1 落地后甚至可删) |
 | `init.js` 的 `helix.load("features/x/index.js")` | `helix.load("x")` |

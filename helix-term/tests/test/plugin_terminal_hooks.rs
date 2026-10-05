@@ -575,7 +575,7 @@ async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
     let file_str = file.to_string_lossy().into_owned();
     std::fs::write(&file, "hello\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let filetree_plugin = format!("{home}/.config/helix/plugins/features/filetree/index.js");
+    let filetree_plugin = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     if !std::path::Path::new(&filetree_plugin).exists() {
         return Ok(());
     }

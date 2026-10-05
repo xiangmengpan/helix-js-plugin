@@ -20,7 +20,7 @@ function safe_load(p) {
 safe_load("lib/icons.js");
 safe_load("terminal");
 safe_load("statusline");
-safe_load("features/filetree/index.js");
+safe_load("filetree");
 
 // 方案 3 可选：状态栏 mode 图标（整行替换默认状态栏，默认不启用）
 // const icons = helix.load("lib/icons.js");
