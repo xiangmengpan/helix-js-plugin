@@ -87,9 +87,24 @@ fn plugins_init_template_loads_resolve() {
         let Some(rel) = rest.split('"').next() else {
             continue;
         };
+        // **按新布局约定解析**(与加载器的 `state::entry_keys` 同一规则):
+        // 裸名 → `<name>/plugin.js`;带 `.js` 或含 `/` → 文件路径(后门)。
+        // 这条曾经按"目录直接拼文件名"解析,于是在 init.js 改用裸名点名后**立刻挂了**
+        // —— 护栏测试的价值就在这里:它逼着解析规则与加载器保持一致。
+        let target = if rel.ends_with(".js") || rel.contains('/') {
+            dir.join(rel)
+        } else {
+            dir.join(rel).join("plugin.js")
+        };
         assert!(
-            dir.join(rel).is_file(),
-            "plugins/init.js 引用了不存在的文件:{rel}(移动/删除插件时漏改 init.js?)"
+            target.is_file(),
+            "plugins/init.js 引用了不存在的{}:{}(移动/删除插件时漏改 init.js?)",
+            if rel.ends_with(".js") || rel.contains('/') {
+                "文件"
+            } else {
+                "插件入口"
+            },
+            target.display()
         );
         checked += 1;
     }

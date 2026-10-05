@@ -318,7 +318,7 @@ async fn plugin_terminal_reopen_after_close() -> anyhow::Result<()> {
     let file = dir.path().join("r.txt");
     std::fs::write(&file, "abc\n")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let term_plugin = format!("{home}/.config/helix/plugins/features/terminal.js");
+    let term_plugin = format!("{home}/.config/helix/plugins/terminal/plugin.js");
     if !std::path::Path::new(&term_plugin).exists() {
         return Ok(());
     }
