@@ -524,6 +524,44 @@ pub(crate) fn js_pane_list(
         .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("pane.list: 解析失败"))))
 }
 
+/// `helix.pane.info(id)` —— 单个 pane 的信息(找不到 → `null`)。
+/// **复用 `pane.list()` 的同一份快照**,不新增任何 Rust 侧状态、不等下一帧。
+pub(crate) fn js_pane_info(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let want: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.pane.info: id must be a number",
+            )))
+        })?;
+    let arr = js_pane_list(&JsValue::undefined(), &[], ctx)?;
+    let Some(arr) = arr.as_object() else {
+        return Ok(JsValue::null());
+    };
+    let len: u64 = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
+    for i in 0..len {
+        let item = arr.get(i, ctx)?;
+        if let Some(o) = item.as_object() {
+            if let Ok(idv) = o.get(JsString::from("id"), ctx) {
+                if idv
+                    .try_js_into::<u64>(ctx)
+                    .map(|id| id == want)
+                    .unwrap_or(false)
+                {
+                    return Ok(item);
+                }
+            }
+        }
+    }
+    Ok(JsValue::null())
+}
+
 /// 当前平级模式:helix.pane_mode.current() → "Normal"|"Locked"|"Pane"|…
 pub(crate) fn js_pane_mode_current(
     _this: &JsValue,

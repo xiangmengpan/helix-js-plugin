@@ -222,6 +222,11 @@ pub fn init() {
                     0,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(layout::js_pane_info),
+                    JsString::from("info"),
+                    1,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(layout::js_pane_float),
                     JsString::from("float"),
                     1,
@@ -981,6 +986,49 @@ pub(crate) mod tests {
             crate::state::resolve_in(&roots, abs.to_str().unwrap()).unwrap(),
             abs
         );
+    }
+
+    /// `helix.pane.info(id)` —— 单个 pane 信息;找不到 → null。
+    /// 复用 pane.list() 的同一份快照(不新增状态),所以两者必须一致。
+    #[test]
+    fn pane_info_reads_same_snapshot_as_list() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        crate::state::cache_panes(
+            r#"{"panes":[
+                {"id":0,"kind":"EditorView","place":"tiled","focused":true,"fixed":false,"pinned":false},
+                {"id":7,"kind":"PluginTerminal","place":"float","focused":false,"fixed":false,"pinned":true,"z":2}
+            ]}"#,
+        );
+        crate::load_script(
+            r##"
+            helix.register_command("pi", () => {
+                const a = helix.pane.info(7);
+                helix.echo("k:" + (a ? a.kind : "null") + " place:" + (a ? a.place : "-") + " z:" + (a ? a.z : "-"));
+                helix.echo("ed:" + helix.pane.info(0).kind);
+                helix.echo("miss:" + helix.pane.info(999));
+                helix.echo("same:" + (helix.pane.info(7).id === helix.pane.list()[1].id));
+            });
+            "##,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("pi", &ctx).unwrap());
+        let m = take_messages();
+        assert_eq!(m[0], "k:PluginTerminal place:float z:2");
+        assert_eq!(m[1], "ed:EditorView");
+        assert_eq!(m[2], "miss:null", "找不到 → null(不是 undefined/报错)");
+        assert_eq!(m[3], "same:true", "与 pane.list() 是同一份快照");
+
+        // **复原全局缓存**:本测试注入过 panes,不清掉会让后续依赖"空缓存"的测试失败
+        // (实测:不清时有 4 个无关测试挂了)
+        crate::state::cache_panes(r#"{"panes":[]}"#);
     }
 
     #[test]
