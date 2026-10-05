@@ -86,6 +86,8 @@ helix.plugin("filetree", { deps: ["icons"] });   // ✅ 名字
 | 2 | **目录级覆盖**:命中用户的 `<name>/` 后,不再回落自带的同名目录 | ⬜ 仍是**文件级**(`resolve_in` 从后往前找第一个存在的文件) |
 | 3 | `deps` 接受**插件名**(内部转成 `<name>/plugin.js`) | ⬜ 现只接受文件 key(但**裸名现在已能解析到插件入口**,所以主要差在文档与校验) |
 
+> 另:**分发步骤已落地** —— `contrib/install-plugins.sh` 把 `plugins/` 装进 `<runtime>/plugins`(见 §8)。
+
 改动集中在 `state::resolve_in` 与 `commands::load_script_checked` 两处 —— 都是纯函数/小函数,
 且 `resolve_in` 已有 4 种情形的单测可直接扩展。
 
@@ -125,3 +127,31 @@ helix.plugin("filetree", { deps: ["icons"] });   // ✅ 名字
 | `after/` 目录 | 与"后加的根覆盖先加的"重复;多根顺序已经能表达,少一个概念 |
 
 **一句话**:Neovim 的布局约定(§3)**现在就抄**;它的加载策略(§7)**先不抄**。
+
+## 8. 分发:把 `plugins/` 装进 `<runtime>/plugins`
+
+**这是"内置插件"真正成立的一步。** 此前只有**查找路径**(多根里的 `<runtime>/plugins`)、
+**没有分发** —— 所以全新安装的机器上那个目录是空的,内置插件并不存在。
+
+```sh
+sh contrib/install-plugins.sh                 # 装到默认 runtime 目录
+sh contrib/install-plugins.sh /path/to/rt     # 指定 runtime 目录(内部会加 /plugins)
+DRY_RUN=1 sh contrib/install-plugins.sh       # 只打印将要做什么
+```
+
+`HELIX_RUNTIME` 未设置时,默认落点是与 helix 一致的 runtime 目录
+(`$HOME/.config/helix/runtime`,源码构建的惯例)。
+
+### 实测(两层的分工在真实文件系统上验过)
+
+| 场景 | 解析到 | 含义 |
+|---|---|---|
+| 用户层有 `which-key/` | **用户层** | 覆盖内置 ✓ |
+| 把用户层 `which-key/` 移开 | **内置层** | 内置顶上 ✓ |
+| `init.js` | 用户层优先 | 用户写自己的入口即覆盖 ✓ |
+
+### 与"迁移"的关系
+
+插件迁移(§6)把仓库的 `plugins/` 对齐成了**内置层该有的形态**
+(`<name>/plugin.js` + `lib/` + `examples/` + `init.js`),
+所以现在这份树**可以直接当内置插件分发**,不需要额外转换。
