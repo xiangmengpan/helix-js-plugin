@@ -4348,6 +4348,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature::DEFAULT,
     },
     TypableCommand {
+        name: "layout",
+        aliases: &[],
+        doc: "Save/load named layouts (save <name>|load <name>|list|delete <name>).",
+        fun: layout,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(2)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "plugin-load",
         aliases: &[],
         doc: "Load a JavaScript plugin file.",
@@ -6152,6 +6163,56 @@ pub(crate) fn server_op(
             ));
         }
     }
+    Ok(())
+}
+
+/// `:layout save|load|list|delete [name]` —— 命名布局的文件持久化。
+/// API 本体在 `helix_js::layout_*`(与 `helix.layout.*` 共用同一内核与目录)。
+fn layout(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let sub = args
+        .first()
+        .ok_or_else(|| anyhow!("usage: layout save|load|list|delete [name]"))?;
+    let name = || -> anyhow::Result<String> {
+        args.get(1)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("usage: layout {sub} <name>"))
+    };
+    match sub {
+        "save" => {
+            let n = name()?;
+            helix_js::layout_save(&n).map_err(|e| anyhow!("layout save: {e}"))?;
+            cx.editor
+                .set_status(format!("已保存布局 {n}(保存目录见 :config-dir/layouts)"));
+        }
+        "load" => {
+            let n = name()?;
+            helix_js::layout_load(&n).map_err(|e| anyhow!("layout load: {e}"))?;
+            cx.editor.set_status(format!("已载入布局 {n}"));
+        }
+        "list" => {
+            let names = helix_js::layout_list();
+            cx.editor.set_status(if names.is_empty() {
+                "没有已保存的布局".to_string()
+            } else {
+                format!("布局({}): {}", names.len(), names.join(" · "))
+            });
+        }
+        "delete" => {
+            let n = name()?;
+            let hit = helix_js::layout_delete(&n).map_err(|e| anyhow!("layout delete: {e}"))?;
+            cx.editor.set_status(if hit {
+                format!("已删除布局 {n}")
+            } else {
+                format!("没有名为 {n} 的布局")
+            });
+        }
+        other => bail!("layout: unknown subcommand '{other}'(save|load|list|delete)"),
+    }
+    // load 经 UiRequest::CacheLayout 入队 → 这里统一泵一次
+    apply_ui_requests(helix_js::take_ui_requests())?;
     Ok(())
 }
 

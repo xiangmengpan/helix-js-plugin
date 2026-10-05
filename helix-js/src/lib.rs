@@ -30,6 +30,8 @@ pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
 pub use state::*;
+// `:layout` 类型化命令用的 Rust 层入口(与 helix.layout.* 共用内核与目录)
+pub use layout::{layout_delete, layout_list, layout_load, layout_save};
 pub use theme::*;
 pub use types::DocChange;
 pub use types::*;

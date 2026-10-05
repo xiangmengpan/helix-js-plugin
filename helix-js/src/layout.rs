@@ -822,6 +822,43 @@ pub(crate) fn js_layout_delete(
     ))
 }
 
+// ── 对外公开的 Rust 层入口(`:layout` 类型化命令用;JS 侧走上面的 native fn)──
+
+fn dir_or_err() -> Result<&'static std::path::Path, String> {
+    crate::state::layouts_dir()
+        .map(|p| p.as_path())
+        .ok_or_else(|| "布局目录未设置(helix-term 启动时应设置)".to_string())
+}
+
+pub fn layout_save(name: &str) -> Result<(), String> {
+    let json = crate::state::layout_json();
+    if json.is_empty() {
+        return Err("还没有布局快照(需编辑器先渲染过至少一帧)".into());
+    }
+    layout_save_in(dir_or_err()?, name, &json)
+}
+
+pub fn layout_load(name: &str) -> Result<(), String> {
+    let json = layout_load_in(dir_or_err()?, name)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::CacheLayout(json));
+    Ok(())
+}
+
+pub fn layout_list() -> Vec<String> {
+    crate::state::layouts_dir()
+        .map(|d| layout_list_in(d))
+        .unwrap_or_default()
+}
+
+pub fn layout_delete(name: &str) -> Result<bool, String> {
+    layout_delete_in(dir_or_err()?, name)
+}
+
 #[cfg(test)]
 mod layout_file_tests {
     use super::*;
