@@ -494,12 +494,12 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
 
     let _guard = HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let wk = format!("{home}/.config/helix/plugins/features/which-key.js");
+    let wk = format!("{home}/.config/helix/plugins/which-key/plugin.js");
     if !std::path::Path::new(&wk).exists() {
         return Ok(());
     }
     let mut app = AppBuilder::new().build()?;
-    // which-key.js 的 deps 是 lib/layout.js(相对名);集成测试需 PLUGINS_DIR
+    // which-key 无 deps(图标已收进核心、不依赖 lib/layout.js —— 那条笔记已过时)
     helix_js::set_plugins_dir(format!("{home}/.config/helix/plugins").into());
     pump(&mut app, &format!(":plugin-load {wk}<ret>")).await?;
     // 普通前缀 g → 中文说明
@@ -535,7 +535,7 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
 #[test]
 fn which_key_has_no_hardcoded_pane_hints_table() {
     let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/features/which-key.js");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/which-key/plugin.js");
     // 刻意**不**静默跳过:这份文件在仓库里必然存在,读不到就是路径写错了 ——
     // 静默 return 会让测试空过(那正是这类"读文件"测试最常见的假绿)。
     let src =

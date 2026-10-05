@@ -1,4 +1,4 @@
-// features/which-key.js — 快捷键提示(方案 3:set_keymap_hint 接管原生 Info)
+// which-key/plugin.js — 快捷键提示(方案 3:set_keymap_hint 接管原生 Info)
 // 依赖:helix.set_keymap_hint(ctx => 多行文本|null)
 // ctx = { title: 前缀名, entries: [{keys, doc}] }
 // 平级模式(C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll)由 compositor
