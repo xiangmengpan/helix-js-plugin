@@ -571,6 +571,49 @@ pub(crate) fn js_pane_pin(
     Ok(JsValue::undefined())
 }
 
+/// `helix.stack.list()` —— 当前所有堆叠组:`[{anchor, members}]`。
+/// 复用 `pane.list()` 的同一份快照(其中每个平铺叶带 `stack` 成员数组),
+/// 所以与 pane 视图永不失配;按锚 id 去重(组内每个成员都会报同一份 members)。
+pub(crate) fn js_stack_list(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let json = crate::state::PANES
+        .get()
+        .map(|m| m.lock().unwrap().clone())
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    let mut groups: Vec<serde_json::Value> = Vec::new();
+    if !json.is_empty() {
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+        if let Some(arr) = v.get("panes").and_then(|p| p.as_array()) {
+            for e in arr {
+                let Some(m) = e.get("stack").and_then(|s| s.as_array()) else {
+                    continue;
+                };
+                if m.len() < 2 {
+                    continue;
+                }
+                let Some(anchor) = m.first().and_then(|x| x.as_u64()) else {
+                    continue;
+                };
+                if !seen.insert(anchor) {
+                    continue; // 组内每个成员都报同一份 members,按锚去重
+                }
+                groups.push(serde_json::json!({ "anchor": anchor, "members": m }));
+            }
+        }
+    }
+    js_json_parse(
+        serde_json::json!({ "stacks": groups }).to_string(),
+        ctx,
+        "stack.list",
+    )
+    .and_then(|o| o.as_object().unwrap().get(JsString::from("stacks"), ctx))
+    .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("stack.list: 解析失败"))))
+}
+
 /// `helix.pane.info(id)` —— 单个 pane 的信息(找不到 → `null`)。
 /// **复用 `pane.list()` 的同一份快照**,不新增任何 Rust 侧状态、不等下一帧。
 pub(crate) fn js_pane_info(

@@ -1379,6 +1379,15 @@ impl Compositor {
             .leafs
             .iter()
             .map(|l| {
+                // 堆叠:列出该叶所在组的成员(不在组里 → 空数组)。
+                // 放进**同一份快照**的理由:stack.list() 因此无需新状态,也不会与 pane.list() 失配。
+                // 不变量:成员 >1 时 `members[0]` 就是锚(= 当前显示的那个,见规格 A.6)。
+                let members = self.main_tree.stack_members(l.id);
+                let stack = if members.len() > 1 {
+                    serde_json::json!(members)
+                } else {
+                    serde_json::json!([])
+                };
                 serde_json::json!({
                     "id": l.id,
                     "kind": self.main_tree.component_kind_of(l.id).unwrap_or(""),
@@ -1386,6 +1395,7 @@ impl Compositor {
                     "focused": l.id == active,
                     "fixed": l.fixed,
                     "pinned": false,
+                    "stack": stack,
                 })
             })
             .collect();

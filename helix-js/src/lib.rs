@@ -377,6 +377,16 @@ pub fn init() {
                     1,
                 )
                 .build();
+            // helix.stack.*(③ 最终命名)。目前只有只读的 `list` ——
+            // `create/activate/remove` 需要先定"add 在兄弟约束下的去留"(见规格 A.7),
+            // 所以本步只把**读**暴露出来(无需新状态、无需设计决策)。
+            let stack_obj = ObjectInitializer::new(engine)
+                .function(
+                    NativeFunction::from_fn_ptr(layout::js_stack_list),
+                    JsString::from("list"),
+                    0,
+                )
+                .build();
             let mut builder = ObjectInitializer::new(engine);
             builder
                 .function(
@@ -741,6 +751,11 @@ pub fn init() {
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
             );
             builder.property(
+                JsString::from("stack"),
+                stack_obj,
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+            builder.property(
                 JsString::from("buffer"),
                 buffer_obj,
                 Attribute::READONLY | Attribute::NON_ENUMERABLE,
@@ -1079,6 +1094,47 @@ pub(crate) mod tests {
             load_script(r#"helix.pane.pin(7);"#).is_err(),
             "pin 缺 on 应当报错"
         );
+    }
+
+    /// `helix.stack.list()` —— 从 pane 快照分组;**按锚去重**是关键
+    /// (组内每个成员都会报同一份 members,不去重就会重复列出同一组)。
+    #[test]
+    fn stack_list_groups_and_dedupes_by_anchor() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        crate::state::cache_panes(
+            r#"{"panes":[
+                {"id":0,"kind":"EditorView","place":"tiled","stack":[0,1]},
+                {"id":1,"kind":"PluginTerminal","place":"tiled","stack":[0,1]},
+                {"id":5,"kind":"PluginPanel","place":"tiled","stack":[]},
+                {"id":7,"kind":"PluginTerminal","place":"float"}
+            ]}"#,
+        );
+        crate::load_script(
+            r##"
+            helix.register_command("sl", () => {
+                const g = helix.stack.list();
+                helix.echo("n:" + g.length);
+                helix.echo("a:" + g[0].anchor + " m:" + g[0].members.join(","));
+                helix.echo("t:" + typeof helix.stack.list);
+            });
+            "##,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("sl", &ctx).unwrap());
+        let m = take_messages();
+        assert_eq!(m[0], "n:1", "两个成员只应产出**一组**(按锚去重)");
+        assert_eq!(m[1], "a:0 m:0,1", "锚 = members[0](= 当前显示的那个)");
+        assert_eq!(m[2], "t:function");
+        // 复原全局缓存(本测试注入过 panes;不清会让依赖"空快照"的测试挂)
+        crate::state::cache_panes(r#"{"panes":[]}"#);
     }
 
     #[test]
