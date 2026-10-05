@@ -83,15 +83,43 @@ helix.export({ run: myFn });                 // 供其他插件 load 后调用
 ### 布局与窗口
 
 ```js
-const id = helix.split("right", { terminal: { cmd: "bash", size: 40 } }); // 分屏
-const id = helix.buffer_open("/path/file.js", { split: "right" });        // buffer 叶子
-helix.focus(id);          // 聚焦叶子
-helix.layout_fix(id, true);  // 固定叶子(免疫交换/关闭/最小化)
-const layout = helix.get_layout(); // { tree, active, leafs:[{id, fixed}], zoomed, minimized }
-helix.zoom(id); helix.unzoom();
-helix.layout_minimize(id, true);   // 最小化
-helix.layout_resize(id, "h", 0.05); // resize
+// 创建:`split` 仍用旧名(它还没有新等价物 —— 统一入口 pane.open({content, place}) 尚未设计)
+const id = helix.split("right", { terminal: { cmd: "bash", size: 40 } });
+
+// ── pane.*(16 个;词汇对齐 zellij:float / embed)──
+helix.pane.list();                    // → [{id, kind, place, focused, fixed, pinned, z?, rect?}]
+helix.pane.info(id);                  // 单个 pane(无 → null);与 list() 同一份快照
+helix.pane.focus(id); helix.pane.focus_dir(id, "left"); helix.pane.move(id, "down");
+helix.pane.resize(id, 0.3); helix.pane.close(id);
+helix.pane.zoom(id); helix.pane.unzoom();
+helix.pane.minimize(id, true); helix.pane.equalize(id); helix.pane.fix(id, true);
+helix.pane.float(id); helix.pane.embed(id); helix.pane.raise(id); helix.pane.pin(id, true);
+
+// ── stack.*(`C-p s` 的编程接口;**组恒为 2 个 pane**)──
+helix.stack.list();                   // → [{anchor, members}]
+helix.stack.create(id);               // 与**兄弟窗**建组(非兄弟 = 无效操作)
+helix.stack.activate(id, member);     // 让 member 成为当前显示的那个
+helix.stack.remove(id);
+
+// ── layout.*(序列化 + 文件持久化)──
+helix.layout.get(); helix.layout.restore(dump);
+helix.layout.save("dev"); helix.layout.load("dev"); helix.layout.list(); helix.layout.delete("dev");
+// 命令行等价::layout save|load|list|delete <name>
+
+// ── buffer.* ──
+helix.buffer.list(); helix.buffer.current(); helix.buffer.focus(id);
+
+// ── icons.*(核心单一来源;零依赖,不必声明 deps)──
+helix.icons.file("src/main.rs"); helix.icons.dir(true); helix.icons.mode("normal");
+helix.icons.diagnostic("error"); helix.icons.git("M"); helix.icons.completion(3);
+helix.icons.enabled(false);  // 一处关掉全部 nerd font 图标
+                             //(或 config.toml 里 [icons] nerd_font = false)
+helix.pane_mode.current(); helix.pane_mode.keymap();  // 当前模式 + 其键位表(唯一来源)
 ```
+
+> **旧的扁平名已删除**(`focus` / `zoom` / `get_layout` / `buffers` / `layout_fix` /
+> `layout_minimize` / `layout_resize` …),由上面的命名空间取代。
+> 仅 `split` / `layout_swap` / `layout_resize` 保留(暂无新等价物)。
 
 ### UI 渲染
 
@@ -121,7 +149,7 @@ helix.set_component_render(tid, (ctx) => [
 
 // 布局标签条(顶部槽位,helix.TABBAR_ID 常量)
 helix.set_component_render(TABBAR_ID, () => {
-  const layout = helix.get_layout();
+  const layout = helix.layout.get();
   return layout.leafs.map((leaf) => ({
     type: "text", text: " " + leaf.id + " ", style: leaf.id === layout.active ? "ui.selection" : "ui.statusline.inactive",
   }));
@@ -161,9 +189,9 @@ helix.term_state(ptyId, "cwd");                     // 读取
 
 ```js
 // 打开文档快照(只读;id 会话内有效)
-helix.buffers();            // → [{id, path, name, dirty, language}]
-helix.current_buffer();     // → id
-helix.focus_buffer(id);     // 当前 view 切换到该文档
+helix.buffer.list();        // → [{id, path, name, dirty, language}]
+helix.buffer.current();     // → id
+helix.buffer.focus(id);     // 当前 view 切换到该文档
 
 // 当前文档的 LSP 诊断(数据来自 Document::diagnostics)
 helix.diagnostics();        // → [{line, message, severity, code, source}]
@@ -240,21 +268,45 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 
 **LSP**:`helix.lsp.hover/completion/document_symbols/workspace_symbols/format/rename/code_actions/execute_code_action`(见 [api/lsp.md](docs/api/lsp.md))。优点:查询/编辑全链路,失败 resolve null 不悬挂。局限:block_on 冻结主线程(code_action 执行)。
 
-## 📦 现有插件
+## 📦 内置插件与两层模型
 
-位于 `~/.config/helix/plugins/`(`init.js` 自动加载;仓库镜像在 `plugins/`):
+**布局约定**(完整规则见 [`docs/plugin-layout.md`](docs/plugin-layout.md))——一个插件 = **一个目录** + 固定入口名:
+
+```
+<插件根>/
+├── init.js          # 可选:该根入口(用户写的覆盖内置)
+├── <name>/plugin.js # ← 一个插件。目录名 = 插件名 = helix.plugin("<name>")
+├── lib/             # 跨插件共享库
+└── examples/        # 示例/模板 —— 不参与自动加载
+```
+
+`init.js` 按**名字**点名(不写文件路径):`helix.load("filetree")` → `<name>/plugin.js`;
+`deps` 也用插件名:`helix.plugin("filetree", { deps: ["icons"] })`。
+
+**两层、同一套规则**(Neovim `runtimepath` 语义:自带在前、用户殿后 ⇒ **用户覆盖内置**):
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| **内置层** | `<runtime>/plugins/`(如 `~/.config/helix/runtime/plugins`) | 随软件分发 |
+| **用户层** | `~/.config/helix/plugins/` | 你的;**同名目录整体覆盖**内置那份 |
+
+```bash
+sh contrib/install-plugins.sh          # 把仓库 plugins/ 装进内置层
+DRY_RUN=1 sh contrib/install-plugins.sh
+```
 
 | 插件 | 功能 |
 |---|---|
-| `features/filetree/` | 侧边文件树面板(图标、展开/折叠、Enter 打开并聚焦) |
-| `features/terminal.js` | 终端命令(:term/:vterm/:hterm)、面板管理 |
-| `features/statusline.js` | 状态栏美化(模式图标、文件类型图标、git 分支、诊断) |
-| `features/which-key.js` | 快捷键中文提示(全键位映射,位置可配置) |
-| `features/tabbar.js` | 布局标签条示范(顶部槽位,点击聚焦) |
-| `lib/icons.js` | 统一图标映射表(文件类型/目录/模式/诊断/git) |
-| `lib/layout.js` | 布局命令封装(:layout-focus/swap/resize/minimize 等) |
+| `filetree/` | 侧边文件树面板(图标、展开/折叠、Enter 打开并聚焦) |
+| `terminal/` | 终端命令(:term/:vterm/:hterm)、面板管理 |
+| `statusline/` | 状态栏(模式图标、文件类型图标、git 分支、诊断) |
+| `which-key/` | 快捷键中文提示(位置可配置) |
+| `tabbar/` | 布局标签条示范(顶部槽位,点击聚焦) |
+| `arsenal/` | 浮层市场窗(`:arsenal`)—— 取代已废弃的 server-manager |
+| `icons/` | 只有 `[icons]` 配置;图标表本身在核心(`helix.icons.*`) |
+| `examples/` | `picker.js`(定义 files/grep/buffers/symbols 四个 picker 源)、`lsp-hover.js` |
 
-安装:复制到 `~/.config/helix/plugins/`,在 `~/.config/helix/init.js` 中 `helix.load("features/xxx.js")`;修改后 `:plugin-reload` 生效。
+说明:某个插件加载失败**不会再拖垮整个入口** —— `init.js` 用包装逐条加载,一个坏了报错后其余照常。
 
 ## 🛠 构建
 
@@ -271,7 +323,9 @@ cargo build --release
 
 ## 📄 文档
 
+- **插件布局与命名**:[`docs/plugin-layout.md`](docs/plugin-layout.md)(目录 · 入口 · 依赖 · 两层覆盖 · 分发)
 - **插件 API**:[`docs/plugin-api.md`](docs/plugin-api.md)(总览与索引)· [`docs/api/`](docs/api/)(分域详细:说明/示例/优缺点)
+- **类型定义**:[`plugins/helix.d.ts`](plugins/helix.d.ts)(编辑器补全用)
 - 本 fork 设计文档:`docs/superpowers/specs/2026-08-15-js-ui-rendering-design.md`(JS 视图层分层)
 - 交接记录:`docs/handoff-2026-08-14.md`(窗口模式/终端/插件演进)
 - 原版 Helix 文档:[官网](https://helix-editor.com) · [文档](https://docs.helix-editor.com/) · [键位表](https://docs.helix-editor.com/keymap.html)

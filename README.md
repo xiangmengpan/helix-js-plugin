@@ -91,15 +91,44 @@ helix.export({ run: myFn });                      // callable after other plugin
 ### Layout & windows
 
 ```js
-const id = helix.split("right", { terminal: { cmd: "bash", size: 40 } }); // split
-const id = helix.buffer_open("/path/file.js", { split: "right" });        // buffer leaf
-helix.focus(id);              // focus leaf
-helix.layout_fix(id, true);   // fix leaf (immune to swap/close/minimize)
-const layout = helix.get_layout(); // { tree, active, leafs:[{id, fixed}], zoomed, minimized }
-helix.zoom(id); helix.unzoom();
-helix.layout_minimize(id, true);    // minimize
-helix.layout_resize(id, "h", 0.05); // resize
+// Creation: `split` keeps its old name (it has no new equivalent yet —
+// the unified `pane.open({content, place})` entry is still to be designed).
+const id = helix.split("right", { terminal: { cmd: "bash", size: 40 } });
+
+// ── pane.* (16 ops; vocabulary follows zellij: float / embed) ──
+helix.pane.list();                    // → [{id, kind, place, focused, fixed, pinned, z?, rect?}]
+helix.pane.info(id);                  // one pane (null if absent); same snapshot as list()
+helix.pane.focus(id); helix.pane.focus_dir(id, "left"); helix.pane.move(id, "down");
+helix.pane.resize(id, 0.3); helix.pane.close(id);
+helix.pane.zoom(id); helix.pane.unzoom();
+helix.pane.minimize(id, true); helix.pane.equalize(id); helix.pane.fix(id, true);
+helix.pane.float(id); helix.pane.embed(id); helix.pane.raise(id); helix.pane.pin(id, true);
+
+// ── stack.* (programmatic side of `C-p s`; groups are always **two** panes) ──
+helix.stack.list();                   // → [{anchor, members}]
+helix.stack.create(id);               // stack with the **sibling** pane (non-sibling = no-op)
+helix.stack.activate(id, member);     // make `member` the shown one
+helix.stack.remove(id);
+
+// ── layout.* (serialization + file persistence) ──
+helix.layout.get(); helix.layout.restore(dump);
+helix.layout.save("dev"); helix.layout.load("dev"); helix.layout.list(); helix.layout.delete("dev");
+// Same thing from the command line: :layout save|load|list|delete <name>
+
+// ── buffer.* ──
+helix.buffer.list(); helix.buffer.current(); helix.buffer.focus(id);
+
+// ── icons.* (core-owned single source; zero deps, no `deps` needed) ──
+helix.icons.file("src/main.rs"); helix.icons.dir(true); helix.icons.mode("normal");
+helix.icons.diagnostic("error"); helix.icons.git("M"); helix.icons.completion(3);
+helix.icons.enabled(false);  // turn all nerd-font icons off in one place
+                             // (or `[icons] nerd_font = false` in config.toml)
+helix.pane_mode.current(); helix.pane_mode.keymap();  // mode + its key table (single source)
 ```
+
+> **The old flat names are gone** (`focus`, `zoom`, `get_layout`, `buffers`, `layout_fix`,
+> `layout_minimize`, `layout_resize`, …) — replaced by the namespaces above.
+> Only `split` / `layout_swap` / `layout_resize` remain (no new equivalent yet).
 
 ### UI rendering
 
@@ -129,7 +158,7 @@ helix.set_component_render(tid, (ctx) => [
 
 // Layout tab bar (top slot, helix.TABBAR_ID constant)
 helix.set_component_render(TABBAR_ID, () => {
-  const layout = helix.get_layout();
+  const layout = helix.layout.get();
   return layout.leafs.map((leaf) => ({
     type: "text", text: " " + leaf.id + " ", style: leaf.id === layout.active ? "ui.selection" : "ui.statusline.inactive",
   }));
@@ -169,9 +198,9 @@ helix.term_state(ptyId, "cwd");                     // read
 
 ```js
 // Open documents snapshot (read-only; id stable within session)
-helix.buffers();            // → [{id, path, name, dirty, language}]
-helix.current_buffer();     // → id
-helix.focus_buffer(id);     // switch current view to that document
+helix.buffer.list();        // → [{id, path, name, dirty, language}]
+helix.buffer.current();     // → id
+helix.buffer.focus(id);     // switch current view to that document
 
 // LSP diagnostics of the current document (data from Document::diagnostics)
 helix.diagnostics();        // → [{line, message, severity, code, source}]
@@ -256,21 +285,47 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 `term-open` `term-mode-change` `term-exit` `term-close` `term-resize` `term-title` `term-key` `component-event`
 `lsp-diagnostics` `cursor-move` `selection-change`
 
-## 📦 Bundled plugins
+## 📦 Bundled plugins & the two-layer model
 
-Located in `~/.config/helix/plugins/` (auto-loaded by `init.js`; repo mirror under `plugins/`):
+**Layout convention** (full rules: [`docs/plugin-layout.md`](docs/plugin-layout.md)) — a plugin is
+**one directory** with a fixed entry name:
+
+```
+<plugin root>/
+├── init.js          # optional: this root's entry (user's wins over bundled)
+├── <name>/plugin.js # ← a plugin. dir name = plugin name = helix.plugin("<name>")
+├── lib/             # shared libraries (cross-plugin)
+└── examples/        # examples/templates — NOT auto-loaded
+```
+
+`init.js` names plugins **by name** (no file paths): `helix.load("filetree")` → `<name>/plugin.js`.
+`deps` take plugin names too: `helix.plugin("filetree", { deps: ["icons"] })`.
+
+**Two layers, one rule set** (Neovim `runtimepath` semantics — bundled first, user last ⇒ **user overrides bundled**):
+
+| Layer | Location | Role |
+|---|---|---|
+| **bundled** | `<runtime>/plugins/` (e.g. `~/.config/helix/runtime/plugins`) | ships with the software |
+| **user** | `~/.config/helix/plugins/` | yours; a same-named **directory** wholly overrides the bundled one |
+
+```bash
+sh contrib/install-plugins.sh          # install the repo's plugins/ into the bundled layer
+DRY_RUN=1 sh contrib/install-plugins.sh
+```
 
 | Plugin | Description |
 |---|---|
-| `features/filetree/` | Side file tree panel (icons, expand/collapse, Enter opens & focuses) |
-| `features/terminal.js` | Terminal commands (:term/:vterm/:hterm), panel management |
-| `features/statusline.js` | Statusline (mode icon, file-type icon, git branch, diagnostics) |
-| `features/which-key.js` | Keymap Chinese hints (full keymap coverage, configurable position) |
-| `features/tabbar.js` | Layout tab bar demo (top slot, click to focus) |
-| `lib/icons.js` | Unified icon map (file type / dir / mode / diagnostic / git) |
-| `lib/layout.js` | Layout command wrappers (:layout-focus/swap/resize/minimize ...) |
+| `filetree/` | Side file tree panel (icons, expand/collapse, Enter opens & focuses) |
+| `terminal/` | Terminal commands (:term/:vterm/:hterm), panel management |
+| `statusline/` | Statusline (mode icon, file-type icon, git branch, diagnostics) |
+| `which-key/` | Keymap Chinese hints (configurable position) |
+| `tabbar/` | Layout tab bar demo (top slot, click to focus) |
+| `arsenal/` | Overlay marketplace window (`:arsenal`) — replaces the deprecated server-manager |
+| `icons/` | `[icons]` config only — the icon table itself lives in core (`helix.icons.*`) |
+| `examples/` | `picker.js` (defines the files/grep/buffers/symbols picker sources), `lsp-hover.js` |
 
-Install: copy into `~/.config/helix/plugins/`, add `helix.load("features/xxx.js")` to `~/.config/helix/init.js`; changes take effect with `:plugin-reload`.
+Note: a failing plugin no longer takes down the whole entry — `init.js` wraps loads so one bad
+plugin reports an error and the rest still load.
 
 ## 🛠 Build
 
@@ -287,7 +342,9 @@ cargo build --release
 
 ## 📄 Docs
 
+- **Plugin layout & naming**: [`docs/plugin-layout.md`](docs/plugin-layout.md) (folders · entry point · deps · the two-layer override · distribution)
 - **Plugin API**: [`docs/plugin-api.md`](docs/plugin-api.md) (overview & index) · [`docs/api/`](docs/api/) (per-domain detail: signatures/examples/pros & cons)
+- **Type definitions**: [`plugins/helix.d.ts`](plugins/helix.d.ts) (for editor autocomplete)
 - JS view-layer design: `docs/superpowers/specs/2026-08-15-js-ui-rendering-design.md`
 - Handoff log: `docs/handoff-2026-08-14.md` (window mode / terminal / plugin evolution)
 - Upstream Helix docs: [Website](https://helix-editor.com) · [Documentation](https://docs.helix-editor.com/) · [Keymap](https://docs.helix-editor.com/keymap.html)
