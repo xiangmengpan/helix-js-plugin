@@ -490,8 +490,14 @@ pub fn is_upgradable(spec: &registry::Spec) -> bool {
 /// 来自内置活配方,如 rust-analyzer;Tool 类与无占位 url 恒 false)。
 pub fn needs_version(spec: &registry::Spec) -> bool {
     match &spec.install {
-        registry::Install::Archive { url_template, .. } => {
-            url_template.contains("{version}") && spec.version.is_none()
+        registry::Install::Archive {
+            url_template,
+            assets,
+            ..
+        } => {
+            (url_template.contains("{version}")
+                || assets.iter().any(|a| a.url.contains("{version}")))
+                && spec.version.is_none()
         }
         registry::Install::Tool { .. } => false,
     }
@@ -893,12 +899,84 @@ pub mod registry {
         Formatter,
     }
 
+    /// 逐平台资产条目(照 Mason 的 `asset[]` 形状)。
+    /// **非空时优先于 `url_template`** —— 单一模板表达不了平台矩阵(x64-musl / aarch64-gnu / win32-x64)。
+    #[derive(Clone, Debug)]
+    pub struct ArchiveAsset {
+        /// Mason 的 target 名,如 `linux_x64_musl`
+        pub target: String,
+        /// 含 `{version}`(可含 `{os}`/`{arch}`/`{triple}`)
+        pub url: String,
+        /// 该平台的 bin;空 = 沿用外层 `bin_rel`
+        pub bin_rel: String,
+    }
+
+    /// 解析 `[[server-manager.registry.<n>.asset]]`(缺省 → 空数组)
+    fn parse_assets(
+        tbl: &toml::map::Map<String, toml::Value>,
+    ) -> anyhow::Result<Vec<ArchiveAsset>> {
+        let Some(arr) = tbl.get("asset").and_then(toml::Value::as_array) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for a in arr {
+            let target = a
+                .get("target")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let url = a
+                .get("url")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if target.is_empty() || url.is_empty() {
+                return Err(anyhow::anyhow!("registry asset 条目需要 target 与 url"));
+            }
+            out.push(ArchiveAsset {
+                target,
+                url,
+                bin_rel: a
+                    .get("bin")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// 当前平台可能对应的 Mason target 名(**按优先级**,后者更通用)。
+    /// 不做 libc 探测 → gnu/musl 无法自动区分:把更精确的名字排在前面,
+    /// 但只有配方**同时**提供两者时才需要区分;两者都缺则回落单模板。
+    pub(crate) fn platform_targets() -> Vec<&'static str> {
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => vec!["linux_x64_musl", "linux_x64_gnu", "linux_x64"],
+            ("linux", "aarch64") => vec!["linux_arm64_musl", "linux_arm64_gnu", "linux_arm64"],
+            ("linux", "x86") => vec!["linux_x86"],
+            ("macos", "x86_64") => vec!["darwin_x64"],
+            ("macos", "aarch64") => vec!["darwin_arm64"],
+            ("windows", "x86_64") => vec!["win_x64"],
+            ("windows", "aarch64") => vec!["win_arm64"],
+            _ => Vec::new(),
+        }
+    }
+
+    /// 按当前平台从资产表选一条(无匹配 → None,调用方回落单模板)
+    pub(crate) fn pick_asset(assets: &[ArchiveAsset]) -> Option<&ArchiveAsset> {
+        platform_targets()
+            .into_iter()
+            .find_map(|t| assets.iter().find(|a| a.target == t))
+    }
+
     /// 安装方式(owned;config 扩展配方经 TOML 构造)
     #[derive(Debug, Clone)]
     pub enum Install {
         /// 下载 release 产物(可 tar.gz/zip);url_template 含 {version} 占位
         Archive {
             url_template: String,
+            /// 逐平台资产(空 = 用 url_template 简写)
+            assets: Vec<ArchiveAsset>,
             sha256: String,
             strip: usize,
             /// 解压后要链接到 managed/bin 的可执行相对路径(相对解压根)
@@ -945,7 +1023,11 @@ pub mod registry {
         /// 有可用下载源(否则 install 报"配方未配置")
         pub fn is_installable(&self) -> bool {
             match &self.install {
-                Install::Archive { url_template, .. } => !url_template.is_empty(),
+                Install::Archive {
+                    url_template,
+                    assets,
+                    ..
+                } => !url_template.is_empty() || !assets.is_empty(),
                 Install::Tool { cmd, .. } => !cmd.is_empty(),
             }
         }
@@ -953,7 +1035,12 @@ pub mod registry {
         pub fn install_needs_version(&self) -> bool {
             matches!(
                 &self.install,
-                Install::Archive { url_template, .. } if url_template.contains("{version}")
+                Install::Archive {
+                    url_template,
+                    assets,
+                    ..
+                } if url_template.contains("{version}")
+                    || assets.iter().any(|a| a.url.contains("{version}"))
             )
         }
     }
@@ -1055,7 +1142,13 @@ pub mod registry {
                 .map(str::to_string)
                 .ok_or_else(|| anyhow!("registry '{name}': 缺必填 '{k}'"))
         };
-        let url = tbl.get("url").and_then(Value::as_str).map(str::to_string); // 允许显式空串 = 占位(no source,description 引导)
+        let mut url = tbl.get("url").and_then(Value::as_str).map(str::to_string); // 允许显式空串 = 占位
+        let assets = parse_assets(tbl)?;
+        // 归一化:**只有 asset[] 而没写 url** → 视为"空 url + 有资产"。
+        // 这样后面按 url 分流的分支**无需改动**,而 is_installable 会因 assets 非空判为可装。
+        if url.is_none() && !assets.is_empty() {
+            url = Some(String::new());
+        }
         let cmd = tbl
             .get("cmd")
             .and_then(Value::as_str)
@@ -1110,6 +1203,7 @@ pub mod registry {
                     .max(0) as usize;
                 Install::Archive {
                     url_template: url.to_string(),
+                    assets,
                     sha256,
                     strip,
                     bin_rel: need("bin")?,
@@ -1120,6 +1214,7 @@ pub mod registry {
                 if url.as_deref() == Some("") {
                     Install::Archive {
                         url_template: String::new(),
+                        assets,
                         sha256: String::new(),
                         strip: 1,
                         bin_rel: bin_name.clone(),
@@ -1206,21 +1301,36 @@ pub fn install(name: &str, version: &str) -> Result<()> {
     match &spec.install {
         registry::Install::Archive {
             url_template,
+            assets,
             sha256,
             strip,
             bin_rel,
         } => {
-            if url_template.is_empty() {
+            // 逐平台资产优先(Mason 形状);无匹配则回落单模板简写
+            let picked = registry::pick_asset(assets);
+            let url_src = picked
+                .map(|a| a.url.as_str())
+                .unwrap_or(url_template.as_str());
+            let bin_eff = picked
+                .map(|a| {
+                    if a.bin_rel.is_empty() {
+                        bin_rel.as_str()
+                    } else {
+                        a.bin_rel.as_str()
+                    }
+                })
+                .unwrap_or(bin_rel.as_str());
+            if url_src.is_empty() {
                 return Err(anyhow!("server '{name}': 下载源未配置(内置配方待录;或在 [server-manager.registry.{name}] 配 url)"));
             }
-            let url = expand_template(url_template, version);
+            let url = expand_template(url_src, version);
             if url.contains('{') {
                 return Err(anyhow!(
                     "server '{name}': url_template 有未支持占位,展开失败 -> {url}(支持 {{version}}/{{os}}/{{arch}}/{{triple}};{{triple}} 需本平台在 rust_triple 表)"
                 ));
             }
             let url = mirror_url(&url);
-            install_adhoc(name, &spec.bin_name, bin_rel, *strip, &url, sha256)
+            install_adhoc(name, &spec.bin_name, bin_eff, *strip, &url, sha256)
         }
         registry::Install::Tool { cmd, args } => {
             if cmd.is_empty() {
@@ -2397,6 +2507,7 @@ mod tests {
                 sha256: String::new(),
                 strip: 1,
                 bin_rel: "t".into(),
+                assets: Vec::new(),
             },
             version,
         };
