@@ -83,7 +83,7 @@ helix.plugin("filetree", { deps: ["icons"] });   // ✅ 名字
 | # | 改动 | 现状 |
 |---|---|---|
 | 1 | ~~**名字 → 目录**解析~~ | ✅ **已实现**(`state::entry_keys` + `load_script_checked`;`<name>.js` 仍可加载,向后兼容;集成测试 `bare_plugin_name_loads_plugin_entry_file` 端到端验收) |
-| 2 | **目录级覆盖** | 🟡 **部分**:解析器与"提供根"栈已就位且有单测(`resolve_in_with_root` / `resolve_in_pref`),但**尚未生效** —— 现场查明**插件脚本体是延迟执行的**,不在加载调用的 push/pop 窗口内,查询时"提供根"已是 None。修法:把提供根**按插件记录**(而非挂在加载栈上),在脚本体真正执行时查询。集成测试 scenario 4 目前**钉住"混合体仍会发生"**这一行为,修好后该断言会挂 → 那时翻转成 `expect(...)` |
+| 2 | ~~**目录级覆盖**~~ | ✅ **已生效**:`resolve_in_with_root`(拿到提供根)+ `resolve_in_pref`(prefer 语义)+ `LOAD_ROOTS` 栈。**关键是 prefer 的对象必须是「父插件的根」而不是「文件自己的根」** —— 后者只会查回同一个文件,等于没生效(第一版就栽在这)。集成测试 scenario 4 端到端验证(内置入口 + 用户层同名 helper → helper 必须也是内置的) |
 | 3 | ~~`deps` 接受**插件名**~~ | ✅ **已确认可用**:依赖走同一个 `load_script_checked` → 同一套 `entry_keys` 解析,所以 `deps: ["icons"]` 直接解析到 `icons/plugin.js`。已补集成测试(自证式:主脚本在被依赖未先加载时抛错)并把 `commands.rs` 里"deps 是文件 key"的过时注释改掉 |
 
 > 另:**分发步骤已落地** —— `contrib/install-plugins.sh` 把 `plugins/` 装进 `<runtime>/plugins`(见 §8)。

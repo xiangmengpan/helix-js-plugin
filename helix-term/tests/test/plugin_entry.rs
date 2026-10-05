@@ -206,20 +206,13 @@ fn bare_plugin_name_loads_plugin_entry_file() {
         "plug/helper.js",
         r#"globalThis.__from = "user";"#,
     );
-    // ⚠️ 这里**如实钉住当前行为(混合体仍会发生)**,而不是断言"已修好"。
-    // 原因(现场查明):插件**脚本体是延迟执行的** —— 它不在 `load_script_checked`
-    // 的 push/pop 窗口内运行,所以那时 `current_load_root()` 已是 None,
-    // §4-2 的"提供根优先"根本没被用上。
-    // (这条发现同时解释了另一个反常:上一轮"依赖先于主脚本"的断言为何通过 ——
-    //  脚本体确实晚于依赖执行,但那是因为**延迟执行**,不是因为加载器先拉依赖。)
+    // §4-2(prerefer 父插件的根):入口取内置(用户层没有 plugin.js),helper 也必须是内置的 ——
+    // 不能因为"后加的根优先"而取到用户层那份(那会造出"内置 main + 用户 helper"的混合体)。
     //
-    // 要做成 §4-2,需要把"提供根"**按插件记录**(而不是挂在加载调用栈上),
-    // 并在脚本体真正执行时查询。那是下一轮的事。
-    // 断言方向:**现在必须失败**,修好后这条会挂 → 那时把它翻转成 expect(...)。
-    let err = helix_js::load_script(r#"helix.load("plug");"#)
-        .expect_err("§4-2 尚未生效:混合体(内置 main + 用户 helper)仍会出现");
-    assert!(
-        format!("{err}").contains("混合体"),
-        "失败原因应是混合体,而不是别的: {err}"
-    );
+    // 这条断言曾经**故意**写成 expect_err(钉住未修好的行为),修好后如期翻转为 expect。
+    // 修的关键不是"脚本体延迟执行"(那是误判:`eval_wrapped` 是立即执行的 IIFE),
+    // 而是 **prefer 的对象取错了**:原先拿"正在加载的文件自己的根"去 prefer,
+    // 只会查回同一个文件 —— 必须取**父插件的根**。
+    helix_js::load_script(r#"helix.load("plug");"#)
+        .expect("§4-2:插件自身的文件必须与入口同层(否则会抛'混合体')");
 }

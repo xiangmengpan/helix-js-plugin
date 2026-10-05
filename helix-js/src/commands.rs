@@ -139,6 +139,10 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         ))));
     }
     // eval 前入栈（嵌套 load 期间本 key 保持可见）；借用即刻释放，不跨 eval 持有。
+    // §4-2 的关键一步:prefer 的对象是**父插件的根**,不是本文件自己的根
+    // (自己的根是"这次加载的结果",拿它做 prefer 只会查回同一个文件,等于没生效 ——
+    //  这正是上一版没起作用的原因)。所以**先取父根**,再 push 自己。
+    let parent_root = crate::state::current_load_root();
     crate::state::with_load_stack(|s| s.push(key.clone()));
     // 与 key **同一处** push/pop,两栈因此始终等长(见 state::LOAD_ROOTS 注释)
     crate::state::push_load_root(providing_root);
@@ -146,7 +150,12 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         let path = if Path::new(&key).is_absolute() {
             PathBuf::from(&key)
         } else {
-            crate::state::resolve_plugin_path(&key).ok_or_else(|| {
+            crate::state::resolve_in_pref(
+                crate::state::plugin_roots(),
+                &key,
+                parent_root.as_deref(),
+            )
+            .ok_or_else(|| {
                 JsError::from_opaque(JsValue::from(JsString::from(
                     "helix.load: plugins dir not set",
                 )))
