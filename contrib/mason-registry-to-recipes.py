@@ -300,7 +300,7 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     langs = [str(x).lower() for x in (pkg.get("languages") or [])]
     src = pkg.get("source_id") or ""
     m = re.match(r"pkg:github/([^/]+)/([^@]+)@(.+)", src)
-    m_tool = re.match(r"pkg:(pypi|npm)/([^@]+)@(.+)", src)
+    m_tool = re.match(r"pkg:(pypi|npm|golang)/([^@]+)@(.+)", src)
     assets = pkg.get("asset") or []
     if not m:
         problems.append(f"来源既不是 github-release 也不是 pypi/npm({src})—— 需人工判断安装方式")
@@ -320,8 +320,15 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
         eco, pkgname, ver = m_tool.group(1), m_tool.group(2), m_tool.group(3)
         if eco == "npm":
             cmd, args = "npm", ["install", "--prefix", "{prefix}", f"{pkgname}@{ver}"]
-        else:  # pypi
+        elif eco == "pypi":
             cmd, args = "pip3", ["install", "--target", "{prefix}", f"{pkgname}=={ver}"]
+        else:  # golang
+            # 关键:`Tool` **不给子进程设 env**(已核实 install_tool_adhoc 里没有任何 .env()),
+            # 而 `go install` 默认写 $GOBIN(通常 ~/go/bin)→ 会落在受管目录**之外**,
+            # 违反"产物须在 <prefix>/bin"的约定。所以用 `sh -c` 内联赋值绕开,
+            # **不必改 Rust**。代价:依赖 `sh`(本 fork 本就 Unix-only)。
+            # 更干净的长期解:给 Tool 加一个可选 `env` 字段(照 assets 那次的做法)。
+            cmd, args = "sh", ["-c", "GOBIN=" + "{prefix}" + "/bin go install " + f"{pkgname}@{ver}"]
         tool_cmd, tool_args = cmd, args
     elif not m:
         problems.append(f"来源既不是 github-release 也不是 pypi/npm({src})—— 需人工判断用哪种安装方式")
