@@ -98,7 +98,11 @@ function render(ctx) {
   const indMark = ctx.indent_style ? " " + ctx.indent_style : "";
   // 语言名:对齐核心的 `unwrap_or(DEFAULT_LANGUAGE_NAME)`(该常量的值实测为 `"text"`)
   const ftMark = " " + (ctx.file_type || "text");
-  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark + leMark + regMark + charMark + indMark + ftMark;
+  // 工作目录末段名(核心 `render_cwd` 就是 `current_working_dir().file_name()`)
+  const cwdMark = ctx.cwd ? " " + ctx.cwd : "";
+  // 代码动作提示:沿用核心的符号 `⋮`(`⋮` = U+22EE),仅在 focused 且有提示时出现
+  const caMark = ctx.code_action_hint ? " ⋮" : "";
+  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark + leMark + regMark + charMark + indMark + ftMark + cwdMark + caMark;
   parts.push({ text: row + ":" + col, style: null, zone: "right" });
   parts.push({ text: pct, style: "ui.virtual", zone: "right" });
   parts.push({ text: String(total), style: "ui.virtual", zone: "right" });

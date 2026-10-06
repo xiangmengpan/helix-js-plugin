@@ -132,6 +132,12 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             }
         },
         file_type: context.doc.language_name().map(str::to_string),
+        cwd: helix_stdx::env::current_working_dir()
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        code_action_hint: context.focused && context.doc.code_action_hints(context.view.id),
     };
     let js_parts = helix_js::statusline_parts(&js_ctx);
     let js_replace = helix_js::statusline_replaces();

@@ -2210,6 +2210,8 @@ pub(crate) mod tests {
             primary_selection_length: 1,
             indent_style: "4 spaces".into(),
             file_type: Some("rust".into()),
+            cwd: "proj".into(),
+            code_action_hint: false,
         };
         assert_eq!(statusline_parts(&ctx), None);
 
@@ -2842,6 +2844,8 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
             primary_selection_length: 1,
             indent_style: "4 spaces".into(),
             file_type: Some("rust".into()),
+            cwd: "proj".into(),
+            code_action_hint: false,
         };
         // reload 前 render 正常
         let before = statusline_parts(&ctx);

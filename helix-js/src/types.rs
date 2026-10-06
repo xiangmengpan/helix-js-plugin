@@ -508,6 +508,11 @@ pub struct StatuslineCtx {
     pub indent_style: String,
     /// 语言名(核心: `language_name().unwrap_or(DEFAULT_LANGUAGE_NAME)`)
     pub file_type: Option<String>,
+    /// 当前工作目录的**末段名**(核心 `render_cwd`:`current_working_dir().file_name()`)
+    pub cwd: String,
+
+    /// 是否有代码动作提示(核心 `render_code_action_hint`:`focused && doc.code_action_hints(view)`)
+    pub code_action_hint: bool,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。
