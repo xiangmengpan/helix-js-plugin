@@ -431,6 +431,30 @@ test_key_sequences(
 "未安装"时就 `break`,**不会写 manifest** ✓;`list`/`status` 只读 ✓。**这一点不能改坏**:
 若 `pin nope` 变成"先建条目再报错",测试就会真的写用户的配置 ✗
 
+#### ⛔ 又一重纠缠:`plugin_op` 是 **JS API `helix.plugin.*` 的共享后端**
+
+`grep plugin_op` 查出它**有 2 个调用者**(不止命令本身):
+
+| 调用点 | 是什么 |
+|---|---|
+| `typed.rs:5585` | `fn plugin`(TypedCommand —— 可随命令一起删 ✓) |
+| **`typed.rs:5365`** | **`helix.plugin.*` 这个 JS API 的桥** ✗✗ |
+
+而 `helix-js/src/commands.rs:362/383/402` 的 `push_plugin_op("install"/"update"/"remove", …)`
+正是往它送请求。⇒ **删掉 `plugin_op` 会直接打断一个公开 API** ✗
+
+**范围核实(一条 grep 定论)**:
+
+| 维度 | 结果 |
+|---|---|
+| **有插件在用吗** | **一个都没有**(`plugins/*.js` grep 为空 ✓) |
+| 是否文档化 | ✗ 是:`docs/plugin-api.md:116,282` · `docs/api/plugin.md:37-39`(带示例) |
+| 是否有测试 | ✗ 有:`helix-js/src/lib.rs:3803-3808` · `tests/test/plugin_manager.rs:148-157` |
+
+⇒ **可行,但必须带兼容路径**:把 `helix.plugin.install/update/remove` **由 JS 管理器自己对外提供**
+(它已经实现了这三个 ✓ —— 所以是**再导出一遍**,不是新逻辑 ✓),同时更新那 2 处文档 + 2 处测试。
+**顺带发现一处不一致**:`plugins/helix.d.ts` **没有**这个 API 的声明 ✗(文档有、类型声明没有)。
+
 **所以"最后一刀"的真实前置是两件**:① `helix.loaded_plugins()`(补 `list` 保真)
 ② **同步改造 `test/plugin_manager.rs`**(改用 JS 提供的 `:plugin`,或按新语义重写断言)
 ③ 然后才是改名 + 一次性删除 + E2E(含"断言 `:plugin-reload` 仍在")
