@@ -652,3 +652,28 @@ CONTEXT 的 RefCell 借用,再借会 panic")⇒ 这是本代码库里**已知的
 
 `read_file_async` / `run_async` 的**具体实现是否借 `with_engine`**(它们的函数名与我猜的不同,
 本轮没定位到)✗ —— 这是下一步的第一件事:确认后即可确定"哪些 API 不能在命令里用"的完整清单。
+
+### 追加更正(同日):**第二个假设也被证伪**
+
+我接着假设"`read_file_async` / `run_async` 借了全局引擎" ✗ —— **查实现又错了**:
+
+| 函数 | 位置 | 前 30 行内 `with_engine` |
+|---|---|---|
+| `js_read_file_async` | `helix-js/src/shell.rs:604` | **0** |
+| `js_run_async` | `helix-js/src/shell.rs:298` | **0** |
+
+⇒ 它们**自己不重入引擎** ✗。那 panic(`with_engine_slot`,`state.rs:138`)只可能来自
+**异步续体 / promise 落定**那一段(Lua? 不 —— 是 boa 的 promise 在后续 tick 里要**重新进引擎**去 settle)✗
+**⇒ 下一步该追的是"promise 落定时谁借了引擎",而不是这两个 API 本身。**
+
+### 但修法结论**不变**:加同步 `helix.read_file(path)`
+
+理由从"异步 API 有问题"改为"**绕过整条 async/promise 机制**"✓ ——
+`plugin-js` 全程同步后就**构造性地**避开这一类重入 ✗,且与既有的同步 `read_dir` 对称 ✓
+
+### 本轮方法论上的一条账
+
+三个假设,读了实现之后**错了两个**(`echo` 重入 ✗ · 异步 API 借引擎 ✗),一个成立(引擎重入这个**现象** ✓)：
+
+> **假设很便宜(一条 grep),照着假设改代码很贵。**
+> 两次"先验假设"都避免了去改**不是原因的地方** —— 而改错地方还会把真原因盖住。
