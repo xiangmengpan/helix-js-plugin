@@ -252,6 +252,31 @@ def parse_yaml(text: str) -> dict:
     return out
 
 
+def fix_block_scalars(pkg: dict, text: str) -> None:
+    """修 YAML **块标量**:`description: |` 这类会被极简解析器读成字面量 `"|"`。
+
+    这里按原文把后续**更深缩进**的行拼回来(只处理 description —— 实测里唯一的多行字段)。
+    **正解是换真 YAML 解析器**;在此之前的取舍:不引入依赖,但只覆盖已知形状。
+    """
+    if pkg.get("description") not in ("|", ">", "|-", ">-"):
+        return
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^(description):\s*[|>]-?\s*$", ln)
+        if not m:
+            continue
+        buf = []
+        for nxt in lines[i + 1 :]:
+            if not nxt.strip():
+                buf.append("")
+                continue
+            if not nxt.startswith((" ", "\t")):
+                break
+            buf.append(nxt.strip())
+        pkg["description"] = " ".join(x for x in buf if x).strip()
+        return
+
+
 def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     """→ (TOML 文本, 需要手工处理的原因列表)"""
     problems: list[str] = []
@@ -263,6 +288,7 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     langs = [str(x).lower() for x in (pkg.get("languages") or [])]
     src = pkg.get("source_id") or ""
     m = re.match(r"pkg:github/([^/]+)/([^@]+)@(.+)", src)
+    m_tool = re.match(r"pkg:(pypi|npm)/([^@]+)@(.+)", src)
     assets = pkg.get("asset") or []
     if not m:
         problems.append(f"来源不是 github-release({src})—— helix 的 Archive 走 release 资产 URL")
@@ -276,7 +302,15 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     # 于是 Go 风格(`linux_amd64`)、clangd 那种不带 arch 的命名、甚至 Rust triple 的 musl 变体
     # —— 全都不需要映射(这正是逐平台资产表存在的意义)。
     asset_rows: list[tuple[str, str, str]] = []
-    if not m:
+    if m_tool:
+        # 包管理器源 → helix 的 **Tool** 型(cmd 在受管目录内跑,产物须落 <prefix>/bin/<bin>)
+        eco, pkgname, ver = m_tool.group(1), m_tool.group(2), m_tool.group(3)
+        if eco == "npm":
+            cmd, args = "npm", ["install", "--prefix", "{prefix}", f"{pkgname}@{ver}"]
+        else:  # pypi
+            cmd, args = "pip3", ["install", "--target", "{prefix}", f"{pkgname}=={ver}"]
+        tool_cmd, tool_args = cmd, args
+    elif not m:
         problems.append(f"来源不是 github-release({src})—— Archive 走 release 资产 URL")
     else:
         for a in assets:
@@ -308,7 +342,11 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
         lines.append(f'homepage = "{pkg["homepage"]}"')
     if version:
         lines.append(f'version = "{version}"')
-    if assets:
+    if m_tool:
+        lines.append(f'cmd = "{tool_cmd}"')
+        lines.append("args = [" + ", ".join(f'"{a}"' for a in tool_args) + "]")
+        lines.append("# 注:helix 的 Tool 型要求产物落在 <prefix>/bin/<bin>(见 server_manager.rs 注释)")
+    elif assets:
         lines.append('# 逐平台资产(文件名原样;{version} 由运行时展开):')
         for target, url, bin_ in asset_rows:
             lines.append("")
@@ -357,6 +395,7 @@ def main() -> int:
         tomllib = None  # type: ignore
     for name, text in texts:
         pkg = parse_yaml(text)
+        fix_block_scalars(pkg, text)
         toml, problems = to_recipe(pkg)
         print("# " + "=" * 70)
         print(f"# {name}: {'需手工' if problems else '可自动转换'}")
