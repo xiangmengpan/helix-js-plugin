@@ -645,6 +645,13 @@ async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
     // 集成测试进程不执行 application.rs 的启动推入 → 手动设插件根(OnceLock 首设生效,
     // 别的测试设过也**同样非空** ⇒ 下面的断言不会空过)
     let dir = tempfile::tempdir()?;
+    // **§15 判据**:预置 manifest ⇒ JS 侧会**多输出一行** `installed(N): …`
+    // (Rust 的 `list` 不会)⇒ 状态里出现 `installed(` 即证明**应答者是 JS**,
+    // 从而防住"插件没加载却依然绿"的**假通过** ✗
+    std::fs::write(
+        dir.path().join("manifest.json"),
+        r#"{"demo":{"source":"local","kind":"local","installed_at":"t","pinned":false,"files":["demo/plugin.js"]}}"#,
+    )?;
     helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]);
 
     let mut app = AppBuilder::new().build()?;
@@ -655,6 +662,11 @@ async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
     assert!(
         list_status.as_ref().contains("plugin"),
         "list 应输出 plugins:/no plugins loaded,实得 {list_status}"
+    );
+    // ★ §15 的**防假绿**断言:这条只有 JS 应答时才成立(Rust 的 list 不输出 installed)
+    assert!(
+        list_status.as_ref().contains("installed("),
+        "§15 判据:list 应含 JS 独有的 `installed(`(证明应答者是 JS 而非回落到 Rust),实得 {list_status}"
     );
 
     pump(&mut app, ":plugin-js status<ret>").await?;
