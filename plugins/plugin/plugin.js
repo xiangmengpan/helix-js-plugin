@@ -11,13 +11,15 @@
 //   `reload` —— **委派**给 Rust 的 `:plugin-reload`(独立命令,零新增)
 //
 // ## 已勘明的缺口(如实标注,不假装完整)
-//   1. ~~list 语义只能给"已安装"~~ → **缺口已关闭**:新增 `helix.loaded_plugins()` 后,
+//   1. ~~子命令只覆盖 5 个~~ → **已覆盖全部 8 个**(`list|install|remove|reload|status|update|pin|unpin`)。
+//      注:Rust 的 usage 文案只写了 5 个(实现 > 文档),所以清单是**读 dispatcher** 得到的。
+//   2. ~~list 语义只能给"已安装"~~ → **缺口已关闭**:新增 `helix.loaded_plugins()` 后,
 //      数据源与 Rust `:plugin list` **完全相同**(都是 `loaded_scripts()`),所以 `list` 语义天然一致;
 //      "已安装"(manifest)作为**附加**一行给出,不混淆两者。
-//   2. ~~`install` 被挡住~~ → **已解锁**:新增限域接口 `helix.write_plugin_file(rel, text)`
+//   3. ~~`install` 被挡住~~ → **已解锁**:新增限域接口 `helix.write_plugin_file(rel, text)`
 //      (父目录按需创建;只相对路径、拒 `..`)后,本地文件/目录安装可在 JS 侧完成;
 //      git 源走 `helix.run("git clone …")`。
-//   3. **布局不一致(实测)**:Rust `install_target` 装进 `plugins/**features**/<name>`(旧路径),
+//   4. **布局不一致(实测)**:Rust `install_target` 装进 `plugins/**features**/<name>`(旧路径),
 //      而当前仓库布局是 `plugins/<name>/`。搬迁时应统一到现有布局,别把旧路径带过去。
 helix.plugin("plugin-manager", { deps: [], version: "0.1" });
 
@@ -172,13 +174,76 @@ helix.register_command("plugin-js", async () => {
       helix.echo("installed '" + installed + "', 请 :plugin-reload 生效");
       break;
     }
+    case "pin":
+    case "unpin": {
+      // 语义照抄 Rust:必须已安装 · **仅 git 插件** · `entry.pinned = (sub == "pin")` · 写 manifest
+      const name = args[1];
+      if (!name) {
+        helix.echo("usage: plugin-js " + sub + " <name>");
+        break;
+      }
+      const m = (await readManifest()) || {};
+      const e = m[name];
+      if (!e) {
+        helix.echo("plugin " + sub + ": '" + name + "' not installed");
+        break;
+      }
+      if (e.kind !== "git") {
+        helix.echo("plugin " + sub + ": only git plugins can be pinned");
+        break;
+      }
+      e.pinned = sub === "pin";
+      try {
+        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+      } catch (err) {
+        helix.echo("plugin " + sub + ": manifest 写入失败: " + err);
+        break;
+      }
+      helix.echo(sub + "ned '" + name + "'"); // 对齐 Rust 的 "{sub}ned '{name}'"
+      break;
+    }
+    case "update": {
+      // 语义照抄 Rust:git 源 → fetch + ff-only 合并,记录新 HEAD;
+      // **`pinned` 的跳过**(manifest 注释写明 "pinned: true = update 跳过")
+      const only = args[1];
+      const m = (await readManifest()) || {};
+      const targets = only ? [only] : Object.keys(m);
+      let n = 0;
+      for (const t of targets) {
+        const e = m[t];
+        if (!e) {
+          helix.echo("plugin update: '" + t + "' not installed");
+          continue;
+        }
+        if (e.kind !== "git" || e.pinned) continue;
+        const dir = mp + "/" + t;
+        try {
+          await helix.run_async(
+            "git -C " + shq(dir) + " fetch --quiet && git -C " + shq(dir) + " merge --ff-only --quiet FETCH_HEAD"
+          );
+          const head = await helix.run_async("git -C " + shq(dir) + " rev-parse HEAD");
+          e.commit = (head || "").trim();
+          n++;
+        } catch (err) {
+          helix.echo("plugin update: " + t + " 失败: " + err);
+        }
+      }
+      try {
+        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+      } catch (err) {
+        helix.echo("plugin update: manifest 写入失败: " + err);
+        break;
+      }
+      helix.echo("updated " + n + " plugin(s)");
+      break;
+    }
     case "reload":
       // 委派给 Rust 的独立命令(本步不搬它 —— 自举兜底)
       helix.echo("请用 :plugin-reload(JS 侧插件管理器的 reload 尚未接管)");
       break;
     default:
       helix.echo(
-        "plugin-js: 已实现 list|status|install|remove|reload(见 §12.2)"
+        "plugin-js: 已实现 list|status|install|remove|update|pin|unpin|reload(8/8,见 §12.2)"
       );
   }
 });
