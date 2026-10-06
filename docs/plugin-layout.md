@@ -616,3 +616,39 @@ helix.plugin.__probe = "ok";   // 零副作用;Rust 侧断言读回 === "ok"
 
 **读值方式**:`helix.echo(...)` + `take_messages()`(与 helix-term 的运行路径同一机制)。
 (第一版我用 `load_script(...).as_string()` → 编译不过:它返回 `()` ✗ —— 又一例"先读 API,别猜"。)
+
+## 14. 引擎重入 panic 的排查结论(`plugin-js` 端到端测试暴露)
+
+补 `plugin-js` 的行为测试时,在应用内跑到 `helix-js/src/state.rs:138` panic。
+该行是 **`CONTEXT.with(|cell| f(&mut cell.borrow_mut()))`**(`with_engine_slot`)⇒ **引擎重入** ✗
+
+### 一个被证伪的假设(先记下来,免得下次重走)
+
+我最初假设"**`helix.echo` 在 `await` 之后调用会重入**" ✗ —— **读了实现发现是错的**:
+
+```rust
+pub(crate) fn js_echo(_this, args, context: &mut Context) -> …  // 用**传入的 context**,不借全局
+    MESSAGES.get().expect(…).lock().expect(…).push(text);        // 只碰一个全局 Mutex
+```
+
+⇒ **`echo` 安全** ✓。而"再借会 panic"那条注释说的是 **`helix.load`**
+(`commands.rs:73-77`:"load 可能发生在命令运行中(lazy 桩),外层 `run_command` 正持有
+CONTEXT 的 RefCell 借用,再借会 panic")⇒ 这是本代码库里**已知的一类约束** ✓
+
+### 可执行的推论
+
+真正的约束是:**命令执行期间,凡是**重新借全局引擎**的 API 都可能 panic** ✗。
+而 `plugin-js` 的 `list`/`status`/`install`/`update` 都在**命令处理函数**里调用
+**异步 API**(`read_file_async` / `run_async`)⇒ 命中这一类 ✗
+
+**关键事实**:`helix-js` **没有同步的 `read_file`**(注册表里只有 `read_file_async`/`write_file_async`/
+`stat_async`/`glob_async`;同步的只有 `read_dir`)✗ —— 于是插件被**逼上异步路径** ✗
+
+**⇒ 最干净的修法:加一个同步 `helix.read_file(path)`** ✓
+- 它同时解决两件事:`plugin-js` 不必再 async(从而避开重入 ✗)· 与 `read_dir` 对称(都是同步读)✓
+- 落地后 `plugin-js` 可整体改为同步,重入问题**从根上消失** ✓,那个端到端测试也就能加回来了
+
+### 未查清
+
+`read_file_async` / `run_async` 的**具体实现是否借 `with_engine`**(它们的函数名与我猜的不同,
+本轮没定位到)✗ —— 这是下一步的第一件事:确认后即可确定"哪些 API 不能在命令里用"的完整清单。
