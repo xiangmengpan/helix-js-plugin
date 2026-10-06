@@ -666,6 +666,34 @@ pub(crate) fn js_resize_term(
     Ok(JsValue::undefined())
 }
 /// 布局树 API：split(dir, {terminal:{cmd}} | {panel:{render,onKey}}) -> leaf_id（预分配）
+/// `helix.read_file(path)` → 同步读取文本(**与 `read_dir` 对称**)。
+///
+/// **为什么需要它**:`helix-js` 原本只有 `read_file_async`(同步的仅 `read_dir`)⇒
+/// 插件读文件被迫进异步;而**在命令处理函数里跑异步**会撞上引擎重入
+/// (`with_engine_slot` 的 `borrow_mut`,见 docs/plugin-layout.md §14)。
+/// 有同步版本后,插件管理这类"读—判断—写"的流程可以全程同步,**构造性地**避开那一类 ✗
+pub(crate) fn js_read_file(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "read_file: path must be a string",
+            )))
+        })?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(JsValue::from(JsString::from(text))),
+        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("read_file('{path}'): {e}"),
+        )))),
+    }
+}
+
 pub(crate) fn js_read_dir(
     _this: &JsValue,
     args: &[JsValue],

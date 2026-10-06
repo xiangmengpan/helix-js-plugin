@@ -480,6 +480,11 @@ pub fn init() {
                     0,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(popup::js_read_file),
+                    JsString::from("read_file"),
+                    1,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(commands::js_write_plugin_file),
                     JsString::from("write_plugin_file"),
                     2,
@@ -1225,6 +1230,40 @@ pub(crate) mod tests {
         assert!(
             load_script(r#"helix.stack.activate(3);"#).is_err(),
             "缺 member 应报错"
+        );
+    }
+
+    /// 同步 `helix.read_file`:① 正常读到内容 ② 缺文件时**抛错且文案含路径**
+    /// (与 `read_dir` 同款约定)
+    #[test]
+    fn read_file_sync_roundtrip_and_error() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        std::fs::write(&f, "hi-sync").unwrap();
+
+        let _ = take_messages();
+        load_script(&format!(
+            r#"helix.echo(helix.read_file("{}"));"#,
+            f.display()
+        ))
+        .unwrap();
+        assert!(
+            take_messages().iter().any(|m| m == "hi-sync"),
+            "应读到文件内容"
+        );
+
+        let _ = take_messages();
+        load_script(&format!(
+            r#"try {{ helix.read_file("{}/nope.txt"); }} catch (e) {{ helix.echo(String(e).includes("nope.txt") ? "caught" : "no-path-in-msg"); }}"#,
+            dir.path().display()
+        ))
+        .unwrap();
+        assert!(
+            take_messages().iter().any(|m| m == "caught"),
+            "缺文件应抛错且文案含路径,实得 {:?}",
+            take_messages()
         );
     }
 
