@@ -76,9 +76,25 @@ helix.register_command("plugin-js", async () => {
       break;
     }
     case "status": {
-      const m = await readManifest();
-      const n = Object.keys(m || {}).length;
-      helix.echo("plugin dir: " + mp + " · manifest entries: " + n);
+      // **逐字对齐 Rust**:`"{N} plugins loaded from {dir}, {M} installed ({G} git, {P} pinned)"`
+      // (集成测试断言状态里含 "loaded" 与 "installed" —— 文案漂移会让测试红)
+      const loaded = (helix.loaded_plugins() || []).length;
+      const m = (await readManifest()) || {};
+      const entries = Object.values(m);
+      const git = entries.filter((e) => e && e.kind === "git").length;
+      const pinned = entries.filter((e) => e && e.pinned).length;
+      helix.echo(
+        loaded +
+          " plugins loaded from " +
+          mp +
+          ", " +
+          entries.length +
+          " installed (" +
+          git +
+          " git, " +
+          pinned +
+          " pinned)"
+      );
       break;
     }
     case "remove": {
@@ -145,7 +161,9 @@ helix.register_command("plugin-js", async () => {
         try {
           entries = helix.read_dir(arg); // 同步;目录或文件都能列
         } catch (e) {
-          helix.echo("plugin install: 路径不可读: " + arg);
+          // **逐字对齐 Rust**:`plugin install: invalid path or git url '{arg}'`
+          // (集成测试断言状态里含 "invalid")
+          helix.echo("plugin install: invalid path or git url '" + arg + "'");
           break;
         }
         const isDir = entries.some((e) => e && (e.is_dir === true || e.isDir === true));
