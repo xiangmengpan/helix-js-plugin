@@ -283,3 +283,46 @@ doc_mut!(cx.editor).set_path(None);   // 防止误保存覆盖原始 tutor 文�
 **过程中的一次事故**:删 `TypableCommand` 条目时用"裸 `}`"当终止符,而真实结束是 `    },`
 → **多删 450 行**;靠 `git diff --stat` 一眼看出不对 → `git checkout` 回退 → 重做时**先断言范围**。
 教训:**删"块"的终止符必须与真实文本一致**(同"锚点必须读出来")。
+
+## 12. 三个候选的施工图(按"最容易 → 最难",数据均为实测)
+
+### 12.1 `:layout` 会话 —— **建议先做这个**(最小、零前置)
+
+| 项 | 事实 |
+|---|---|
+| 核心里有什么 | `TypableCommand` 条目 **11 行** + `fn layout` **47 行** = **58 行纯包装**(只调 `helix_js::layout_*`) |
+| 前置接口 | **零** —— API 早已在 helix-js(`helix.layout.save/load/list/delete`),且有纯函数单测与**路径穿越防护** |
+| 插件 | `plugins/layout/plugin.js`(~25 行):注册 `layout` 命令,按子命令分发到 `helix.layout.*`;失败 → `helix.echo` |
+| 删除 | 58 行。**终止符是 `    },` 不是 `}`** —— 见 §11 那次"多删 450 行"的教训;**先断言范围再删** |
+| init | 仓库 + 用户 `init.js` 各加 `safe_load("layout")`;两层镜像同步 |
+| **测试缺口** | `:layout` 命令当前**无测试**(我加它时点明过)→ 搬迁时按 `tutor_plugin_opens_unbound_doc` 的模式补插件级 E2E(从**仓库路径**加载 → 缺文件即明确失败,不静默跳过) |
+| 难度 / 风险 | **低 / 低**(纯包装,行为可逐字对照;删除有范围断言) |
+
+### 12.2 `:plugin` 管理器(最大,但**自包含**)
+
+| 项 | 事实 |
+|---|---|
+| 核心依赖 | **只依赖 `helix_loader::config_dir`(3 处)** —— **不依赖任何核心能力**;其余是目录/文件操作 |
+| JS 侧可用 | `read_dir` · `write_file(_async)` · `helix.load` ✓ → **JS 可实现** |
+| 自举风险 | 插件管理器**本身是插件**:它若加载失败,就不能用它管理插件 |
+| 建议做法 | **分两步**:先搬 `list`/`install`/`remove`(纯文件操作),**`reload` 暂时留在 Rust 作兜底**(它要触发整树重载) |
+| 难度 / 风险 | 中 / 中(自举 + 需要决定兜底策略) |
+
+### 12.3 状态栏丰富元素(视觉收益最大)
+
+| 项 | 事实 |
+|---|---|
+| 核心 | `ui/statusline.rs` **733 行**(约 25 个 `render_*`) |
+| JS 现状 | `statusline/plugin.js` 已替换它,但只覆盖 **~8 个元素**:mode · path · cursor · total_lines · 诊断(error/warning)· window_mode · active_leaf_path/type |
+| 搬迁 = | ① JS 侧补齐其余(selections · encoding · line-ending · file-type · spinner · position-% · read-only · modified · base-name …)② 核心**只留最小回退**(~100 行:mode + 文件名 + 位置) |
+| **为何要留回退** | 刻意取舍:**插件一挂就没有状态栏** vs 少 733 行。规则见 §10 |
+| 难度 / 风险 | 中(纯 JS 增量,但**要逐项对照核心的条件与样式**,细节容易漂移) |
+| 验证 | 本套件有 `render_rows` 辅助 → 每补一个元素做渲染断言 |
+
+### 建议顺序
+
+**`:layout` → 状态栏 → `:plugin`**
+
+- `:layout`:最小 + 零前置 → 能**再次走通整条搬迁流程**(第二次会快很多)
+- 状态栏:纯 JS 增量,可**逐元素验证**
+- `:plugin`:**自举**,需要先定"reload 兜底"策略,放最后
