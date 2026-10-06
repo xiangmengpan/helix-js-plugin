@@ -481,6 +481,33 @@ pub(crate) fn plugin_roots() -> &'static [PathBuf] {
     PLUGIN_ROOTS.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
+/// 自带 runtime 目录(**有序**;由 helix-term 启动时推入)。
+///
+/// 为什么必须"推入"而不是自己取:`helix-js` **不依赖 `helix-loader`**(实测其 Cargo.toml),
+/// 所以拿不到 runtime 目录 —— 与 `PLUGIN_ROOTS` / `LAYOUTS_DIR` 同一模式。
+pub(crate) static RUNTIME_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+pub fn set_runtime_dirs(dirs: Vec<PathBuf>) {
+    let _ = RUNTIME_DIRS.set(dirs);
+}
+
+/// `name` → runtime 里的绝对路径(**按序取第一个存在的**)。
+/// 纯函数(吃 dirs)便于单测 —— 同 `resolve_in` / `plugin_roots_for`。
+pub(crate) fn runtime_file_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    if Path::new(name).is_absolute() {
+        return Path::new(name).exists().then(|| PathBuf::from(name));
+    }
+    dirs.iter().map(|d| d.join(name)).find(|p| p.exists())
+}
+
+/// 给 JS 侧用的包装:`helix.runtime_path(name)`
+pub fn runtime_path(name: &str) -> Option<PathBuf> {
+    runtime_file_in(
+        RUNTIME_DIRS.get().map(|v| v.as_slice()).unwrap_or(&[]),
+        name,
+    )
+}
+
 /// 加载参数 → **候选 key(按序尝试)**。
 ///
 /// 约定见 `docs/plugin-layout.md` §3.3:
@@ -933,5 +960,35 @@ mod dir_override_tests {
         let (p, r) = resolve_in_with_root(&roots, "/tmp/abs.js").unwrap();
         assert_eq!(p, PathBuf::from("/tmp/abs.js"));
         assert!(r.as_os_str().is_empty(), "绝对路径没有提供根");
+    }
+}
+
+#[cfg(test)]
+mod runtime_path_tests {
+    use super::*;
+
+    /// 按序取第一个存在的;都不存在 → None;绝对路径按存在性判定
+    #[test]
+    fn runtime_file_resolution() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(b.path().join("tutor"), "T").unwrap();
+        std::fs::write(a.path().join("only-a"), "A").unwrap();
+        let dirs = vec![a.path().to_path_buf(), b.path().to_path_buf()];
+
+        // 只有后者有 → 仍能解析到(按序但不要求必须在第一个)
+        let got = runtime_file_in(&dirs, "tutor").unwrap();
+        assert_eq!(std::fs::read_to_string(&got).unwrap(), "T");
+        assert_eq!(
+            runtime_file_in(&dirs, "only-a").unwrap(),
+            a.path().join("only-a")
+        );
+        assert!(runtime_file_in(&dirs, "nope").is_none(), "都不存在 → None");
+        // 绝对路径:存在 → 原样;不存在 → None
+        let abs = b.path().join("tutor");
+        assert_eq!(runtime_file_in(&dirs, abs.to_str().unwrap()).unwrap(), abs);
+        assert!(runtime_file_in(&dirs, "/definitely/not/here").is_none());
+        // 空目录列表 → None(不会 panic)
+        assert!(runtime_file_in(&[], "tutor").is_none());
     }
 }

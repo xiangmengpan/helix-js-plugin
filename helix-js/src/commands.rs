@@ -75,6 +75,28 @@ pub fn set_plugins_dir(dir: PathBuf) {
 /// 嵌套加载：内层 load 消费 LAST_EXPORT（take 语义），外层脚本自己的 export 随后设置。
 /// 直接用传入的 boa Context 调（不再借 CONTEXT 线程局部）——load 可能发生在命令运行中
 /// （lazy 桩），外层 run_command 正持有 CONTEXT 的 RefCell 借用，再借会 panic。
+/// `helix.runtime_path(name)` → 自带 runtime 里的绝对路径(找不到 → null)。
+/// 用途:让**内置内容型插件**能打开随软件分发的内容(如 `:tutor` 打开 `runtime/tutor`)。
+pub(crate) fn js_runtime_path(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.runtime_path: name must be a string",
+            )))
+        })?;
+    Ok(match crate::state::runtime_path(&name) {
+        Some(p) => JsValue::from(JsString::from(p.to_string_lossy().to_string())),
+        None => JsValue::null(),
+    })
+}
+
 pub(crate) fn js_load(
     _this: &JsValue,
     args: &[JsValue],

@@ -465,6 +465,11 @@ pub fn init() {
                     1,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(commands::js_runtime_path),
+                    JsString::from("runtime_path"),
+                    1,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(popup::js_move_panel),
                     JsString::from("move_panel"),
                     2,
