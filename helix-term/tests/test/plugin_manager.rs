@@ -173,6 +173,11 @@ async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     let plugin = dir.path().join("api.js");
     std::fs::write(&plugin, r#"helix.plugin.remove("nope-js-api");"#)?;
+    // 本用例**没有** `PLUGIN_TEST_LOCK` 那一行(所以按那行锚定的批量插入漏了它 ✗)
+    // ⇒ 单独设插件根:集成进程不执行 application.rs 的启动推入,`plugins_dir()` 会是 null,
+    //    JS 侧便早退报"插件目录不可用",断言就看不到预期的 `failed to remove` ✗
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
     let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");

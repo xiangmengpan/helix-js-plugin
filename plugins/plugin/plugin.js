@@ -41,7 +41,7 @@ function manifestPath() {
 /// **同步**读 manifest —— 用 `helix.read_file`(同步,与 `read_dir` 对称)。
 /// 为什么强调同步:命令处理函数里跑异步会撞**引擎重入**(`with_engine_slot` 的 `borrow_mut`,
 /// 见 docs/plugin-layout.md §14)。**读路径全程同步 ⇒ 不产生续体 ⇒ 构造性地避开那一类** ✓
-/// (写路径仍需 `await write_file_async` —— 因为**没有同步写 API** ✗,见文件头缺口 5)
+/// (写路径仍需 `write_file_async` —— 因为**没有同步写 API** ✗,见文件头缺口 5)
 function readManifest() {
   const p = manifestPath();
   if (!p) return null;
@@ -62,7 +62,7 @@ function readManifest() {
 
 /// 命令体抽成**独立函数** —— 命令与 `helix.plugin.*` **兼容层**共用同一实现(§13)。
 /// `args = [sub, arg]` 让下方 switch 里既有的 `args[1]` 用法**一行都不用改** ✓
-async function runOp(sub, arg) {
+function runOp(sub, arg) {
   const args = [sub, arg];
   const mp = manifestPath();
   if (!mp) {
@@ -111,11 +111,12 @@ async function runOp(sub, arg) {
         helix.echo("usage: plugin-js remove <name>");
         break;
       }
-      const m = (await readManifest()) || {};
+      const m = (readManifest()) || {};
       const e = m[name];
       if (!e) {
-        helix.echo("没有名为 '" + name + "' 的安装记录");
-        break;
+        // **同步路径,直接抛错** ⇒ 立即上屏 ✓(异步时 throw 会变 rejected promise,上不了 ✗)
+        // 文案对齐 Rust 的 `failed to remove`(集成用例断言的就是它)
+        throw new Error("failed to remove '" + name + "': not installed");
       }
       // 逐个删 manifest 记录的文件(**限域**:remove_plugin_file 只接受相对路径、拒 `..`)
       let n = 0;
@@ -132,7 +133,7 @@ async function runOp(sub, arg) {
       } catch (err) {}
       delete m[name];
       try {
-        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+        helix.write_file(manifestPath(), JSON.stringify(m, null, 2));
       } catch (err) {
         helix.echo("plugin remove: manifest 写入失败: " + err);
         break;
@@ -146,7 +147,7 @@ async function runOp(sub, arg) {
         helix.echo("usage: plugin-js install <path|git-url>");
         break;
       }
-      const m = (await readManifest()) || {};
+      const m = (readManifest()) || {};
       const now = new Date().toISOString();
       const isGit = /^[a-z+]+:\/\//i.test(arg) || arg.endsWith(".git");
 
@@ -155,7 +156,7 @@ async function runOp(sub, arg) {
         const base = arg.replace(/\/+$/, "").split("/").pop().replace(/\.git$/, "");
         const dest = mp + "/" + base;
         try {
-          await helix.run_async("git clone --depth 1 " + shq(arg) + " " + shq(dest));
+          helix.run("git clone --depth 1 " + shq(arg) + " " + shq(dest));
         } catch (e) {
           helix.echo("plugin install: git clone 失败: " + e);
           break;
@@ -179,19 +180,19 @@ async function runOp(sub, arg) {
         if (isDir) {
           for (const e of entries) {
             const nm = e.name || e.path;
-            const txt = await helix.read_file_async(arg + "/" + nm);
+            const txt = helix.read_file(arg + "/" + nm);
             helix.write_plugin_file(stem + "/" + nm, txt);
             files.push(stem + "/" + nm);
           }
         } else {
-          const txt = await helix.read_file_async(arg);
+          const txt = helix.read_file(arg);
           helix.write_plugin_file(stem + "/plugin.js", txt);
           files.push(stem + "/plugin.js");
         }
         m[stem] = { source: arg, kind: "local", installed_at: now, pinned: false, files: files };
       }
       try {
-        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+        helix.write_file(manifestPath(), JSON.stringify(m, null, 2));
       } catch (e) {
         helix.echo("plugin install: manifest 写入失败: " + e);
         break;
@@ -208,7 +209,7 @@ async function runOp(sub, arg) {
         helix.echo("usage: plugin-js " + sub + " <name>");
         break;
       }
-      const m = (await readManifest()) || {};
+      const m = (readManifest()) || {};
       const e = m[name];
       if (!e) {
         helix.echo("plugin " + sub + ": '" + name + "' not installed");
@@ -220,7 +221,7 @@ async function runOp(sub, arg) {
       }
       e.pinned = sub === "pin";
       try {
-        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+        helix.write_file(manifestPath(), JSON.stringify(m, null, 2));
       } catch (err) {
         helix.echo("plugin " + sub + ": manifest 写入失败: " + err);
         break;
@@ -232,7 +233,7 @@ async function runOp(sub, arg) {
       // 语义照抄 Rust:git 源 → fetch + ff-only 合并,记录新 HEAD;
       // **`pinned` 的跳过**(manifest 注释写明 "pinned: true = update 跳过")
       const only = args[1];
-      const m = (await readManifest()) || {};
+      const m = (readManifest()) || {};
       const targets = only ? [only] : Object.keys(m);
       let n = 0;
       for (const t of targets) {
@@ -244,10 +245,10 @@ async function runOp(sub, arg) {
         if (e.kind !== "git" || e.pinned) continue;
         const dir = mp + "/" + t;
         try {
-          await helix.run_async(
+          helix.run(
             "git -C " + shq(dir) + " fetch --quiet && git -C " + shq(dir) + " merge --ff-only --quiet FETCH_HEAD"
           );
-          const head = await helix.run_async("git -C " + shq(dir) + " rev-parse HEAD");
+          const head = helix.run("git -C " + shq(dir) + " rev-parse HEAD");
           e.commit = (head || "").trim();
           n++;
         } catch (err) {
@@ -255,7 +256,7 @@ async function runOp(sub, arg) {
         }
       }
       try {
-        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+        helix.write_file(manifestPath(), JSON.stringify(m, null, 2));
       } catch (err) {
         helix.echo("plugin update: manifest 写入失败: " + err);
         break;
@@ -276,9 +277,9 @@ async function runOp(sub, arg) {
 
 // ── 命令壳:从键入参数取 sub/arg,交给共享实现 ──
 // (命令名仍为临时名 `plugin-js`;正式改名与删 Rust 是**一次原子改动**,见 §12.2/§15)
-helix.register_command("plugin-js", async () => {
+helix.register_command("plugin-js", () => {
   const a = helix.command_args();
-  await runOp(a[0] || "status", a[1]);
+  runOp(a[0] || "status", a[1]);
 });
 
 // ── 兼容层(§13;探测已证:原生 `helix.plugin` 对象可挂、也可覆盖既有属性)──

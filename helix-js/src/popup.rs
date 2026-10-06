@@ -694,6 +694,47 @@ pub(crate) fn js_read_file(
     }
 }
 
+/// `helix.write_file(path, text)` → **同步写文本**(与 `read_file`/`read_dir` 对称)。
+///
+/// **为什么需要它**:`helix-js` 原本只有 `write_file_async` ⇒ 插件的"读—判断—写"流程被迫进异步;
+/// 而**异步函数里的 throw 会变成 rejected promise**,在命令/加载上下文里**上不了状态栏** ✗
+/// (集成用例 `plugin_js_api_remove_uninstalled` 就是这样卡住的)。
+/// 有同步写之后,插件可**全程同步** ⇒ 错误能立即上屏 ✓,且 §14 的引擎重入在**所有**路径消失 ✓
+pub(crate) fn js_write_file(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "write_file: path must be a string",
+            )))
+        })?;
+    let text: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "write_file: text must be a string",
+            )))
+        })?;
+    // 父目录按需创建(与 `helix.write_plugin_file` 同款;manifest 的目录通常已存在)
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&path, text) {
+        Ok(()) => Ok(JsValue::undefined()),
+        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(
+            format!("write_file('{path}'): {e}"),
+        )))),
+    }
+}
+
 pub(crate) fn js_read_dir(
     _this: &JsValue,
     args: &[JsValue],

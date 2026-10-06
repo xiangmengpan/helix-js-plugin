@@ -485,6 +485,11 @@ pub fn init() {
                     1,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(popup::js_write_file),
+                    JsString::from("write_file"),
+                    2,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(commands::js_write_plugin_file),
                     JsString::from("write_plugin_file"),
                     2,
