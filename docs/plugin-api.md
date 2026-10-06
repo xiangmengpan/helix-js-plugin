@@ -280,6 +280,9 @@ helix.export(obj)
 helix.lazy(name, ...commands)
 helix.plugin(name, { deps, version? })          // 声明加载依赖
 helix.plugin.install(arg) / update(name?) / remove(name)   // 管理(结果走状态栏)
+// 实现位置:`plugins/plugin/plugin.js`(管理器本身是**内置插件**)。
+// 命令 `:plugin …` 与上面三个 API 共用同一份实现;该 API 的**错误语义**与旧核心一致
+// (例如"未安装"时 remove 抛 `failed to remove '<name>': not installed`)。
 ```
 
 ### 数据形状

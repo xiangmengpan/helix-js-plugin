@@ -713,6 +713,17 @@ Rust 的 `list` 只输出一行(`no plugins loaded` / `plugins: a, b`);
 
 ## 16. 最后一刀:**逐符号的完整清单**(2026-10-06 实测)
 
+> ✅ **已于 2026-10-06 执行完毕**(提交 `69331f881`):`8 files changed, 7 insertions(+), 989 deletions(-)`
+> —— 核心已**零残留** `:plugin` 的 Rust 实现;`:plugin-reload` **保留**(自举兜底)✓
+> 全部测试绿:`plugin_manager` 5/5(**JS 在应答**)· `plugin_js_manager` 1(**§15 判据 ⇒ 非假绿**)·
+> `helix-js` 135 · `helix-term --lib` 157 · `plugin_entry` 3 · `plugin_reload` 2 · `plugin_components` 5
+>
+> 执行中额外踩到并已记入的坑:**空 `for` 循环**(删数组项后变 `[]` ⇒ 类型推断错)· **测试前提变了**
+> (Rust 应答时不需要 `plugins_dir()`,JS 应答后必需)· **`git rm` 后的回退要用
+> `git restore --source=HEAD --staged --worktree`**(纯 `git checkout` 不撤销已暂存的删除 ⇒ 假回退)
+>
+> 本清单**保留原样**作为决策记录(含当时的行号),不改写历史 ✓
+
 | # | 位置 | 内容 | 注意 |
 |---|---|---|---|
 | 1 | `plugins/plugin/plugin.js` | 命令名 `plugin-js` → `plugin` | 已知:**注册行 + 命令壳 + 3 处 usage 文案**;⚠️ **每步 `node --check`**(我在此处栽过两次 ✗) |
