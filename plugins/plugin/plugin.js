@@ -60,9 +60,10 @@ function readManifest() {
   }
 }
 
-helix.register_command("plugin-js", async () => {
-  const args = helix.command_args();
-  const sub = args[0] || "status";
+/// 命令体抽成**独立函数** —— 命令与 `helix.plugin.*` **兼容层**共用同一实现(§13)。
+/// `args = [sub, arg]` 让下方 switch 里既有的 `args[1]` 用法**一行都不用改** ✓
+async function runOp(sub, arg) {
+  const args = [sub, arg];
   const mp = manifestPath();
   if (!mp) {
     helix.echo("plugin: 插件目录不可用(helix.plugins_dir() 返回 null)");
@@ -271,4 +272,19 @@ helix.register_command("plugin-js", async () => {
         "plugin-js: 已实现 list|status|install|remove|update|pin|unpin|reload(8/8,见 §12.2)"
       );
   }
+}
+
+// ── 命令壳:从键入参数取 sub/arg,交给共享实现 ──
+// (命令名仍为临时名 `plugin-js`;正式改名与删 Rust 是**一次原子改动**,见 §12.2/§15)
+helix.register_command("plugin-js", async () => {
+  const a = helix.command_args();
+  await runOp(a[0] || "status", a[1]);
 });
+
+// ── 兼容层(§13;探测已证:原生 `helix.plugin` 对象可挂、也可覆盖既有属性)──
+// 迁移后由 JS 侧提供这三个入口 ⇒ **公开 API `helix.plugin.*` 不变更** ✓
+// `__hx_shim` 供测试断言"走的确实是 JS 兼容层"(否则分不清新旧实现)。
+helix.plugin.install = (arg) => runOp("install", arg);
+helix.plugin.update = (name) => runOp("update", name);
+helix.plugin.remove = (name) => runOp("remove", name);
+helix.plugin.install.__hx_shim = true;
