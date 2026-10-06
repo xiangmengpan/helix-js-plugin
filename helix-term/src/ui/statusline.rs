@@ -113,6 +113,7 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         window_mode: context.window_mode,
         active_leaf_type: context.active_leaf_type.to_string(),
         active_leaf_path: context.active_leaf_path.clone(),
+        modified: context.doc.is_modified(),
     };
     let js_parts = helix_js::statusline_parts(&js_ctx);
     let js_replace = helix_js::statusline_replaces();

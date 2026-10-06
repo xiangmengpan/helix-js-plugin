@@ -2200,6 +2200,7 @@ pub(crate) mod tests {
             window_mode: false,
             active_leaf_type: "editor".into(),
             active_leaf_path: None,
+            modified: false,
         };
         assert_eq!(statusline_parts(&ctx), None);
 
@@ -2822,6 +2823,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
             window_mode: false,
             active_leaf_type: "editor".into(),
             active_leaf_path: None,
+            modified: false,
         };
         // reload 前 render 正常
         let before = statusline_parts(&ctx);

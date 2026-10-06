@@ -77,7 +77,11 @@ function render(ctx) {
   const row = (cur.row || 0) + 1;
   const col = (cur.col || 0) + 1;
   const total = ctx.total_lines || 1;
-  const pct = Math.round((row / total) * 100) + "%";
+  // 修改标记:语义严格对齐核心的 `FileModificationIndicator`(`[+]` / 未改时无),
+  // 由新增的 ctx 字段 `modified`(statusline.rs:79 填入 `doc.is_modified()`)驱动。
+  // 放置位置是 JS 状态栏自己的布局选择(挂在右区位置段上)。
+  const modMark = ctx.modified ? " [+]" : "";
+  const pct = Math.round((row / total) * 100) + "%" + modMark;
   parts.push({ text: row + ":" + col, style: null, zone: "right" });
   parts.push({ text: pct, style: "ui.virtual", zone: "right" });
   parts.push({ text: String(total), style: "ui.virtual", zone: "right" });

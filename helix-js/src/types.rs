@@ -487,6 +487,9 @@ pub struct StatuslineCtx {
     pub active_leaf_type: String,
     /// 活动窗口路径(editor/buffer 叶子时)
     pub active_leaf_path: Option<String>,
+
+    /// 文档是否已修改(核心 `FileModificationIndicator` 语义:未改时也占位)
+    pub modified: bool,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。
