@@ -97,6 +97,19 @@ pub(crate) fn js_remove_plugin_file(
     }
 }
 
+/// `helix.plugins_dir()` → 插件目录绝对路径(未推入 → null)。
+/// `:plugin` 管理器用它定位 `manifest.json` 与插件文件。
+pub(crate) fn js_plugins_dir(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<JsValue> {
+    Ok(match crate::state::plugins_dir() {
+        Some(p) => JsValue::from(JsString::from(p.to_string_lossy().to_string())),
+        None => JsValue::null(),
+    })
+}
+
 /// `helix.command_args()` → 当前键入命令的参数数组(如 `:layout save dev` → `["save","dev"]`)。
 /// 由分派器在调用前设入、调用后清空(见 `state::{set,clear}_command_args`)。
 pub(crate) fn js_command_args(

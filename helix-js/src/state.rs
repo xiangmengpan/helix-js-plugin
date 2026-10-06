@@ -481,6 +481,13 @@ pub(crate) fn plugin_roots() -> &'static [PathBuf] {
     PLUGIN_ROOTS.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
+/// 插件目录(**用户层 = 最后一个根**;`resolve_in` 用 `rev()` 迭代 ⇒ 末位优先级最高)。
+/// `manifest.json` 与插件文件都在这里 —— `:plugin` 管理器必需
+/// (此前 JS 侧**没有任何** config/插件目录访问器,实测 `config_dir`/`plugin_dir` 注册数为 0)。
+pub fn plugins_dir() -> Option<PathBuf> {
+    plugin_roots().last().cloned()
+}
+
 // ── 键入命令的参数通道(§12.0)──────────────────────────────────────
 // 为什么是**独立通道**而不是给 `CommandContext` 加字段:它有 ~57 个构造点
 // (3 处 typed.rs · 2 处 helix-js 非测试 · ≈52 处单测),加字段就是 57 处都要改 ——
