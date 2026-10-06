@@ -2375,18 +2375,6 @@ fn debug_remote(
     dap_start_impl(cx, name.as_deref(), address, Some(args))
 }
 
-fn tutor(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-
-    let path = helix_loader::runtime_file(Path::new("tutor"));
-    cx.editor.open(&path, Action::Replace)?;
-    // Unset path to prevent accidentally saving to the original tutor file.
-    doc_mut!(cx.editor).set_path(None);
-    Ok(())
-}
-
 fn abort_goto_line_number_preview(cx: &mut compositor::Context) {
     if let Some(last_selection) = cx.editor.last_selection.take() {
         let scrolloff = cx.editor.config().scrolloff;
@@ -3987,17 +3975,6 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["hnew"],
         doc: "Open a scratch buffer in a horizontal split.",
         fun: hsplit_new,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (0, Some(0)),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "tutor",
-        aliases: &[],
-        doc: "Open the tutorial.",
-        fun: tutor,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

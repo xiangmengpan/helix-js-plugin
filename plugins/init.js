@@ -18,6 +18,7 @@ function safe_load(p) {
 }
 
 safe_load("icons");
+safe_load("tutor");   // 教程(:tutor)—— 已从核心搬到插件
 safe_load("terminal");
 safe_load("statusline");
 safe_load("filetree");
