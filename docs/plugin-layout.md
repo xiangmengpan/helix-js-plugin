@@ -565,3 +565,39 @@ let js_parts = helix_js::statusline_parts(&js_ctx);  // 同文件 :117 调用钩
 - `:layout`:最小 + 零前置 → 能**再次走通整条搬迁流程**(第二次会快很多)
 - 状态栏:纯 JS 增量,可**逐元素验证**
 - `:plugin`:**自举**,需要先定"reload 兜底"策略,放最后
+
+## 13. 兼容层 `helix.plugin.*` 的具体设计(最后一刀的前置)
+
+迁移 `:plugin` 时,`plugin_op` 是命令与 **`helix.plugin.*` JS API 的共享后端**
+(API 桥在 `typed.rs:5365`,`helix-js` 侧由 `push_plugin_op` 送请求)。
+该 API **无插件使用**,但**公开文档化**(`docs/plugin-api.md` · `docs/api/plugin.md`)且有测试
+(`helix-js/src/lib.rs:3803-3808` · `tests/test/plugin_manager.rs:148-157`)⇒ **必须带兼容路径**。
+
+### 三步(都在 `plugins/plugin/plugin.js` 内)
+
+1. **重构**:把 `register_command("plugin-js", async () => { … })` 里的逻辑抽成
+   `async function runOp(sub, arg)`;命令壳只做 `helix.command_args()` → `runOp(sub, args[1])` ✓
+2. **对外导出**(三个能力**都已实现** ⇒ 是"再导出一遍",不是新逻辑):
+   ```js
+   helix.plugin.install = (arg)  => runOp("install", arg);
+   helix.plugin.update  = (name) => runOp("update", name);
+   helix.plugin.remove  = (name) => runOp("remove", name);
+   ```
+3. **可断言的标记**(否则测试分不清走原生还是 JS 兼容层):
+   ```js
+   helix.plugin.install.__hx_shim = true;
+   ```
+
+### ⚠️ 唯一未知点:动手前先探测
+
+`helix.plugin` 是**声明函数**(`helix.plugin(name, opts)`),Rust 侧在**同一函数对象**上挂了
+`install`/`update`/`remove`。**JS 能否覆盖/添加这些属性?** 探测只需一行 + 一条断言:
+
+```js
+helix.plugin.__probe = "ok";   // 零副作用;Rust 侧断言读回 === "ok"
+```
+
+- **可挂** → 按上面三步做 ✓
+- **不可挂**(原生对象冻结/只读)→ 改走"**JS 导出模块**":管理器用 `helix.export` 暴露
+  `{install, update, remove}`,文档改为 `const mgr = helix.load("plugin"); mgr.install(…)`
+  —— **这是一次公开 API 变更**,所以更该先探测再动手。
