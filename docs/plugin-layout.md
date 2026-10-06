@@ -286,12 +286,37 @@ doc_mut!(cx.editor).set_path(None);   // 防止误保存覆盖原始 tutor 文�
 
 ## 12. 三个候选的施工图(按"最容易 → 最难",数据均为实测)
 
-### 12.1 `:layout` 会话 —— **建议先做这个**(最小、零前置)
+### 12.0 ⚠️ 共同前置:键入参数要能到 JS(**挡住 12.1 与 12.2 两项**)
+
+**实测**:`CommandContext`(`helix-js/src/types.rs:460`)**没有 args 字段** ——
+而 JS 注册的命令拿到的是单个 `ctx` → **读不到键入参数**。
+即 `:layout save dev` 里的 `save`/`dev`、`:plugin install <path>` 里的 `<path>`,JS 插件**都看不见**。
+
+**唯一的分派桥**:`run_plugin_command`(`helix-term/src/commands/typed.rs:4427`)。
+参数应在**这里**接上。
+
+#### 实现建议:用**独立通道**,不要给 `CommandContext` 加字段
+
+`CommandContext` 有 **约 57 个构造点**(3 处在 typed.rs、2 处在 helix-js 非测试代码、
+其余 ≈52 处是单测)。加一个字段 = 57 处都要改 —— 正是本项目反复吃亏的"改一处漏一处、
+且漏了**不报错**"的形态。
+
+**照 `OpenScratchFile` 那次的成功做法**:开**一条独立通道** ——
+`run_plugin_command` 在调用 JS 命令**之前**把 args 放进一个 thread-local,
+JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext` 一个字段都不动** ✓
+
+- 位置:`run_plugin_command`(typed.rs:4427)设值;**调用后清空**(避免粘到下一个命令)
+- JS 形状:`ctx.args = ["save", "dev"]`(由命令包装器注入)或 `helix.command_args()`
+- 单测:入队 → 断言 JS 侧读到;命令结束后 → 断言已清空(防"粘住"这类难查的 bug)
+
+> **这条前置不做,12.1 与 12.2 都无法做** —— 但做完它,两件事一起解锁。
+
+### 12.1 `:layout` 会话 —— **建议先做这个**(最小)
 
 | 项 | 事实 |
 |---|---|
 | 核心里有什么 | `TypableCommand` 条目 **11 行** + `fn layout` **47 行** = **58 行纯包装**(只调 `helix_js::layout_*`) |
-| 前置接口 | **零** —— API 早已在 helix-js(`helix.layout.save/load/list/delete`),且有纯函数单测与**路径穿越防护** |
+| 前置接口 | 数据 API 早已在 helix-js(`helix.layout.save/load/list/delete`,含纯函数单测与**路径穿越防护**);**但需 §12.0 的参数通道**(本命令有子命令与名字) |
 | 插件 | `plugins/layout/plugin.js`(~25 行):注册 `layout` 命令,按子命令分发到 `helix.layout.*`;失败 → `helix.echo` |
 | 删除 | 58 行。**终止符是 `    },` 不是 `}`** —— 见 §11 那次"多删 450 行"的教训;**先断言范围再删** |
 | init | 仓库 + 用户 `init.js` 各加 `safe_load("layout")`;两层镜像同步 |
@@ -303,6 +328,7 @@ doc_mut!(cx.editor).set_path(None);   // 防止误保存覆盖原始 tutor 文�
 | 项 | 事实 |
 |---|---|
 | 核心依赖 | **只依赖 `helix_loader::config_dir`(3 处)** —— **不依赖任何核心能力**;其余是目录/文件操作 |
+| 前置接口 | **§12.0 的参数通道**(`list\|install <path>\|remove <name>` 都要读参数) |
 | JS 侧可用 | `read_dir` · `write_file(_async)` · `helix.load` ✓ → **JS 可实现** |
 | 自举风险 | 插件管理器**本身是插件**:它若加载失败,就不能用它管理插件 |
 | 建议做法 | **分两步**:先搬 `list`/`install`/`remove`(纯文件操作),**`reload` 暂时留在 Rust 作兜底**(它要触发整树重载) |
