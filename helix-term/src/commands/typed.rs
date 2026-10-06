@@ -4413,10 +4413,13 @@ fn execute_command_line(
 
     match typed::TYPABLE_COMMAND_MAP.get(command) {
         Some(cmd) => execute_command(cx, cmd, rest, event),
-        None if event == PromptEvent::Validate => match run_plugin_command(cx, command)? {
-            true => Ok(()),
-            false => Err(anyhow!("no such command: '{command}'")),
-        },
+        None if event == PromptEvent::Validate => {
+            let pargs: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
+            match run_plugin_command(cx, command, &pargs)? {
+                true => Ok(()),
+                false => Err(anyhow!("no such command: '{command}'")),
+            }
+        }
         None => Ok(()),
     }
 }
@@ -4424,7 +4427,11 @@ fn execute_command_line(
 /// 运行插件命令（静态命令表 miss 时的回退路径）。
 /// 返回 Ok(true) = 已运行，Ok(false) = 未注册，Err = 运行失败。
 /// 序列化当前文档状态后交给 JS 运行时；成功时消费 echo 消息、UI 请求与编辑队列。
-pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> anyhow::Result<bool> {
+pub(crate) fn run_plugin_command(
+    cx: &mut compositor::Context,
+    name: &str,
+    args: &[String],
+) -> anyhow::Result<bool> {
     let docs = cx
         .editor
         .documents
@@ -4456,7 +4463,12 @@ pub(crate) fn run_plugin_command(cx: &mut compositor::Context, name: &str) -> an
     };
     // 借用：view/doc（及 text）的最后使用在 ctx 构造处，NLL 在此结束对 editor 的共享借用
 
-    match helix_js::run_command(name, &ctx) {
+    // §12.0:把键入参数交给 JS 命令(独立通道,不动 CommandContext)。
+    // **先取结果再清空** —— 这样即使下面各分支 early return,也不会漏清。
+    helix_js::set_command_args(args.to_vec());
+    let res = helix_js::run_command(name, &ctx);
+    helix_js::clear_command_args();
+    match res {
         Ok(true) => {
             let msgs = helix_js::take_messages();
             if !msgs.is_empty() {

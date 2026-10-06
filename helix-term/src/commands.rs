@@ -266,7 +266,8 @@ impl MappableCommand {
                 } else {
                     // 插件命令回退：键位绑定的插件命令（helix.map 注入）走这里。
                     // 与 execute_command_line 共用 run_plugin_command，保证行为一致。
-                    match typed::run_plugin_command(&mut cx, name) {
+                    let pargs: Vec<String> = args.split_whitespace().map(str::to_string).collect();
+                    match typed::run_plugin_command(&mut cx, name, &pargs) {
                         Ok(true) => {}
                         Ok(false) if !args.is_empty() => {
                             cx.editor.set_error(format!("no such command: '{name}'"));
