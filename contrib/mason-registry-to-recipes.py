@@ -303,7 +303,7 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     m_tool = re.match(r"pkg:(pypi|npm)/([^@]+)@(.+)", src)
     assets = pkg.get("asset") or []
     if not m:
-        problems.append(f"来源不是 github-release({src})—— helix 的 Archive 走 release 资产 URL")
+        problems.append(f"来源既不是 github-release 也不是 pypi/npm({src})—— 需人工判断安装方式")
         version, base = "", ""
     else:
         owner, repo, version = m.group(1), m.group(2), m.group(3)
@@ -372,6 +372,11 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
                 lines.append(f'bin = "{bin_}"')
     else:
         lines.append('# 无资产条目(该包可能只有 npm/pypi 源 —— 需手工改为 cmd/args 的 Tool 型)')
+    if m_tool:
+        # Tool 路的安装语义**已经确定**(cmd/args),不该再带 Archive 路的判据提示。
+        # 之所以要"过滤"而不是"改那一处 append":产生该提示的分支在文件里有**两处**,
+        # 且措辞不同、生成同一句话 —— 上一版就因此漏改了一处(验证当场打脸)。
+        problems = [x for x in problems if "github-release" not in x]
     for pr in problems:
         lines.append(f"# ⚠️ needs-manual: {pr}")
     return "\n".join(lines) + "\n", problems
