@@ -323,7 +323,7 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 | **测试缺口** | `:layout` 命令当前**无测试**(我加它时点明过)→ 搬迁时按 `tutor_plugin_opens_unbound_doc` 的模式补插件级 E2E(从**仓库路径**加载 → 缺文件即明确失败,不静默跳过) |
 | 难度 / 风险 | **低 / 低**(纯包装,行为可逐字对照;删除有范围断言) |
 
-### 12.2 `:plugin` 管理器(**勘路完成**:需要 1 个新接口 + 1 个 Rust 钩子)
+### 12.2 `:plugin` 管理器(**前置已齐**,搬迁待做)
 
 **先纠正一个印象**:它不只是文件操作。`plugin_manager.rs`(639 行)实测含
 **manifest 读写** · **安装复制**(`install_target`/`install_copy`/`walkdir`)· **删除**
@@ -340,17 +340,22 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 | `install <local path>` | `read_file` + `write_file` ✅(目录树用 `read_dir` 递归) | **可直接搬** |
 | `install <git url>` / 更新 | **`helix.run`/`spawn` 可执行 `git`** ✅ | **可直接搬**(用 `git clone/fetch/pull` 命令,不必新 API) |
 | manifest 读写 | `read_file`/`write_file` ✅ | 可直接搬 |
-| **`remove <name>`** | ❌ **JS 没有删除文件的 API**(现有:read/write/read_dir/stat/glob) | **缺 1 个接口**:`helix.remove_file`/`remove_dir_all`(危险操作 → 需限定在插件目录内,防越界删除) |
-| **`reload`** | ❌ 需触发整树重载(Rust 侧) | **缺 1 个钩子**;建议**保留 Rust 版 `:plugin-reload` 作兜底**(自举:管理器本身是插件,它挂了还得能救) |
+| **`remove <name>`** | ✅ **接口已实现**:`helix.remove_plugin_file(rel)` —— **限域**(只相对路径 · 拒 `..` · `canonicalize` 复核只落插件根内),`true` 删了 / `false` 幂等 / 非法路径抛错;**测试断言"拒绝时根外文件仍在"** | **可直接搬** |
+| **`reload`** | ✅ **不需要新钩子**:`:plugin-reload` 本就是**独立命令**(`typed.rs:4320`)→ JS 插件**委派**给它即可 | **可直接搬** |
 
-#### 建议的分步路径(每步都能独立验收)
+#### 结论:**前置全齐,只剩"写插件 + 删 Rust"**
 
-1. **`list`/`status`** —— 只读,零新接口 → 先搬,验证"插件能列出插件"
-2. **`install`(本地 + git)** —— 用现有 `read/write/read_dir` + `run("git", …)` ✓
-3. **加删除接口**(限定插件目录内)**→ 搬 `remove`**
-4. **`reload` 留在 Rust**(兜底)—— 或另加一个薄钩子后再搬
+| 前置 | 状态 |
+|---|---|
+| 参数通道(§12.0) | ✅ `helix.command_args()` |
+| 删除(限域) | ✅ `helix.remove_plugin_file(rel)` |
+| 重载 | ✅ **复用** `:plugin-reload`(独立命令,零新增) |
+| 其余(list/install/manifest/git) | ✅ 现有能力足够(`read_dir`·`read_file`·`write_file`·`helix.run` 驱动 git) |
 
-> **自举风险的处理原则**:任何"管理器自己挂了就救不回来"的路径,都留一个 Rust 兜底。
+**剩下的是机械活**:写 `plugins/plugin/plugin.js`(覆盖 `list|install|remove|status`,把 `reload`
+委派给 `:plugin-reload`)+ 删 Rust 639 行 + init 两处 + 端到端测试。
+
+> **自举原则(仍然适用)**:`:plugin-reload` **不要删** —— 管理器自己挂了时,它是唯一的救援路径。
 
 
 
