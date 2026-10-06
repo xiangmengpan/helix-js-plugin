@@ -710,3 +710,30 @@ Rust 的 `list` 只输出一行(`no plugins loaded` / `plugins: a, b`);
 2. **加判据**:5 个用例预置 manifest + 断言 `installed(` 出现 ⇒ **证明 JS 真的在应答** ✓
 3. **改名 → 一次性删 Rust**(条目 + `fn plugin` + `plugin_op` + API 桥 + `push_plugin_op`
    + `plugin_manager.rs` + `mod`)+ 文档 + 断言 `:plugin-reload` 仍在 ✓
+
+## 16. 最后一刀:**逐符号的完整清单**(2026-10-06 实测)
+
+| # | 位置 | 内容 | 注意 |
+|---|---|---|---|
+| 1 | `plugins/plugin/plugin.js` | 命令名 `plugin-js` → `plugin` | 已知:**注册行 + 命令壳 + 3 处 usage 文案**;⚠️ **每步 `node --check`**(我在此处栽过两次 ✗) |
+| 2 | `typed.rs` | TypableCommand 条目(≈8 行) | 终止符是 `    },` ✗ 不是裸 `}` |
+| 3 | `typed.rs` | `fn plugin`(≈11 行)· `fn plugin_op`(≈200 行) | 终止符为**裸 `}`**(顶层函数 ✓) |
+| 4 | `typed.rs` | **API 桥**:调用 `plugin_op(editor, &op, arg.as_deref())` 的那个函数 | ⚠️ **所在函数尚未确认**:我的定位器判到 `layer_id`(≈4838 起),**不可信**(函数不可能跨 500 行)→ **动手前先读这一处** ✓ |
+| 5 | `helix-js/src/commands.rs` | `js_plugin_install`(348)· `js_plugin_update`(367)· `js_plugin_remove`(388)· `push_plugin_op`(406) | 三个 API 函数**必须一并删**(否则 `plugin_op` 仍被引用 ✗) |
+| 6 | `helix-js/src/lib.rs` | 上述三个的**注册** | 实测在 `lib.rs:147/152/157` ✓ |
+| 7 | `helix-term/src/commands.rs:3` | `pub(crate) mod plugin_manager;` + 删 `plugin_manager.rs`(639 行) | —— |
+| 8 | `tests/test/plugin_manager.rs` | 5 个用例:改断言并**加 §15 判据** | 已各自加载 JS 管理器 ✓;判据 = 预置 manifest + 断言 `installed(` |
+| 9 | 文档 | `docs/api/plugin.md` 等:说明 `helix.plugin.*` 现由**插件**提供 | —— |
+| 10 | E2E | 断言 **`:plugin-reload` 仍在**(自举兜底,不可删) | —— |
+
+### 为什么第 5 项决定了"整刀不可分"
+
+`plugin_op` 是 `:plugin` 与 `helix.plugin.*` 的**共享后端** ✓ ⇒ 删它就必须同时删
+**三个 JS API 函数 + 它们的注册 + API 桥** ✗ —— 而 **JS 侧兼容层已经把这些入口接管了** ✓
+(§13 探测证明可覆盖 ✓,本清单确认了"被覆盖的旧实现"具体是什么 ✓)
+
+### 执行纪律(这一刀专用)
+
+1. **改完立刻验证**:JS → `node --check`;Rust → `cargo check --all-targets`
+2. **任一步失败即整体回退**(`git checkout` 涉及文件)—— 本会话已用此法 8+ 次,**零次**留下损坏状态
+3. **一次性提交**,提交信息里写明"哪三个 API 函数的实现搬到了插件侧"
