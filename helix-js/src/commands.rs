@@ -964,6 +964,22 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
     emit_event_impl(name, ctx, extra, None)
 }
 
+/// `layout-change` 事件入口(**无需命令上下文**)。
+///
+/// 为什么需要它:布局变更发生在 `LayoutTree`/`Compositor` 内部(§47 勘明),
+/// 那里**没有** `CommandContext` ✗;而 `emit_event_impl` 只用到 `ctx.docs`
+/// (其它已打开 buffer 的快照)⇒ 这里给一个**最小上下文**(与测试构造同款)即可 ✓
+pub fn emit_layout_change() -> Result<()> {
+    let ctx = CommandContext {
+        path: None,
+        text: String::new(),
+        cursor: (0, 0),
+        selection: ((0, 0), (0, 0)),
+        docs: Vec::new(),
+    };
+    emit_event_impl("layout-change", &ctx, None, None)
+}
+
 /// doc-change 事件入口：参数附带防抖窗口内合并的变更范围（doc.changes）。
 pub fn emit_doc_change(ctx: &CommandContext, changes: &[DocChange]) -> Result<()> {
     emit_event_impl("doc-change", ctx, None, Some(changes))

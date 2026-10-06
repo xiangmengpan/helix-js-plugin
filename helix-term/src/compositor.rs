@@ -1414,6 +1414,12 @@ impl Compositor {
         helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
         let json = serde_json::to_string(&dump).unwrap_or_default();
         helix_js::cache_layout(&json);
+        // #47:layout-change 事件 —— 发在这里即覆盖**所有**布局变更
+        // (`sync_layout_cache` 是唯一汇聚点;调用者虽多,函数体只有这一处)
+        // 暂不携带"变更种类":种类需从 LayoutTree 逐层串上来(≈10 处),留作后续增量 ✓
+        if let Err(e) = helix_js::emit_layout_change() {
+            log::warn!("layout-change event failed: {e}");
+        }
     }
 
     pub fn focus_leaf(&mut self, id: u64) {
