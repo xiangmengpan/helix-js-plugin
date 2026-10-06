@@ -242,6 +242,23 @@ type EventName =
 // ────────────────────────── 主接口 ──────────────────────────
 
 interface HelixPlugin {
+  /**
+   * 安装插件(本地路径或 git URL):复制/clone → 写 manifest。
+   * 结果经状态栏反馈;失败抛错。
+   * 与 `:plugin install <path|git-url>` 同一实现。
+   */
+  install(arg: string): void;
+  /**
+   * 更新 git 源插件(`fetch` + `ff-only` 合并,记录新 HEAD)。
+   * 省略 `name` = 更新全部;**`pinned` 的会被跳过**。
+   * 与 `:plugin update [name]` 同一实现。
+   */
+  update(name?: string): void;
+  /**
+   * 移除插件:删 manifest 记录的文件与目录,并更新 manifest。
+   * 与 `:plugin remove <name>` 同一实现。
+   */
+  remove(name: string): void;
   /** 声明加载依赖(文件 key,拓扑加载) */
   (name: string, opts: { deps: string[]; version?: string }): void;
   /** 安装插件(本地路径或 git-url),结果经状态栏显示 */
