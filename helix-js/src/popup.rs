@@ -1721,6 +1721,16 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 Attribute::all(),
             )
             .property(
+                JsString::from("selections"),
+                JsValue::from(ctx.selections as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("selections_primary"),
+                JsValue::from(ctx.selections_primary as f64),
+                Attribute::all(),
+            )
+            .property(
                 JsString::from("diagnostics_error"),
                 JsValue::from(ctx.diagnostics_error as f64),
                 Attribute::all(),

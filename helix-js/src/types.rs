@@ -490,6 +490,10 @@ pub struct StatuslineCtx {
 
     /// 文档是否已修改(核心 `FileModificationIndicator` 语义:未改时也占位)
     pub modified: bool,
+    /// 选区数(核心 `Selections` 的语义:多光标时显示数量)
+    pub selections: usize,
+    /// 主选区序号(从 0 起;核心渲染成 `{primary+1}/{count} sels`)
+    pub selections_primary: usize,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。

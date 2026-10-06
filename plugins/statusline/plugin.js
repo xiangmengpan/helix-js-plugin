@@ -81,7 +81,9 @@ function render(ctx) {
   // 由新增的 ctx 字段 `modified`(statusline.rs:79 填入 `doc.is_modified()`)驱动。
   // 放置位置是 JS 状态栏自己的布局选择(挂在右区位置段上)。
   const modMark = ctx.modified ? " [+]" : "";
-  const pct = Math.round((row / total) * 100) + "%" + modMark;
+  // 选区数:语义**对齐核心** `render_selections`(1 个时不显示;多个显示 `主序/总数 sels`)
+  const selMark = ctx.selections > 1 ? " " + (ctx.selections_primary + 1) + "/" + ctx.selections + " sels" : "";
+  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark;
   parts.push({ text: row + ":" + col, style: null, zone: "right" });
   parts.push({ text: pct, style: "ui.virtual", zone: "right" });
   parts.push({ text: String(total), style: "ui.virtual", zone: "right" });
