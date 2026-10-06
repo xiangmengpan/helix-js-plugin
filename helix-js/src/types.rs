@@ -38,6 +38,13 @@ pub enum UiRequest {
         row: Option<u16>,
         col: Option<u16>,
     },
+    /// 打开文件但**不绑定路径**(`helix.open_file(p, { scratch: true })`)。
+    /// 用途:内置"内容型插件"打开随软件分发的内容(如 `runtime/tutor`)——
+    /// 用户 `:w` 不该覆盖原始文件。单独一个请求,是为了**不改既有 `OpenFile` 的形状**
+    /// (否则所有构造点都要跟着改)。
+    OpenScratchFile {
+        path: String,
+    },
     FocusBuffer {
         id: u64,
     },

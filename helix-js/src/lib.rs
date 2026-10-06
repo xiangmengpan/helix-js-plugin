@@ -1203,6 +1203,40 @@ pub(crate) mod tests {
         );
     }
 
+    /// `open_file` 的 `scratch` 选项:带它走 `OpenScratchFile`(不绑定路径),不带走原请求。
+    /// 这条路由是 `:tutor` 搬迁的**安全前提** —— 走错了,用户 `:w` 会覆盖 runtime 里的原文件。
+    #[test]
+    fn open_file_scratch_routes_to_scratch_request() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        load_script(
+            r#"
+        helix.register_command("ofs", () => {
+            helix.open_file("/tmp/plain.txt");
+            helix.open_file("/tmp/scratch.txt", { scratch: true });
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(run_command("ofs", &ctx).unwrap());
+        let reqs = take_ui_requests();
+        assert!(
+            matches!(&reqs[0], UiRequest::OpenFile { path, .. } if path == "/tmp/plain.txt"),
+            "不带 scratch → 原 OpenFile 请求"
+        );
+        assert!(
+            matches!(&reqs[1], UiRequest::OpenScratchFile { path } if path == "/tmp/scratch.txt"),
+            "带 scratch → OpenScratchFile(不绑定路径)"
+        );
+    }
+
     #[test]
     fn open_terminal_api() {
         let _guard = TEST_LOCK.lock().unwrap();

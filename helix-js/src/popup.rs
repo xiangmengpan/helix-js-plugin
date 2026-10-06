@@ -734,21 +734,25 @@ pub(crate) fn js_open_file(
                 "open_file: path must be a string",
             )))
         })?;
-    let (row, col) = match args.get(1) {
+    let (row, col, scratch) = match args.get(1) {
         Some(obj) if obj.is_object() => {
             let o = obj.as_object().unwrap();
             let row = opt_u16(&o.get(JsString::from("row"), ctx)?, ctx, "row")?;
             let col = opt_u16(&o.get(JsString::from("col"), ctx)?, ctx, "col")?;
-            (row, col)
+            // scratch:打开但不绑定路径(内置内容型插件用,见 types::OpenScratchFile)
+            let scratch = o
+                .get(JsString::from("scratch"), ctx)?
+                .as_boolean()
+                .unwrap_or(false);
+            (row, col, scratch)
         }
-        _ => (None, None),
+        _ => (None, None, false),
     };
-    UI_REQUESTS
-        .get()
-        .unwrap()
-        .lock()
-        .unwrap()
-        .push(UiRequest::OpenFile { path, row, col });
+    UI_REQUESTS.get().unwrap().lock().unwrap().push(if scratch {
+        UiRequest::OpenScratchFile { path }
+    } else {
+        UiRequest::OpenFile { path, row, col }
+    });
     Ok(JsValue::undefined())
 }
 

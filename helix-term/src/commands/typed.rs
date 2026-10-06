@@ -4938,6 +4938,19 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.close_panel_by_id(id);
                 });
             }
+            helix_js::UiRequest::OpenScratchFile { path } => {
+                job::dispatch_blocking(move |editor, _compositor| {
+                    let p = PathBuf::from(&path);
+                    match editor.open(&p, Action::Replace) {
+                        Err(err) => editor.set_error(format!("open_scratch: {err}")),
+                        Ok(_) => {
+                            // **安全前提**:不绑定路径 → 用户 `:w` 不会覆盖原始文件
+                            // (如 runtime/tutor)。Rust 版 :tutor 也是这么做的。
+                            doc_mut!(editor).set_path(None);
+                        }
+                    }
+                });
+            }
             helix_js::UiRequest::OpenFile { path, row, col } => {
                 // open 是同步的（editor.open 直接返回），:open 语义（Action::Replace）；
                 // 错误经 set_error 上报（闭包内无 Result 传播路径）；
