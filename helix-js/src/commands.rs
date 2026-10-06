@@ -1975,7 +1975,12 @@ pub fn load_script_named(name: &str, src: &str) -> Result<()> {
 
 /// 已加载脚本名（按加载顺序；供 :plugin list / status）
 pub fn loaded_scripts() -> Vec<String> {
-    crate::init();
+    // ⚠️ **不要在这里调 `crate::init()`** ——(2026-10-06 定位到的真因)
+    // 读"已加载脚本"只是读一个**线程局部**;而 `init()` 每次都会走
+    // `state::with_engine_slot(|slot| …)` ⇒ `CONTEXT.borrow_mut()`。
+    // 本函数会被**命令执行路径**调用(`:plugin list` · `helix.loaded_plugins()`),
+    // 而外层 `run_command` 正持有 CONTEXT 的借用 ⇒ **再借即 panic**
+    // (panic 点:`state.rs:138`,与 `helix.load` 注释里警告过的是同一类)。
     crate::state::with_loaded_scripts(|s| s.iter().map(|(name, _)| name.clone()).collect())
 }
 

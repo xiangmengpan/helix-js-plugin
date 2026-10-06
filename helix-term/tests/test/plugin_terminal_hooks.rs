@@ -633,6 +633,43 @@ async fn layout_plugin_routes_args_and_persists() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// **`plugin-js` 端到端**(第三次尝试 —— 前两次的失败把真因逼了出来:
+/// `loaded_scripts()` 里那次多余的 `crate::init()` 会在命令持锁期间重入引擎)。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/plugin/plugin.js");
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    // 集成测试进程不执行 application.rs 的启动推入 → 手动设插件根(OnceLock 首设生效,
+    // 别的测试设过也**同样非空** ⇒ 下面的断言不会空过)
+    let dir = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]);
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+
+    pump(&mut app, ":plugin-js list<ret>").await?;
+    let (list_status, _) = app.editor.get_status().unwrap();
+    assert!(
+        list_status.as_ref().contains("plugin"),
+        "list 应输出 plugins:/no plugins loaded,实得 {list_status}"
+    );
+
+    pump(&mut app, ":plugin-js status<ret>").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.as_ref().contains("loaded"),
+        "status 应含 loaded,实得 {status}"
+    );
+    assert!(
+        status.as_ref().contains("installed"),
+        "status 应含 installed,实得 {status}"
+    );
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
