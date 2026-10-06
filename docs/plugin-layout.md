@@ -323,7 +323,36 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 | **测试缺口** | `:layout` 命令当前**无测试**(我加它时点明过)→ 搬迁时按 `tutor_plugin_opens_unbound_doc` 的模式补插件级 E2E(从**仓库路径**加载 → 缺文件即明确失败,不静默跳过) |
 | 难度 / 风险 | **低 / 低**(纯包装,行为可逐字对照;删除有范围断言) |
 
-### 12.2 `:plugin` 管理器(最大,但**自包含**)
+### 12.2 `:plugin` 管理器(**勘路完成**:需要 1 个新接口 + 1 个 Rust 钩子)
+
+**先纠正一个印象**:它不只是文件操作。`plugin_manager.rs`(639 行)实测含
+**manifest 读写** · **安装复制**(`install_target`/`install_copy`/`walkdir`)· **删除**
+(`remove_files`/`remove_orphan`)· **完整 git 集成**(`is_git_url`/`clone_to_vendor`/
+`git_head_commit`/`git_fetch`/`git_pull_ff`/`git_origin_head`)—— 即"**从 Git URL 装插件并更新**"。
+
+它的核心依赖很薄:`helix_loader::config_dir`(3 处)+ `std::fs::{write, remove_file, remove_dir_all}`。
+
+#### 逐项判据(JS 现有能力 vs 缺什么)
+
+| 子命令 / 内部件 | JS 侧现状 | 结论 |
+|---|---|---|
+| `list` / `status` | `read_dir` + `read_file` ✅ | **可直接搬**(只读) |
+| `install <local path>` | `read_file` + `write_file` ✅(目录树用 `read_dir` 递归) | **可直接搬** |
+| `install <git url>` / 更新 | **`helix.run`/`spawn` 可执行 `git`** ✅ | **可直接搬**(用 `git clone/fetch/pull` 命令,不必新 API) |
+| manifest 读写 | `read_file`/`write_file` ✅ | 可直接搬 |
+| **`remove <name>`** | ❌ **JS 没有删除文件的 API**(现有:read/write/read_dir/stat/glob) | **缺 1 个接口**:`helix.remove_file`/`remove_dir_all`(危险操作 → 需限定在插件目录内,防越界删除) |
+| **`reload`** | ❌ 需触发整树重载(Rust 侧) | **缺 1 个钩子**;建议**保留 Rust 版 `:plugin-reload` 作兜底**(自举:管理器本身是插件,它挂了还得能救) |
+
+#### 建议的分步路径(每步都能独立验收)
+
+1. **`list`/`status`** —— 只读,零新接口 → 先搬,验证"插件能列出插件"
+2. **`install`(本地 + git)** —— 用现有 `read/write/read_dir` + `run("git", …)` ✓
+3. **加删除接口**(限定插件目录内)**→ 搬 `remove`**
+4. **`reload` 留在 Rust**(兜底)—— 或另加一个薄钩子后再搬
+
+> **自举风险的处理原则**:任何"管理器自己挂了就救不回来"的路径,都留一个 Rust 兜底。
+
+
 
 | 项 | 事实 |
 |---|---|
