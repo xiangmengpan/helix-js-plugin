@@ -371,6 +371,29 @@ type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
 
 **⇒ 移植前置最终清单**:参数通道 ✓ · 限域删除 ✓ · `reload` 复用 ✓ · **目录访问器 ⬜** · E2E 测试计划 ✓
 
+#### 🚧 最后一次删除的**真实爆炸半径**(实测,2026-10-06)
+
+`grep plugin_manager` 的结果把删除面完整画出来了:
+
+| 牵连 | 位置 | 处理 |
+|---|---|---|
+| `mod plugin_manager;` | `helix-term/src/commands.rs:3` | 删 |
+| `plugin_manager.rs`(639 行) | 同名文件 | 删 |
+| **`fn plugin` 只有 **9 行** | `typed.rs:5578` | ⚠️ 说明真代码在它调用的**辅助函数**里(5604–5781 那段引用 `plugin_manager::`)→ **必须一并删** |
+| `TypableCommand` 条目(8 行) | `typed.rs:4335` | 删 |
+| **集成测试** | `helix-term/tests/test/plugin_manager.rs` | ⚠️⚠️ **真阻塞** |
+
+**为什么测试是真阻塞**:`test/plugin_manager.rs` 里有 `:plugin list` / `:plugin install plain-name`
+等用例,断言的是 **Rust 侧**行为(例如"list 应显示**已加载**插件的路径");
+`integration.rs:39` 还注册了 `mod plugin_manager;`。**现在删,这些测试立刻变红** ✗。
+
+⇒ 于是它与前面记下的**第 1 个缺口串起来了**:那些测试要的正是"**已加载**插件"这个语义,
+而 JS 侧**给不出**(只有 manifest 的"已安装")→ 要全保真,**必须先有 `helix.loaded_plugins()`** ✓
+
+**所以"最后一刀"的真实前置是两件**:① `helix.loaded_plugins()`(补 `list` 保真)
+② **同步改造 `test/plugin_manager.rs`**(改用 JS 提供的 `:plugin`,或按新语义重写断言)
+③ 然后才是改名 + 一次性删除 + E2E(含"断言 `:plugin-reload` 仍在")
+
 #### 落地顺序(每步都可验,但**第 2 步必须一次做完**)
 
 1. **先写 JS 插件的骨架 + `list`/`status`/`reload`**(此时**不要注册 `plugin` 命令名**,先用临时名如 `plugin-js` 验证行为)✓
