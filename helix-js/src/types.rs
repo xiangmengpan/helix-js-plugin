@@ -513,6 +513,15 @@ pub struct StatuslineCtx {
 
     /// 是否有代码动作提示(核心 `render_code_action_hint`:`focused && doc.code_action_hints(view)`)
     pub code_action_hint: bool,
+
+    /// 工作区(全部文档)诊断计数(核心 `render_workspace_diagnostics` 按 severity 折叠)
+    pub workspace_diagnostics_error: usize,
+    pub workspace_diagnostics_warning: usize,
+    pub workspace_diagnostics_info: usize,
+    pub workspace_diagnostics_hint: usize,
+
+    /// LSP 进度帧(spinner);无进行中任务时为 None(核心 `render_lsp_spinner`)
+    pub spinner: Option<String>,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。

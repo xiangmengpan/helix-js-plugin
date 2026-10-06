@@ -138,6 +138,39 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             .to_string_lossy()
             .to_string(),
         code_action_hint: context.focused && context.doc.code_action_hints(context.view.id),
+        workspace_diagnostics_error: context
+            .editor
+            .diagnostics
+            .values()
+            .flatten()
+            .filter(|(d, _)| d.severity == Some(DiagnosticSeverity::ERROR))
+            .count(),
+        workspace_diagnostics_warning: context
+            .editor
+            .diagnostics
+            .values()
+            .flatten()
+            .filter(|(d, _)| d.severity == Some(DiagnosticSeverity::WARNING))
+            .count(),
+        workspace_diagnostics_info: context
+            .editor
+            .diagnostics
+            .values()
+            .flatten()
+            .filter(|(d, _)| d.severity == Some(DiagnosticSeverity::INFORMATION))
+            .count(),
+        workspace_diagnostics_hint: context
+            .editor
+            .diagnostics
+            .values()
+            .flatten()
+            .filter(|(d, _)| d.severity == Some(DiagnosticSeverity::HINT))
+            .count(),
+        spinner: context
+            .doc
+            .language_servers()
+            .find_map(|srv| context.spinners.get(srv.id()).and_then(|s| s.frame()))
+            .map(|s| s.to_string()),
     };
     let js_parts = helix_js::statusline_parts(&js_ctx);
     let js_replace = helix_js::statusline_replaces();

@@ -1782,6 +1782,34 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 Attribute::all(),
             )
             .property(
+                JsString::from("workspace_diagnostics_error"),
+                JsValue::from(ctx.workspace_diagnostics_error as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("workspace_diagnostics_warning"),
+                JsValue::from(ctx.workspace_diagnostics_warning as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("workspace_diagnostics_info"),
+                JsValue::from(ctx.workspace_diagnostics_info as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("workspace_diagnostics_hint"),
+                JsValue::from(ctx.workspace_diagnostics_hint as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("spinner"),
+                match &ctx.spinner {
+                    Some(s) => JsValue::from(JsString::from(s.clone())),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .property(
                 JsString::from("diagnostics_error"),
                 JsValue::from(ctx.diagnostics_error as f64),
                 Attribute::all(),

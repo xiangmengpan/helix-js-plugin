@@ -2212,6 +2212,11 @@ pub(crate) mod tests {
             file_type: Some("rust".into()),
             cwd: "proj".into(),
             code_action_hint: false,
+            workspace_diagnostics_error: 0,
+            workspace_diagnostics_warning: 0,
+            workspace_diagnostics_info: 0,
+            workspace_diagnostics_hint: 0,
+            spinner: None,
         };
         assert_eq!(statusline_parts(&ctx), None);
 
@@ -2846,6 +2851,11 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
             file_type: Some("rust".into()),
             cwd: "proj".into(),
             code_action_hint: false,
+            workspace_diagnostics_error: 0,
+            workspace_diagnostics_warning: 0,
+            workspace_diagnostics_info: 0,
+            workspace_diagnostics_hint: 0,
+            spinner: None,
         };
         // reload 前 render 正常
         let before = statusline_parts(&ctx);

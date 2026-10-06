@@ -102,7 +102,15 @@ function render(ctx) {
   const cwdMark = ctx.cwd ? " " + ctx.cwd : "";
   // 代码动作提示:沿用核心的符号 `⋮`(`⋮` = U+22EE),仅在 focused 且有提示时出现
   const caMark = ctx.code_action_hint ? " ⋮" : "";
-  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark + leMark + regMark + charMark + indMark + ftMark + cwdMark + caMark;
+  // 工作区诊断:核心把它折叠成 4 个计数;这里**只列非零项**,字母 E/W/I/H。
+  // (核心的具体排版我没读全 → 这是 JS 侧自己的排版选择,计数语义与核心一致)
+  const ws = [["E", ctx.workspace_diagnostics_error], ["W", ctx.workspace_diagnostics_warning],
+              ["I", ctx.workspace_diagnostics_info], ["H", ctx.workspace_diagnostics_hint]]
+    .filter(([, n]) => n > 0).map(([k, n]) => k + n).join(" ");
+  const wsMark = ws ? " " + ws : "";
+  // LSP 进度帧:核心在无进度时也占位;JS 里仅在有时显示(布局取舍,已注明)
+  const spinMark = ctx.spinner ? " " + ctx.spinner : "";
+  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark + leMark + regMark + charMark + indMark + ftMark + cwdMark + caMark + wsMark + spinMark;
   parts.push({ text: row + ":" + col, style: null, zone: "right" });
   parts.push({ text: pct, style: "ui.virtual", zone: "right" });
   parts.push({ text: String(total), style: "ui.virtual", zone: "right" });
