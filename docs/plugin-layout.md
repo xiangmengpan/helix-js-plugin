@@ -376,8 +376,29 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 | JS 现状 | `statusline/plugin.js` 已替换它,但只覆盖 **~8 个元素**:mode · path · cursor · total_lines · 诊断(error/warning)· window_mode · active_leaf_path/type |
 | 搬迁 = | ① JS 侧补齐其余(selections · encoding · line-ending · file-type · spinner · position-% · read-only · modified · base-name …)② 核心**只留最小回退**(~100 行:mode + 文件名 + 位置) |
 | **为何要留回退** | 刻意取舍:**插件一挂就没有状态栏** vs 少 733 行。规则见 §10 |
-| 难度 / 风险 | 中(纯 JS 增量,但**要逐项对照核心的条件与样式**,细节容易漂移) |
+| 难度 / 风险 | 中(**但见下面的更正**:不是"纯 JS 增量") |
 | 验证 | 本套件有 `render_rows` 辅助 → 每补一个元素做渲染断言 |
+
+#### ⚠️ 勘路更正:"纯 JS 增量"这个说法**不成立**
+
+实测 `StatuslineCtx`(`helix-js/src/types.rs:477`,注释写明"轻量上下文,不含 `doc.text`,避免每帧克隆全文")
+**只有 9 个字段**:`path` · `mode` · `cursor` · `total_lines` · `diagnostics_error` ·
+`diagnostics_warning` · `window_mode` · `active_leaf_type` · `active_leaf_path`。
+
+而 JS 状态栏**已经把这 9 个全部用上**了 → 要补**任何**新元素(encoding · line-ending · modified ·
+read-only · selections · file-type · spinner …),**核心必须先多暴露字段** ⇒ **有前置**,不是纯 JS 增量。
+
+另一个纠正:**"位置百分比"JS 侧已经有了**(`plugin.js:80` 的 `Math.round((row/total)*100)+"%"`),
+所以原计划里"补百分比"是**多余的**;`~8/25` 的覆盖数应理解为"9 个 ctx 字段,而非 25 个核心元素"。
+
+#### ❓ 尚未定位(下一步勘路的第一步)
+
+`StatuslineCtx` 的**字面构造点只有 2 处,且都在 helix-js 的测试里**(`lib.rs:2193` / `2815`);
+`helix-term` 里**一处都没有** → 说明**生产路径是用别的方式构造它的**(某个 builder / 逐字段传入
+/ 或状态栏钩子的另一条路径),**这一点本轮没查清**。
+
+**先定位它**,才能判断"扩 ctx 要改几处" —— 这决定状态栏搬迁是"改 1 处"还是"改 N 处"
+(参照 §12.0 的教训:改 N 处才是风险所在)。
 
 ### 建议顺序
 
