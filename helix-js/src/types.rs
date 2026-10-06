@@ -208,11 +208,6 @@ pub enum UiRequest {
         columns: Vec<String>,
         rows: Vec<RowSpec>,
     },
-    /// 插件管理操作(JS API helix.plugin.install/update/remove 镜像命令)
-    PluginOp {
-        op: String,
-        arg: Option<String>,
-    },
     /// server 管理操作(JS API helix.server.* 镜像 :server;UI 面板用)
     ServerOp {
         op: String,

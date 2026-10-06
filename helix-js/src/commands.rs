@@ -345,75 +345,10 @@ pub(crate) fn js_plugin(
 }
 
 /// helix.plugin.install(arg)：镜像 :plugin install(path 或 git-url)。结果经状态栏显示。
-pub(crate) fn js_plugin_install(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> boa_engine::JsResult<JsValue> {
-    let arg: String = args
-        .first()
-        .unwrap_or(&JsValue::undefined())
-        .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.plugin.install: arg (path or git url) required",
-            )))
-        })?;
-    push_plugin_op("install", Some(arg));
-    Ok(JsValue::undefined())
-}
 
 /// helix.plugin.update([name])：镜像 :plugin update(name 可选 = all)
-pub(crate) fn js_plugin_update(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> boa_engine::JsResult<JsValue> {
-    let arg: Option<String> = args
-        .first()
-        .filter(|v| !v.is_null_or_undefined())
-        .map(|v| {
-            v.try_js_into(context).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "helix.plugin.update: arg must be a string",
-                )))
-            })
-        })
-        .transpose()?;
-    push_plugin_op("update", arg);
-    Ok(JsValue::undefined())
-}
 
 /// helix.plugin.remove(name)：镜像 :plugin remove
-pub(crate) fn js_plugin_remove(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> boa_engine::JsResult<JsValue> {
-    let arg: String = args
-        .first()
-        .unwrap_or(&JsValue::undefined())
-        .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.plugin.remove: name required",
-            )))
-        })?;
-    push_plugin_op("remove", Some(arg));
-    Ok(JsValue::undefined())
-}
-
-fn push_plugin_op(op: &str, arg: Option<String>) {
-    UI_REQUESTS
-        .get()
-        .unwrap()
-        .lock()
-        .unwrap()
-        .push(UiRequest::PluginOp {
-            op: op.to_string(),
-            arg,
-        });
-}
 
 /// helix.server.<op>：镜像 :server(list/search/install/update/remove/status)。
 /// 单向请求(与 PluginOp 同构)：结果经 editor 状态栏/错误显示,不回传 JS。

@@ -141,35 +141,7 @@ pub fn init() {
             .length(2)
             .build(); // JsFunction(可调用)
                       // 函数对象上加管理方法属性(Deref → JsObject::set;属性值为 JsFunction)
-            for (name, f) in [
-                (
-                    "install",
-                    commands::js_plugin_install
-                        as boa_engine::native_function::NativeFunctionPointer,
-                ),
-                (
-                    "update",
-                    commands::js_plugin_update
-                        as boa_engine::native_function::NativeFunctionPointer,
-                ),
-                (
-                    "remove",
-                    commands::js_plugin_remove
-                        as boa_engine::native_function::NativeFunctionPointer,
-                ),
-            ] {
-                let f = FunctionObjectBuilder::new(
-                    engine.realm(),
-                    boa_engine::NativeFunction::from_fn_ptr(f),
-                )
-                .name(name)
-                .length(1)
-                .build();
-                plugin_fn
-                    .set(JsString::from(name), f, false, engine)
-                    .expect("set plugin method");
-            }
-            // helix.server 命名空间:list/search/install/update/remove/status(镜像 :server)
+                      // helix.server 命名空间:list/search/install/update/remove/status(镜像 :server)
             let server_obj = ObjectInitializer::new(engine)
                 .function(
                     NativeFunction::from_fn_ptr(commands::js_server_list),
@@ -3872,27 +3844,6 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     }
 
     #[test]
-    fn plugin_api_arg_validation() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        init();
-        // install/remove 缺 arg → 报错
-        assert!(load_script(r#"helix.plugin.install();"#).is_err());
-        assert!(load_script(r#"helix.plugin.remove();"#).is_err());
-        // 合法调用 → push PluginOp 请求
-        crate::state::take_ui_requests(); // 清空
-        load_script(r#"helix.plugin.remove("nope");"#).unwrap();
-        load_script(r#"helix.plugin.update();"#).unwrap(); // arg 可选
-        let reqs = crate::state::take_ui_requests();
-        assert!(reqs.iter().any(|r| matches!(
-            r,
-            crate::types::UiRequest::PluginOp { op, arg }
-                if op == "remove" && arg.as_deref() == Some("nope")
-        )));
-        assert!(reqs
-            .iter()
-            .any(|r| matches!(r, crate::types::UiRequest::PluginOp { op, arg } if op == "update" && arg.is_none())));
-    }
-
     #[test]
     fn server_api_pushes_server_ops() {
         let _guard = TEST_LOCK.lock().unwrap();

@@ -108,7 +108,7 @@ function runOp(sub, arg) {
     case "remove": {
       const name = args[1];
       if (!name) {
-        helix.echo("usage: plugin-js remove <name>");
+        helix.echo("usage: plugin remove <name>");
         break;
       }
       const m = (readManifest()) || {};
@@ -144,7 +144,7 @@ function runOp(sub, arg) {
     case "install": {
       const arg = args[1];
       if (!arg) {
-        helix.echo("usage: plugin-js install <path|git-url>");
+        helix.echo("usage: plugin install <path|git-url>");
         break;
       }
       const m = (readManifest()) || {};
@@ -206,7 +206,7 @@ function runOp(sub, arg) {
       // 语义照抄 Rust:必须已安装 · **仅 git 插件** · `entry.pinned = (sub == "pin")` · 写 manifest
       const name = args[1];
       if (!name) {
-        helix.echo("usage: plugin-js " + sub + " <name>");
+        helix.echo("usage: plugin " + sub + " <name>");
         break;
       }
       const m = (readManifest()) || {};
@@ -277,7 +277,7 @@ function runOp(sub, arg) {
 
 // ── 命令壳:从键入参数取 sub/arg,交给共享实现 ──
 // (命令名仍为临时名 `plugin-js`;正式改名与删 Rust 是**一次原子改动**,见 §12.2/§15)
-helix.register_command("plugin-js", () => {
+helix.register_command("plugin", () => {
   const a = helix.command_args();
   runOp(a[0] || "status", a[1]);
 });

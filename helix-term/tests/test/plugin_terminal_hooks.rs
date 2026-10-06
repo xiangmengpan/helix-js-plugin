@@ -657,7 +657,7 @@ async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().build()?;
     pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
 
-    pump(&mut app, ":plugin-js list<ret>").await?;
+    pump(&mut app, ":plugin list<ret>").await?;
     let (list_status, _) = app.editor.get_status().unwrap();
     assert!(
         list_status.as_ref().contains("plugin"),
@@ -669,7 +669,7 @@ async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
         "§15 判据:list 应含 JS 独有的 `installed(`(证明应答者是 JS 而非回落到 Rust),实得 {list_status}"
     );
 
-    pump(&mut app, ":plugin-js status<ret>").await?;
+    pump(&mut app, ":plugin status<ret>").await?;
     let (status, _) = app.editor.get_status().unwrap();
     assert!(
         status.as_ref().contains("loaded"),
