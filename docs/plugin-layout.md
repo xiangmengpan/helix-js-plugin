@@ -371,6 +371,24 @@ type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
 
 **⇒ 移植前置最终清单**:参数通道 ✓ · 限域删除 ✓ · `reload` 复用 ✓ · **目录访问器 ⬜** · E2E 测试计划 ✓
 
+#### ⛔ 先纠正一处**我自己写错的数**:子命令是 **8 个**,不是 5 个
+
+我依据的是 Rust 的 **usage 文案**(`usage: plugin <list|install|remove|reload|status>`)——
+但**实现比文档多**。读 `plugin_op` 的 match 才看到全部 8 个:
+
+| 子命令 | 语义(读自源码) | JS 侧现状 |
+|---|---|---|
+| `list` · `install` · `remove` · `reload` · `status` | 见上一节 | ✅ 已覆盖 |
+| **`update`** | `update_entries` + `refresh_commits` + 写 manifest(**git 源更新**) | ✗ **未覆盖** |
+| **`pin`** / **`unpin`** | `entry.pinned = (sub == "pin")`;**仅 git 插件**(否则报 `only git plugins can be pinned`);文案 `"{sub}ned '{name}'"` | ✗ **未覆盖** |
+
+⇒ **若现在做一次性切换,会静默丢掉 `update`/`pin`/`unpin` 三个子命令** ✗✗
+(这正是"一次性切换"最危险的地方:丢掉的功能**不会报错**,只会消失。)
+
+**所以第 2 步的真实覆盖面是 8/8,当前是 5/8。** 读测试与 dispatcher 各救了一次:
+- 读**测试** → 发现 `pin`/`unpin` 存在
+- 读 **dispatcher** → 发现 `update` 存在,且 usage 文案**不完整**(实现 > 文档)
+
 #### 🚧 最后一次删除的**真实爆炸半径**(实测,2026-10-06)
 
 `grep plugin_manager` 的结果把删除面完整画出来了:
