@@ -494,6 +494,10 @@ pub struct StatuslineCtx {
     pub selections: usize,
     /// 主选区序号(从 0 起;核心渲染成 `{primary+1}/{count} sels`)
     pub selections_primary: usize,
+    /// 是否只读(核心用**字段** `doc.readonly`)
+    pub read_only: bool,
+    /// 当前编码名(如 `utf-8`;UTF-8 时 JS 侧不显示,对齐核心 `enc != UTF_8`)
+    pub encoding: String,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。

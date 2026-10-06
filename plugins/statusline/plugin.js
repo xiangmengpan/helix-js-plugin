@@ -83,7 +83,10 @@ function render(ctx) {
   const modMark = ctx.modified ? " [+]" : "";
   // 选区数:语义**对齐核心** `render_selections`(1 个时不显示;多个显示 `主序/总数 sels`)
   const selMark = ctx.selections > 1 ? " " + (ctx.selections_primary + 1) + "/" + ctx.selections + " sels" : "";
-  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark;
+  // 只读 / 编码:语义对齐核心(`" [readonly] "` · 非 UTF-8 时才显示编码名)
+  const roMark = ctx.read_only ? " [readonly]" : "";
+  const encMark = ctx.encoding && ctx.encoding !== "utf-8" ? " " + ctx.encoding : "";
+  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark;
   parts.push({ text: row + ":" + col, style: null, zone: "right" });
   parts.push({ text: pct, style: "ui.virtual", zone: "right" });
   parts.push({ text: String(total), style: "ui.virtual", zone: "right" });

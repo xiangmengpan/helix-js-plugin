@@ -2203,6 +2203,8 @@ pub(crate) mod tests {
             modified: false,
             selections: 1,
             selections_primary: 0,
+            read_only: false,
+            encoding: "utf-8".into(),
         };
         assert_eq!(statusline_parts(&ctx), None);
 
@@ -2828,6 +2830,8 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
             modified: false,
             selections: 1,
             selections_primary: 0,
+            read_only: false,
+            encoding: "utf-8".into(),
         };
         // reload 前 render 正常
         let before = statusline_parts(&ctx);
