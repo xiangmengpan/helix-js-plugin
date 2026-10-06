@@ -19,6 +19,9 @@
 //   3. ~~`install` 被挡住~~ → **已解锁**:新增限域接口 `helix.write_plugin_file(rel, text)`
 //      (父目录按需创建;只相对路径、拒 `..`)后,本地文件/目录安装可在 JS 侧完成;
 //      git 源走 `helix.run("git clone …")`。
+//   5. **缺同步写 API**:`helix-js` 只有 `write_file_async` ✗ ⇒ **写路径**(install/remove/pin/update)
+//      仍须 `await`。**读路径已全程同步**(`helix.read_file`,本轮新增)⇒ 只读流程(`list`/`status`)
+//      不再产生续体,**构造性地**避开 §14 的引擎重入 ✓。要彻底解决,需再加同步 `write_file`。
 //   4. **布局不一致(实测)**:Rust `install_target` 装进 `plugins/**features**/<name>`(旧路径),
 //      而当前仓库布局是 `plugins/<name>/`。搬迁时应统一到现有布局,别把旧路径带过去。
 helix.plugin("plugin-manager", { deps: [], version: "0.1" });
@@ -35,12 +38,16 @@ function manifestPath() {
 }
 
 /// 读 manifest:缺文件/坏 JSON → **空表**(与 Rust 侧 `read_manifest` 的"不崩"语义一致)
-async function readManifest() {
+/// **同步**读 manifest —— 用 `helix.read_file`(同步,与 `read_dir` 对称)。
+/// 为什么强调同步:命令处理函数里跑异步会撞**引擎重入**(`with_engine_slot` 的 `borrow_mut`,
+/// 见 docs/plugin-layout.md §14)。**读路径全程同步 ⇒ 不产生续体 ⇒ 构造性地避开那一类** ✓
+/// (写路径仍需 `await write_file_async` —— 因为**没有同步写 API** ✗,见文件头缺口 5)
+function readManifest() {
   const p = manifestPath();
   if (!p) return null;
   let raw;
   try {
-    raw = await helix.read_file_async(p);
+    raw = helix.read_file(p);
   } catch (e) {
     return {}; // 缺文件
   }
@@ -68,7 +75,7 @@ helix.register_command("plugin-js", async () => {
       const loaded = (helix.loaded_plugins() || []).slice().sort();
       helix.echo(loaded.length === 0 ? "no plugins loaded" : "plugins: " + loaded.join(", "));
       // 附加一行:manifest 里**已安装**的(便于对照"装了但没加载")
-      const m = (await readManifest()) || {};
+      const m = readManifest() || {};
       const installed = Object.keys(m).sort();
       if (installed.length) {
         helix.echo("installed(" + installed.length + "): " + installed.join(", "));
@@ -79,7 +86,7 @@ helix.register_command("plugin-js", async () => {
       // **逐字对齐 Rust**:`"{N} plugins loaded from {dir}, {M} installed ({G} git, {P} pinned)"`
       // (集成测试断言状态里含 "loaded" 与 "installed" —— 文案漂移会让测试红)
       const loaded = (helix.loaded_plugins() || []).length;
-      const m = (await readManifest()) || {};
+      const m = readManifest() || {};
       const entries = Object.values(m);
       const git = entries.filter((e) => e && e.kind === "git").length;
       const pinned = entries.filter((e) => e && e.pinned).length;
