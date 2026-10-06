@@ -391,14 +391,27 @@ read-only · selections · file-type · spinner …),**核心必须先多暴露�
 另一个纠正:**"位置百分比"JS 侧已经有了**(`plugin.js:80` 的 `Math.round((row/total)*100)+"%"`),
 所以原计划里"补百分比"是**多余的**;`~8/25` 的覆盖数应理解为"9 个 ctx 字段,而非 25 个核心元素"。
 
-#### ❓ 尚未定位(下一步勘路的第一步)
+#### ✅ 已定位:扩 ctx 只需**改 1 处** → 前置很便宜
 
-`StatuslineCtx` 的**字面构造点只有 2 处,且都在 helix-js 的测试里**(`lib.rs:2193` / `2815`);
-`helix-term` 里**一处都没有** → 说明**生产路径是用别的方式构造它的**(某个 builder / 逐字段传入
-/ 或状态栏钩子的另一条路径),**这一点本轮没查清**。
+生产构造点在 **`helix-term/src/ui/statusline.rs:79`**:
 
-**先定位它**,才能判断"扩 ctx 要改几处" —— 这决定状态栏搬迁是"改 1 处"还是"改 N 处"
-(参照 §12.0 的教训:改 N 处才是风险所在)。
+```rust
+let js_ctx = helix_js::StatuslineCtx { … };          // ← 唯一的生产构造点
+…
+let js_parts = helix_js::statusline_parts(&js_ctx);  // 同文件 :117 调用钩子
+```
+
+全仓 `StatuslineCtx` 的使用点只有 4 处:结构体定义(`types.rs:478`)· 钩子入口
+(`popup.rs:1677`)· **唯一生产构造点(`statusline.rs:79`)** · 2 处单测构造。
+
+⇒ **扩字段 = 改 1 处** ✓ 与 §12.0 的 `CommandContext`(**~57 处**构造点)形成鲜明对比 ——
+**状态栏的前置因此是三项里最便宜的**:按元素逐个"在 ctx 加一个字段 + 在 `statusline.rs:79` 填上 +
+在 JS 里渲染",每步都能独立验证。
+
+> **勘路方法上的一条教训**:前一轮我用 `grep -r "StatuslineCtx {" helix-term/src --include=*.rs`
+> **没命中**,于是推断"生产路径是别的方式"—— **错了**:不带 `--include` 的同义搜索就命中了
+> (`helix-term/src/ui/statusline.rs:79`)。**"搜不到"不等于"不存在"**,换一种搜索方式再确认,
+> 比基于漏检去推断架构要省得多。
 
 ### 建议顺序
 
