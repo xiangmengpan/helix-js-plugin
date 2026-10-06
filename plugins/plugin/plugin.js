@@ -11,8 +11,9 @@
 //   `reload` —— **委派**给 Rust 的 `:plugin-reload`(独立命令,零新增)
 //
 // ## 已勘明的缺口(如实标注,不假装完整)
-//   1. Rust 的 `list` 列的是"**已加载**"的插件名,而 JS 侧**没有**枚举已加载插件的接口 ✗
-//      → 这里先给"**已安装**"(manifest 的事实),**不假称**等于"已加载"。全保真需 `helix.loaded_plugins()`。
+//   1. ~~list 语义只能给"已安装"~~ → **缺口已关闭**:新增 `helix.loaded_plugins()` 后,
+//      数据源与 Rust `:plugin list` **完全相同**(都是 `loaded_scripts()`),所以 `list` 语义天然一致;
+//      "已安装"(manifest)作为**附加**一行给出,不混淆两者。
 //   2. ~~`install` 被挡住~~ → **已解锁**:新增限域接口 `helix.write_plugin_file(rel, text)`
 //      (父目录按需创建;只相对路径、拒 `..`)后,本地文件/目录安装可在 JS 侧完成;
 //      git 源走 `helix.run("git clone …")`。
@@ -60,13 +61,16 @@ helix.register_command("plugin-js", async () => {
   }
   switch (sub) {
     case "list": {
-      const m = await readManifest();
-      const names = Object.keys(m || {}).sort();
-      helix.echo(
-        names.length === 0
-          ? "no plugins installed (manifest empty)"
-          : "installed(" + names.length + "): " + names.join(", ")
-      );
+      // 第一行与 Rust `:plugin list` **语义一致**:已**加载**的插件
+      // (数据源同为 `loaded_scripts()`,所以不会漂移)
+      const loaded = (helix.loaded_plugins() || []).slice().sort();
+      helix.echo(loaded.length === 0 ? "no plugins loaded" : "plugins: " + loaded.join(", "));
+      // 附加一行:manifest 里**已安装**的(便于对照"装了但没加载")
+      const m = (await readManifest()) || {};
+      const installed = Object.keys(m).sort();
+      if (installed.length) {
+        helix.echo("installed(" + installed.length + "): " + installed.join(", "));
+      }
       break;
     }
     case "status": {

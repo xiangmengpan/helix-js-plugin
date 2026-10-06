@@ -157,6 +157,21 @@ pub(crate) fn js_command_args(
     Ok(arr.into())
 }
 
+/// `helix.loaded_plugins()` → **已加载**插件名数组(与 Rust `:plugin list` 同一个数据源
+/// `loaded_scripts()`,所以语义天然一致)。
+/// 用途:让 JS 侧的插件管理器能给出与核心相同的 `list` 语义(此前只能给"已安装")。
+pub(crate) fn js_loaded_plugins(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<JsValue> {
+    let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
+    for (i, name) in loaded_scripts().iter().enumerate() {
+        let _ = arr.set(i, JsValue::from(JsString::from(name.as_str())), false, ctx);
+    }
+    Ok(arr.into())
+}
+
 /// `helix.runtime_path(name)` → 自带 runtime 里的绝对路径(找不到 → null)。
 /// 用途:让**内置内容型插件**能打开随软件分发的内容(如 `:tutor` 打开 `runtime/tutor`)。
 pub(crate) fn js_runtime_path(
