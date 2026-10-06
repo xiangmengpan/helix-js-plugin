@@ -219,3 +219,54 @@ DRY_RUN=1 sh contrib/install-plugins.sh       # 只打印将要做什么
 >
 > 也就是说:**"把功能从核心拆出去"这件事,主体已经做完了**;剩下的不是搬迁,
 > 而是**维持那条缝的健康**(本文件的约定、两层覆盖、错误隔离、分发,都是为此)。
+
+## 11. 下一个该拆的:`:tutor`(第一个"真搬迁",含两个前置薄接口)
+
+### 为什么是它
+
+| 事实(已核实) | 含义 |
+|---|---|
+| Rust 侧只有 **11 行**(`typed.rs:2378` 的 `fn tutor` = `open(runtime_file("tutor"))`) | 核心几乎没逻辑 |
+| 内容 **50842 字节**在 `runtime/tutor` | **内容早已是数据**,不在代码里 |
+| Neovim 的 `tutor.vim` **正是内置插件** | 有先例,模式一致 |
+| **`:tutor` 没有任何测试**(`helix-term/tests/` 里 grep 不到) | 搬迁不会破坏现有测试;**但意味着这条路径当前无覆盖**,搬迁时应补一条 |
+
+### 前置①:`helix.runtime_path(name)`
+
+**实测约束**:`helix-js` **不依赖 `helix-loader`**(Cargo.toml 里没有),所以 JS 侧**拿不到** runtime 目录
+—— 必须由 helix-term **启动时推入**,与既有两处同一模式:
+
+- `application.rs:170` `set_plugin_roots(plugin_roots_for(runtime_dirs(), config_dir()))`
+- `application.rs:176` `set_layouts_dir(config_dir()/layouts)`
+
+照此加 `set_runtime_dirs(runtime_dirs())`,并在 `state.rs` 写**纯函数解析器**
+(从一个有序目录列表里取第一个存在的 `<dir>/<name>`)——**纯函数才便于单测**,同 `resolve_in` / `plugin_roots_for`。
+
+### 前置②:"打开但**不绑定路径**"
+
+Rust 版的 `:tutor` 有一句安全措施:
+
+```rust
+doc_mut!(cx.editor).set_path(None);   // 防止误保存覆盖原始 tutor 文件
+```
+
+而 JS 的 `helix.open_file(path)` 会**绑定路径** → 用户 `:w` 会**写进 runtime 目录**。
+**少了这层,搬迁就是安全回退**。所以要二选一:
+
+- `helix.open_file(path, { scratch: true })` —— 语义清晰,推荐
+- 或单独暴露 `helix.doc.set_path(id, null)` 之类的薄原语
+
+### 搬迁步骤(按此顺序,每步可验证)
+
+1. 加**前置①**(启动推入 + 纯函数解析器 + 单测)
+2. 加**前置②**(`open_file` 的 `scratch` 选项 + 单测)
+3. 写 `plugins/tutor/plugin.js`:注册 `tutor` 命令 → `helix.open_file(helix.runtime_path("tutor"), { scratch: true })`
+4. 删 Rust 的 `fn tutor` + 它的 `TypableCommand` 条目(`typed.rs:3997`)
+5. `init.js`(仓库 + 用户)加 `safe_load("tutor")`;**两层镜像都同步**(用户层 + 内置层,后者用 `contrib/install-plugins.sh`)
+6. **补一条插件级测试**(当前 `:tutor` 无覆盖)—— 断言命令存在 + 打开后 doc 的 `path` 为 None(即"未绑定",这正是前置②的意义)
+
+### 为什么不现在做
+
+它要**新增两个薄能力**(都属"扩接口"类),而这类改动必须端到端验证(参照 `[[…asset]]` 那次:
+新增可选字段后,三个消费点逐个过 + 端到端安装测试)。预算不足时开它,风险是留下"命令删了但插件没接上"
+—— 用户会发现 `:tutor` 直接消失。
