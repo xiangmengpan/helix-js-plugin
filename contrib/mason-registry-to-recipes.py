@@ -99,6 +99,15 @@ bin = "ruff-x86_64-unknown-linux-musl/ruff"
 ③ 同时扩 `rust_triple()` 表(musl 等变体);④ 保留现有单模板写法作为简写(向后兼容)。
 **做完这一步,本脚本才能真正批量转换** —— 在那之前它只做"能转的转、不能转的如实标记"。
 
+## ⚠️ 批量跑之前先读这个(实测教训)
+
+- **不要在重定向到文件时靠 stdout 看进度**:Python 对文件是块缓冲,卡住时**零线索**。
+  现在进度打到 **stderr 并 flush**,且单个包失败**跳过而非中断整批**。
+- **API 限额**:未认证 60 次/小时,而**每个包要 2 次**调用 → 一小时约 30 个包;
+  600+ 包需要 **20+ 小时**(或带 token)。
+- 上次实测一次 `--fetch` 挂了 31 分钟且**一次调用都没发出去**;`urlopen(timeout=)` 
+  只覆盖已建立的连接,**DNS/建连阶段可能不受它约束**。
+
 ## 用法
 
     python3 contrib/mason-registry-to-recipes.py ruff lua-language-server --fetch   # 走 API 抓
@@ -147,11 +156,23 @@ RUST_TRIPLES = {
 
 
 def api_json(url: str):
+    """**带可见进度**的取数。
+
+    实测教训:一次 `--fetch` 批量转换**卡了 31 分钟、日志 0 字节、且一次 API 调用都没发出去**
+    (配额 59/60 未消耗)。两个原因值得记住:
+      1. stdout 重定向到文件时**是块缓冲的** —— 卡住时你连"卡在哪一步"都看不到;
+      2. `urlopen` 的 timeout 只覆盖已建立的连接,**DNS/建连阶段可能不生效**。
+    所以:进度打到 **stderr 且 flush**,并给整个调用套一个**硬超时**。
+    """
+    print(f"  → GET {url}", file=sys.stderr, flush=True)
     req = urllib.request.Request(
         url, headers={"User-Agent": "helix-mason-convert", "Accept": "application/vnd.github+json"}
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except Exception as e:
+        raise SystemExit(f"取数失败 {url}: {type(e).__name__}: {e}") from e
 
 
 def fetch_yaml(pkg: str) -> str:
@@ -250,42 +271,31 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
         owner, repo, version = m.group(1), m.group(2), m.group(3)
         base = f"https://github.com/{owner}/{repo}/releases/download/{{version}}"
 
-    # 资产名 → 能否用单一模板表达
-    template = None
-    for a in assets:
-        target, f = a.get("target", ""), a.get("file", "")
-        if not f:
-            continue
-        fname, _, prefix = f.partition(":")
-        if prefix:
-            problems.append(
-                f"{target}: 资产含解压前缀 `{prefix}` —— helix 的 `strip` 是**数字**(剥层数),语义不同,需手工核"
-            )
-        if "{{version}}" in fname or "{version}" in fname:
-            cand = fname.replace("{{version}}", "{version}")
-        else:
-            cand = fname
-        t = MASON_TARGETS.get(target)
-        if t and t in RUST_TRIPLES:
-            trial = cand.replace(RUST_TRIPLES[t], "{triple}")
-            if "{triple}" not in trial:
-                # 资产名没用 Rust triple 命名 —— 试试 os/arch 两种写法
-                os_, arch = t
-                for pat in (f"{os_}-{arch}", f"{os_}_{arch}", f"{arch}-{os_}"):
-                    if pat in cand:
-                        trial = cand.replace(pat, "{triple}")  # 仍走 triple 占位(值由 helix 表给出)
-                        break
-            if "{triple}" in trial:
-                if template is None:
-                    template = trial
-                elif template != trial:
-                    problems.append("不同平台的资产名**无法**用同一个模板表达 → 需要逐平台条目")
-                    template = None
-                    break
-            else:
-                problems.append(f"{target}: 资产名 `{fname}` 里的平台段无法映射到 {{{{triple}}}}/{{{{os}}}}/{{{{arch}}}}")
-        elif target:
-            problems.append(f"{target}: 未知 target(Mason 新增的平台?)")
+    # ── 逐平台资产(现在 schema 支持了,所以**不再需要**"映射成统一模板")──
+    # 关键:文件名**原样照抄**,只把 Mason 的 `{{version}}` 换成 helix 的 `{version}`。
+    # 于是 Go 风格(`linux_amd64`)、clangd 那种不带 arch 的命名、甚至 Rust triple 的 musl 变体
+    # —— 全都不需要映射(这正是逐平台资产表存在的意义)。
+    asset_rows: list[tuple[str, str, str]] = []
+    if not m:
+        problems.append(f"来源不是 github-release({src})—— Archive 走 release 资产 URL")
+    else:
+        for a in assets:
+            target, f = a.get("target", ""), a.get("file", "")
+            if not target or not f:
+                continue
+            fname, _, prefix = f.partition(":")
+            if prefix:
+                problems.append(
+                    f"{target}: 资产含解压前缀 `{prefix}` —— helix 的 `strip` 是**数字**(剥层数),"
+                    "语义不同,需手工核"
+                )
+            if target not in MASON_TARGETS:
+                problems.append(f"{target}: 未知 target(helix 侧认不出该平台,该条会被忽略)")
+            fname = fname.replace("{{version}}", "{version}")
+            bin_ = a.get("bin", "").removeprefix("exec:")
+            asset_rows.append((target, f"{base}/{fname}", bin_))
+        if not asset_rows:
+            problems.append("没有任何可用的 asset 条目")
 
     lines = [f"[server-manager.registry.{name}]"]
     if kind:
@@ -297,14 +307,20 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     if pkg.get("homepage"):
         lines.append(f'homepage = "{pkg["homepage"]}"')
     if version:
-        lines.append(f'version = "{version}"   # Mason 的 source 里带的版本;留空则需 needs-version')
-    if template and base:
-        lines.append(f'url = "{base}/{template}"')
+        lines.append(f'version = "{version}"')
+    if assets:
+        lines.append('# 逐平台资产(文件名原样;{version} 由运行时展开):')
+        for target, url, bin_ in asset_rows:
+            lines.append("")
+            lines.append(f"[[server-manager.registry.{name}.asset]]")
+            lines.append(f'target = "{target}"')
+            lines.append(f'url = "{url}"')
+            if bin_:
+                lines.append(f'bin = "{bin_}"')
     else:
-        lines.append('# url = "<需手工:资产命名无法用单一模板表达,或来源不是 github-release>"')
-    if problems:
-        for p in problems:
-            lines.append(f"# ⚠️ needs-manual: {p}")
+        lines.append('# 无资产条目(该包可能只有 npm/pypi 源 —— 需手工改为 cmd/args 的 Tool 型)')
+    for pr in problems:
+        lines.append(f"# ⚠️ needs-manual: {pr}")
     return "\n".join(lines) + "\n", problems
 
 
@@ -324,7 +340,13 @@ def main() -> int:
             if y:
                 texts.append((p.name, y[0].read_text()))
     for p in args.packages:
-        texts.append((p, fetch_yaml(p)))
+        try:
+            pkg, text = p, fetch_yaml(p)
+        except SystemExit as e:
+            print(f"# !! 跳过 {p}: {e}", file=sys.stderr, flush=True)
+            continue
+        print(f"# 已取 {pkg}", file=sys.stderr, flush=True)
+        texts.append((pkg, text))
     if not texts:
         ap.error("给出包名(--fetch)或 --dir")
 
