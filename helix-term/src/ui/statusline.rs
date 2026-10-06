@@ -321,39 +321,43 @@ fn append<'a>(buffer: &mut Spans<'a>, mut span: Span<'a>, base_style: Style) {
     buffer.0.push(span);
 }
 
+/// 已迁移到 JS 插件的元素:核心回退**不再渲染**(文本由 JS 提供,见 docs/plugin-layout.md §12)。
+/// 保留臂是为 match 穷尽性;元素仍可被用户配置引用(仅回退视图里不显示)。
+fn render_none<'a, F>(_context: &mut RenderContext<'a>, _write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+}
+
 fn get_render_function<'a, F>(element_id: StatusLineElementID) -> impl Fn(&mut RenderContext<'a>, F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     match element_id {
         helix_view::editor::StatusLineElement::Mode => render_mode,
-        helix_view::editor::StatusLineElement::Spinner => render_lsp_spinner,
+        helix_view::editor::StatusLineElement::Spinner => render_none,
         helix_view::editor::StatusLineElement::FileBaseName => render_file_base_name,
         helix_view::editor::StatusLineElement::FileName => render_file_name,
         helix_view::editor::StatusLineElement::FileAbsolutePath => render_file_absolute_path,
-        helix_view::editor::StatusLineElement::FileModificationIndicator => {
-            render_file_modification_indicator
-        }
-        helix_view::editor::StatusLineElement::ReadOnlyIndicator => render_read_only_indicator,
-        helix_view::editor::StatusLineElement::FileEncoding => render_file_encoding,
-        helix_view::editor::StatusLineElement::FileLineEnding => render_file_line_ending,
-        helix_view::editor::StatusLineElement::FileIndentStyle => render_file_indent_style,
-        helix_view::editor::StatusLineElement::FileType => render_file_type,
+        helix_view::editor::StatusLineElement::FileModificationIndicator => render_none,
+        helix_view::editor::StatusLineElement::ReadOnlyIndicator => render_none,
+        helix_view::editor::StatusLineElement::FileEncoding => render_none,
+        helix_view::editor::StatusLineElement::FileLineEnding => render_none,
+        helix_view::editor::StatusLineElement::FileIndentStyle => render_none,
+        helix_view::editor::StatusLineElement::FileType => render_none,
         helix_view::editor::StatusLineElement::Diagnostics => render_diagnostics,
-        helix_view::editor::StatusLineElement::WorkspaceDiagnostics => render_workspace_diagnostics,
-        helix_view::editor::StatusLineElement::Selections => render_selections,
-        helix_view::editor::StatusLineElement::PrimarySelectionLength => {
-            render_primary_selection_length
-        }
+        helix_view::editor::StatusLineElement::WorkspaceDiagnostics => render_none,
+        helix_view::editor::StatusLineElement::Selections => render_none,
+        helix_view::editor::StatusLineElement::PrimarySelectionLength => render_none,
         helix_view::editor::StatusLineElement::Position => render_position,
         helix_view::editor::StatusLineElement::PositionPercentage => render_position_percentage,
         helix_view::editor::StatusLineElement::TotalLineNumbers => render_total_line_numbers,
         helix_view::editor::StatusLineElement::Separator => render_separator,
         helix_view::editor::StatusLineElement::Spacer => render_spacer,
         helix_view::editor::StatusLineElement::VersionControl => render_version_control,
-        helix_view::editor::StatusLineElement::Register => render_register,
-        helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
-        helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
+        helix_view::editor::StatusLineElement::Register => render_none,
+        helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_none,
+        helix_view::editor::StatusLineElement::CodeActionHint => render_none,
     }
 }
 
@@ -385,27 +389,6 @@ where
         Style::default()
     };
     write(context, Span::styled(content, style));
-}
-
-fn render_lsp_spinner<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    write(
-        context,
-        context
-            .doc
-            .language_servers()
-            .find_map(|srv| {
-                context
-                    .spinners
-                    .get(srv.id())
-                    .and_then(|spinner| spinner.frame())
-            })
-            // Even if there's no spinner; reserve its space to avoid elements frequently shifting.
-            .unwrap_or(" ")
-            .into(),
-    );
 }
 
 fn render_diagnostics<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -457,100 +440,6 @@ where
     }
 }
 
-fn render_workspace_diagnostics<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    use helix_core::diagnostic::Severity;
-    let (hints, info, warnings, errors) = context.editor.diagnostics.values().flatten().fold(
-        (0u32, 0u32, 0u32, 0u32),
-        |mut counts, (diag, _)| {
-            match diag.severity {
-                // PERF: For large workspace diagnostics, this loop can be very tight.
-                //
-                // Most often the diagnostics will be for warnings and errors.
-                // Errors should tend to be fixed fast, leaving warnings as the most common.
-                Some(DiagnosticSeverity::WARNING) => counts.2 += 1,
-                Some(DiagnosticSeverity::ERROR) => counts.3 += 1,
-                Some(DiagnosticSeverity::HINT) => counts.0 += 1,
-                Some(DiagnosticSeverity::INFORMATION) => counts.1 += 1,
-                // Fallback to `hint`.
-                _ => counts.0 += 1,
-            }
-            counts
-        },
-    );
-
-    let sevs_to_show = &context.editor.config().statusline.workspace_diagnostics;
-
-    // Avoid showing the " W " if no diagnostic counts will be shown.
-    if !sevs_to_show.iter().any(|sev| match sev {
-        Severity::Hint => hints != 0,
-        Severity::Info => info != 0,
-        Severity::Warning => warnings != 0,
-        Severity::Error => errors != 0,
-    }) {
-        return;
-    }
-
-    write(context, " W ".into());
-
-    for sev in sevs_to_show {
-        match sev {
-            Severity::Hint if hints > 0 => {
-                write(context, Span::styled("●", context.editor.theme.get("hint")));
-                write(context, format!(" {} ", hints).into());
-            }
-            Severity::Info if info > 0 => {
-                write(context, Span::styled("●", context.editor.theme.get("info")));
-                write(context, format!(" {} ", info).into());
-            }
-            Severity::Warning if warnings > 0 => {
-                write(
-                    context,
-                    Span::styled("●", context.editor.theme.get("warning")),
-                );
-                write(context, format!(" {} ", warnings).into());
-            }
-            Severity::Error if errors > 0 => {
-                write(
-                    context,
-                    Span::styled("●", context.editor.theme.get("error")),
-                );
-                write(context, format!(" {} ", errors).into());
-            }
-            _ => {}
-        }
-    }
-}
-
-fn render_selections<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let selection = context.doc.selection(context.view.id);
-    let count = selection.len();
-    write(
-        context,
-        if count == 1 {
-            " 1 sel ".into()
-        } else {
-            format!(" {}/{count} sels ", selection.primary_index() + 1).into()
-        },
-    );
-}
-
-fn render_primary_selection_length<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let tot_sel = context.doc.selection(context.view.id).primary().len();
-    write(
-        context,
-        format!(" {} char{} ", tot_sel, if tot_sel == 1 { "" } else { "s" }).into(),
-    );
-}
-
 fn get_position(context: &RenderContext) -> Position {
     coords_at_pos(
         context.doc.text().slice(..),
@@ -594,51 +483,6 @@ where
     );
 }
 
-fn render_file_encoding<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let enc = context.doc.encoding();
-
-    if enc != encoding::UTF_8 {
-        write(context, format!(" {} ", enc.name()).into());
-    }
-}
-
-fn render_file_line_ending<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    use helix_core::LineEnding::*;
-    let line_ending = match context.doc.line_ending {
-        Crlf => "CRLF",
-        LF => "LF",
-        #[cfg(feature = "unicode-lines")]
-        VT => "VT", // U+000B -- VerticalTab
-        #[cfg(feature = "unicode-lines")]
-        FF => "FF", // U+000C -- FormFeed
-        #[cfg(feature = "unicode-lines")]
-        CR => "CR", // U+000D -- CarriageReturn
-        #[cfg(feature = "unicode-lines")]
-        Nel => "NEL", // U+0085 -- NextLine
-        #[cfg(feature = "unicode-lines")]
-        LS => "LS", // U+2028 -- Line Separator
-        #[cfg(feature = "unicode-lines")]
-        PS => "PS", // U+2029 -- ParagraphSeparator
-    };
-
-    write(context, format!(" {} ", line_ending).into());
-}
-
-fn render_file_type<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let file_type = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
-
-    write(context, format!(" {} ", file_type).into());
-}
-
 fn render_file_name<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
@@ -668,31 +512,6 @@ where
         format!(" {} ", path)
     };
 
-    write(context, title.into());
-}
-
-fn render_file_modification_indicator<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let title = if context.doc.is_modified() {
-        "[+]"
-    } else {
-        "   "
-    };
-
-    write(context, title.into());
-}
-
-fn render_read_only_indicator<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let title = if context.doc.readonly {
-        " [readonly] "
-    } else {
-        ""
-    };
     write(context, title.into());
 }
 
@@ -740,52 +559,4 @@ where
         .to_string();
 
     write(context, head.into());
-}
-
-fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    if let Some(reg) = context.editor.selected_register {
-        write(context, format!(" reg={} ", reg).into())
-    }
-}
-
-fn render_file_indent_style<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let style = context.doc.indent_style;
-
-    write(
-        context,
-        match style {
-            IndentStyle::Tabs => " tabs ".into(),
-            IndentStyle::Spaces(indent) => {
-                format!(" {} space{} ", indent, if indent == 1 { "" } else { "s" }).into()
-            }
-        },
-    );
-}
-
-fn render_cwd<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    let cwd = helix_stdx::env::current_working_dir();
-    let cwd = cwd
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    write(context, cwd.into())
-}
-
-fn render_code_action_hint<'a, F>(context: &mut RenderContext<'a>, write: F)
-where
-    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
-{
-    if context.focused && context.doc.code_action_hints(context.view.id) {
-        write(context, " ⋮ ".into())
-    }
 }
