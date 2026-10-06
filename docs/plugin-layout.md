@@ -778,3 +778,20 @@ helix_js::UiRequest::PluginOp { op, arg } => {
 3. 删 `lib.rs:147/152/157` 的**注册**
 
 ⇒ 与 §16 第 5 项**合成一件事**:这正是"三个 API 函数的实现搬到插件侧"的完整落地 ✓
+
+## 17. 状态栏迁移:**已完成**(2026-10-06 核实)
+
+§12.3 当时的判断是"JS 只覆盖 ~8/25 个元素,余下多为布局变体"—— **现在已不成立**,故补此节。
+
+**核实方式**:把核心的状态栏元素清单与 JS 的实际渲染逐一对照:
+
+| 来源 | 覆盖的元素 |
+|---|---|
+| **本会话新加的 ctx 字段**(13 个) | `modified` · `selections`+`selections_primary` · `read_only` · `encoding` · `line_ending` · `indent_style` · `file_type` · `register` · `primary_selection_length` · `cwd` · `code_action_hint` · `workspace_diagnostics_*`(4)· `spinner` |
+| **JS 原有的渲染** | `mode` · `path`(⇒ `FileBaseName`/`FileName`/`FileAbsolutePath` 三者是**互斥选项**,JS 取路径这一支)· 诊断(error/warning)· `cursor`(⇒ `Position`)· 百分比 · `total_lines` · git(⇒ `VersionControl`)· 三区布局(⇒ `Separator`/`Spacer`) |
+
+⇒ **核心 24 个元素全部在 JS 侧有对应** ✓
+⇒ 核心保留 **12 个 `render_*`** —— 即设计中的**最小回退**(mode + 文件名 + 诊断 + 位置/百分比 + 行数 + git + 分隔):
+**"插件挂了也还有一条能用的状态栏"** ✓
+
+**结论**:状态栏这条线**不需要再"迁移元素"**;后续若想动,只可能是**布局/样式**上的取舍(那是 JS 插件自己的设计空间)。
