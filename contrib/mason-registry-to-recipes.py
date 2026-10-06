@@ -277,6 +277,18 @@ def fix_block_scalars(pkg: dict, text: str) -> None:
         return
 
 
+def extract_bins(pkg: dict, text: str) -> None:
+    """抽取顶层 `bins:` 列表(helix 的配方**必需** `bin`:解析处是 `need("bin")?`,
+    缺它整条配方会被拒绝 —— 不是可选字段)。用正则直接扫原文,避开极简 list 解析。
+    """
+    m = re.search(r"^bins:\s*\n((?:[ \t]*-[ \t]*\S+\n?)+)", text, re.M)
+    if not m:
+        return
+    bins = re.findall(r"-[ \t]*(\S+)", m.group(1))
+    if bins:
+        pkg["bins"] = bins
+
+
 def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     """→ (TOML 文本, 需要手工处理的原因列表)"""
     problems: list[str] = []
@@ -304,6 +316,7 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
     asset_rows: list[tuple[str, str, str]] = []
     if m_tool:
         # 包管理器源 → helix 的 **Tool** 型(cmd 在受管目录内跑,产物须落 <prefix>/bin/<bin>)
+        # 注意:这里**不能**再走"非 github-release = needs-manual"那条判断(那是 Archive 路的判据)
         eco, pkgname, ver = m_tool.group(1), m_tool.group(2), m_tool.group(3)
         if eco == "npm":
             cmd, args = "npm", ["install", "--prefix", "{prefix}", f"{pkgname}@{ver}"]
@@ -311,7 +324,7 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
             cmd, args = "pip3", ["install", "--target", "{prefix}", f"{pkgname}=={ver}"]
         tool_cmd, tool_args = cmd, args
     elif not m:
-        problems.append(f"来源不是 github-release({src})—— Archive 走 release 资产 URL")
+        problems.append(f"来源既不是 github-release 也不是 pypi/npm({src})—— 需人工判断用哪种安装方式")
     else:
         for a in assets:
             target, f = a.get("target", ""), a.get("file", "")
@@ -342,6 +355,8 @@ def to_recipe(pkg: dict) -> tuple[str, list[str]]:
         lines.append(f'homepage = "{pkg["homepage"]}"')
     if version:
         lines.append(f'version = "{version}"')
+    if pkg.get("bins"):
+        lines.append(f'bin = "{pkg["bins"][0]}"   # 来自 Mason 的 bins[0](helix 的 bin 是必需字段)')
     if m_tool:
         lines.append(f'cmd = "{tool_cmd}"')
         lines.append("args = [" + ", ".join(f'"{a}"' for a in tool_args) + "]")
@@ -396,6 +411,7 @@ def main() -> int:
     for name, text in texts:
         pkg = parse_yaml(text)
         fix_block_scalars(pkg, text)
+        extract_bins(pkg, text)
         toml, problems = to_recipe(pkg)
         print("# " + "=" * 70)
         print(f"# {name}: {'需手工' if problems else '可自动转换'}")
