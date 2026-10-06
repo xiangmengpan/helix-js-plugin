@@ -15,9 +15,13 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
         r#"helix.register_command("list-demo", () => {});"#,
     )?;
 
+    // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
+    // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
+    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
+            (Some(&format!(":plugin-load {}<ret>", mgr.display())), None),
             (
                 Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
                 None,
@@ -58,9 +62,13 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
+    // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
+    // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
+    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
+            (Some(&format!(":plugin-load {}<ret>", mgr.display())), None),
             (Some(":plugin list<ret>"), None),
             (
                 Some(":plugin status<ret>"),
@@ -89,18 +97,24 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
+    // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
+    // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
+    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
-        vec![(
-            Some(":plugin install plain-name<ret>"),
-            Some(&|app| {
-                let (status, _) = app.editor.get_status().unwrap();
-                assert!(
-                    status.as_ref().contains("invalid"),
-                    "expected invalid arg error, got: {status}"
-                );
-            }),
-        )],
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", mgr.display())), None),
+            (
+                Some(":plugin install plain-name<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        status.as_ref().contains("invalid"),
+                        "expected invalid arg error, got: {status}"
+                    );
+                }),
+            ),
+        ],
         false,
     )
     .await?;
@@ -115,9 +129,13 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
+    // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
+    // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
+    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
+            (Some(&format!(":plugin-load {}<ret>", mgr.display())), None),
             (
                 Some(":plugin pin nope<ret>"),
                 Some(&|app| {
@@ -155,19 +173,25 @@ async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     let plugin = dir.path().join("api.js");
     std::fs::write(&plugin, r#"helix.plugin.remove("nope-js-api");"#)?;
+    // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
+    // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
+    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
-        vec![(
-            Some(&format!(":plugin-load {}<ret>", plugin.display())),
-            Some(&|app| {
-                // PluginOp 请求在 load 的 drain 里 dispatch,事件循环 idle 前执行 → set_error
-                let (status, _) = app.editor.get_status().unwrap();
-                assert!(
-                    status.as_ref().contains("failed to remove"),
-                    "expected remove error, got: {status}"
-                );
-            }),
-        )],
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", mgr.display())), None),
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                Some(&|app| {
+                    // PluginOp 请求在 load 的 drain 里 dispatch,事件循环 idle 前执行 → set_error
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(
+                        status.as_ref().contains("failed to remove"),
+                        "expected remove error, got: {status}"
+                    );
+                }),
+            ),
+        ],
         false,
     )
     .await?;
