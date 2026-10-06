@@ -5,6 +5,11 @@ use super::*;
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_manager_list_status() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
+    // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
+    // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("r.txt");
@@ -58,6 +63,11 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_list_and_status() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
+    // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
+    // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -93,6 +103,11 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
+    // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
+    // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -125,6 +140,11 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
+    // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
+    // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -167,6 +187,11 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
+    // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
+    // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
