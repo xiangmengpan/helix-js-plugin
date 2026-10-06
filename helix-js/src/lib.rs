@@ -480,6 +480,11 @@ pub fn init() {
                     0,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(commands::js_write_plugin_file),
+                    JsString::from("write_plugin_file"),
+                    2,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(commands::js_remove_plugin_file),
                     JsString::from("remove_plugin_file"),
                     1,

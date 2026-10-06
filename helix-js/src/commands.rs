@@ -97,6 +97,39 @@ pub(crate) fn js_remove_plugin_file(
     }
 }
 
+/// `helix.write_plugin_file(rel, text)` → 写入**用户层插件根内**的文件(父目录按需创建)。
+/// 限域同 `remove_plugin_file`:只相对路径 · 拒 `..`。返回写入的绝对路径;非法**抛错**。
+pub(crate) fn js_write_plugin_file(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<JsValue> {
+    let rel: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.write_plugin_file: path must be a string",
+            )))
+        })?;
+    let text: String = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.write_plugin_file: text must be a string",
+            )))
+        })?;
+    match crate::state::write_plugin_file(&rel, &text) {
+        Ok(p) => Ok(JsValue::from(JsString::from(
+            p.to_string_lossy().to_string(),
+        ))),
+        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(e)))),
+    }
+}
+
 /// `helix.plugins_dir()` → 插件目录绝对路径(未推入 → null)。
 /// `:plugin` 管理器用它定位 `manifest.json` 与插件文件。
 pub(crate) fn js_plugins_dir(

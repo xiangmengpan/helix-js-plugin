@@ -625,6 +625,47 @@ pub fn remove_plugin_file(rel: &str) -> Result<bool, String> {
     remove_plugin_file_in(plugin_roots(), rel)
 }
 
+// ── 插件文件写入(§12.2:`install` 需要)────────────────────────────
+// 与删除同一套限域:**相对路径** · 拒 `..` · 只落插件根之内。
+// 不同点:写入有明确目标 —— **用户层(最后一个根)**,因为覆盖优先级在末位
+// (见 `resolve_in` 的 `rev()`),装到内置层既无意义也可能没权限。
+// 父目录**按需创建**:实测 `helix-js` 原本没有任何建目录 API,连单文件安装都做不了。
+
+/// 纯函数版(吃 roots)便于单测:校验 + 写入 + 按需建父目录。返回写入的绝对路径。
+pub(crate) fn write_plugin_file_in(
+    roots: &[PathBuf],
+    rel: &str,
+    text: &str,
+) -> Result<PathBuf, String> {
+    let bad = |why: &str| Err(format!("helix.write_plugin_file({rel:?}): {why}"));
+    if rel.is_empty() {
+        return bad("路径不能为空");
+    }
+    if Path::new(rel).is_absolute() {
+        return bad("只接受相对路径");
+    }
+    if Path::new(rel)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return bad("路径不能含 `..`");
+    }
+    let root = roots
+        .last()
+        .ok_or_else(|| "helix.write_plugin_file: 没有可写的插件根(未推入?)".to_string())?;
+    let p = root.join(rel);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&p, text).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// 用当前插件根
+pub fn write_plugin_file(rel: &str, text: &str) -> Result<PathBuf, String> {
+    write_plugin_file_in(plugin_roots(), rel, text)
+}
+
 /// 相对名 → **(绝对路径, 提供它的根)**。从后往前找第一个存在的 = 后加的根覆盖先加的。
 /// 绝对路径没有"根"的概念(返回空 Path)。
 pub(crate) fn resolve_in_with_root(roots: &[PathBuf], key: &str) -> Option<(PathBuf, PathBuf)> {
@@ -1139,5 +1180,40 @@ mod remove_plugin_file_tests {
         std::fs::write(root.path().join("plug2/sub/a.js"), "x").unwrap();
         assert_eq!(remove_plugin_file_in(&roots, "plug2").unwrap(), true);
         assert!(!root.path().join("plug2").exists());
+    }
+}
+
+#[cfg(test)]
+mod write_plugin_file_tests {
+    use super::*;
+
+    /// 限域写入的三条硬要求:**只相对路径** · **拒 `..`** · **只落用户层(最后一个根)**
+    /// 以及**父目录按需创建**(这是它存在的原因:`install` 要往还不存在的目录里写)
+    #[test]
+    fn scoped_write_rejects_escapes_and_creates_parents() {
+        let bundled = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let roots = vec![bundled.path().to_path_buf(), user.path().to_path_buf()];
+
+        // 拒绝 + **拒绝时两个根都不得被写入**
+        for rel in ["/abs/x.js", "../x.js", "a/../../x.js", ""] {
+            assert!(
+                write_plugin_file_in(&roots, rel, "x").is_err(),
+                "应拒: {rel:?}"
+            );
+        }
+        assert!(!bundled.path().join("x.js").exists() && !user.path().join("x.js").exists());
+
+        // 合法:父目录按需创建;落**用户层**
+        let p = write_plugin_file_in(&roots, "my/plug/plugin.js", "// hi").unwrap();
+        assert!(
+            p.starts_with(user.path()),
+            "应写入用户层(最后一个根),实得 {p:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "// hi");
+        assert!(!bundled.path().join("my").exists(), "不得写进内置层");
+
+        // 空根列表 → 报错而非 panic
+        assert!(write_plugin_file_in(&[], "x.js", "x").is_err());
     }
 }

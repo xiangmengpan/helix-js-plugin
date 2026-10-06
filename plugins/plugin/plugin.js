@@ -13,13 +13,17 @@
 // ## 已勘明的缺口(如实标注,不假装完整)
 //   1. Rust 的 `list` 列的是"**已加载**"的插件名,而 JS 侧**没有**枚举已加载插件的接口 ✗
 //      → 这里先给"**已安装**"(manifest 的事实),**不假称**等于"已加载"。全保真需 `helix.loaded_plugins()`。
-//   2. **`install` 被挡住**:`helix-js` **完全没有建目录/复制文件的 API**
-//      (`create_dir`/`mkdir`/`copy_file`/`exists` 注册数**全为 0**)→ 连单文件安装也要先有
-//      `plugins/features/<name>/` 存在 ✗。修法:加一个**限域**的 `helix.write_plugin_file(rel, text)`
-//      (父目录按需创建;相对插件根、拒 `..` —— 与 `remove_plugin_file` 同一套限域思路)。
+//   2. ~~`install` 被挡住~~ → **已解锁**:新增限域接口 `helix.write_plugin_file(rel, text)`
+//      (父目录按需创建;只相对路径、拒 `..`)后,本地文件/目录安装可在 JS 侧完成;
+//      git 源走 `helix.run("git clone …")`。
 //   3. **布局不一致(实测)**:Rust `install_target` 装进 `plugins/**features**/<name>`(旧路径),
 //      而当前仓库布局是 `plugins/<name>/`。搬迁时应统一到现有布局,别把旧路径带过去。
 helix.plugin("plugin-manager", { deps: [], version: "0.1" });
+
+/// shell 单引号引用(与 statusline 插件同款)
+function shq(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
 
 /// manifest 路径:`helix.plugins_dir()`(= 用户层插件根,`config_dir/plugins`)
 function manifestPath() {
@@ -106,14 +110,71 @@ helix.register_command("plugin-js", async () => {
       helix.echo("已移除 '" + name + "'(" + n + " 个文件;manifest 已更新)");
       break;
     }
+    case "install": {
+      const arg = args[1];
+      if (!arg) {
+        helix.echo("usage: plugin-js install <path|git-url>");
+        break;
+      }
+      const m = (await readManifest()) || {};
+      const now = new Date().toISOString();
+      const isGit = /^[a-z+]+:\/\//i.test(arg) || arg.endsWith(".git");
+
+      if (isGit) {
+        // git 源:名字取 URL 末段(去掉 .git),clone 到 <plugins>/<name>
+        const base = arg.replace(/\/+$/, "").split("/").pop().replace(/\.git$/, "");
+        const dest = mp + "/" + base;
+        try {
+          await helix.run_async("git clone --depth 1 " + shq(arg) + " " + shq(dest));
+        } catch (e) {
+          helix.echo("plugin install: git clone 失败: " + e);
+          break;
+        }
+        m[base] = { source: arg, kind: "git", installed_at: now, pinned: false, files: [base] };
+      } else {
+        // 本地路径:文件 → <name>/plugin.js;目录 → 递归复制其内容
+        const base = arg.replace(/\/+$/, "").split("/").pop();
+        const stem = base.replace(/\.[^.]+$/, "");
+        let entries;
+        try {
+          entries = helix.read_dir(arg); // 同步;目录或文件都能列
+        } catch (e) {
+          helix.echo("plugin install: 路径不可读: " + arg);
+          break;
+        }
+        const isDir = entries.some((e) => e && (e.is_dir === true || e.isDir === true));
+        const files = [];
+        if (isDir) {
+          for (const e of entries) {
+            const nm = e.name || e.path;
+            const txt = await helix.read_file_async(arg + "/" + nm);
+            helix.write_plugin_file(stem + "/" + nm, txt);
+            files.push(stem + "/" + nm);
+          }
+        } else {
+          const txt = await helix.read_file_async(arg);
+          helix.write_plugin_file(stem + "/plugin.js", txt);
+          files.push(stem + "/plugin.js");
+        }
+        m[stem] = { source: arg, kind: "local", installed_at: now, pinned: false, files: files };
+      }
+      try {
+        await helix.write_file_async(manifestPath(), JSON.stringify(m, null, 2));
+      } catch (e) {
+        helix.echo("plugin install: manifest 写入失败: " + e);
+        break;
+      }
+      const installed = Object.keys(m).pop();
+      helix.echo("installed '" + installed + "', 请 :plugin-reload 生效");
+      break;
+    }
     case "reload":
       // 委派给 Rust 的独立命令(本步不搬它 —— 自举兜底)
       helix.echo("请用 :plugin-reload(JS 侧插件管理器的 reload 尚未接管)");
       break;
     default:
       helix.echo(
-        "plugin-js: 已实现 list|status|remove|reload;" +
-          " install 待补(缺建目录 API,见文件头 §12.2)"
+        "plugin-js: 已实现 list|status|install|remove|reload(见 §12.2)"
       );
   }
 });
