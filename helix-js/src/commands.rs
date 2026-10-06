@@ -75,6 +75,20 @@ pub fn set_plugins_dir(dir: PathBuf) {
 /// 嵌套加载：内层 load 消费 LAST_EXPORT（take 语义），外层脚本自己的 export 随后设置。
 /// 直接用传入的 boa Context 调（不再借 CONTEXT 线程局部）——load 可能发生在命令运行中
 /// （lazy 桩），外层 run_command 正持有 CONTEXT 的 RefCell 借用，再借会 panic。
+/// `helix.command_args()` → 当前键入命令的参数数组(如 `:layout save dev` → `["save","dev"]`)。
+/// 由分派器在调用前设入、调用后清空(见 `state::{set,clear}_command_args`)。
+pub(crate) fn js_command_args(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<JsValue> {
+    let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
+    for (i, a) in crate::state::command_args().iter().enumerate() {
+        let _ = arr.set(i, JsValue::from(JsString::from(a.as_str())), false, ctx);
+    }
+    Ok(arr.into())
+}
+
 /// `helix.runtime_path(name)` → 自带 runtime 里的绝对路径(找不到 → null)。
 /// 用途:让**内置内容型插件**能打开随软件分发的内容(如 `:tutor` 打开 `runtime/tutor`)。
 pub(crate) fn js_runtime_path(

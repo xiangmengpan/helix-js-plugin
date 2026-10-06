@@ -481,6 +481,29 @@ pub(crate) fn plugin_roots() -> &'static [PathBuf] {
     PLUGIN_ROOTS.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
+// ── 键入命令的参数通道(§12.0)──────────────────────────────────────
+// 为什么是**独立通道**而不是给 `CommandContext` 加字段:它有 ~57 个构造点
+// (3 处 typed.rs · 2 处 helix-js 非测试 · ≈52 处单测),加字段就是 57 处都要改 ——
+// 正是本项目反复吃亏的"漏一处**不报错**"的形态。(同 `OpenScratchFile` 那次的取舍。)
+thread_local! {
+    static PENDING_COMMAND_ARGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 分派器在调用 JS 命令**之前**设入(`run_plugin_command`)。
+pub fn set_command_args(args: Vec<String>) {
+    PENDING_COMMAND_ARGS.with(|a| *a.borrow_mut() = args);
+}
+
+/// **调用之后必须清空** —— 否则参数会"粘"到下一个命令,而那类 bug 极难查。
+pub fn clear_command_args() {
+    PENDING_COMMAND_ARGS.with(|a| a.borrow_mut().clear());
+}
+
+/// 当前待处理参数(JS 侧 `helix.command_args()` 读它)
+pub fn command_args() -> Vec<String> {
+    PENDING_COMMAND_ARGS.with(|a| a.borrow().clone())
+}
+
 /// 自带 runtime 目录(**有序**;由 helix-term 启动时推入)。
 ///
 /// 为什么必须"推入"而不是自己取:`helix-js` **不依赖 `helix-loader`**(实测其 Cargo.toml),
@@ -990,5 +1013,27 @@ mod runtime_path_tests {
         assert!(runtime_file_in(&dirs, "/definitely/not/here").is_none());
         // 空目录列表 → None(不会 panic)
         assert!(runtime_file_in(&[], "tutor").is_none());
+    }
+}
+
+#[cfg(test)]
+mod command_args_tests {
+    use super::*;
+
+    /// 设 → 读 → **清空后必须为空**(防"粘到下一个命令")
+    #[test]
+    fn command_args_roundtrip_and_clear() {
+        clear_command_args();
+        assert!(command_args().is_empty(), "初始为空");
+        set_command_args(vec!["save".into(), "dev".into()]);
+        assert_eq!(command_args(), vec!["save".to_string(), "dev".to_string()]);
+        // 再设会整体替换(不是累加)
+        set_command_args(vec!["list".into()]);
+        assert_eq!(command_args(), vec!["list".to_string()]);
+        clear_command_args();
+        assert!(
+            command_args().is_empty(),
+            "清空后为空 —— 否则会粘到下一个命令"
+        );
     }
 }

@@ -470,6 +470,11 @@ pub fn init() {
                     1,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(commands::js_command_args),
+                    JsString::from("command_args"),
+                    0,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(popup::js_move_panel),
                     JsString::from("move_panel"),
                     2,
