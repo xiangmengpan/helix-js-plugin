@@ -304,6 +304,7 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 | `tabbar/` | 布局标签条示范(顶部槽位,点击聚焦) |
 | `arsenal/` | 浮层市场窗(`:arsenal`)—— 取代已废弃的 server-manager |
 | `icons/` | 只有 `[icons]` 配置;图标表本身在核心(`helix.icons.*`) |
+| `tutor/` | `:tutor` 教程(**第一个从核心搬进插件的功能**;内容在 `runtime/tutor`,插件打开它且**不绑定路径**) |
 | `examples/` | `picker.js`(定义 files/grep/buffers/symbols 四个 picker 源)、`lsp-hover.js` |
 
 说明:某个插件加载失败**不会再拖垮整个入口** —— `init.js` 用包装逐条加载,一个坏了报错后其余照常。

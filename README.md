@@ -322,6 +322,7 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 | `tabbar/` | Layout tab bar demo (top slot, click to focus) |
 | `arsenal/` | Overlay marketplace window (`:arsenal`) — replaces the deprecated server-manager |
 | `icons/` | `[icons]` config only — the icon table itself lives in core (`helix.icons.*`) |
+| `tutor/` | `:tutor` — the tutorial (**the first feature moved out of core into a plugin**; content lives in `runtime/tutor`, the plugin opens it without binding a path) |
 | `examples/` | `picker.js` (defines the files/grep/buffers/symbols picker sources), `lsp-hover.js` |
 
 Note: a failing plugin no longer takes down the whole entry — `init.js` wraps loads so one bad

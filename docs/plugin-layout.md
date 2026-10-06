@@ -220,7 +220,7 @@ DRY_RUN=1 sh contrib/install-plugins.sh       # 只打印将要做什么
 > 也就是说:**"把功能从核心拆出去"这件事,主体已经做完了**;剩下的不是搬迁,
 > 而是**维持那条缝的健康**(本文件的约定、两层覆盖、错误隔离、分发,都是为此)。
 
-## 11. 下一个该拆的:`:tutor`(第一个"真搬迁",含两个前置薄接口)
+## 11. `:tutor` —— 第一个"真搬迁"(✅ **已完成**,附实录)
 
 ### 为什么是它
 
@@ -265,8 +265,21 @@ doc_mut!(cx.editor).set_path(None);   // 防止误保存覆盖原始 tutor 文�
 5. `init.js`(仓库 + 用户)加 `safe_load("tutor")`;**两层镜像都同步**(用户层 + 内置层,后者用 `contrib/install-plugins.sh`)
 6. **补一条插件级测试**(当前 `:tutor` 无覆盖)—— 断言命令存在 + 打开后 doc 的 `path` 为 None(即"未绑定",这正是前置②的意义)
 
-### 为什么不现在做
+### ✅ 完成实录(2026-10-06)
 
-它要**新增两个薄能力**(都属"扩接口"类),而这类改动必须端到端验证(参照 `[[…asset]]` 那次:
-新增可选字段后,三个消费点逐个过 + 端到端安装测试)。预算不足时开它,风险是留下"命令删了但插件没接上"
-—— 用户会发现 `:tutor` 直接消失。
+| 步 | 结果 |
+|---|---|
+| 前置①`helix.runtime_path(name)` | `state::{RUNTIME_DIRS, runtime_file_in, runtime_path}` + JS 绑定 + 启动推入;纯函数单测(按序解析/不存在/绝对路径/空列表) |
+| 前置②`open_file(p, { scratch: true })` | **新增一个请求** `OpenScratchFile`(而非给既有 `OpenFile` 加字段 —— 后者会让所有构造点都要改,漏一处是**静默**错);JS 路由有单测 |
+| 插件 | `plugins/tutor/plugin.js`(注册 `tutor` 命令) |
+| 核心 | 删 `fn tutor`(12 行)+ `TypableCommand` 条目(11 行)= **23 行** |
+| init | 仓库与用户 `init.js` 各加 `safe_load("tutor")`;两层镜像同步 |
+| 测试 | 新增**插件级端到端**(`tutor_plugin_opens_unbound_doc`):断言①找到 runtime 内容 ②`doc.path().is_none()`(**scratch 生效**)③内容真载入(>1000 字符) |
+
+**两处防空过措施**(否则测试"绿得毫无意义"):从**仓库**路径加载(缺失即明确失败,不静默跳过)·
+手动 `set_runtime_dirs`(集成进程里启动推入不执行 → 否则 `runtime_path` 为 null、插件只 echo 一句错、
+而**初始空文档的 path 本来也是 None** → 断言会假通过)。
+
+**过程中的一次事故**:删 `TypableCommand` 条目时用"裸 `}`"当终止符,而真实结束是 `    },`
+→ **多删 450 行**;靠 `git diff --stat` 一眼看出不对 → `git checkout` 回退 → 重做时**先断言范围**。
+教训:**删"块"的终止符必须与真实文本一致**(同"锚点必须读出来")。
