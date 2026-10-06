@@ -586,6 +586,53 @@ async fn tutor_plugin_opens_unbound_doc() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `:layout` 现在由**插件**提供(第二个从核心搬走的)。端到端断言 **§12.0 参数通道真的通了**。
+///
+/// 判据刻意**不依赖渲染快照**:`layout save` 在"还没渲染过一帧"时会被 API 正确拒绝
+/// (我第一版就是这么写错的 —— 失败原因不是通道,而是前提),所以这里用 **delete**:
+/// 预置两个文件 → 只删指定的那个 → 既证明 `sub` 到了 JS,也证明 `name` 路由正确。
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_plugin_routes_args_and_persists() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/layout/plugin.js");
+    // 从**仓库**路径加载(不依赖用户镜像)→ 缺失即明确失败,不静默跳过
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    // layouts 目录:集成测试进程里 application.rs 的启动推入**不执行** →
+    // 必须手动指向临时目录,**否则会动到用户真实的 ~/.config/helix/layouts**
+    let tmp = tempfile::tempdir()?;
+    helix_js::set_layouts_dir(tmp.path().to_path_buf());
+    std::fs::write(
+        tmp.path().join("dev.json"),
+        r#"{"tree":{"type":"leaf","id":0}}"#,
+    )?;
+    std::fs::write(
+        tmp.path().join("keep.json"),
+        r#"{"tree":{"type":"leaf","id":0}}"#,
+    )?;
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+
+    // 无子命令 → 不应崩(走 usage 分支)
+    pump(&mut app, ":layout<ret>").await?;
+
+    // 核心断言:`delete dev` 必须只删 dev.json。
+    // 若参数没到 JS(§12.0 断了),插件会走 usage 分支 → **两个文件都还在** → 这里失败。
+    // 若只路由了 sub 而丢了 name,则可能删错文件 → keep.json 断言会失败。
+    pump(&mut app, ":layout delete dev<ret>").await?;
+    assert!(
+        !tmp.path().join("dev.json").exists(),
+        "delete dev 应删掉 dev.json(参数没到 JS 时会失败)"
+    );
+    assert!(
+        tmp.path().join("keep.json").is_file(),
+        "不该动到别的布局(证明 name 也路由对了,不只是 sub)"
+    );
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
