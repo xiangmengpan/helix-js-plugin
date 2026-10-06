@@ -323,7 +323,49 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 | **测试缺口** | `:layout` 命令当前**无测试**(我加它时点明过)→ 搬迁时按 `tutor_plugin_opens_unbound_doc` 的模式补插件级 E2E(从**仓库路径**加载 → 缺文件即明确失败,不静默跳过) |
 | 难度 / 风险 | **低 / 低**(纯包装,行为可逐字对照;删除有范围断言) |
 
-### 12.2 `:plugin` 管理器(**前置已齐**,搬迁待做)
+### 12.2 `:plugin` 管理器(前置已齐;下面是**照抄即可**的移植规格)
+
+#### ⚠️ 一个**顺序约束**(决定了它必须"一次性切换",不能分步)
+
+`:plugin` 是**一个命令名**。JS 侧注册 `plugin` 会**遮挡**Rust 的那个 →
+所以**必须先让 JS 插件覆盖全部子命令**,才能删 Rust 的;否则被遮挡的子命令(如 `install`)会**直接失效** ✗。
+状态栏那种"逐个元素增量"在这里**不成立**。
+
+#### Manifest 格式(实测,`helix-term/src/commands/plugin_manager.rs`)
+
+```rust
+struct ManifestEntry { source: String, kind: String /* "local"|"git" */, installed_at: String,
+                       commit: Option<String> /* git 源 HEAD */, pinned: bool, files: Vec<String> }
+type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
+// 路径:config_dir()/plugins/manifest.json
+// 读:缺文件或 JSON 坏 → **返回空表,不崩**;写:pretty JSON
+```
+
+#### 子命令规格(取自 `typed.rs:5578` 的 `fn plugin`)
+
+| 子命令 | 行为 | 用户可见文案(照抄) |
+|---|---|---|
+| (无参) | 报用法 | `usage: plugin <list\|install\|remove\|reload\|status>` |
+| `list` | 列出已加载插件名 | 空 → `no plugins loaded`;否则 `plugins: a, b` |
+| `install <path\|git-url>` | 缺参报错;git URL → clone;本地路径 → 复制 | 成功 → `installed '{name}', reloading...`(随后触发重载);失败 → `plugin install: invalid path or git url '{arg}'` |
+| `remove <name>` | 删 manifest 里该插件的 `files` + 孤儿目录 | (文案待补读) |
+| `reload` | 整树重载 | —— **JS 侧直接委派给 `:plugin-reload`**(独立命令,零新增) |
+| `status` | 报告状态 | (文案待补读) |
+
+**JS 侧现有能力覆盖情况**:`list`→`read_dir` ✓ · `install`(本地)→`read_file`+`write_file` ✓ ·
+`install`(git)→`helix.run("git", …)` ✓ · manifest 读写→`read_file`/`write_file` ✓ ·
+`remove`→`helix.remove_plugin_file`(**限域**)✓ · 参数→`helix.command_args()` ✓
+
+#### 落地顺序(每步都可验,但**第 2 步必须一次做完**)
+
+1. **先写 JS 插件的骨架 + `list`/`status`/`reload`**(此时**不要注册 `plugin` 命令名**,先用临时名如 `plugin-js` 验证行为)✓
+2. **补齐 `install`/`remove` 后,一次性把命令名改成 `plugin` 并删 Rust 的**(`TypableCommand` 条目 + `fn plugin` + `plugin_manager.rs` 整个模块 + `mod` 声明)—— **这一步不可分**
+3. 端到端测试(照 `layout_plugin_routes_args_and_persists` 的模式):
+   - 预置 manifest + 假插件目录 → `plugin list` 应列出 → `plugin remove <name>` 应删文件且**不动别的**
+   - `plugin install <临时目录>` → 断言文件被复制 + manifest 被写
+   - **断言 `plugin-reload` 仍在**(自举兜底不能被删)
+
+
 
 **先纠正一个印象**:它不只是文件操作。`plugin_manager.rs`(639 行)实测含
 **manifest 读写** · **安装复制**(`install_target`/`install_copy`/`walkdir`)· **删除**
