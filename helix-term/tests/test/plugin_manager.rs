@@ -39,6 +39,13 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
                         status.as_ref().contains(plugin_path.to_str().unwrap()),
                         ":plugin list should show loaded plugin path, got: {status}"
                     );
+                    // ★ §15 防假绿判据:这条**只有当 JS 在应答时**才成立
+                    //   (JS 的 list 总会多输出一行 `installed(N): …`;Rust 的 list 只有一行)
+                    //   ⇒ 若插件加载失败、回落 Rust,这里立刻变红 ✗
+                    assert!(
+                        status.as_ref().contains("installed("),
+                        "§15 判据:应含 JS 独有的 `installed(`,实得 {status}"
+                    );
                 }),
             ),
             (

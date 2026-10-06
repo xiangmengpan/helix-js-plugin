@@ -78,9 +78,11 @@ function runOp(sub, arg) {
       // 附加一行:manifest 里**已安装**的(便于对照"装了但没加载")
       const m = readManifest() || {};
       const installed = Object.keys(m).sort();
-      if (installed.length) {
-        helix.echo("installed(" + installed.length + "): " + installed.join(", "));
-      }
+      // **总是**输出这一行(含 0 条)—— 三个理由:
+      // ① 它是 JS 侧独有的(**Rust 的 list 只输出一行**)⇒ 可作 §15 判据的判别标志 ✓
+      // ② "装了但没加载"与"没装"都能一眼看出,比只在非空时输出更有用 ✓
+      // ③ 判据**不再依赖 manifest 是否存在** ⇒ 测试不受"插件根是进程全局"的顺序影响 ✓
+      helix.echo("installed(" + installed.length + "): " + installed.join(", "));
       break;
     }
     case "status": {
