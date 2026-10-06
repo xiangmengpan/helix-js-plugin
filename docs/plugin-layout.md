@@ -737,3 +737,33 @@ Rust 的 `list` 只输出一行(`no plugins loaded` / `plugins: a, b`);
 1. **改完立刻验证**:JS → `node --check`;Rust → `cargo check --all-targets`
 2. **任一步失败即整体回退**(`git checkout` 涉及文件)—— 本会话已用此法 8+ 次,**零次**留下损坏状态
 3. **一次性提交**,提交信息里写明"哪三个 API 函数的实现搬到了插件侧"
+
+### §16 的第 4 项**已确认**(并修正一处说法)
+
+我原写"API 桥**所在函数**尚未确认"。**读出来了 —— 它不是一个函数,而是一个 `match` 臂** ✓:
+
+```rust
+// typed.rs(UI 请求分发器内,与 OpenFile/OpenScratchFile 等同一个 match)
+helix_js::UiRequest::PluginOp { op, arg } => {
+    job::dispatch_blocking(move |editor, _compositor| {
+        if let Err(e) = plugin_op(editor, &op, arg.as_deref()) {
+            editor.set_error(format!("plugin: {e}"));
+        }
+    });
+}
+```
+
+**我的定位器为什么判错**:它的模式是 `^(pub )?fn ` —— **不匹配 `pub(crate) fn`** ✗
+(于是往上找到了 4838 的 `fn layer_id`,给出"函数跨 500 行"这种明显荒谬的结论 ✓ ——
+**荒谬的结论本身就是"读法错了"的信号** ✓)
+
+### 连带项(删这个臂必带的三件事)
+
+删掉 `PluginOp` 臂后,`UiRequest::PluginOp` 这个**变体**就没人处理 ⇒ **match 不再穷尽** ✗
+⇒ 必须一并处理:
+
+1. 删 `helix-js` 的 **`UiRequest::PluginOp` 变体**(`types.rs`)
+2. 删 **`push_plugin_op`**(`commands.rs:406`)与三个 API 函数(348/367/388)
+3. 删 `lib.rs:147/152/157` 的**注册**
+
+⇒ 与 §16 第 5 项**合成一件事**:这正是"三个 API 函数的实现搬到插件侧"的完整落地 ✓
