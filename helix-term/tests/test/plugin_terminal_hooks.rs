@@ -550,6 +550,42 @@ fn which_key_has_no_hardcoded_pane_hints_table() {
     );
 }
 
+/// `:tutor` 现在由**插件**提供 —— 第一个从核心搬到插件的功能。端到端断言两件事:
+/// ① 插件能找到 runtime 里的内容 ② 打开后 doc **不绑定路径**。
+///
+/// ② 是**安全前提**:Rust 版原实现是 `set_path(None)`(防误存覆盖原 tutor 文件),
+/// 少了它就是"看着一样、实则能毁掉运行时文件"的搬迁。
+#[tokio::test(flavor = "multi_thread")]
+async fn tutor_plugin_opens_unbound_doc() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/tutor/plugin.js");
+    // 从**仓库**路径加载(不依赖用户镜像)→ 文件缺失应**明确失败**,而不是静默跳过
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    // 集成测试进程里 `application.rs` 的启动推入**不执行** → 得手动设 runtime 目录。
+    // 否则 `helix.runtime_path("tutor")` 返回 null,插件只 echo 一句错误 →
+    // 下面的断言会**假通过**(doc 是初始空文档,path 本来也是 None)。
+    helix_js::set_runtime_dirs(vec![root.join("runtime")]);
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":tutor<ret>").await?;
+
+    let (_, doc) = current_ref!(app.editor);
+    assert!(
+        doc.path().is_none(),
+        "scratch 语义要求不绑定路径(否则 :w 会覆盖 runtime/tutor),实得 {:?}",
+        doc.path()
+    );
+    assert!(
+        doc.text().len_chars() > 1000,
+        "应真的载入了教程内容(50KB 量级),实得 {} 字节",
+        doc.text().len_chars()
+    );
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
