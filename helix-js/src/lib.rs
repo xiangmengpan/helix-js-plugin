@@ -2205,6 +2205,11 @@ pub(crate) mod tests {
             selections_primary: 0,
             read_only: false,
             encoding: "utf-8".into(),
+            line_ending: "LF".into(),
+            register: None,
+            primary_selection_length: 1,
+            indent_style: "4 spaces".into(),
+            file_type: Some("rust".into()),
         };
         assert_eq!(statusline_parts(&ctx), None);
 
@@ -2832,6 +2837,11 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
             selections_primary: 0,
             read_only: false,
             encoding: "utf-8".into(),
+            line_ending: "LF".into(),
+            register: None,
+            primary_selection_length: 1,
+            indent_style: "4 spaces".into(),
+            file_type: Some("rust".into()),
         };
         // reload 前 render 正常
         let before = statusline_parts(&ctx);

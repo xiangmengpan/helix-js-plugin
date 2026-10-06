@@ -1741,6 +1741,37 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
                 Attribute::all(),
             )
             .property(
+                JsString::from("line_ending"),
+                JsValue::from(JsString::from(ctx.line_ending.clone())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("register"),
+                match &ctx.register {
+                    Some(r) => JsValue::from(JsString::from(r.clone())),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("primary_selection_length"),
+                JsValue::from(ctx.primary_selection_length as f64),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("indent_style"),
+                JsValue::from(JsString::from(ctx.indent_style.clone())),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("file_type"),
+                match &ctx.file_type {
+                    Some(t) => JsValue::from(JsString::from(t.clone())),
+                    None => JsValue::null(),
+                },
+                Attribute::all(),
+            )
+            .property(
                 JsString::from("diagnostics_error"),
                 JsValue::from(ctx.diagnostics_error as f64),
                 Attribute::all(),

@@ -118,6 +118,20 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         selections_primary: context.doc.selection(context.view.id).primary_index(),
         read_only: context.doc.readonly,
         encoding: context.doc.encoding().name().to_string(),
+        line_ending: match context.doc.line_ending {
+            helix_core::LineEnding::Crlf => "CRLF",
+            _ => "LF",
+        }
+        .to_string(),
+        register: context.editor.selected_register.map(|r| r.to_string()),
+        primary_selection_length: context.doc.selection(context.view.id).primary().len(),
+        indent_style: match context.doc.indent_style {
+            helix_core::indent::IndentStyle::Tabs => "tabs".to_string(),
+            helix_core::indent::IndentStyle::Spaces(n) => {
+                format!("{} space{}", n, if n == 1 { "" } else { "s" })
+            }
+        },
+        file_type: context.doc.language_name().map(str::to_string),
     };
     let js_parts = helix_js::statusline_parts(&js_ctx);
     let js_replace = helix_js::statusline_replaces();

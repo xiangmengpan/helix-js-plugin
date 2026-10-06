@@ -86,7 +86,19 @@ function render(ctx) {
   // 只读 / 编码:语义对齐核心(`" [readonly] "` · 非 UTF-8 时才显示编码名)
   const roMark = ctx.read_only ? " [readonly]" : "";
   const encMark = ctx.encoding && ctx.encoding !== "utf-8" ? " " + ctx.encoding : "";
-  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark;
+  // 行尾符:核心**总是**显示(`" LF "`);JS 布局里 LF 是常态,故**仅非 LF 时显示** ——
+  // 这是一处**刻意的布局取舍**(同"放置位置"由 JS 布局决定),不是语义偏差:字符串本身与核心一致。
+  const leMark = ctx.line_ending && ctx.line_ending !== "LF" ? " " + ctx.line_ending : "";
+  // 寄存器:对齐核心 `" reg=X "`(未选中寄存器时不显示)
+  const regMark = ctx.register ? " reg=" + ctx.register : "";
+  // 主选区长度:对齐核心 `" N char(s) "`
+  const n = ctx.primary_selection_length;
+  const charMark = " " + n + " char" + (n === 1 ? "" : "s");
+  // 缩进风格:直接用核心的原文案(`tabs` / `4 spaces`)
+  const indMark = ctx.indent_style ? " " + ctx.indent_style : "";
+  // 语言名:对齐核心的 `unwrap_or(DEFAULT_LANGUAGE_NAME)`(该常量的值实测为 `"text"`)
+  const ftMark = " " + (ctx.file_type || "text");
+  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark + leMark + regMark + charMark + indMark + ftMark;
   parts.push({ text: row + ":" + col, style: null, zone: "right" });
   parts.push({ text: pct, style: "ui.virtual", zone: "right" });
   parts.push({ text: String(total), style: "ui.virtual", zone: "right" });

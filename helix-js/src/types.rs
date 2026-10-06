@@ -498,6 +498,16 @@ pub struct StatuslineCtx {
     pub read_only: bool,
     /// 当前编码名(如 `utf-8`;UTF-8 时 JS 侧不显示,对齐核心 `enc != UTF_8`)
     pub encoding: String,
+    /// 行尾符名(核心 `render_file_line_ending` 的映射:CRLF/LF/…)
+    pub line_ending: String,
+    /// 当前寄存器(未选中为 None;核心 `render_register` 语义)
+    pub register: Option<String>,
+    /// 主选区长度(字符数;核心 `render_primary_selection_length`)
+    pub primary_selection_length: usize,
+    /// 缩进风格文案(核心原文案: `tabs` / `4 spaces`)
+    pub indent_style: String,
+    /// 语言名(核心: `language_name().unwrap_or(DEFAULT_LANGUAGE_NAME)`)
+    pub file_type: Option<String>,
 }
 
 /// 状态栏分段：text + 可选 theme scope（null = 跟随状态栏基样式）。
