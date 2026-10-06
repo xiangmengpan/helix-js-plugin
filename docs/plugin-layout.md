@@ -408,6 +408,29 @@ type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
 ⇒ 于是它与前面记下的**第 1 个缺口串起来了**:那些测试要的正是"**已加载**插件"这个语义,
 而 JS 侧**给不出**(只有 manifest 的"已安装")→ 要全保真,**必须先有 `helix.loaded_plugins()`** ✓
 
+#### ✅ 前置③的最后一个未知点也已读清:测试改造 = **每个用例加一步**
+
+`tests/test/plugin_manager.rs` 的 5 个用例结构一致:
+
+```rust
+let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+let dir = tempfile::tempdir()?;                       // 每个用例自造 fixture
+test_key_sequences(
+    &mut AppBuilder::new().with_file(file, None).build()?,
+    vec![
+        (Some(":plugin-load <fixture>.js<ret>"), None),   // ← 现有:载入 fixture
+        (Some(":plugin list<ret>"), Some(&|app| assert!(…))),
+```
+
+⇒ **改造 = 在每串序列的 `:plugin` 之前,插入一次 `:plugin-load <repo>/plugins/plugin/plugin.js`** ✓
+(照 `tutor_plugin_*` / `layout_plugin_*` 的既定做法:**从仓库路径加载**,文件缺失即**明确失败**、
+不静默跳过)。**断言可原样保留** —— 因为文案我已逐字对齐 ✓
+
+**一个必须注意的保真点**:这 5 个用例刻意"**只测无副作用路径**"(它们用 `nope`/`plain-name` 这类
+假名字,以免动到真实的 `~/.config/plugins`)✓ —— 我的 JS 实现**恰好满足**:`pin`/`unpin` 在
+"未安装"时就 `break`,**不会写 manifest** ✓;`list`/`status` 只读 ✓。**这一点不能改坏**:
+若 `pin nope` 变成"先建条目再报错",测试就会真的写用户的配置 ✗
+
 **所以"最后一刀"的真实前置是两件**:① `helix.loaded_plugins()`(补 `list` 保真)
 ② **同步改造 `test/plugin_manager.rs`**(改用 JS 提供的 `:plugin`,或按新语义重写断言)
 ③ 然后才是改名 + 一次性删除 + E2E(含"断言 `:plugin-reload` 仍在")
