@@ -1228,6 +1228,38 @@ pub(crate) mod tests {
         );
     }
 
+    /// **探测**:JS 能否给原生的 `helix.plugin`(**声明函数对象**)挂/改属性?
+    ///
+    /// 这是 `:plugin` 迁移兼容层的唯一未知点(见 docs/plugin-layout.md §13):
+    /// Rust 侧在 `helix.plugin` 这个函数对象上挂了 `install`/`update`/`remove`,
+    /// 兼容层要由 JS 顶替 —— 若原生对象不可写,就得改走"JS 导出模块"(公开 API 变更)。
+    /// **动手前先在这里问清楚。**
+    ///
+    /// 读值方式:`helix.echo` + `take_messages()`(与 helix-term 的运行路径同一机制)。
+    #[test]
+    fn plugin_object_accepts_new_and_existing_properties() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        let _ = take_messages(); // 清空上一次残留
+
+        // ① 挂**新**属性
+        load_script(r#"helix.plugin.__probe = "ok"; helix.echo(helix.plugin.__probe);"#).unwrap();
+        let m1 = take_messages();
+        assert!(
+            m1.iter().any(|m| m == "ok"),
+            "原生 helix.plugin 应可挂新属性,实得 {m1:?}"
+        );
+
+        // ② 覆盖**既有**属性(`install` 由 Rust 挂上)→ 用标记值确认**确实被改掉**
+        load_script(r#"helix.plugin.install = () => "shim"; helix.echo(helix.plugin.install());"#)
+            .unwrap();
+        let m2 = take_messages();
+        assert!(
+            m2.iter().any(|m| m == "shim"),
+            "既有属性 install 应可被 JS 覆盖,否则兼容层方案不成立,实得 {m2:?}"
+        );
+    }
+
     /// `open_file` 的 `scratch` 选项:带它走 `OpenScratchFile`(不绑定路径),不带走原请求。
     /// 这条路由是 `:tutor` 搬迁的**安全前提** —— 走错了,用户 `:w` 会覆盖 runtime 里的原文件。
     #[test]

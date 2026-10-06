@@ -601,3 +601,18 @@ helix.plugin.__probe = "ok";   // 零副作用;Rust 侧断言读回 === "ok"
 - **不可挂**(原生对象冻结/只读)→ 改走"**JS 导出模块**":管理器用 `helix.export` 暴露
   `{install, update, remove}`,文档改为 `const mgr = helix.load("plugin"); mgr.install(…)`
   —— **这是一次公开 API 变更**,所以更该先探测再动手。
+
+### ✅ 探测结果(2026-10-06):**可行**
+
+测试 `helix-js::tests::plugin_object_accepts_new_and_existing_properties` **通过**:
+
+| 探测 | 结果 |
+|---|---|
+| 挂**新**属性(`helix.plugin.__probe = "ok"`) | ✅ 可挂 |
+| **覆盖既有**属性(`helix.plugin.install = () => "shim"`,替换 Rust 挂上的那个) | ✅ **可覆盖** |
+
+⇒ **兼容层方案成立**(§13 的三步可以直接做),**不需要**改走"JS 导出模块"
+—— 也就是说 **`helix.plugin.*` 这个公开 API 不会变更** ✓
+
+**读值方式**:`helix.echo(...)` + `take_messages()`(与 helix-term 的运行路径同一机制)。
+(第一版我用 `load_script(...).as_string()` → 编译不过:它返回 `()` ✗ —— 又一例"先读 API,别猜"。)
