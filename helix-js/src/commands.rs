@@ -75,6 +75,28 @@ pub fn set_plugins_dir(dir: PathBuf) {
 /// 嵌套加载：内层 load 消费 LAST_EXPORT（take 语义），外层脚本自己的 export 随后设置。
 /// 直接用传入的 boa Context 调（不再借 CONTEXT 线程局部）——load 可能发生在命令运行中
 /// （lazy 桩），外层 run_command 正持有 CONTEXT 的 RefCell 借用，再借会 panic。
+/// `helix.remove_plugin_file(rel)` → 删掉**插件根内**的文件/目录(限域,见 state 里的说明)。
+/// 返回 `true`(删了)/ `false`(本来不存在,幂等);非法路径**抛错**。
+pub(crate) fn js_remove_plugin_file(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<JsValue> {
+    let rel: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "helix.remove_plugin_file: path must be a string",
+            )))
+        })?;
+    match crate::state::remove_plugin_file(&rel) {
+        Ok(b) => Ok(JsValue::from(b)),
+        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(e)))),
+    }
+}
+
 /// `helix.command_args()` → 当前键入命令的参数数组(如 `:layout save dev` → `["save","dev"]`)。
 /// 由分派器在调用前设入、调用后清空(见 `state::{set,clear}_command_args`)。
 pub(crate) fn js_command_args(

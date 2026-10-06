@@ -565,6 +565,59 @@ pub(crate) fn resolve_in(roots: &[PathBuf], key: &str) -> Option<PathBuf> {
     roots.last().map(|r| r.join(key))
 }
 
+// ── 插件文件删除(§12.2 的唯一新接口)──────────────────────────────
+// **必须限域**:`remove_files` 那类操作的输入来自 manifest(可被插件/用户改动),
+// 若允许任意路径,一次笔误就能删掉插件目录之外的东西。所以:
+//   ① 只接受**相对路径**;绝对路径直接拒绝
+//   ② 拒绝任何含 `..` 的段(防穿越)
+//   ③ 解析**只走插件根**(与加载同一套多根),命中后删除
+// 返回:Ok(true) 删掉了 · Ok(false) 本来就不存在 · Err(原因)
+
+/// 纯函数版(吃 roots)便于单测:校验 + 限域删除。
+pub(crate) fn remove_plugin_file_in(roots: &[PathBuf], rel: &str) -> Result<bool, String> {
+    let bad = |why: &str| Err(format!("helix.remove_plugin_file({rel:?}): {why}"));
+    if rel.is_empty() {
+        return bad("路径不能为空");
+    }
+    if Path::new(rel).is_absolute() {
+        return bad("只接受相对路径");
+    }
+    if Path::new(rel)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return bad("路径不能含 `..`");
+    }
+    // 从后往前找(与 resolve_in 同序:用户层覆盖内置层)
+    for r in roots.iter().rev() {
+        let p = r.join(rel);
+        if !p.exists() {
+            continue;
+        }
+        // 双保险:解析后仍须落在该根之下(符号链接/奇怪路径的最后一道闸)
+        let real_root = r.canonicalize().map_err(|e| format!("{e}"))?;
+        let real_p = p.canonicalize().map_err(|e| format!("{e}"))?;
+        if !real_p.starts_with(&real_root) {
+            return bad("解析后落在插件根之外");
+        }
+        return if real_p.is_dir() {
+            std::fs::remove_dir_all(&real_p)
+                .map(|_| true)
+                .map_err(|e| format!("{e}"))
+        } else {
+            std::fs::remove_file(&real_p)
+                .map(|_| true)
+                .map_err(|e| format!("{e}"))
+        };
+    }
+    Ok(false) // 本来就不存在 → 幂等
+}
+
+/// 用当前插件根
+pub fn remove_plugin_file(rel: &str) -> Result<bool, String> {
+    remove_plugin_file_in(plugin_roots(), rel)
+}
+
 /// 相对名 → **(绝对路径, 提供它的根)**。从后往前找第一个存在的 = 后加的根覆盖先加的。
 /// 绝对路径没有"根"的概念(返回空 Path)。
 pub(crate) fn resolve_in_with_root(roots: &[PathBuf], key: &str) -> Option<(PathBuf, PathBuf)> {
@@ -1035,5 +1088,49 @@ mod command_args_tests {
             command_args().is_empty(),
             "清空后为空 —— 否则会粘到下一个命令"
         );
+    }
+}
+
+#[cfg(test)]
+mod remove_plugin_file_tests {
+    use super::*;
+
+    /// 限域删除的三条硬要求:**只相对路径** · **拒 `..`** · **只动插件根内**
+    #[test]
+    fn scoped_removal_rejects_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("precious.txt");
+        std::fs::write(&victim, "x").unwrap();
+        std::fs::create_dir_all(root.path().join("plug")).unwrap();
+        std::fs::write(root.path().join("plug/plugin.js"), "// x").unwrap();
+        let roots = vec![root.path().to_path_buf()];
+
+        // 绝对路径 → 拒
+        assert!(remove_plugin_file_in(&roots, victim.to_str().unwrap()).is_err());
+        assert!(victim.is_file(), "绝对路径必须被拒,且不动文件");
+        // 含 `..` → 拒(即便它算出来真的指向外面)
+        for rel in ["../precious.txt", "plug/../../precious.txt", "a/../b"] {
+            assert!(remove_plugin_file_in(&roots, rel).is_err(), "应拒: {rel}");
+        }
+        assert!(victim.is_file(), "穿越尝试不得动到根外的文件");
+        // 空路径 → 拒
+        assert!(remove_plugin_file_in(&roots, "").is_err());
+
+        // 合法:删根内的文件 → true;再删 → false(幂等)
+        assert_eq!(
+            remove_plugin_file_in(&roots, "plug/plugin.js").unwrap(),
+            true
+        );
+        assert!(!root.path().join("plug/plugin.js").exists());
+        assert_eq!(
+            remove_plugin_file_in(&roots, "plug/plugin.js").unwrap(),
+            false
+        );
+        // 目录也能删(remove_orphan 要删整棵插件目录)
+        std::fs::create_dir_all(root.path().join("plug2/sub")).unwrap();
+        std::fs::write(root.path().join("plug2/sub/a.js"), "x").unwrap();
+        assert_eq!(remove_plugin_file_in(&roots, "plug2").unwrap(), true);
+        assert!(!root.path().join("plug2").exists());
     }
 }
