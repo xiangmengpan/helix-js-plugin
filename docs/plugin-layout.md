@@ -356,6 +356,21 @@ type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
 `install`(git)→`helix.run("git", …)` ✓ · manifest 读写→`read_file`/`write_file` ✓ ·
 `remove`→`helix.remove_plugin_file`(**限域**)✓ · 参数→`helix.command_args()` ✓
 
+#### ⬜ 还差**一个**薄接口:插件/config 目录的访问器(实测缺)
+
+**实测**:`helix-js` 里**没有任何** config/插件目录的访问器 ——
+`"config_dir"` / `"plugin_dir"` / `"plugins_dir"` / `"config_path"` / `"data_dir"` 的注册数**全为 0**,
+把 `lib.rs` 里注册的顶层 API 名**全量列出**也确认没有(最接近的是 `runtime_path`,只服务 runtime)。
+
+⇒ 没有它,JS 连 `plugins/manifest.json` 的**路径都凑不出来** → `list`/`install`/`remove` 全部无法开始 ✗
+**所以第 1 步(哪怕只用临时命令名)也被挡住了。**
+
+**修法很小,且是既有模式**:`state` 里**已经有** `plugin_roots()` ✓ →
+加一个 `plugins_dir()`(取其首个根,或直接推入 config 下的 `plugins/`)按 **`set_runtime_dirs` 的同款方式**
+在 `application.rs` 启动时推入即可 ✓ 与 §12.0、限域删除同属"一个薄接口解锁一整项"的情形。
+
+**⇒ 移植前置最终清单**:参数通道 ✓ · 限域删除 ✓ · `reload` 复用 ✓ · **目录访问器 ⬜** · E2E 测试计划 ✓
+
 #### 落地顺序(每步都可验,但**第 2 步必须一次做完**)
 
 1. **先写 JS 插件的骨架 + `list`/`status`/`reload`**(此时**不要注册 `plugin` 命令名**,先用临时名如 `plugin-js` 验证行为)✓
