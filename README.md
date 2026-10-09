@@ -323,6 +323,9 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 | `arsenal/` | Overlay marketplace window (`:arsenal`) — replaces the deprecated server-manager |
 | `icons/` | `[icons]` config only — the icon table itself lives in core (`helix.icons.*`) |
 | `tutor/` | `:tutor` — the tutorial (**the first feature moved out of core into a plugin**; content lives in `runtime/tutor`, the plugin opens it without binding a path) |
+| `layout/` | `:layout save\|load\|list\|delete <name>` — named layout sessions (**moved out of core into a plugin**; data API `helix.layout.*` lives in `helix-js`) |
+| `plugin/` | `:plugin list\|install\|remove\|update\|pin\|unpin\|reload\|status` — the plugin manager (**moved out of core**); it also provides the `helix.plugin.*` API |
+| `pane-open/` | `helix.pane.open({place, content})` — unified pane-creation entry (a thin shape over the existing `helix.split`) |
 | `examples/` | `picker.js` (defines the files/grep/buffers/symbols picker sources), `lsp-hover.js` |
 
 Note: a failing plugin no longer takes down the whole entry — `init.js` wraps loads so one bad

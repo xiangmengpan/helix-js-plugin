@@ -305,6 +305,9 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 | `arsenal/` | 浮层市场窗(`:arsenal`)—— 取代已废弃的 server-manager |
 | `icons/` | 只有 `[icons]` 配置;图标表本身在核心(`helix.icons.*`) |
 | `tutor/` | `:tutor` 教程(**第一个从核心搬进插件的功能**;内容在 `runtime/tutor`,插件打开它且**不绑定路径**) |
+| `layout/` | `:layout save\|load\|list\|delete <name>` 命名布局的会话存取(**已从核心搬进插件**;数据 API `helix.layout.*` 在 `helix-js`) |
+| `plugin/` | `:plugin list\|install\|remove\|update\|pin\|unpin\|reload\|status` 插件管理器(**已从核心搬出**);并对外提供 `helix.plugin.*` API |
+| `pane-open/` | `helix.pane.open({place, content})` 统一 pane 创建入口(对既有 `helix.split` 的形状收敛) |
 | `examples/` | `picker.js`(定义 files/grep/buffers/symbols 四个 picker 源)、`lsp-hover.js` |
 
 说明:某个插件加载失败**不会再拖垮整个入口** —— `init.js` 用包装逐条加载,一个坏了报错后其余照常。
