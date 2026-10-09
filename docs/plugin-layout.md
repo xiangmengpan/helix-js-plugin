@@ -850,3 +850,39 @@ grep -n "fn sync_layout_cache" -A 30 helix-term/src/compositor.rs  # 它到底�
 
 > 两次"看起来很有道理"的假设**都错** ✗ —— 而两次都只值**一次 grep** ✓
 > **在"哪里发事件"这种问题上,推理的命中率低于阅读。**
+
+### §18 结论:真因找到了 —— **事件名白名单**(`EVENT_WHITELIST`)
+
+把**加载后**的状态栏打出来,一句话就结束了三轮猜测:
+
+```
+plugin-load: plugin script '…/lc.js' error: "helix.on: unknown event 'layout-change'"
+```
+
+**`helix.on` 会对事件名做白名单校验** ✗ —— `layout-change` **不在** `EVENT_WHITELIST` 里 ⇒
+探针插件**加载即抛** ⇒ 它注册的命令不存在 ⇒ 触发不了 ⇒ **看起来像"事件没发出去"** ✓
+
+| 我之前的假设 | 实际 |
+|---|---|
+| 空 ctx 让 `doc_to_js` 失败 | ❌ 无关(事件根本没走到那一步) |
+| `:vsplit` 不经过汇聚点 ⇒ 改用 JS API | ❌ 无关(命令压根不存在) |
+| 注册 API 用错(`watch` vs `on`) | ❌ 无关(`on` 确实喂 `with_event_handlers` ✓) |
+| —— | ✅ **插件注释:事件名不在白名单 ⇒ 加载失败** |
+
+**方法上最值钱的一条**:
+> 我三轮都在看**触发之后**的状态栏 ✗,而错误发生在**加载那一刻** ✓。
+> 诊断的第一步应该是:**先确认被测物真的就位**(这里是"插件是否加载成功")✓ ——
+> 否则测的是"没加载",而不是"事件没发" ✓
+
+### 精确的三步修法(锚点都已核对)
+
+1. **`helix-js/src/commands.rs:13`**:`const EVENT_WHITELIST: [&str; 18] = [` …
+   在结尾的 `];`(单独一行)之前加 `"layout-change",`,**并把 `[&str; 18]` 改成 `[&str; 19]`** ✗
+   —— 定长数组这一点我试错过两次(第一次只加元素、没改长度 ⇒ 编译错 ✓)
+2. **`helix-term/src/commands/typed.rs`**:给 **`SplitLeaf`**(在 `compositor.split_leaf_prealloc(...)` 之后)
+   与 **`CloseLeaf`**(在 `compositor.close_leaf_clean(...)` 之后)各补一句
+   `compositor.sync_layout_cache();` —— 其余 7 个臂(浮窗/堆叠/raise/pin/embed)本来就有 ✓
+3. **把探针测试加回来**,并**先断言插件加载成功**(状态栏不含 `error`)——
+   否则它会重演本节的错误:测"没加载"而非"没发事件" ✓
+   另外:把 `emit_layout_change` 的失败从 `log::warn` 改成**推入 `MESSAGES`**(可见)✓ ——
+   本次正是靠"让错误可见"才走出来的 ✓
