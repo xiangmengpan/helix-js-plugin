@@ -238,18 +238,10 @@ function open_dashboard(ctx) {
     const doc = ctx && ctx.doc ? ctx.doc : null;
     if (doc && typeof doc.insert === "function") {
       doc.insert(0, 0, body);
-      // ★ 关键:插入后视图会停在**插入点末尾** ⇒ 用户只看到最后一行在左下 ✗
-      // 把光标移回行首(行 0 列 0)⇒ 视图回到顶部,整屏可见 ✓
-      for (const fn of ["set_cursor", "goto_line", "set_selection"]) {
-        if (typeof helix[fn] !== "function") continue;
-        try {
-          if (fn === "set_selection") helix.set_selection({ row: 0, col: 0 }, { row: 0, col: 0 });
-          else helix[fn](0, 0);
-          break;
-        } catch (e) {
-          guard(() => helix.echo("dashboard: " + fn + " 失败 —— " + (e && e.message ? e.message : e)));
-        }
-      }
+      // 【已回退】此处曾尝试"把光标移回行首"(set_cursor/goto_line/set_selection)✗
+      // —— 那三个接口的形状**我从未验证** ✗,而真机上"主区域不显示内容"的症状
+      //    出现在加了它之后 ⇒ 按纪律**回退未经证实的猜测**,只保留已验证的 insert ✓
+      // (真实编辑器里的视图落点仍待用探针确认 —— 见 :dashboard-diag ✓)
     } else {
       throw new Error(
         "拿不到带编辑方法的 ctx.doc(命令/事件处理器必须接收并使用其 ctx 参数)"
