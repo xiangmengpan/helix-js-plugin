@@ -32,6 +32,11 @@ const LOGO_SLIM = ["  H E L I X  ⌘"];
 // ── 状态 ──────────────────────────────────────────────────────────────────
 let dash_open = false; // 启动屏是否已开(不新开 buffer ⇒ 只需一个标记 ✓)
 let dash_buffer_id = null; // 启动屏所在 buffer(用于"真的离开" ✓)
+// 诊断计数器:用来分清"哪条触发路径真的跑了" ✓(纯观测,不影响行为 ✓)
+let n_startup = 0; // startup 事件次数
+let n_buffer_open = 0; // buffer-open 事件次数
+let n_open_calls = 0; // open_dashboard 被调用次数
+let n_open_drew = 0; // 其中"真的插入成功"的次数
 let bound = false; // 键位是否已绑(精确解绑用 ✓)
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
@@ -208,6 +213,7 @@ function dismiss_on_others() {
 }
 
 function open_dashboard(ctx) {
+  n_open_calls++;
   if (dash_open) return;
 
   // **安全闸(必需)**:若当前 buffer **有路径**(真实文件),绝不把启动屏写进去 ✗
@@ -284,6 +290,7 @@ helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
 // **离开即解绑**(最高优先的修复 ✓):切 buffer / 开新 buffer ⇒ 那 7 个全局键立即失效 ✓
 // ⇒ 从根上消掉"在 filetree 里按键又触发 dashboard ⇒ 重入卡死" ✗
 helix.on("buffer-open", () => {
+  n_buffer_open++;
   if (dash_open) {
     // 已经在屏上 ⇒ 这是"用户切走了" ⇒ 解绑 ✓(这条消掉了"按 e 卡死" ✓)
     dismiss_on_others();
@@ -346,7 +353,10 @@ helix.register_command("dashboard-diag", (ctx) => {
   }, "err");
   guard(() =>
     helix.echo(
-      "dashboard-diag: vw=" + (v ? v[0] : "n/a") + " vh=" + (v ? v[1] : "n/a") +
+      "startup=" + n_startup + " bufOpen=" + n_buffer_open +
+      " openCalls=" + n_open_calls + " drew=" + n_open_drew +
+      " dashOpen=" + (dash_open ? 1 : 0) +
+      " | vw=" + (v ? v[0] : "n/a") + " vh=" + (v ? v[1] : "n/a") +
       " len=" + len + " target=" + tgt + " currentBuffer=" + curBuf
     )
   );
@@ -356,6 +366,7 @@ helix.register_command("dashboard-diag", (ctx) => {
 // 判定:当前 buffer **没有路径** ⇒ 视为无文件启动 ✓
 // 判定不出/形状不同 ⇒ **不显示**(安全降级 ✓,绝不打扰正常编辑)
 helix.on("startup", (arg) => {
+  n_startup++;
   // 事件处理器的参数形状与事件相关(如 layout-change 带 kind)✗ ⇒ 兼容多种形状取 ctx ✓
   const ctx = arg && arg.doc ? arg : arg && arg.ctx ? arg.ctx : null;
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
