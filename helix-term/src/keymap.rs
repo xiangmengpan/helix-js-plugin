@@ -328,6 +328,37 @@ impl Keymaps {
         self.map.store(Arc::new(current));
     }
 
+    /// 摘掉一条绑定（`insert_binding` 的**逆操作**）。
+    ///
+    /// 为何需要：键位是**全局表**（`view.keymaps`）✗ ——“只在这个 buffer 生效”无法直接表达。
+    /// 替代做法：**开屏时绑、关屏时解绑**（dashboard 用）⇒ 需要真正的“摘除”，
+    /// 而不是把键改成 `no_op` ✗（那会**吞掉**按键，让 `f` 变死键）。
+    ///
+    /// 语义：沿键序列走到叶并摘除；若中间节点因此**变空**，向上回收 ✓；
+    /// 键序列不存在 → **幂等**（不报错）✓
+    pub fn remove_binding(&self, mode: Mode, keys: &[KeyEvent]) {
+        let mut current = (**self.map.load()).clone();
+        if let Some(trie) = current.get_mut(&mode) {
+            Self::remove_from_trie(trie, keys);
+        }
+        self.map.store(Arc::new(current));
+    }
+
+    /// 在 trie 里沿 `keys` 摘除叶；若节点因此变空，返回 `true`（交由调用者摘掉该节点）✓
+    fn remove_from_trie(trie: &mut KeyTrie, keys: &[KeyEvent]) -> bool {
+        let (Some((first, rest)), KeyTrie::Node(node)) = (keys.split_first(), &mut *trie) else {
+            return false;
+        };
+        if rest.is_empty() {
+            node.map.shift_remove(first);
+        } else if let Some(child) = node.map.get_mut(first) {
+            if Self::remove_from_trie(child, rest) {
+                node.map.shift_remove(first);
+            }
+        }
+        node.map.is_empty()
+    }
+
     /// Returns list of keys waiting to be disambiguated in current mode.
     pub fn pending(&self) -> &[KeyEvent] {
         &self.state
