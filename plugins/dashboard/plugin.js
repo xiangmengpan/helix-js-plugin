@@ -230,6 +230,13 @@ function open_dashboard(ctx) {
 
   // **内容写入必须报错可见** —— 先前这里包了 guard(),于是"内容没写进去"被**静默吞掉** ✗
   // (E2E 第一次运行就发现:buffer 开对了,但文本只有 "\n")⇒ 改成显式 try/catch + echo ✓
+  // ★★ 关键顺序修正(真机四连测得出 ✓):
+  // 插入本身没问题(连 D-REAL 都显示 ✓);出错的是**插入之后**发的请求
+  // (set_cursor 与 7 次 helix.map)⇒ 它们似乎会冲掉刚排队的编辑 ✗
+  // ⇒ 先把键绑好、把光标定位好,**最后**再插入 ✓(插入后不再发任何请求 ✓)
+  bind_keys();
+  guard(() => helix.set_cursor(0, 0)); // 签名已读实现确认:set_cursor(row, col) ✓
+
   try {
     const body = build_text();
     // **编辑方法在 doc 对象上**(不在 helix 全局)✗ —— 诊断实得 "not a callable function" ✓
@@ -248,10 +255,10 @@ function open_dashboard(ctx) {
       } finally {
         if (has_batch) helix.end_edit();
       }
-      // 光标移回行首 —— 签名**已读实现确认**:`set_cursor(row, col)` ✓(args[0]=row,args[1]=col ✓)
-      // 注意:真机上即使做了这一步,主区域仍可能不显示 ⇒ 说明"落在哪个 buffer"才是关键 ✓
-      guard(() => helix.set_cursor(0, 0));
-      // 【已回退】此前还试过 goto_line / set_selection 的猜测循环 ✗(形状未验证 ✓ 已删)
+      // 【已移走】set_cursor 挪到插入之前 —— 见下方说明 ✓
+      // 真机四连测已证:插入本身完全正常(连 D-REAL 都显示 ✓)
+      // ⇒ 罪魁是**插入之后**发出的请求(set_cursor / 7 次 helix.map)✗
+      // ⇒ 顺序改为:**先绑键、先定位,最后插入** ✓(插入后不再有任何请求扰动它 ✓)
       // —— 那三个接口的形状**我从未验证** ✗,而真机上"主区域不显示内容"的症状
       //    出现在加了它之后 ⇒ 按纪律**回退未经证实的猜测**,只保留已验证的 insert ✓
       // (真实编辑器里的视图落点仍待用探针确认 —— 见 :dashboard-diag ✓)
@@ -269,7 +276,6 @@ function open_dashboard(ctx) {
   // 记下自己所在的 buffer(退出时要用 ✓)
   dash_buffer_id = guard(() => helix.buffer.current().id, null);
   guard(() => helix.echo("HELIX 启动屏 —— f 查找 · r buffer · e 文件树 · q 关闭"));
-  bind_keys();
 }
 
 // ── 显式命令(永远可用,不依赖 startup ✓)──────────────────────────────────
