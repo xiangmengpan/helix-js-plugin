@@ -795,3 +795,30 @@ helix_js::UiRequest::PluginOp { op, arg } => {
 **"插件挂了也还有一条能用的状态栏"** ✓
 
 **结论**:状态栏这条线**不需要再"迁移元素"**;后续若想动,只可能是**布局/样式**上的取舍(那是 JS 插件自己的设计空间)。
+
+## 18. `layout-change` 的实现**未真正生效**(端到端测试抓出,如实记录)
+
+提交 `959181de4` 加了 `emit_layout_change()`,并发在 `sync_layout_cache()` 的函数体内 ✓ —— 但**端到端测试证明事件没有到达处理器** ✗。
+
+### 探针(测试已写,但为保树绿已回退;内容留档于此)
+
+```rust
+// 插件:helix.on("layout-change", () => helix.write_file(<marker>, "yes"));
+// 步骤:加载插件 → 断言 marker 不存在 → :vsplit → 断言 marker 存在
+// 结果:**marker 不存在** ✗ ⇒ 处理器没被调用
+```
+
+用**写文件**而不用 `helix.echo` 作判据,是为了避开"事件路径与命令路径的消息 drain 不同"这一不确定性 ✓
+
+### 最可能的原因
+
+`emit_event_impl` 里会**从 ctx 构造一个 doc**(`doc_to_js(ctx, engine)`)✗ ——
+而我给它的是**空上下文**(`text: ""`、`cursor: (0,0)`、`docs: []`)⇒ 这一步**很可能失败** ✗,
+于是走不到"调用处理器"那一段 ✓;而我的代码只 `log::warn!` ✗ ⇒ **静默** ✓
+
+### 下一步(两条路)
+
+1. **先确认**:让探针顺手断言日志/或把 `log::warn` 改成 `set_error` ⇒ 一眼看出是不是 `doc_to_js` 失败 ✓
+2. **修法**:发事件时给**更完整的上下文** —— 布局变更处虽无 `CommandContext`,但 `Compositor` 手里有 `editor` ✓
+   ⇒ 可从 `editor` 构造当前 doc 的最小快照(路径/文本/光标),而不是空值 ✓
+   或:给 `emit_event_impl` 加一条**跳过 doc 构造**的路径(事件不带 doc 时)✓
