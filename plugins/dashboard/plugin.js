@@ -291,6 +291,30 @@ helix.on("buffer-open", () => {
 helix.on("buffer-close", () => dismiss_on_others());
 helix.register_command("dashboard-close", (ctx) => close_dashboard(ctx));
 
+/// **最小探针**:真机上"JS 发起的编辑到底会不会被应用" ✓
+/// 只在**空白 buffer** 上试(绝不碰你的文件 ✓);插入固定串后立刻回报长度 ✓
+/// 用法:`:dashboard-probe` ⇒ 看状态栏 + 看主区域是否出现 `PROBE-OK` ✓
+helix.register_command("dashboard-probe", (ctx) => {
+  const doc = ctx && ctx.doc ? ctx.doc : null;
+  if (!doc || typeof doc.insert !== "function") {
+    guard(() => helix.echo("dashboard-probe: 没有 ctx.doc.insert ⇒ 命令路径本身有问题 ✗"));
+    return;
+  }
+  const before = String(doc.text || "");
+  if (before.trim() !== "") {
+    guard(() => helix.echo("dashboard-probe: 当前 buffer 非空,请在**空 buffer** 上试(避免改到文件)"));
+    return;
+  }
+  try {
+    if (typeof helix.begin_edit === "function") helix.begin_edit();
+    doc.insert(0, 0, "PROBE-OK");
+    if (typeof helix.end_edit === "function") helix.end_edit();
+    guard(() => helix.echo("dashboard-probe: 已发出编辑(insert 未抛)⇒ 请看主区域是否出现 PROBE-OK"));
+  } catch (e) {
+    guard(() => helix.echo("dashboard-probe: insert 抛错 —— " + (e && e.message ? e.message : e)));
+  }
+});
+
 /// 自诊断:把"居中/定位"依赖的两个事实打出来 ✓
 /// 用法:`:dashboard-diag` —— 若 `vw=0` 说明核心没把视口尺寸送到 JS ✗;
 /// 若 `vbuf=...` 的行号不是 0,说明光标没回到行首 ⇒ 视图会停在末尾 ✓
