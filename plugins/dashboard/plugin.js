@@ -238,7 +238,10 @@ function open_dashboard(ctx) {
     const doc = ctx && ctx.doc ? ctx.doc : null;
     if (doc && typeof doc.insert === "function") {
       doc.insert(0, 0, body);
-      // 【已回退】此处曾尝试"把光标移回行首"(set_cursor/goto_line/set_selection)✗
+      // 光标移回行首 —— 签名**已读实现确认**:`set_cursor(row, col)` ✓(args[0]=row,args[1]=col ✓)
+      // 注意:真机上即使做了这一步,主区域仍可能不显示 ⇒ 说明"落在哪个 buffer"才是关键 ✓
+      guard(() => helix.set_cursor(0, 0));
+      // 【已回退】此前还试过 goto_line / set_selection 的猜测循环 ✗(形状未验证 ✓ 已删)
       // —— 那三个接口的形状**我从未验证** ✗,而真机上"主区域不显示内容"的症状
       //    出现在加了它之后 ⇒ 按纪律**回退未经证实的猜测**,只保留已验证的 insert ✓
       // (真实编辑器里的视图落点仍待用探针确认 —— 见 :dashboard-diag ✓)
@@ -276,10 +279,17 @@ helix.register_command("dashboard-diag", (ctx) => {
   const doc = ctx && ctx.doc ? ctx.doc : null;
   const cur = doc ? String(doc.cursor || JSON.stringify(doc.cursor)) : "no-ctx";
   const len = doc ? String(doc.text || "").length : -1;
+  // ★ 关键新信息:`_target`(ctx.doc 指向的 buffer/文件)与当前 buffer 是否同一个 ✓
+  // 若两者不同 ⇒ "内容插进了另一个 buffer" ⇒ 主区域当然不显示 ✗
+  const tgt = doc ? String(doc._target === undefined ? "undefined" : doc._target) : "no-ctx";
+  const curBuf = guard(() => {
+    const b = helix.buffer.current();
+    return b ? JSON.stringify({ id: b.id, path: b.path, name: b.name }) : "null";
+  }, "err");
   guard(() =>
     helix.echo(
-      "dashboard-diag: viewport=" + JSON.stringify(v) + " vw=" + (v ? v[0] : "n/a") +
-      " vh=" + (v ? v[1] : "n/a") + " cursor=" + cur + " len=" + len
+      "dashboard-diag: vw=" + (v ? v[0] : "n/a") + " vh=" + (v ? v[1] : "n/a") +
+      " len=" + len + " target=" + tgt + " currentBuffer=" + curBuf
     )
   );
 });
