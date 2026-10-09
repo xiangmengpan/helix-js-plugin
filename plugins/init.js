@@ -22,7 +22,8 @@ safe_load("tutor");
 safe_load("layout");
 safe_load("plugin");
 safe_load("pane-open");
-safe_load("dashboard"); // 启动屏(LazyVim 风格,buffer 式) // helix.pane.open({place,content})统一创建入口   // :plugin 管理器(JS 侧第 1 步,临时命令名 plugin-js)   // :layout 会话(- 已从核心搬到插件)   // 教程(:tutor)—— 已从核心搬到插件
+// 【已临时停用】dashboard 启动屏有 bug(无法退出/文件打不开/e 卡死):全局键位未自动解绑
+// safe_load("dashboard"); // helix.pane.open({place,content})统一创建入口   // :plugin 管理器(JS 侧第 1 步,临时命令名 plugin-js)   // :layout 会话(- 已从核心搬到插件)   // 教程(:tutor)—— 已从核心搬到插件
 safe_load("terminal");
 safe_load("statusline");
 safe_load("filetree");
