@@ -183,6 +183,8 @@ function dismiss_on_others() {
   if (!dash_open) return;
   unbind_keys();
   dash_open = false;
+  // **可见**(便于验证与排错):证明"离开即解绑"真的跑了 ✓
+  guard(() => helix.echo("dashboard: 已离开启动屏,键位已解除"));
 }
 
 function open_dashboard(ctx) {
