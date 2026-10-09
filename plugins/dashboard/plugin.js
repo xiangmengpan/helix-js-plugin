@@ -330,6 +330,7 @@ helix.register_command("dashboard-probe", (ctx) => {
     if (typeof helix.begin_edit === "function") helix.begin_edit();
     for (const [, s] of cases) doc.insert(0, 0, s + "\n");
     if (typeof helix.end_edit === "function") helix.end_edit();
+    n_open_drew++; // 真的插入成功(诊断计数 ✓)
     guard(() => helix.echo("dashboard-probe: 已依次插入 A-SHORT / B-MULTI / C-LONG / D-REAL ⇒ 看主区域出现了哪几个"));
   } catch (e) {
     guard(() => helix.echo("dashboard-probe: insert 抛错 —— " + (e && e.message ? e.message : e)));
