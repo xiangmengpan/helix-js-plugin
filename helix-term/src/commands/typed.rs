@@ -5021,6 +5021,11 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         |t| t.view_id() == view_id,
                     ) {
                         compositor.remove_leaf(id);
+                        // 布局变更 ⇒ 同步 JS 快照并触发 layout-change(#47)。
+                        // 这一臂此前**漏了** sync ⇒ 关终端时 JS 侧快照会陈旧、layout-change 也不发 ✗
+                        // （与另 9 个臂对齐；关闭终端同样改变了布局）
+                        helix_js::set_layout_change_kind("close");
+                        compositor.sync_layout_cache();
                     }
                 });
             }
