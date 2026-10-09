@@ -118,6 +118,10 @@ pub struct Compositor {
 
 impl Compositor {
     pub fn new(area: Rect) -> Self {
+        // ★ 初始尺寸也要推给 JS —— 此前只在 `resize()` 里推 ✗,
+        // 而 `resize()` 只在**终端尺寸变化**时被调 ⇒ 启动后 `vw/vh` 一直是 0 ✗
+        // (真机实测:`dashboard-diag: vw=0 vh=0` ✓ —— 这就是"不居中"的真因 ✓)
+        helix_js::set_viewport(area.width, area.height);
         Self {
             main_tree: Default::default(),
             layers: Vec::new(),

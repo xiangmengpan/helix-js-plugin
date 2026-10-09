@@ -267,7 +267,17 @@ helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
 
 // **离开即解绑**(最高优先的修复 ✓):切 buffer / 开新 buffer ⇒ 那 7 个全局键立即失效 ✓
 // ⇒ 从根上消掉"在 filetree 里按键又触发 dashboard ⇒ 重入卡死" ✗
-helix.on("buffer-open", () => dismiss_on_others());
+helix.on("buffer-open", () => {
+  if (dash_open) {
+    // 已经在屏上 ⇒ 这是"用户切走了" ⇒ 解绑 ✓(这条消掉了"按 e 卡死" ✓)
+    dismiss_on_others();
+    return;
+  }
+  // ★ 真机实测:`startup` 期插入的内容会被**后续换 buffer 冲掉** ✗
+  // (状态栏留着回显 ✓ 而主区域空 ✗;之后查 doc 只有 1 字符 ✓)
+  // ⇒ 在 `buffer-open`(启动定型之后)再补画一次;闸门会保证只画空白 buffer ✓
+  guard(() => helix.run_command("dashboard"));
+});
 helix.on("buffer-close", () => dismiss_on_others());
 helix.register_command("dashboard-close", (ctx) => close_dashboard(ctx));
 
