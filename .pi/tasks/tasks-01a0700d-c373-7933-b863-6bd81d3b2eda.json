@@ -1,0 +1,65 @@
+{
+  "nextId": 15,
+  "tasks": [
+    {
+      "id": "10",
+      "subject": "Rail-T1: LayoutTree rail 登记与结构护栏",
+      "description": "layout.rs: rail 登记/is_rail/root 形状护栏(split 目标为 rail→落 main)+ dump rail 标记,单元测试",
+      "status": "completed",
+      "activeForm": "实现 LayoutTree rail 登记",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788617432024,
+      "updatedAt": 1788617684214
+    },
+    {
+      "id": "11",
+      "subject": "Rail-T2: open_panel→rail + 操作政策护栏",
+      "description": "typed OpenPanel left/right→rail 注册;window-mode 护栏(swap/resize/min/zoom 免疫,x 关 rail,split 落 main);zoom 不藏 rail",
+      "status": "completed",
+      "activeForm": "接线 open_panel rail 注册与政策",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788617432027,
+      "updatedAt": 1788618351619
+    },
+    {
+      "id": "12",
+      "subject": "Rail-T3: 焦点模型(C-w h/l 进出/Esc 回)",
+      "description": "C-w h/l 进出 rail、Esc/l 回 main(pre_rail_focus 记忆)、浏览键消费、rail 上 v/s/n 落 main",
+      "status": "completed",
+      "activeForm": "实现 rail 焦点模型",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788617432028,
+      "updatedAt": 1788618351620
+    },
+    {
+      "id": "13",
+      "subject": "Rail-T4: Enter 打开文件到 main 活动窗",
+      "description": "filetree Enter 打开文件→main 活动窗打开并聚焦;filetree 保持打开",
+      "status": "completed",
+      "activeForm": "接线 Enter 打开联动",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788617432030,
+      "updatedAt": 1788621312101
+    },
+    {
+      "id": "14",
+      "subject": "Rail-T5: 文档 + 全量回归",
+      "description": "README/plugin-api 窗口段 rail 文档;helix-view/js/integration 全量 + clippy/fmt",
+      "status": "completed",
+      "activeForm": "文档与全量回归",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788617432031,
+      "updatedAt": 1788624109883
+    }
+  ]
+}

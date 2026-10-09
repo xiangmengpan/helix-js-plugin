@@ -1,0 +1,77 @@
+{
+  "nextId": 7,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "SM-T1: registry + archive 安装/升级/卸载",
+      "description": "server_manager registry/ServerSpec/InstallSpec::Archive + 受管目录 + download(mirror+sha256)+解压+managed/bin + update/remove;file:// 假源单测",
+      "status": "in_progress",
+      "activeForm": "实现 registry+archive 安装",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788668548389,
+      "updatedAt": 1788668554335
+    },
+    {
+      "id": "2",
+      "subject": "SM-T2: tool 类配方安装",
+      "description": "InstallSpec::Tool(pip/cargo/npm 前缀于受管目录)+ launcher + 失败清理",
+      "status": "pending",
+      "activeForm": "实现 tool 类配方",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788668548392,
+      "updatedAt": 1788668548392
+    },
+    {
+      "id": "3",
+      "subject": "SM-T3: languages.toml 自动写+合并",
+      "description": "标记段剥离/重建/幂等;最小 [[language]]+language-servers+DAP debugger;用户自定义语言不覆盖;rust 集成验证合并生效",
+      "status": "pending",
+      "activeForm": "实现 languages.toml 标记段",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788668548393,
+      "updatedAt": 1788668548393
+    },
+    {
+      "id": "4",
+      "subject": "SM-T4: :server 命令族+JS API",
+      "description": "6 typed 命令+config [server-manager](dir/mirror/registry)+UiRequest::ServerOp+JS helix.server.*",
+      "status": "pending",
+      "activeForm": "实现 :server 命令族",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788668548394,
+      "updatedAt": 1788668548394
+    },
+    {
+      "id": "5",
+      "subject": "SM-T5: UI 面板 + health 提示",
+      "description": "rail picker 插件(list/search/install/remove)+health 缺失提示",
+      "status": "pending",
+      "activeForm": "实现 UI 面板与 health",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788668548395,
+      "updatedAt": 1788668548395
+    },
+    {
+      "id": "6",
+      "subject": "SM-T6: 文档 + 全量回归",
+      "description": "README/plugin-api server manager 段;全量 cargo test+clippy+fmt",
+      "status": "pending",
+      "activeForm": "文档与全量回归",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788668548396,
+      "updatedAt": 1788668548396
+    }
+  ]
+}

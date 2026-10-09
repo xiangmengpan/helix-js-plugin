@@ -1,0 +1,29 @@
+{
+  "nextId": 34,
+  "tasks": [
+    {
+      "id": "32",
+      "subject": "批次 10 任务 1:装饰二分",
+      "description": "装饰二分:排序存储 + 可见范围 + 单测",
+      "status": "completed",
+      "activeForm": "执行批次 10 任务 1",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788137223454,
+      "updatedAt": 1788139199816
+    },
+    {
+      "id": "33",
+      "subject": "批次 10 任务 2:粘贴支持",
+      "description": "粘贴支持:批量插入 + Paste 分支 + integration",
+      "status": "in_progress",
+      "activeForm": "执行批次 10 任务 2",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1788137223455,
+      "updatedAt": 1788138147471
+    }
+  ]
+}
