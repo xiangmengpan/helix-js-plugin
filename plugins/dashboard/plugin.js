@@ -54,6 +54,27 @@ function width() {
   return guard(() => helix.width(), 80) || 80;
 }
 
+/// **显示宽度**(不是码点数):中文/全角在屏上占 **2 列** ✓
+/// 不加这个,菜单缩进就会参差 —— E2E 实测过 ✗(logo 那几行因为全是块元素/制表符=1列,
+/// 反而看起来很整齐,只有中文行偏 ✗ ⇒ 正好印证:块元素按 1 列、**只有 CJK 按 2 列** ✓)
+function disp_width(s) {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    const wide =
+      (c >= 0x1100 && c <= 0x115f) || // 韩文字母
+      (c >= 0x2e80 && c <= 0xa4cf) || // CJK 部首 / 假名 / 表意文字
+      (c >= 0xac00 && c <= 0xd7a3) || // 韩文音节
+      (c >= 0xf900 && c <= 0xfaff) || // CJK 兼容表意
+      (c >= 0xfe30 && c <= 0xfe6f) || // CJK 兼容形式
+      (c >= 0xff00 && c <= 0xff60) || // 全角标点
+      (c >= 0xffe0 && c <= 0xffe6) || // 全角符号
+      (c >= 0x1f300 && c <= 0x1f64f); // 常用 emoji
+    n += wide ? 2 : 1;
+  }
+  return n;
+}
+
 // ── 菜单 ──────────────────────────────────────────────────────────────────
 // 动作全部走 `guard`,失败静默 —— 启动屏不该因为某个动作不可用而报错 ✓
 const MENU = [
@@ -70,13 +91,21 @@ const MENU = [
 function build_text() {
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   const w = width();
-  const pad = (s) => " ".repeat(Math.max(0, Math.floor((w - s.length) / 2))) + s;
+  // 用**显示宽度**算居中(不是 `s.length` ✗)
+  const pad = (s) => " ".repeat(Math.max(0, Math.floor((w - disp_width(s)) / 2))) + s;
   const lines = [""];
   if (cfg.logo !== "none") {
     for (const l of cfg.logo === "slim" ? LOGO_SLIM : LOGO_BLOCKS) lines.push(pad(l));
   }
   lines.push("");
-  for (const item of MENU) lines.push(pad("  " + item[0] + "   " + item[1]));
+  // **整体居中**:先求最宽项,再统一左边距 —— 逐行居中会让键位参差 ✗(第一版就这样)
+  const label = (it) => "  " + it[0] + "   " + it[1];
+  const item_w = Math.max.apply(
+    null,
+    MENU.map((it) => disp_width(label(it)))
+  );
+  const left = " ".repeat(Math.max(0, Math.floor((w - item_w) / 2)));
+  for (const it of MENU) lines.push(left + label(it));
   lines.push("");
   lines.push(pad("────────────────────────────────"));
   lines.push(pad("  " + (stamp() ? "启动于 " + stamp() : "欢迎") + " · 按 q 关闭"));
