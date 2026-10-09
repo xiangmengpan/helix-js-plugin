@@ -5152,6 +5152,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 复用 ②-1 的浮窗模型:set_float 给默认居中槽位
                     compositor.set_float(id);
+                    helix_js::set_layout_change_kind("float");
                     compositor.sync_layout_cache();
                 });
             }
@@ -5163,6 +5164,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                         .stack_new_with_sibling(id)
                         .is_some()
                     {
+                        helix_js::set_layout_change_kind("stack-create");
                         compositor.sync_layout_cache();
                     }
                 });
@@ -5179,6 +5181,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                             }
                             lt.stack_rotate(id, true);
                         }
+                        helix_js::set_layout_change_kind("stack-activate");
                         compositor.sync_layout_cache();
                     }
                 });
@@ -5186,24 +5189,28 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
             helix_js::UiRequest::StackRemove { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().stack_remove_member(id);
+                    helix_js::set_layout_change_kind("stack-remove");
                     compositor.sync_layout_cache();
                 });
             }
             helix_js::UiRequest::PaneRaise { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().float_raise(id);
+                    helix_js::set_layout_change_kind("raise");
                     compositor.sync_layout_cache();
                 });
             }
             helix_js::UiRequest::PanePin { id, on } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().float_set_pinned(id, on);
+                    helix_js::set_layout_change_kind("pin");
                     compositor.sync_layout_cache();
                 });
             }
             helix_js::UiRequest::PaneEmbed { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().remove_float(id);
+                    helix_js::set_layout_change_kind("embed");
                     compositor.sync_layout_cache();
                 });
             }
