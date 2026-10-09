@@ -69,7 +69,15 @@ function stamp() {
   return guard(() => new Date().toISOString().slice(0, 16).replace("T", " "), "");
 }
 function width() {
-  return guard(() => helix.width(), 80) || 80;
+  // ★ 实测:`helix.width` **不存在** ✗ ⇒ 以前一直回退 80 ⇒ 宽终端上像是"不满屏/没居中" ✓
+  // 取不到 ⇒ 返回 0 ⇒ pad() 改用固定缩进:宁可不居中,也不要"按 80 列居中的假象" ✓
+  for (const f of ["width", "cols", "columns"]) {
+    if (typeof helix[f] === "function") {
+      const v = guard(() => helix[f](), 0);
+      if (typeof v === "number" && v > 0) return v;
+    }
+  }
+  return 0;
 }
 
 /// **显示宽度**(不是码点数):中文/全角在屏上占 **2 列** ✓
@@ -102,15 +110,16 @@ const MENU = [
   ["e", "文件树", () => try_command("filetree")],
   ["c", "配置", () => guard(() => helix.open_file(guess_config(), {}))],
   ["m", "市场", () => try_command("arsenal")],
-  ["q", "关闭", () => close_dashboard()],
+  ["q", "关闭", () => guard(() => helix.run_command("dashboard-close"))],
 ];
 
 // ── 内容 ──────────────────────────────────────────────────────────────────
 function build_text() {
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   const w = width();
-  // 用**显示宽度**算居中(不是 `s.length` ✗)
-  const pad = (s) => " ".repeat(Math.max(0, Math.floor((w - disp_width(s)) / 2))) + s;
+  // 宽度已知 ⇒ 按**显示宽度**居中;未知(w==0)⇒ 固定缩进 4 列(不假装居中 ✓)
+  const pad = (s) =>
+    w > 0 ? " ".repeat(Math.max(0, Math.floor((w - disp_width(s)) / 2))) + s : "    " + s;
   const lines = [""];
   if (cfg.logo !== "none") {
     for (const l of cfg.logo === "slim" ? LOGO_SLIM : LOGO_BLOCKS) lines.push(pad(l));
@@ -154,26 +163,41 @@ function bind_keys() {
 }
 
 // ── 开屏 / 关屏 ───────────────────────────────────────────────────────────
-function close_dashboard() {
+function close_dashboard(ctx) {
   unbind_keys();
   dash_open = false;
-  // **真的离开**:尽量关掉这张 buffer(dashboard 就是启动时那个空 buffer ✓)
-  // 关不掉也**不静默** —— 至少把状态说清 ✓(上次"按 q 没反应"就是因为它什么都不做 ✗)
-  let closed = false;
-  for (const fn of ["buffer_close", "close_buffer"]) {
-    if (typeof helix[fn] === "function") {
-      try {
-        helix[fn](dash_buffer_id);
-        closed = true;
-        break;
-      } catch (e) {
-        helix.echo("dashboard: " + fn + " 失败 —— " + (e && e.message ? e.message : e));
-      }
+  // ★ 探针实测:**没有** `helix.close` / `buffer_close` / `close_buffer` ✗
+  // ⇒ 用**已证实**的 `ctx.doc.delete` 把启动屏**清空**(留下的就是启动时那个空 buffer ✓ = 离开 ✓)
+  if (ctx && ctx.doc && typeof ctx.doc.delete === "function") {
+    try {
+      const rows = String(ctx.doc.text || "").split("\n").length;
+      ctx.doc.delete(0, 0, rows, 0);
+      guard(() => helix.echo("dashboard: 已关闭启动屏"));
+      return;
+    } catch (e) {
+      helix.echo("dashboard: 清屏失败 —— " + (e && e.message ? e.message : e));
     }
   }
-  if (!closed) {
-    helix.echo("dashboard: 已解除启动屏键位(未能关闭缓冲,可用 :q 或切 buffer 离开)");
+  guard(() => helix.echo("dashboard: 键位已解除(未拿到 ctx.doc,屏内容保留)"));
+  // **真的离开**:尽量关掉这张 buffer(dashboard 就是启动时那个空 buffer ✓)
+  // 关不掉也**不静默** —— 至少把状态说清 ✓(上次"按 q 没反应"就是因为它什么都不做 ✗)
+  // 真名是 `helix.close` ✓(注册清单里有 `close` 与 `close_panel`;后者是面板 ✗)
+  let closed = false;
+  for (const fn of ["close", "buffer_close", "close_buffer"]) {
+    if (typeof helix[fn] !== "function") continue;
+    try {
+      if (fn === "close") {
+        try { helix.close(dash_buffer_id); } catch (e) { helix.close(); }
+      } else {
+        helix[fn](dash_buffer_id);
+      }
+      closed = true;
+      break;
+    } catch (e) {
+      helix.echo("dashboard: " + fn + " 失败 —— " + (e && e.message ? e.message : e));
+    }
   }
+  guard(() => helix.echo(closed ? "dashboard: 已关闭启动屏" : "dashboard: 已解除键位,但没找到可用的关闭接口(请报告)"));
   dash_buffer_id = null;
 }
 
@@ -192,10 +216,15 @@ function open_dashboard(ctx) {
 
   // **安全闸(必需)**:若当前 buffer **有路径**(真实文件),绝不把启动屏写进去 ✗
   // E2E 实测过这个后果:在打开的 a.txt 上跑 `:dashboard`,内容被混进那个文件 ✗
-  const cur = guard(() => helix.current_buffer(), null);
-  const cp = cur ? cur.path : null;
-  if (cp !== null && cp !== undefined && cp !== "") {
-    guard(() => helix.echo("dashboard: 当前是文件缓冲(" + cp + "),不在此绘制启动屏"));
+  // 判定改用**已证实**的 `ctx.doc.text`(探针实测:`buffer.current().path` 是 undefined ✗ 不可用 ✓)
+  // 规则:**只在空白 buffer 上绘制** —— 等价于 LazyVim("空白无名 buffer 才显示")且更安全 ✓
+  const text = ctx && ctx.doc ? String(ctx.doc.text || "") : null;
+  if (text === null) {
+    guard(() => helix.echo("dashboard: 拿不到 ctx.doc(需经命令路径调用)"));
+    return;
+  }
+  if (text.trim() !== "") {
+    guard(() => helix.echo("dashboard: 当前 buffer 非空,不在此绘制启动屏"));
     return;
   }
   // **不新开 buffer** —— 启动屏就是"启动时那个空白无名 buffer 本身" ✓(LazyVim 也是这个模型)
@@ -225,7 +254,7 @@ function open_dashboard(ctx) {
     helix.echo("dashboard: 写入内容失败 —— " + (e && e.message ? e.message : e));
   }
   // 记下自己所在的 buffer(退出时要用 ✓)
-  dash_buffer_id = guard(() => helix.current_buffer().id, null);
+  dash_buffer_id = guard(() => helix.buffer.current().id, null);
   guard(() => helix.echo("HELIX 启动屏 —— f 查找 · r buffer · e 文件树 · q 关闭"));
   bind_keys();
 }
@@ -237,7 +266,7 @@ helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
 // ⇒ 从根上消掉"在 filetree 里按键又触发 dashboard ⇒ 重入卡死" ✗
 helix.on("buffer-open", () => dismiss_on_others());
 helix.on("buffer-close", () => dismiss_on_others());
-helix.register_command("dashboard-close", () => close_dashboard());
+helix.register_command("dashboard-close", (ctx) => close_dashboard(ctx));
 
 // ── 启动自动显示(仅"无文件启动")──────────────────────────────────────────
 // 判定:当前 buffer **没有路径** ⇒ 视为无文件启动 ✓
@@ -247,9 +276,7 @@ helix.on("startup", (arg) => {
   const ctx = arg && arg.doc ? arg : arg && arg.ctx ? arg.ctx : null;
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   if (cfg.enabled === false) return;
-  const cur = guard(() => helix.current_buffer(), null);
-  if (!cur) return;
-  const p = cur.path;
-  if (p !== null && p !== undefined && p !== "") return; // 有文件 ⇒ 不显示 ✓
-  open_dashboard(ctx);
+  // ★ 关键:事件处理器**拿不到可编辑的 ctx** ✗ ⇒ 改为**触发自己的命令**(命令路径能拿到 ctx ✓)
+  // (这条正是"手动输入命令就能用"所证明的 ✓)
+  guard(() => helix.run_command("dashboard"));
 });

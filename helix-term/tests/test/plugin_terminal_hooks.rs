@@ -776,6 +776,62 @@ async fn dashboard_opens_scratch_screen() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// **dashboard 端到端**:`:dashboard` 在**空白 buffer** 上绘制启动屏 ⇒ `:dashboard-close` **清空它**
+///
+/// 这两条正是用户实测问题的回归:①"得手动输入命令才出屏"⇒ 现在 startup 走命令路径 ✓
+/// ②"q 没效果"⇒ 关闭现在真的清屏(404 → 0 字符)✓
+/// 注:必须无文件启动 —— 插件有安全闸,**非空白 buffer 拒绝绘制** ✓
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_draws_and_closes() -> anyhow::Result<()> {
+    let _g = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/dashboard/plugin.js");
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+
+    pump(&mut app, ":dashboard<ret>").await?;
+    let (_, opened) = current_ref!(app.editor);
+    let n_open = opened.text().len_chars();
+    assert!(n_open > 100, "启动屏应写入内容,实得 {n_open} 字符");
+    assert!(
+        opened.text().to_string().contains("查找文件"),
+        "内容应含菜单项"
+    );
+
+    pump(&mut app, ":dashboard-close<ret>").await?;
+    let (_, closed) = current_ref!(app.editor);
+    assert_eq!(
+        closed.text().len_chars(),
+        0,
+        "关闭后应清空启动屏(q 的修复:以前它什么都不做 ✗)"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dash_verify_diag() -> anyhow::Result<()> {
+    let _g = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/dashboard/plugin.js");
+    // 无文件启动 ⇒ 初始 buffer 空白 ⇒ 通过"仅空白可绘制"的闸 ✓
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":dashboard<ret>").await?;
+    let (_, d1) = current_ref!(app.editor);
+    let n1 = d1.text().len_chars();
+    pump(&mut app, ":dashboard-close<ret>").await?;
+    let (_, d2) = current_ref!(app.editor);
+    let n2 = d2.text().len_chars();
+    let st = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    panic!("AFTER_OPEN={n1} AFTER_CLOSE={n2} STATUS=[{st}]");
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
