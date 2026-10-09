@@ -451,6 +451,41 @@ pub fn merge_keys(dst: &mut HashMap<Mode, KeyTrie>, mut delta: HashMap<Mode, Key
 
 #[cfg(test)]
 mod tests {
+    /// `remove_binding` 是 `insert_binding` 的逆操作:摘叶 + 空节点回收 + 幂等 ✓
+    ///
+    /// 两点踩坑记录(都是本测试前几版失败的原因 ✗):
+    ///  1. 构造必须**从默认键表起步** —— `insert_binding` 只 merge 进**已有模式**,
+    ///     空表(`Keymaps::new(HashMap::new())`)里永远合不进去 ✗
+    ///  2. 探针必须用 **`get`** —— `contains_key` 的语义是"给定 **pending 前缀**后该节点是否含此键",
+    ///     前缀为空时**恒为 false** ✗,并且在该模式无条目时还会索引 panic ✗
+    ///   还有:别假设任何键"默认未绑"(如 `Q` 默认就是绑的 ✗)⇒ 只断言"是否命中**我们绑的那条**" ✓
+    #[test]
+    fn remove_binding_is_inverse_of_insert() {
+        // 注:`get` 取 `&mut self`(要记录 pending 状态)✗ ⇒ 必须 `mut` ✓
+        let mut keymaps = Keymaps::new(default());
+        let k: KeyEvent = "Q".parse().unwrap();
+
+        keymaps.insert_binding(Mode::Normal, &[k], MappableCommand::no_op);
+        // 注:`MappableCommand::no_op` 是**函数指针** ✗ ⇒ 不能用 `matches!` 模式匹配;
+        // 照既有测试用 `assert_eq!` 比较**值** ✓
+        assert_eq!(
+            keymaps.get(Mode::Normal, k),
+            KeymapResult::Matched(MappableCommand::no_op),
+            "插入后应命中我们绑的命令"
+        );
+
+        keymaps.remove_binding(Mode::Normal, &[k]);
+        assert_ne!(
+            keymaps.get(Mode::Normal, k),
+            KeymapResult::Matched(MappableCommand::no_op),
+            "摘除后不应再命中那条命令"
+        );
+
+        // 幂等:再摘一次不 panic;不存在的键序列也不 panic ✓
+        keymaps.remove_binding(Mode::Normal, &[k]);
+        keymaps.remove_binding(Mode::Normal, &["F12".parse().unwrap()]);
+    }
+
     use super::macros::keymap;
     use super::*;
     use crate::commands::MappableCommand;
