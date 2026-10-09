@@ -822,3 +822,31 @@ helix_js::UiRequest::PluginOp { op, arg } => {
 2. **修法**:发事件时给**更完整的上下文** —— 布局变更处虽无 `CommandContext`,但 `Compositor` 手里有 `editor` ✓
    ⇒ 可从 `editor` 构造当前 doc 的最小快照(路径/文本/光标),而不是空值 ✓
    或:给 `emit_event_impl` 加一条**跳过 doc 构造**的路径(事件不带 doc 时)✓
+
+### §18 追加:第二个假设也被证伪 —— 请从"读调用路径"开始,而不是推理
+
+第一版探针用 `:vsplit` 触发 ⇒ 失败 ✗。我推断"`:vsplit` 不经过 `sync_layout_cache`" ✓,并把探针改为
+**JS API**(`helix.split("right", {})`)—— **仍然失败** ✗
+
+| 假设 | 结果 |
+|---|---|
+| 空 ctx 让 `doc_to_js` 失败 ⇒ 静默跳过 | ❌ **证伪**(`doc_to_js` 用 `build_doc_object(None, "", (0,0), …)`,空值完全合法 ✓) |
+| `:vsplit` 不经过汇聚点,改用 JS API 即可 | ❌ **证伪**(JS API 路径**同样不触发** ✗) |
+| `sync_layout_cache` 是"所有布局变更的唯一汇聚点" | ❌ **很可能也不成立** —— 至少 `SplitLeaf` 这条路不经过它 ✗ |
+
+### 下一步:**先把调用路径读出来**(不要再推理)
+
+```bash
+grep -n "SplitLeaf" -A 12 helix-term/src/commands/typed.rs     # 谁处理它?那里调 sync_layout_cache 了吗?
+grep -n "sync_layout_cache" helix-term/src/commands/typed.rs   # 7 个调用点分别在哪些臂里?
+grep -n "fn sync_layout_cache" -A 30 helix-term/src/compositor.rs  # 它到底做几件事(是否只在特定变更时调)
+```
+
+**要回答的问题**:布局变更后,**谁**负责"让 JS 侧知道"?
+- 若已有别的机制(例如 `UiRequest` 处理完后统一刷新)⇒ 事件应挂在**那里** ✓
+- 若没有 ⇒ 需要像 §16 说的那样,从 `LayoutTree` 的变更点**串上来**(≈10 处)—— 那才是 marker 的原意 ✓
+
+### 方法上的账(第二次同款)
+
+> 两次"看起来很有道理"的假设**都错** ✗ —— 而两次都只值**一次 grep** ✓
+> **在"哪里发事件"这种问题上,推理的命中率低于阅读。**
