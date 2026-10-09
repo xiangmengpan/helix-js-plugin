@@ -119,7 +119,18 @@ function open_dashboard() {
   guard(() => helix.close_buffer(helix.buffer.current().id));
   const id = guard(() => helix.open_file("/tmp/hx-dashboard.txt", { scratch: true }), null);
   dash_doc = guard(() => (id === null ? helix.buffer.current().id : id), null);
-  guard(() => helix.insert(0, 0, build_text()));
+
+  // **内容写入必须报错可见** —— 先前这里包了 guard(),于是"内容没写进去"被**静默吞掉** ✗
+  // (E2E 第一次运行就发现:buffer 开对了,但文本只有 "\n")⇒ 改成显式 try/catch + echo ✓
+  try {
+    const body = build_text();
+    helix.insert(0, 0, body);
+    if (helix.read_lines === undefined) {
+      // no-op:保留一个能力探测点,便于日后替换成"读回校验" ✓
+    }
+  } catch (e) {
+    helix.echo("dashboard: 写入内容失败 —— " + (e && e.message ? e.message : e));
+  }
   guard(() => helix.echo("HELIX 启动屏 —— f 查找 · r buffer · e 文件树 · q 关闭"));
   bind_keys();
 }
