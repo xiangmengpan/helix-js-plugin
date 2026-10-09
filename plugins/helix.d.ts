@@ -393,6 +393,21 @@ interface Helix {
     minimize(id: number, on?: boolean): void;
     equalize(id: number): void;
     fix(id: number, fixed: boolean): void;
+    /** 新建 pane 并**直接带内容**（统一入口；由内置插件 `pane-open` 提供） */
+    open(opts: {
+      /** 方向；缺省 "right"。也接受别名 below/above */
+      place?: SplitDir | "below" | "above";
+      /** 透传给底层 split 的内容：`{terminal: {cmd, size}}` 或 `{panel: {...}}` */
+      content?: { terminal?: { cmd: string; size?: number }; panel?: PanelOptions };
+    }): void;
+    /** 按方向分裂（**需给内容**：`{terminal|panel}`；空对象会被拒） */
+    split(dir: SplitDir, opts: { terminal?: { cmd: string; size?: number }; panel?: PanelOptions }): void;
+    /** 该 pane 的详情（与 `list()` 的单项同构） */
+    info(id: number): { id: number; kind: string; place: string; focused: boolean } | null;
+    /** 提到最前（浮窗层序 / 堆叠可见位） */
+    raise(id: number): void;
+    /** 固定：更新时跳过（堆叠成员用） */
+    pin(id: number, on?: boolean): void;
   };
   /** 图标表 —— **核心单一来源**(helix-js/src/icons.rs)。
    *  所有插件**零依赖**可用,不需要再声明 `deps: ["lib/icons.js"]`。
