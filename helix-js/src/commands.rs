@@ -729,12 +729,25 @@ pub(crate) fn js_map(
         command_arg.try_js_into(context)?
     };
 
+    // 第 4 个可选参数:{ unbind: true } ⇒ 摘掉这条绑定(dashboard 关屏时用)✓
+    let unbind = args
+        .get(3)
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get(JsString::from("unbind"), context).ok())
+        .and_then(|v| v.as_boolean())
+        .unwrap_or(false);
+
     UI_REQUESTS
         .get()
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::MapKey { mode, key, command });
+        .push(UiRequest::MapKey {
+            mode,
+            key,
+            command,
+            unbind,
+        });
     Ok(JsValue::undefined())
 }
 

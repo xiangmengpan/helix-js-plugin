@@ -2209,7 +2209,9 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
         match &reqs[0] {
-            UiRequest::MapKey { mode, key, command } => {
+            UiRequest::MapKey {
+                mode, key, command, ..
+            } => {
                 assert_eq!(mode, "normal");
                 assert_eq!(key, "gd");
                 assert_eq!(command, "goto-def");

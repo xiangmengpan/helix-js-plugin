@@ -56,6 +56,7 @@ pub enum UiRequest {
         mode: String,
         key: String,
         command: String,
+        unbind: bool,
     },
     /// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
     /// pty_id 是内部 spawn 的 pty 进程 id（term_write/term_resize/关闭时 kill 用）。

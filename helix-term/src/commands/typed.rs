@@ -5360,12 +5360,22 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::MapKey { mode, key, command } => {
+            helix_js::UiRequest::MapKey {
+                mode,
+                key,
+                command,
+                unbind,
+            } => {
                 // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
                 let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(view) = compositor.find::<ui::EditorView>() {
-                        view.keymaps.insert_binding(mode, &keys, cmd);
+                        if unbind {
+                            // 解绑(dashboard 关屏时用)—— 真正的"摘叶",不是绑到 no_op ✗
+                            view.keymaps.remove_binding(mode, &keys);
+                        } else {
+                            view.keymaps.insert_binding(mode, &keys, cmd);
+                        }
                     }
                 });
             }
