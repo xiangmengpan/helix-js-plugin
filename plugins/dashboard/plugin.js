@@ -30,7 +30,7 @@ const LOGO_BLOCKS = [
 const LOGO_SLIM = ["  H E L I X  ⌘"];
 
 // ── 状态 ──────────────────────────────────────────────────────────────────
-let dash_doc = null; // 启动屏的 buffer id(每次"当前 buffer"变化都会清掉 ✓)
+let dash_open = false; // 启动屏是否已开(不新开 buffer ⇒ 只需一个标记 ✓)
 let bound = false; // 键位是否已绑(精确解绑用 ✓)
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
@@ -109,22 +109,41 @@ function bind_keys() {
 // ── 开屏 / 关屏 ───────────────────────────────────────────────────────────
 function close_dashboard() {
   unbind_keys();
-  if (dash_doc !== null) guard(() => helix.close_buffer(dash_doc));
-  dash_doc = null;
+  // 不关 buffer(那本来就是用户启动时的空 buffer ✓)——只解除"启动屏模式" ✓
+  dash_open = false;
 }
 
-function open_dashboard() {
-  if (dash_doc !== null) return;
-  // 关掉启动时留下的那个空 buffer(尽量,失败无所谓 ✓)
-  guard(() => helix.close_buffer(helix.buffer.current().id));
-  const id = guard(() => helix.open_file("/tmp/hx-dashboard.txt", { scratch: true }), null);
-  dash_doc = guard(() => (id === null ? helix.buffer.current().id : id), null);
+function open_dashboard(ctx) {
+  if (dash_open) return;
+
+  // **安全闸(必需)**:若当前 buffer **有路径**(真实文件),绝不把启动屏写进去 ✗
+  // E2E 实测过这个后果:在打开的 a.txt 上跑 `:dashboard`,内容被混进那个文件 ✗
+  const cur = guard(() => helix.buffer.current(), null);
+  const cp = cur ? cur.path : null;
+  if (cp !== null && cp !== undefined && cp !== "") {
+    guard(() => helix.echo("dashboard: 当前是文件缓冲(" + cp + "),不在此绘制启动屏"));
+    return;
+  }
+  // **不新开 buffer** —— 启动屏就是"启动时那个空白无名 buffer 本身" ✓(LazyVim 也是这个模型)
+  // 先前新开一张的写法有个隐蔽 bug:`ctx.doc` 是在处理器运行**之前**构造的 ✗
+  // ⇒ 它指向**开屏前**的 buffer ⇒ 内容写进了旧的,新 buffer 仍是空的 ✗(E2E 实得 LEN=1)
+  dash_open = true;
 
   // **内容写入必须报错可见** —— 先前这里包了 guard(),于是"内容没写进去"被**静默吞掉** ✗
   // (E2E 第一次运行就发现:buffer 开对了,但文本只有 "\n")⇒ 改成显式 try/catch + echo ✓
   try {
     const body = build_text();
-    helix.insert(0, 0, body);
+    // **编辑方法在 doc 对象上**(不在 helix 全局)✗ —— 诊断实得 "not a callable function" ✓
+    // 优先用当前 doc 的 insert;再退回全局(两级都试,任一成功即可)✓
+    // **编辑方法在 `ctx.doc` 上**(不在 helix 全局)✓ —— 见 docs/api/editing.md
+    const doc = ctx && ctx.doc ? ctx.doc : null;
+    if (doc && typeof doc.insert === "function") {
+      doc.insert(0, 0, body);
+    } else {
+      throw new Error(
+        "拿不到带编辑方法的 ctx.doc(命令/事件处理器必须接收并使用其 ctx 参数)"
+      );
+    }
     if (helix.read_lines === undefined) {
       // no-op:保留一个能力探测点,便于日后替换成"读回校验" ✓
     }
@@ -136,18 +155,20 @@ function open_dashboard() {
 }
 
 // ── 显式命令(永远可用,不依赖 startup ✓)──────────────────────────────────
-helix.register_command("dashboard", () => open_dashboard());
+helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
 helix.register_command("dashboard-close", () => close_dashboard());
 
 // ── 启动自动显示(仅"无文件启动")──────────────────────────────────────────
 // 判定:当前 buffer **没有路径** ⇒ 视为无文件启动 ✓
 // 判定不出/形状不同 ⇒ **不显示**(安全降级 ✓,绝不打扰正常编辑)
-helix.on("startup", () => {
+helix.on("startup", (arg) => {
+  // 事件处理器的参数形状与事件相关(如 layout-change 带 kind)✗ ⇒ 兼容多种形状取 ctx ✓
+  const ctx = arg && arg.doc ? arg : arg && arg.ctx ? arg.ctx : null;
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   if (cfg.enabled === false) return;
   const cur = guard(() => helix.buffer.current(), null);
   if (!cur) return;
   const p = cur.path;
   if (p !== null && p !== undefined && p !== "") return; // 有文件 ⇒ 不显示 ✓
-  open_dashboard();
+  open_dashboard(ctx);
 });
