@@ -732,6 +732,50 @@ helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cm
     Ok(())
 }
 
+/// **dashboard(B 方案)端到端**:无文件启动后 `:dashboard` ⇒ 在**那个空白无名 buffer**
+/// 上写出启动屏(断言:无路径 + 文本含菜单)✓
+///
+/// 注:必须用**无文件启动** —— 插件有安全闸,当前 buffer **有路径**时会**拒绝绘制** ✓
+/// (键位"开屏绑 / 关屏解绑"由 `keymap::tests::remove_binding_is_inverse_of_insert` 覆盖 ✓)
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_opens_scratch_screen() -> anyhow::Result<()> {
+    let _g = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/dashboard/plugin.js");
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    // 无文件启动 ⇒ 初始 buffer 无名无路径 ⇒ 启动屏的落点 ✓
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    // 先确认插件**加载成功**,否则测的是"没加载"而不是"没开屏"(这个坑踩过 ✗)
+    let after_load = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(
+        !after_load.contains("error"),
+        "插件应先加载成功,实得 {after_load}"
+    );
+
+    pump(&mut app, ":dashboard<ret>").await?;
+
+    let (_, doc) = current_ref!(app.editor);
+    assert!(
+        doc.path().is_none(),
+        "启动屏应在无路径的 buffer 上,实得 {:?}",
+        doc.path()
+    );
+    let text = doc.text().to_string();
+    assert!(
+        text.contains("查找文件"),
+        "应写出菜单文本,实得 {} 字符:{:?}",
+        text.chars().count(),
+        text.chars().take(80).collect::<String>()
+    );
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
