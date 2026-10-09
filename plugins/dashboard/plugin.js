@@ -69,15 +69,11 @@ function stamp() {
   return guard(() => new Date().toISOString().slice(0, 16).replace("T", " "), "");
 }
 function width() {
-  // ★ 实测:`helix.width` **不存在** ✗ ⇒ 以前一直回退 80 ⇒ 宽终端上像是"不满屏/没居中" ✓
-  // 取不到 ⇒ 返回 0 ⇒ pad() 改用固定缩进:宁可不居中,也不要"按 80 列居中的假象" ✓
-  for (const f of ["width", "cols", "columns"]) {
-    if (typeof helix[f] === "function") {
-      const v = guard(() => helix[f](), 0);
-      if (typeof v === "number" && v > 0) return v;
-    }
-  }
-  return 0;
+  // 视口列数来自核心新增的 `helix.viewport() -> [width, height]` ✓
+  // (此前**没有任何接口**能读到 ✗ —— `helix.width`/`rows` 都是 undefined,探针实测过 ✓)
+  const v = guard(() => helix.viewport(), null);
+  if (v && typeof v[0] === "number" && v[0] > 0) return v[0];
+  return 0; // 读不到(如测试夹具无真实终端)⇒ 返回 0 ⇒ pad() 用固定缩进,不假装居中 ✓
 }
 
 /// **显示宽度**(不是码点数):中文/全角在屏上占 **2 列** ✓

@@ -140,6 +140,9 @@ impl Compositor {
 
     pub fn resize(&mut self, area: Rect) {
         self.area = area;
+        // 视口尺寸推给 JS 状态(插件要"真居中"就必须读得到 ✓;此前没有任何接口 ✗)
+        // 这里是**唯一入口** —— 全部尺寸变化都会经过它 ✓
+        helix_js::set_viewport(area.width, area.height);
     }
 
     /// Add a layer to be rendered in front of all existing layers.

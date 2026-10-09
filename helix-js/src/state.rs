@@ -465,6 +465,27 @@ pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
 }
 
 pub(crate) static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+/// 最近一次的**视口尺寸** (width, height) —— 由 `Compositor::resize` 推进来 ✓
+/// 为什么需要:插件要"真正居中/铺满"就必须知道列数,而此前**没有任何接口**能读到 ✗
+/// (曾据此猜过 `helix.width`/`helix.rows` ⇒ 都是 undefined ✗ —— 探针实测过)
+pub(crate) static VIEWPORT: OnceLock<Mutex<(u16, u16)>> = OnceLock::new();
+
+/// 记录视口尺寸(由核心在 `Compositor::resize` 里调用 ✓)
+pub fn set_viewport(width: u16, height: u16) {
+    let cell = VIEWPORT.get_or_init(|| Mutex::new((width, height)));
+    if let Ok(mut v) = cell.lock() {
+        *v = (width, height);
+    }
+}
+
+/// 读取视口尺寸(JS 侧 `helix.viewport()` 用 ✓)
+pub(crate) fn viewport() -> (u16, u16) {
+    VIEWPORT
+        .get()
+        .and_then(|c| c.lock().ok().map(|v| *v))
+        .unwrap_or((0, 0))
+}
+
 pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
 /// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
 /// 插件根目录(**有序**)。语义对齐 Neovim 的 `runtimepath`:自带 runtime 在前、

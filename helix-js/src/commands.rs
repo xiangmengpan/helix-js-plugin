@@ -134,6 +134,23 @@ pub(crate) fn js_write_plugin_file(
 
 /// `helix.plugins_dir()` → 插件目录绝对路径(未推入 → null)。
 /// `:plugin` 管理器用它定位 `manifest.json` 与插件文件。
+/// `helix.viewport() -> [width, height]` —— 视口列数/行数 ✓
+///
+/// 为什么需要:插件要"真正居中/铺满"就必须读得到列数,而此前**没有任何接口** ✗
+/// (曾猜过 `helix.width`/`helix.rows` ⇒ 探针实测都是 undefined ✗)
+/// 签名照抄同文件的 `js_plugins_dir`(**boa 引擎** ✓,不是 rquickjs ✗)
+pub(crate) fn js_viewport(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let (w, h) = crate::state::viewport();
+    let arr = JsArray::new(ctx)?;
+    arr.set(0, JsValue::from(w as i32), true, ctx)?;
+    arr.set(1, JsValue::from(h as i32), true, ctx)?;
+    Ok(arr.into())
+}
+
 pub(crate) fn js_plugins_dir(
     _this: &JsValue,
     _args: &[JsValue],
