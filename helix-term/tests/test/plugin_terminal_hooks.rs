@@ -682,6 +682,53 @@ async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// **#47 端到端**:`layout-change` 事件(第六版 —— 前五版全是**探针自身**的问题 ✗)。
+///
+/// 逐层排除后发现的真相:
+///   ① `helix.on` 有**事件名白名单** ⇒ `layout-change` 不在其中 ⇒ 插件**加载即抛** ✗(已修)
+///   ② `helix.split(dir, {})` **被拒**("opts must have 'terminal' or 'panel'")⇒ split 从未发生 ✗
+///   ③ `{panel:{}}` 被拒("panel render must be a function")✗
+///   ④ `{terminal:{cmd:"true"}}` ✓ ⇒ **事件如期触发** ✓
+/// ⇒ 即:实现一直是对的,**是探针喂了非法参数** ✓
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_change_event_fires_after_split() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let marker = dir.path().join("fired.txt");
+    let plugin = dir.path().join("lc.js");
+    std::fs::write(
+        &plugin,
+        format!(
+            r#"helix.on("layout-change", () => {{ helix.write_file({m:?}, "yes"); }});
+helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cmd: "true" }} }}); }});"#,
+            m = marker.to_string_lossy()
+        ),
+    )?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x\n")?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    // 先确认**插件真的加载了**(加载失败时状态栏含 error)——
+    // 否则测的是"没加载",不是"事件没发":这个坑我踩了五轮 ✗
+    let after_load = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(
+        !after_load.contains("error"),
+        "插件应先加载成功,实得 {after_load}"
+    );
+    assert!(!marker.exists(), "触发前不应存在");
+    pump(&mut app, ":lc-go<ret>").await?;
+    assert!(
+        marker.is_file(),
+        "helix.split 应经 sync_layout_cache 触发 layout-change(处理器写 marker)"
+    );
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
