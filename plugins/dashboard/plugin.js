@@ -305,11 +305,19 @@ helix.register_command("dashboard-probe", (ctx) => {
     guard(() => helix.echo("dashboard-probe: 当前 buffer 非空,请在**空 buffer** 上试(避免改到文件)"));
     return;
   }
+  // **三连测**:分别插入三种形态,各带独立标记 ✓(都在同一个空 buffer 上 ✓)
+  // 目的:一次问出"到底是哪一种属性让 dashboard 的插入失效" ✗
+  const cases = [
+    ["A-SHORT", "A-SHORT"],                                  // ① 短串(已知会成功 ✓)
+    ["B-MULTI", "B-MULTI\nB-LINE2"],                         // ② 多行
+    ["C-LONG", "C-LONG\n" + "x".repeat(700)],                 // ③ 长串(≈dashboard 的量级)
+    ["D-REAL", build_text()],                                 // ④ dashboard 真正要插的那段
+  ];
   try {
     if (typeof helix.begin_edit === "function") helix.begin_edit();
-    doc.insert(0, 0, "PROBE-OK");
+    for (const [, s] of cases) doc.insert(0, 0, s + "\n");
     if (typeof helix.end_edit === "function") helix.end_edit();
-    guard(() => helix.echo("dashboard-probe: 已发出编辑(insert 未抛)⇒ 请看主区域是否出现 PROBE-OK"));
+    guard(() => helix.echo("dashboard-probe: 已依次插入 A-SHORT / B-MULTI / C-LONG / D-REAL ⇒ 看主区域出现了哪几个"));
   } catch (e) {
     guard(() => helix.echo("dashboard-probe: insert 抛错 —— " + (e && e.message ? e.message : e)));
   }
