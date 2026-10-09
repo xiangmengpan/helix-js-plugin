@@ -5136,11 +5136,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     };
                     // 用预分配 id 直接建叶子（split 的 id 由 JS 分配，回调已注册）
                     compositor.split_leaf_prealloc(id, dir, first, size, component);
+                    compositor.sync_layout_cache();
                 });
             }
             helix_js::UiRequest::CloseLeaf { id } => {
                 job::dispatch_blocking(move |editor, compositor| {
                     compositor.close_leaf_clean(editor, id);
+                    compositor.sync_layout_cache();
                 });
             }
             helix_js::UiRequest::PaneFloat { id } => {
