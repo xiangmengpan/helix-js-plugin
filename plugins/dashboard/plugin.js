@@ -238,6 +238,18 @@ function open_dashboard(ctx) {
     const doc = ctx && ctx.doc ? ctx.doc : null;
     if (doc && typeof doc.insert === "function") {
       doc.insert(0, 0, body);
+      // ★ 关键:插入后视图会停在**插入点末尾** ⇒ 用户只看到最后一行在左下 ✗
+      // 把光标移回行首(行 0 列 0)⇒ 视图回到顶部,整屏可见 ✓
+      for (const fn of ["set_cursor", "goto_line", "set_selection"]) {
+        if (typeof helix[fn] !== "function") continue;
+        try {
+          if (fn === "set_selection") helix.set_selection({ row: 0, col: 0 }, { row: 0, col: 0 });
+          else helix[fn](0, 0);
+          break;
+        } catch (e) {
+          guard(() => helix.echo("dashboard: " + fn + " 失败 —— " + (e && e.message ? e.message : e)));
+        }
+      }
     } else {
       throw new Error(
         "拿不到带编辑方法的 ctx.doc(命令/事件处理器必须接收并使用其 ctx 参数)"
@@ -263,6 +275,22 @@ helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
 helix.on("buffer-open", () => dismiss_on_others());
 helix.on("buffer-close", () => dismiss_on_others());
 helix.register_command("dashboard-close", (ctx) => close_dashboard(ctx));
+
+/// 自诊断:把"居中/定位"依赖的两个事实打出来 ✓
+/// 用法:`:dashboard-diag` —— 若 `vw=0` 说明核心没把视口尺寸送到 JS ✗;
+/// 若 `vbuf=...` 的行号不是 0,说明光标没回到行首 ⇒ 视图会停在末尾 ✓
+helix.register_command("dashboard-diag", (ctx) => {
+  const v = guard(() => helix.viewport(), null);
+  const doc = ctx && ctx.doc ? ctx.doc : null;
+  const cur = doc ? String(doc.cursor || JSON.stringify(doc.cursor)) : "no-ctx";
+  const len = doc ? String(doc.text || "").length : -1;
+  guard(() =>
+    helix.echo(
+      "dashboard-diag: viewport=" + JSON.stringify(v) + " vw=" + (v ? v[0] : "n/a") +
+      " vh=" + (v ? v[1] : "n/a") + " cursor=" + cur + " len=" + len
+    )
+  );
+});
 
 // ── 启动自动显示(仅"无文件启动")──────────────────────────────────────────
 // 判定:当前 buffer **没有路径** ⇒ 视为无文件启动 ✓
