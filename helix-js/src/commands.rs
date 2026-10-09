@@ -970,7 +970,23 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
 /// 为什么需要它:布局变更发生在 `LayoutTree`/`Compositor` 内部(§47 勘明),
 /// 那里**没有** `CommandContext` ✗;而 `emit_event_impl` 只用到 `ctx.docs`
 /// (其它已打开 buffer 的快照)⇒ 这里给一个**最小上下文**(与测试构造同款)即可 ✓
+/// 暂存本次布局变更的**种类**（线程局部）。
+///
+/// 为什么不用参数：发射点在 `Compositor::sync_layout_cache` 内，那里**没有变更点**的信息 ✗；
+/// 而调用者（如 `SplitLeaf`/`CloseLeaf` 两臂）在**同一线程、紧邻其前**先 `set` 一下即可 ✓
+/// （若没人 set，`emit_layout_change` 取到 None，事件照发，只是不带种类 ✓）
+thread_local! {
+    static LAYOUT_CHANGE_KIND: std::cell::RefCell<Option<&'static str>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 标注“接下来的布局变更属于哪种”（由 `LayoutTree`/命令臂在**变更后立刻**调用）
+pub fn set_layout_change_kind(kind: &'static str) {
+    LAYOUT_CHANGE_KIND.with(|c| *c.borrow_mut() = Some(kind));
+}
+
 pub fn emit_layout_change() -> Result<()> {
+    let kind = LAYOUT_CHANGE_KIND.with(|c| c.borrow_mut().take());
     let ctx = CommandContext {
         path: None,
         text: String::new(),
@@ -978,7 +994,19 @@ pub fn emit_layout_change() -> Result<()> {
         selection: ((0, 0), (0, 0)),
         docs: Vec::new(),
     };
-    emit_event_impl("layout-change", &ctx, None, None)
+    // 变更种类走 `extra`（与 `mode-change` 传模式串同一机制）
+    match emit_event_impl("layout-change", &ctx, kind, None) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // **让失败可见**：只 log::warn 会静默（我曾因此误判多轮 ✗）
+            if let Some(m) = crate::state::MESSAGES.get() {
+                if let Ok(mut v) = m.lock() {
+                    v.push(format!("layout-change emit failed: {e}"));
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// doc-change 事件入口：参数附带防抖窗口内合并的变更范围（doc.changes）。

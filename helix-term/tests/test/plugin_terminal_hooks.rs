@@ -699,7 +699,7 @@ async fn layout_change_event_fires_after_split() -> anyhow::Result<()> {
     std::fs::write(
         &plugin,
         format!(
-            r#"helix.on("layout-change", () => {{ helix.write_file({m:?}, "yes"); }});
+            r#"helix.on("layout-change", (kind) => {{ helix.write_file({m:?}, kind || "none"); }});
 helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cmd: "true" }} }}); }});"#,
             m = marker.to_string_lossy()
         ),
@@ -724,8 +724,11 @@ helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cm
     pump(&mut app, ":lc-go<ret>").await?;
     assert!(
         marker.is_file(),
-        "helix.split 应经 sync_layout_cache 触发 layout-change(处理器写 marker)"
+        "helix.split 应触发 layout-change(处理器写 marker)"
     );
+    // 并断言**变更种类**也到达了处理器(split/close 两类已带种类;其余操作暂为 None)
+    let got = std::fs::read_to_string(&marker)?;
+    assert_eq!(got, "split", "处理器应收到 kind=\"split\",实得 {got:?}");
     Ok(())
 }
 
