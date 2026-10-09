@@ -318,6 +318,13 @@ impl Application {
                 .unwrap_or_else(|_| editor.new_file(Action::VerticalSplit));
         }
 
+        // ── `startup` 事件 ──
+        // 发在初始文件处理**之后**（开屏/无文件的分支有好几处 ✗，所以只在这里发一次 ✓）。
+        // “要不要显示启动屏”由**插件**判断（它自己看当前 buffer 是否空白无名）✓
+        if let Err(e) = helix_js::emit_startup() {
+            log::warn!("startup event failed: {e}");
+        }
+
         // 叶=窗口:收编启动期遗留的 view-tree 分裂(启动多文件/空文件路径仍走 core split)
         // 为 BufferLeaf 叶——之后全部窗口均可被 window mode 控制。
         compositor.adopt_orphan_views(&mut editor);

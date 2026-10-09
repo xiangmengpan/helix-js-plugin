@@ -10,7 +10,7 @@ use boa_engine::{Context, JsError, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-const EVENT_WHITELIST: [&str; 19] = [
+const EVENT_WHITELIST: [&str; 20] = [
     "save",
     "mode-change",
     "buffer-open",
@@ -30,6 +30,7 @@ const EVENT_WHITELIST: [&str; 19] = [
     "selection-change",
     "pane-mode-change",
     "layout-change",
+    "startup",   // 启动完成（发在 application.rs 的初始文件处理之后；由插件自行判断“是否空白无名 buffer”）
 ];
 
 use crate::state::{
@@ -970,6 +971,32 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
 /// 为什么需要它:布局变更发生在 `LayoutTree`/`Compositor` 内部(§47 勘明),
 /// 那里**没有** `CommandContext` ✗;而 `emit_event_impl` 只用到 `ctx.docs`
 /// (其它已打开 buffer 的快照)⇒ 这里给一个**最小上下文**(与测试构造同款)即可 ✓
+/// `startup` 事件入口（**无需命令上下文**，与 `emit_layout_change` 同款）。
+///
+/// 发在 `application.rs` 处理完初始文件**之后** ⇒ “要不要显示启动屏”由**插件**判断
+/// （它自己看当前 buffer 是否空白无名）✓ —— 核心只负责“启动完成了”这一事实 ✓
+pub fn emit_startup() -> Result<()> {
+    let ctx = CommandContext {
+        path: None,
+        text: String::new(),
+        cursor: (0, 0),
+        selection: ((0, 0), (0, 0)),
+        docs: Vec::new(),
+    };
+    match emit_event_impl("startup", &ctx, None, None) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）
+            if let Some(m) = crate::state::MESSAGES.get() {
+                if let Ok(mut v) = m.lock() {
+                    v.push(format!("startup emit failed: {e}"));
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
 /// 暂存本次布局变更的**种类**（线程局部）。
 ///
 /// 为什么不用参数：发射点在 `Compositor::sync_layout_cache` 内，那里**没有变更点**的信息 ✗；
