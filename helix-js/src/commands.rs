@@ -30,7 +30,7 @@ const EVENT_WHITELIST: [&str; 20] = [
     "selection-change",
     "pane-mode-change",
     "layout-change",
-    "startup",   // 启动完成（发在 application.rs 的初始文件处理之后；由插件自行判断“是否空白无名 buffer”）
+    "startup", // 启动完成（发在 application.rs 的初始文件处理之后；由插件自行判断“是否空白无名 buffer”）
 ];
 
 use crate::state::{
