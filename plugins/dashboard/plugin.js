@@ -31,6 +31,7 @@ const LOGO_SLIM = ["  H E L I X  ⌘"];
 
 // ── 状态 ──────────────────────────────────────────────────────────────────
 let dash_open = false; // 启动屏是否已开(不新开 buffer ⇒ 只需一个标记 ✓)
+let dash_buffer_id = null; // 启动屏所在 buffer(用于"真的离开" ✓)
 let bound = false; // 键位是否已绑(精确解绑用 ✓)
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
@@ -42,7 +43,24 @@ function guard(fn, fallback) {
   }
 }
 function try_command(name) {
-  guard(() => helix.run_command(name));
+  // 失败必须**可见** —— 静默的 guard 让"命令不存在"变成了"按了没反应" ✗(用户实测过)
+  try {
+    helix.run_command(name);
+  } catch (e) {
+    helix.echo("dashboard: 命令 " + name + " 不可用 —— " + (e && e.message ? e.message : e));
+  }
+}
+
+/// picker 是 **API 不是命令** ✗(`:picker` 不存在)✓ 见 docs/api/picker-theme.md
+function picker_run(source) {
+  try {
+    if (!helix.picker || typeof helix.picker.run !== "function") {
+      throw new Error("helix.picker.run 不可用");
+    }
+    helix.picker.run(source);
+  } catch (e) {
+    helix.echo("dashboard: 打开 " + source + " 失败 —— " + (e && e.message ? e.message : e));
+  }
 }
 function guess_config() {
   return guard(() => helix.config_dir() + "/init.js", "~/.config/helix/init.js");
@@ -78,8 +96,8 @@ function disp_width(s) {
 // ── 菜单 ──────────────────────────────────────────────────────────────────
 // 动作全部走 `guard`,失败静默 —— 启动屏不该因为某个动作不可用而报错 ✓
 const MENU = [
-  ["f", "查找文件", () => try_command("picker")],
-  ["r", "打开 buffer", () => try_command("buffer")],
+  ["f", "查找文件", () => picker_run("files")],
+  ["r", "打开 buffer", () => picker_run("buffers")],
   ["n", "新建文件", () => guard(() => helix.open_file("/tmp/hx-new.txt", { scratch: true }))],
   ["e", "文件树", () => try_command("filetree")],
   ["c", "配置", () => guard(() => helix.open_file(guess_config(), {}))],
@@ -138,7 +156,32 @@ function bind_keys() {
 // ── 开屏 / 关屏 ───────────────────────────────────────────────────────────
 function close_dashboard() {
   unbind_keys();
-  // 不关 buffer(那本来就是用户启动时的空 buffer ✓)——只解除"启动屏模式" ✓
+  dash_open = false;
+  // **真的离开**:尽量关掉这张 buffer(dashboard 就是启动时那个空 buffer ✓)
+  // 关不掉也**不静默** —— 至少把状态说清 ✓(上次"按 q 没反应"就是因为它什么都不做 ✗)
+  let closed = false;
+  for (const fn of ["buffer_close", "close_buffer"]) {
+    if (typeof helix[fn] === "function") {
+      try {
+        helix[fn](dash_buffer_id);
+        closed = true;
+        break;
+      } catch (e) {
+        helix.echo("dashboard: " + fn + " 失败 —— " + (e && e.message ? e.message : e));
+      }
+    }
+  }
+  if (!closed) {
+    helix.echo("dashboard: 已解除启动屏键位(未能关闭缓冲,可用 :q 或切 buffer 离开)");
+  }
+  dash_buffer_id = null;
+}
+
+/// 任何 buffer 活动都视为"用户离开了启动屏" ⇒ 立刻解绑
+/// **这一条是"按 e 卡死"的正解** ✓:重入的前提是那 7 个键还在 ✗
+function dismiss_on_others() {
+  if (!dash_open) return;
+  unbind_keys();
   dash_open = false;
 }
 
@@ -147,7 +190,7 @@ function open_dashboard(ctx) {
 
   // **安全闸(必需)**:若当前 buffer **有路径**(真实文件),绝不把启动屏写进去 ✗
   // E2E 实测过这个后果:在打开的 a.txt 上跑 `:dashboard`,内容被混进那个文件 ✗
-  const cur = guard(() => helix.buffer.current(), null);
+  const cur = guard(() => helix.current_buffer(), null);
   const cp = cur ? cur.path : null;
   if (cp !== null && cp !== undefined && cp !== "") {
     guard(() => helix.echo("dashboard: 当前是文件缓冲(" + cp + "),不在此绘制启动屏"));
@@ -179,12 +222,19 @@ function open_dashboard(ctx) {
   } catch (e) {
     helix.echo("dashboard: 写入内容失败 —— " + (e && e.message ? e.message : e));
   }
+  // 记下自己所在的 buffer(退出时要用 ✓)
+  dash_buffer_id = guard(() => helix.current_buffer().id, null);
   guard(() => helix.echo("HELIX 启动屏 —— f 查找 · r buffer · e 文件树 · q 关闭"));
   bind_keys();
 }
 
 // ── 显式命令(永远可用,不依赖 startup ✓)──────────────────────────────────
 helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
+
+// **离开即解绑**(最高优先的修复 ✓):切 buffer / 开新 buffer ⇒ 那 7 个全局键立即失效 ✓
+// ⇒ 从根上消掉"在 filetree 里按键又触发 dashboard ⇒ 重入卡死" ✗
+helix.on("buffer-open", () => dismiss_on_others());
+helix.on("buffer-close", () => dismiss_on_others());
 helix.register_command("dashboard-close", () => close_dashboard());
 
 // ── 启动自动显示(仅"无文件启动")──────────────────────────────────────────
@@ -195,7 +245,7 @@ helix.on("startup", (arg) => {
   const ctx = arg && arg.doc ? arg : arg && arg.ctx ? arg.ctx : null;
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   if (cfg.enabled === false) return;
-  const cur = guard(() => helix.buffer.current(), null);
+  const cur = guard(() => helix.current_buffer(), null);
   if (!cur) return;
   const p = cur.path;
   if (p !== null && p !== undefined && p !== "") return; // 有文件 ⇒ 不显示 ✓
