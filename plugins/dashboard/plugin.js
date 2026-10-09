@@ -237,7 +237,17 @@ function open_dashboard(ctx) {
     // **编辑方法在 `ctx.doc` 上**(不在 helix 全局)✓ —— 见 docs/api/editing.md
     const doc = ctx && ctx.doc ? ctx.doc : null;
     if (doc && typeof doc.insert === "function") {
-      doc.insert(0, 0, body);
+      // ★★ 关键:编辑是**排队**的 —— `end_edit()` 才让积压编辑被 take_edits 取走并应用 ✓
+      // (实现注释:"声明批量编辑事务结束:积压编辑可被 take_edits 取走" ✓)
+      // 我的插件此前**从未调用** begin_edit/end_edit ✗ ⇒ 插入很可能一直躺在队列里没生效 ✓
+      // —— 这正好解释"回显成功 ✓ 而 buffer 里只有 1 字符 ✗"
+      const has_batch = typeof helix.begin_edit === "function" && typeof helix.end_edit === "function";
+      if (has_batch) helix.begin_edit();
+      try {
+        doc.insert(0, 0, body);
+      } finally {
+        if (has_batch) helix.end_edit();
+      }
       // 光标移回行首 —— 签名**已读实现确认**:`set_cursor(row, col)` ✓(args[0]=row,args[1]=col ✓)
       // 注意:真机上即使做了这一步,主区域仍可能不显示 ⇒ 说明"落在哪个 buffer"才是关键 ✓
       guard(() => helix.set_cursor(0, 0));
