@@ -338,6 +338,41 @@ helix.register_command("pick", (ctx) => {
 });
 helix.register_command("pick-close", () => close_picker());
 /// 自诊断:把 v1 依赖的事实打出来 ✓
+/// 注册"由 JS 画核心 picker"的渲染函数(返回是否成功 ✓)
+/// 数据一律经 `helix.picker_state()` 取 ✓ —— 核心 render 回调只给 `(focus,{width,height})` ✗
+/// (与 `:pick-core-draw` 里那段渲染逻辑同源;这里独立成函数,便于同命令内复用 ✓)
+function register_js_renderer(id) {
+  const ok = guard(() => {
+    helix.set_component_render(id, (_focus, ctx) => {
+      const s = guard(() => helix.picker_state(), "") || "";
+      const lines = s.split("\n");
+      const head = lines.shift() || "";
+      const rows = lines;
+      const w = (ctx && ctx.width) ? ctx.width : 60;
+      const cur = Number((/cursor=(\d+)/.exec(head) || [])[1] ?? -1);
+      const q = (/query="([^"]*)"/.exec(head) || [])[1] || "";
+      const out = [{ type: "text", text: clip("JS-DRAWN  q=" + q, w) }];
+      for (let i = 0; i < rows.length; i++) {
+        const cells = rows[i].split("\t");
+        const mark = i === cur ? "▸ " : "  ";
+        const body = clip(cells.join("   "), Math.max(1, w - 2));
+        const line = { type: "text", text: mark + body + " ".repeat(Math.max(0, w - dw(mark + body) - 1)) };
+        if (i === cur) {
+          const st = guard(() => helix.get_style("ui.text.focus"), null);
+          if (st) line.style = st;
+          else line.text = "» " + body;
+        }
+        out.push(line);
+      }
+      if (rows.length === 0) out.push({ type: "text", text: clip("  (无可见项)", w) });
+      return out;
+    });
+    return true;
+  }, false);
+  if (ok) core_draw = 1;
+  return ok;
+}
+
 /// 按**显示宽度**截断(CJK 感知 ✓;复用本文件的 dw() ✓)
 function clip(s, width) {
   let out = "";
@@ -365,8 +400,21 @@ helix.register_command("pick-core", () => {
     })
   );
   const ok = guard(() => { helix.picker.run("picker-ui-core-demo"); return true; }, false);
-  if (!ok) say("pick-core: helix.picker.run 失败");
-  else say("pick-core: 已打开**核心** picker ⇒ 按 Esc 关闭后跑 :pick-diag 看 core= ✓");
+  if (!ok) {
+    say("pick-core: helix.picker.run 失败");
+    return;
+  }
+  // ★ 就地在**同一命令内**注册 JS 渲染器 ✓(核心已在 open 时推了摘要+js_id ✓)
+  //   理由(实测):核心 picker **接管键盘** ✗ ⇒ "之后再敲 :pick-core-draw"走不通 ✓(踩过两次 ✓)
+  const st = guard(() => helix.picker_state(), "") || "";
+  const m = /js_id=(\d+)/.exec(st);
+  if (!m) {
+    say("pick-core: 已打开核心 picker,但状态里没有 js_id ⇒ 跑 :pick-diag 看 core= 并发我");
+    return;
+  }
+  const drew = register_js_renderer(Number(m[1]));
+  say("pick-core: 核心 picker 已打开;JS 渲染器=" + (drew ? "已注册 ✓" : "注册失败 ✗") +
+      " ⇒ 列表应由 JS 画(前缀 JS-DRAWN ✓)");
 });
 
 /// **第一个真正使用"渲染委托"的插件渲染器** ✓
