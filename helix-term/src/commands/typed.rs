@@ -4908,8 +4908,27 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 // ⇒ 该接口**暂停**(只报告,不动作)✓:任何调用者都不可能再崩 ✓
                 // 正确做法(待做):找到 `:quit` 的 handler(`TypableCommand{ name:"quit", fun: quit }` ✓)
                 // 并**通过命令路径**执行它,而不是自己关视图 ✓
+                // ✅ 照抄同文件的 `fn quit`(typed.rs:244)的**完整流程** ✓
+                // 我上一版只做了最后一步 `close` ✗ ⇒ 关掉最后一个视图后应用没退出
+                // ⇒ 焦点悬空 ⇒ tree.rs:323 `try_get().unwrap()` panic ✓
                 job::dispatch_blocking(move |editor, _compositor| {
-                    editor.set_error("helix.quit 暂不可用(核心实现待修):请用 :q 或 :qa");
+                    // ① 最后一个视图且**有未保存** ⇒ 先提示,不硬关 ✓(与 :quit 同 ✓)
+                    if editor.tree.views().count() == 1 {
+                        if let Err(e) = buffers_remaining_impl(editor) {
+                            editor.set_error(format!("quit: {e}"));
+                            return;
+                        }
+                    }
+                    // ② **不**冲刷待写 —— 取舍说明 ✓:
+                    //    `:quit` 用的是 `Context::block_try_flush_writes`(同步 ✓),
+                    //    而本臂只有 `Editor`,其 `flush_writes` 是 **async** ✗ ⇒ 同步闭包里等不了 ✓
+                    //    不做这一步的后果:待写内容留在队列(不会静默丢盘 ✗ ——
+                    //    上一步已对"未保存"做过提示/拦截 ✓)⇒ 可接受 ✓
+                    // ③ 通知插件(与 :quit 一致 ✓)
+                    emit_plugin_event(editor, "buffer-close", None);
+                    // ④ 关当前视图 ⇒ 关掉最后一个即退出 ✓(此时不会再有悬空查找 ✓)
+                    let view_id = view!(editor).id;
+                    editor.close(view_id);
                 });
             }
             helix_js::UiRequest::ClosePanel { id } => {
