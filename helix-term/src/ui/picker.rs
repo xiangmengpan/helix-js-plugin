@@ -725,8 +725,6 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     fn render_picker(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let status = self.matcher.tick(10);
         let snapshot = self.matcher.snapshot();
-        // 把状态喂给 JS ✓(每帧一次,≈一次加锁+分配;要"绘 UI 交 JS"就必须有这一步 ✓)
-        helix_js::set_picker_state(&self.state_summary());
         if status.changed {
             self.cursor = self
                 .cursor
@@ -799,6 +797,27 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         matcher.config = Config::DEFAULT;
         if self.file_fn.is_some() {
             matcher.config.set_match_paths()
+        }
+
+        // ★ ④ 把状态喂给 JS:**计数 + 可见窗口的行** ✓(载荷只窗口 ⇒ 不随列表规模膨胀 ✓)
+        //   格式(简单、免转义):首行为摘要;其后每个可见项一行,单元格以 \t 分隔 ✓
+        {
+            let mut s = self.state_summary();
+            for item in snapshot.matched_items(offset..end) {
+                s.push('\n');
+                let mut first = true;
+                for column in self.columns.iter() {
+                    if !first {
+                        s.push('\t');
+                    }
+                    first = false;
+                    // 照同文件 `format_text` 的写法:`.content.into()` → String ✓
+                    // (编译器实测:`.content` 是 `Text<'_>`,不是 `&str` ✗)
+                    let text: String = column.format(item.data, &self.editor_data).content.into();
+                    s.push_str(&text);
+                }
+            }
+            helix_js::set_picker_state(&s);
         }
 
         // ★ ③(b) JS 渲染委托:有委托 ⇒ 用 JS 的行来画并返回;**无委托 ⇒ 以下一行不执行,原路径一字不改** ✓
