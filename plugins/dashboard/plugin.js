@@ -293,7 +293,7 @@ helix.register_command("dashboard", (ctx) => open_dashboard(ctx));
 
 // **离开即解绑**(最高优先的修复 ✓):切 buffer / 开新 buffer ⇒ 那 7 个全局键立即失效 ✓
 // ⇒ 从根上消掉"在 filetree 里按键又触发 dashboard ⇒ 重入卡死" ✗
-helix.on("buffer-open", () => {
+helix.on("buffer-open", (_extra, bo_doc) => {
   n_buffer_open++;
   if (dash_open) {
     // 已经在屏上 ⇒ 这是"用户切走了" ⇒ 解绑 ✓(这条消掉了"按 e 卡死" ✓)
@@ -303,7 +303,7 @@ helix.on("buffer-open", () => {
   // ★ 真机实测:`startup` 期插入的内容会被**后续换 buffer 冲掉** ✗
   // (状态栏留着回显 ✓ 而主区域空 ✗;之后查 doc 只有 1 字符 ✓)
   // ⇒ 在 `buffer-open`(启动定型之后)再补画一次;闸门会保证只画空白 buffer ✓
-  guard(() => helix.run_command("dashboard"));
+      guard(() => helix.run_command("dashboard", bo_doc ? { doc: bo_doc } : undefined));
 });
 helix.on("buffer-close", () => dismiss_on_others());
 
@@ -313,11 +313,11 @@ helix.on("buffer-close", () => dismiss_on_others());
 ///  - 而**命令路径**经探针真机验证**完全可用** ✓(PROBE-OK / D-REAL 都显示了 ✓)
 /// ⇒ 于是:等**第一次交互**(那时编辑器已定型、有可用 ctx ✓)再自动触发一次 ✓
 /// 用 `mode-change` 作为"用户已开始操作"的信号 ✓;只在**从没画过**且 buffer 仍空白时触发 ✓
-helix.on("mode-change", () => {
+helix.on("mode-change", (_mode, doc) => {
   if (n_open_drew > 0 || dash_open) return; // 已经画过/正在屏上 ⇒ 不再打扰 ✓
   defer_tries++;
   if (defer_tries > 1) return; // 只试一次,避免反复打扰 ✓
-  guard(() => helix.run_command("dashboard"));
+      guard(() => helix.run_command("dashboard", doc ? { doc: doc } : undefined));
 });
 helix.register_command("dashboard-close", (ctx) => close_dashboard(ctx));
 
@@ -384,13 +384,14 @@ helix.register_command("dashboard-diag", (ctx) => {
 // ── 启动自动显示(仅"无文件启动")──────────────────────────────────────────
 // 判定:当前 buffer **没有路径** ⇒ 视为无文件启动 ✓
 // 判定不出/形状不同 ⇒ **不显示**(安全降级 ✓,绝不打扰正常编辑)
-helix.on("startup", (arg) => {
+helix.on("startup", (_extra, doc) => {
   n_startup++;
   // 事件处理器的参数形状与事件相关(如 layout-change 带 kind)✗ ⇒ 兼容多种形状取 ctx ✓
-  const ctx = arg && arg.doc ? arg : arg && arg.ctx ? arg.ctx : null;
+  // 事件处理器收到 [extra, doc] ⇒ doc 在第二个参数上 ✓(此前写成 (arg) ⇒ 丢了 ✓)
+  const ev_doc = doc && typeof doc === "object" ? doc : null;
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   if (cfg.enabled === false) return;
   // ★ 关键:事件处理器**拿不到可编辑的 ctx** ✗ ⇒ 改为**触发自己的命令**(命令路径能拿到 ctx ✓)
   // (这条正是"手动输入命令就能用"所证明的 ✓)
-  guard(() => helix.run_command("dashboard"));
+  guard(() => helix.run_command("dashboard", ev_doc ? { doc: ev_doc } : undefined));
 });
