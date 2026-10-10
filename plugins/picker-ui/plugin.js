@@ -363,7 +363,10 @@ helix.register_command("pick-diag", () => {
       " opens=" + n_open + " typed=" + n_typed + " accepted=" + n_accepted +
       " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query) +
       " src=" + cur_source +
-      " bufs=" + (typeof helix.buffers === "function" ? JSON.stringify(guard(() => (helix.buffers() || []).length, -1)) : "none") +
+      // ★ 修正:此前这里查的是 `helix.buffers` ✗ —— 但**真名是 `helix.buffer.list()`** ✓
+      //   ⇒ 仪表在说谎(源已修、字段没修)⇒ 按"核查你自己的工具"这条纪律修 ✓
+      " bufs=" + JSON.stringify(guard(() => (helix.buffer && helix.buffer.list ? helix.buffer.list().length : -1), -2)) +
+      " bufsApi=" + (guard(() => typeof (helix.buffer && helix.buffer.list), "none")) +
       // ★ 核心 picker 的**状态馈送**(每帧由 render_picker 推送 ✓):
       //   打开核心 picker(如 helix.picker.run("files"))后即可读到它;
       //   关闭后仍保留**最后一次**快照(本实现只写不清 ✓)—— 故可关屏后再查 ✓
