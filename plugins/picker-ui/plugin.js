@@ -113,8 +113,8 @@ const SOURCES = {
   },
   buffers: {
     label: "缓冲",
-    load: (done) => done(buffers_list()),
-    open: (item) => guard(() => helix.open_file(item, {})),
+    load: (done) => { buffer_items = []; done(buffers_list()); },
+    open: (item) => buffer_open(item),
   },
 };
 
@@ -185,20 +185,28 @@ function load_files() {
 }
 
 /// 打开的缓冲区列表 —— 形状未验证 ✗ ⇒ 兼容三种形态并在诊断里报告 ✓
+/// 缓冲区列表 —— **真名来自先例** ✓(plugins/examples/picker.js:37)
+///   `helix.buffer.list()` ⇒ [{id,name,path}] ✓ · `helix.buffer.focus(id)` ✓
+/// (此前我猜的是 `helix.buffers()` ✗ ⇒ 诊断里显示 `bufs=none` ✓ —— 又一次"名字在清单里但挂别处" ✓)
 function buffers_list() {
-  let raw = null;
-  try { raw = helix.buffers ? helix.buffers() : null; }
-  catch (e) { say("pick: buffers 不可用 —— " + (e && e.message ? e.message : e)); }
+  const raw = guard(() => (helix.buffer && helix.buffer.list ? helix.buffer.list() : null), null);
   if (!raw) {
-    const cur = guard(() => helix.buffer.current(), null);
-    const p = cur ? cur.path || cur.name : null;
-    return p ? [String(p)] : [];
+    say("pick: helix.buffer.list 不可用(该版本?)");
+    return [];
   }
   const arr = Array.isArray(raw) ? raw : [];
-  return arr
-    .map((b) => (typeof b === "string" ? b : b && (b.path || b.name) ? b.path || b.name : null))
-    .filter((x) => typeof x === "string" && x.length > 0);
+  buffer_items = arr
+    .map((b) => (b && (b.name || b.path) ? { id: b.id, label: String(b.name || b.path) } : null))
+    .filter((x) => x !== null);
+  return buffer_items.map((x) => x.label);
 }
+/// 打开缓冲区:按 **id** 聚焦(匿名 buffer 无 path ⇒ 必须用 id ✓,照先例 ✓)
+function buffer_open(label) {
+  const hit = buffer_items.find((x) => x.label === label);
+  if (!hit) return false;
+  return guard(() => { helix.buffer.focus(Number(hit.id)); return true; }, false);
+}
+let buffer_items = [];
 
 /// 同步兜底:rg --files(gitignore 友好 ✓)→ git ls-files → find ✓;全部失败则空表 ✓
 function sync_fallback() {
@@ -328,6 +336,27 @@ helix.register_command("pick", (ctx) => {
 });
 helix.register_command("pick-close", () => close_picker());
 /// 自诊断:把 v1 依赖的事实打出来 ✓
+/// **给核心 picker 定义一个源并打开它** —— 用来验证"核心状态是否喂到 JS" ✓
+/// 结构**照抄** plugins/examples/picker.js ✓(columns/items/preview/action ✓)
+helix.register_command("pick-core", () => {
+  guard(() =>
+    helix.picker.define("picker-ui-core-demo", {
+      columns: ["name", "path"],
+      items: () =>
+        helix.read_tree(".").then((entries) =>
+          (entries || [])
+            .filter((e) => e && !e.is_dir)
+            .map((e) => [e.name, String(e.path || "").replace(/^\.\//, "")])
+        ),
+      preview: (row) => ({ path: row[1], line: 0 }),
+      action: (row) => helix.open_file(row[1]),
+    })
+  );
+  const ok = guard(() => { helix.picker.run("picker-ui-core-demo"); return true; }, false);
+  if (!ok) say("pick-core: helix.picker.run 失败");
+  else say("pick-core: 已打开**核心** picker ⇒ 按 Esc 关闭后跑 :pick-diag 看 core= ✓");
+});
+
 helix.register_command("pick-diag", () => {
   say(
     "pick-diag: open=" + (popup === null ? "closed" : popup) +
