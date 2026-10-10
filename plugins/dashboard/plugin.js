@@ -85,7 +85,11 @@ function quit_now() {
   //    (`helix-view/src/tree.rs:323` unwrap None ✓)—— 根因是照猜用了 `Editor::close` ✗
   //    ⇒ 暂停使用该接口(改为明确提示),待核心按 `:quit` 的真实实现修好再开 ✓
   //    这里**故意不调用** helix.quit(),避免用户一按 q 就崩 ✗
-  if (typeof helix.quit === "function") {
+  // ⚠️ 2026-10-10 第二次事故:即便照抄了 `fn quit` 的四步,真机按 q **仍然崩溃** ✗
+  //    (`helix-view/src/tree.rs:323` try_get().unwrap() on None ✓)
+  //    ⇒ 说明"关视图"这条路在**插件请求**上下文里本质上不安全 ✗(与 :quit 的执行环境不同 ✓)
+  //    ⇒ **停用**,改用绝对安全的路径;真因待 `RUST_BACKTRACE=1` 的栈定位 ✓
+  if (false && typeof helix.quit === "function") {
     try {
       helix.quit();
       return;
@@ -93,7 +97,7 @@ function quit_now() {
       say("dashboard: helix.quit 失败 —— " + (e && e.message ? e.message : e));
     }
   }
-  say("dashboard: 该版本无 helix.quit,请按 Esc 后用 :q 退出");
+  say("dashboard: 按 Esc 后用 :q 退出即可(helix.quit 停用中 ✓)");
 }
 
 function try_command(name) {
