@@ -125,6 +125,8 @@ let sel = 0;          // 当前选中下标
 let query = "";       // 当前查询
 let n_open = 0, n_typed = 0, n_accepted = 0;
 let cur_source = "files"; // 当前源 ✓
+// JS 渲染器是否已成功注册(供 :pick-diag 断言 ✓ —— 不依赖易被覆盖的状态栏文案 ✗)
+let core_draw = 0;
 
 function refilter() {
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
@@ -415,6 +417,7 @@ helix.register_command("pick-core-draw", () => {
     });
     return true;
   }, false);
+  if (ok) core_draw = 1;   // ← 供 :pick-diag 断言 ✓
   say(ok ? ("pick-core-draw: 已注册 JS 渲染器(id=" + id + ")⇒ 列表现在由 JS 画 ✓")
          : "pick-core-draw: set_component_render 失败(该版本?)");
 });
@@ -424,7 +427,7 @@ helix.register_command("pick-diag", () => {
     "pick-diag: open=" + (popup === null ? "closed" : popup) +
       " opens=" + n_open + " typed=" + n_typed + " accepted=" + n_accepted +
       " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query) +
-      " src=" + cur_source +
+      " src=" + cur_source + " coreDraw=" + core_draw +
       // ★ 修正:此前这里查的是 `helix.buffers` ✗ —— 但**真名是 `helix.buffer.list()`** ✓
       //   ⇒ 仪表在说谎(源已修、字段没修)⇒ 按"核查你自己的工具"这条纪律修 ✓
       " bufs=" + JSON.stringify(guard(() => (helix.buffer && helix.buffer.list ? helix.buffer.list().length : -1), -2)) +
