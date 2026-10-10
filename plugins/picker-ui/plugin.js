@@ -126,6 +126,50 @@ function accept() {
   return "close";
 }
 
+/// 归一化:接受 `["a","b"]` 或 `[{path|name}, …]` ✓(形状不确定 ⇒ 两种都收 ✓)
+function normalize(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  return list
+    .map((x) => (typeof x === "string" ? x : x && (x.path || x.name) ? x.path || x.name : null))
+    .filter((x) => typeof x === "string" && x.length > 0);
+}
+
+/// 取文件列表:**先照先例用 read_tree 的 Promise** ✓;失败/不可用则**同步兜底** `helix.run` ✓
+function load_files() {
+  let p = null;
+  try {
+    p = helix.read_tree(".");
+  } catch (e) {
+    say("pick: read_tree 不可用 —— " + (e && e.message ? e.message : e));
+  }
+  if (p && typeof p.then === "function") {
+    p.then((entries) => {
+      all = normalize(entries);
+      refilter();
+    }).catch((e) => {
+      say("pick: read_tree 失败,改用同步兜底 —— " + (e && e.message ? e.message : e));
+      sync_fallback();
+    });
+    return;
+  }
+  sync_fallback();
+}
+
+/// 同步兜底:rg --files(gitignore 友好 ✓)→ git ls-files → find ✓;全部失败则空表 ✓
+function sync_fallback() {
+  for (const cmd of ["rg --files", "git ls-files", "find . -type f -not -path './.git/*'"]) {
+    const out = guard(() => helix.run(cmd), null);
+    if (typeof out === "string" && out.length > 0) {
+      all = out.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
+      refilter();
+      say("pick: 数据源 = " + JSON.stringify(cmd) + "(" + all.length + " 条)");
+      return;
+    }
+  }
+  say("pick: 没有取到文件列表(read_tree/兜底命令都不可用)");
+  refilter();
+}
+
 function render(_focus, ctx) {
   const w = ctx && typeof ctx.width === "number" ? ctx.width : 80;
   const h = ctx && typeof ctx.height === "number" ? ctx.height : 20;
@@ -155,12 +199,13 @@ function open_picker() {
   n_open++;
   query = "";
   sel = 0;
-  // 数据源 v1:文件树(现有 picker 的文件源也是这么取的 ✓)
-  all = guard(() => helix.read_tree("."), []) || [];
-  all = all
-    .map((x) => (typeof x === "string" ? x : x && (x.path || x.name) ? x.path || x.name : null))
-    .filter((x) => typeof x === "string" && x.length > 0);
-  refilter();
+  // ★ 修正(由先例得出):`helix.read_tree(".")` 返回的是 **Promise** ✗ 不是数组 ✓
+  //   (plugins/examples/picker.js:12 `helix.read_tree(".").then(entries => …)` ✓)
+  //   而我先前当数组用 ⇒ `all.map` 不是函数 ⇒ 命令直接失败 ✓
+  // ⇒ 改成:先给空列表 ⇒ 数据到了再重过滤(render 每帧都调 ⇒ 自然刷新 ✓)
+  all = [];
+  shown = [];
+  load_files();
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
   const id = guard(
     () =>
