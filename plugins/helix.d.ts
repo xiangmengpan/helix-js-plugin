@@ -221,6 +221,8 @@ interface LspLocation {
 // ────────────────────────── 事件 ──────────────────────────
 
 type EventName =
+  | "startup"
+  | "layout-change"
   | "save"
   | "mode-change"
   | "buffer-open"
@@ -362,7 +364,12 @@ interface Helix {
   } | null;
   restore_layout(layout: unknown): void; // 真重建:按 dump 重塑布局树 + 浮窗槽位
   buffers(): BufferInfo[];
-  current_buffer(): BufferInfo | null;
+  /** 视口尺寸 `[width, height]` ✓ —— 由核心在 `Compositor::new`/`resize` 推送 ✓
+   *  **真机实测可用** ✓(`vw=120` ✓);测试夹具里为 `[0,0]`(无真实终端 ✓) */
+  viewport(): [number, number];
+  /** ⚠️ 实测:**不是** `helix.current_buffer` ✗(探针:`typeof helix.current_buffer === "undefined"` ✓)
+   *  真正可用的是 **`helix.buffer.current()`** ✓ —— 与 `helix.buffer_open()` 同族 ✓ */
+  buffer: { current(): BufferInfo | null; };
   focus_buffer(id: number): void;
   // ── ③ 新命名空间(与上面扁平 API 等价;扁平名待删) ──
   /** pane 操作 —— 词汇对齐 zellij 插件 API(`float` / `embed`) */
@@ -382,7 +389,10 @@ interface Helix {
     float(id: number): void;
     /** 浮窗 → 平铺 */
     embed(id: number): void;
-    close(id: number): void;
+    /** ⚠️ 实测:顶层 `helix.close` 是 **undefined** ✗(探针 ✓)。
+   *  关 buffer 请用 `helix.open_file()` 切走 / 或命令 `:buffer-close`;
+   *  关**面板**用 `helix.close_panel(id)` ✓ */
+  close(id: number): void;
     focus(id: number): void;
     focus_dir(id: number, dir: SplitDir): void;
     /** 与方向邻居交换(浮窗则搬位置) */
