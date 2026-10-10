@@ -801,6 +801,19 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             matcher.config.set_match_paths()
         }
 
+        // ★ ③(b) JS 渲染委托:有委托 ⇒ 用 JS 的行来画并返回;**无委托 ⇒ 以下一行不执行,原路径一字不改** ✓
+        //   (js_render_id 仅在 js_picker 路径被设置 ⇒ 其余 19 个调用者完全不受影响 ✓)
+        if let Some(js_id) = self.js_render_id {
+            if let Ok(content) = helix_js::render_component(js_id, inner.width, inner.height, None)
+            {
+                let lines = crate::ui::comp_layout::render(content, (inner.width, inner.height));
+                let mut dr = crate::ui::comp_layout::DiffRenderer; // 零字段单元结构体 ⇒ 零成本 ✓
+                dr.render(&lines, inner, surface, &cx.editor.theme); // 全量渲染:清空区域 + 写全部行 ✓
+                return;
+            }
+            // 拿不到内容(未注册/失败)⇒ **落回原路径** ✓(正常回退,不是错误 ✓)
+        }
+
         let options = snapshot.matched_items(offset..end).map(|item| {
             let mut widths = self.widths.iter_mut();
             let mut matcher_index = 0;
