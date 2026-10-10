@@ -791,28 +791,6 @@ async fn dashboard_popup_opens_and_closes() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn dash_verify_diag() -> anyhow::Result<()> {
-    let _g = PLUGIN_TEST_LOCK.lock().await;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let plugin = root.join("plugins/dashboard/plugin.js");
-    // 无文件启动 ⇒ 初始 buffer 空白 ⇒ 通过"仅空白可绘制"的闸 ✓
-    let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
-    pump(&mut app, ":dashboard<ret>").await?;
-    let (_, d1) = current_ref!(app.editor);
-    let n1 = d1.text().len_chars();
-    pump(&mut app, ":dashboard-close<ret>").await?;
-    let (_, d2) = current_ref!(app.editor);
-    let n2 = d2.text().len_chars();
-    let st = app
-        .editor
-        .get_status()
-        .map(|(s, _)| s.clone())
-        .unwrap_or_default();
-    panic!("AFTER_OPEN={n1} AFTER_CLOSE={n2} STATUS=[{st}]");
-}
-
 /// 回归测试:`UiRequest::Quit` 关掉最后一个视图后,**主循环必须先检查 should_close 再渲染** ✓
 /// (修复前此测试**必崩**:Tree::get ← active_leaf_info ← render ✓ —— 已用 RUST_BACKTRACE 复现 ✓)
 #[tokio::test(flavor = "multi_thread")]
