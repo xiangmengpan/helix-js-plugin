@@ -8,3 +8,7 @@ runtime/grammars
 
 # agent 工具产物(非项目内容)
 .pi/
+
+# agent 工作产物(实施计划与会话交接),非项目文档
+docs/superpowers/plans/
+docs/superpowers/handoff/
