@@ -48,9 +48,10 @@ function guard(fn, fallback) {
 function say(msg) {
   guard(() => helix.echo(msg));
 }
-function stamp() {
-  return guard(() => new Date().toISOString().slice(0, 16).replace("T", " "), "");
-}
+// 【已移除】曾用 `new Date()` 显示"启动于 …" ✗
+// 实测:JS 引擎**没有真实时钟**(核心未提供 Date ✓,也没有任何取时间的接口 ✓)
+// ⇒ `new Date()` 返回**固定值** ⇒ 每次显示同一个时间 ⇒ **假信息** ✗
+// ⇒ 按纪律"不给假信息"直接去掉 ✓;若日后需要,应加一个 `helix.now()`(照 viewport 模式 ✓)
 /// **显示宽度**(不是码点数):CJK/全角在屏上占 2 列 ✓
 /// (块元素 █ 与制表符 ╗─ 是 1 列 —— 这一点由真机渲染自己反证过 ✓)
 function disp_width(s) {
@@ -149,7 +150,7 @@ function build_lines(box_width) {
   for (const it of MENU) lines.push(left + label(it));
   lines.push("");
   lines.push(pad("────────────────────────────────"));
-  lines.push(pad("  " + (stamp() ? "启动于 " + stamp() : "欢迎") + " · Esc 关闭 · q 退出"));
+  lines.push(pad("  HELIX · Esc 关闭 · q 退出程序"));
   lines.push("");
   return lines;
 }
