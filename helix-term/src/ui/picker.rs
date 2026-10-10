@@ -802,7 +802,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // ★ ④ 把状态喂给 JS:**计数 + 可见窗口的行** ✓(载荷只窗口 ⇒ 不随列表规模膨胀 ✓)
         //   格式(简单、免转义):首行为摘要;其后每个可见项一行,单元格以 \t 分隔 ✓
         {
-            let mut s = self.state_summary();
+            // 首行末尾附上**委托 id** ✓(JS 据此调用 set_component_render(id, fn) ✓
+            // —— 否则 JS 无法知道该给哪个 id 注册 ✓)
+            let mut s = match self.js_render_id {
+                Some(id) => format!("{} js_id={id}", self.state_summary()),
+                None => self.state_summary(),
+            };
             for item in snapshot.matched_items(offset..end) {
                 s.push('\n');
                 let mut first = true;

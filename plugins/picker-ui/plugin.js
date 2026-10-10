@@ -357,6 +357,44 @@ helix.register_command("pick-core", () => {
   else say("pick-core: 已打开**核心** picker ⇒ 按 Esc 关闭后跑 :pick-diag 看 core= ✓");
 });
 
+/// **第一个真正使用"渲染委托"的插件渲染器** ✓
+/// 用法(顺序重要 ✓):
+///   1) `:pick-core`(打开**核心** picker ⇒ 它会渲染一次,从而把状态+js_id 推给 JS ✓)
+///   2) `:pick-core-draw`(本命令:读状态里的 js_id ⇒ 注册渲染函数 ✓)
+///      ⇒ 此后核心 picker 的**列表内容由 JS 决定** ✓(核心仍负责匹配/窗口/预览 ✓)
+/// 说明:核心的 render 回调只收到 `(focus,{width,height})` ✗ ⇒ 数据一律经 `helix.picker_state()` 取 ✓
+helix.register_command("pick-core-draw", () => {
+  const st = guard(() => helix.picker_state(), "");
+  const idm = /js_id=(\d+)/.exec(st || "");
+  if (!idm) {
+    say("pick-core-draw: 状态里没有 js_id ⇒ 请先 :pick-core 让核心 picker 渲染一次");
+    return;
+  }
+  const id = Number(idm[1]);
+  const ok = guard(() => {
+    helix.set_component_render(id, (_focus, ctx) => {
+      const s = guard(() => helix.picker_state(), "") || "";
+      const lines = s.split("\n");
+      const head = lines.shift() || "";
+      const rows = lines;
+      const w = ctx && ctx.width ? ctx.width : 60;
+      const out = [];
+      // 首行:摘要(JS 自己排版 ⇒ UI 归 JS ✓)
+      out.push({ type: "text", text: "JS-DRAWN  " + head.slice(0, Math.max(1, w - 12)) });
+      // 其后:可见窗口的行(**核心已按 \t 分好单元格** ✓)—— 我在这里加自己的前缀/高亮 ✓
+      for (const r of rows) {
+        const cells = r.split("\t").join("  ");
+        out.push({ type: "text", text: cells.slice(0, Math.max(1, w)) });
+      }
+      if (rows.length === 0) out.push({ type: "text", text: "(无可见项)" });
+      return out;
+    });
+    return true;
+  }, false);
+  say(ok ? ("pick-core-draw: 已注册 JS 渲染器(id=" + id + ")⇒ 列表现在由 JS 画 ✓")
+         : "pick-core-draw: set_component_render 失败(该版本?)");
+});
+
 helix.register_command("pick-diag", () => {
   say(
     "pick-diag: open=" + (popup === null ? "closed" : popup) +
