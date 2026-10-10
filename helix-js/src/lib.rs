@@ -452,6 +452,11 @@ pub fn init() {
                     0,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(commands::js_quit),
+                    JsString::from("quit"),
+                    0,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(commands::js_plugins_dir),
                     JsString::from("plugins_dir"),
                     0,

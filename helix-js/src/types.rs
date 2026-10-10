@@ -30,6 +30,8 @@ pub enum UiRequest {
         /// 注册为侧栏 rail(贴边全高,不参与 window mode 分裂;默认 false=普通叶)
         rail: bool,
     },
+    /// 关闭当前视图(关掉最后一个视图即退出程序 ✓)—— dashboard 的 q 用 ✓
+    Quit,
     ClosePanel {
         id: u64,
     },

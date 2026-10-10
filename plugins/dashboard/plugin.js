@@ -79,6 +79,19 @@ function picker_run(source) {
     say("dashboard: 打开 " + source + " 失败 —— " + (e && e.message ? e.message : e));
   }
 }
+/// 退出程序:优先用专用接口 `helix.quit()` ✓;退化时提示可用 `:q` ✓
+function quit_now() {
+  if (typeof helix.quit === "function") {
+    try {
+      helix.quit();
+      return;
+    } catch (e) {
+      say("dashboard: helix.quit 失败 —— " + (e && e.message ? e.message : e));
+    }
+  }
+  say("dashboard: 该版本无 helix.quit,请按 Esc 后用 :q 退出");
+}
+
 function try_command(name) {
   try {
     helix.run_command(name);
@@ -98,7 +111,9 @@ const MENU = [
   // ⚠️ 实测:`helix.run_command()` **只能调 JS 注册的命令** ✗
   //    (`js_run_command` 查的是 `with_registry` 那张表 —— 核心的 `quit` 不在其中 ✓)
   //    ⇒ 这里先尝试(万一将来注册了 ✓),但**真正能退出的是 `:q`/`:qa`** ✓
-  ["q", "退出程序", () => { try_command("quit"); try_command("q"); }],
+  // ✅ 真退出:用新加的 `helix.quit()` ✓
+  //    (旧的 `run_command("quit")` **永远失败** ✗ —— 它只查 JS 侧注册表 ✓)
+  ["q", "退出程序", () => quit_now()],
 ];
 
 // ── 内容 ──────────────────────────────────────────────────────────────────
@@ -199,7 +214,8 @@ helix.register_command("dashboard-diag", () => {
   say(
     "dashboard-diag: vw=" + (v ? v[0] : "n/a") + " vh=" + (v ? v[1] : "n/a") +
       " popup=" + (popup_id === null ? "closed" : popup_id) +
-      " opens=" + n_open + " keys=" + n_key
+      " opens=" + n_open + " keys=" + n_key +
+      " quit=" + (typeof helix.quit === "function" ? "fn" : "none")
   );
 });
 

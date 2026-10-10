@@ -4900,6 +4900,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
+            helix_js::UiRequest::Quit => {
+                // 关当前视图 —— 关掉**最后一个**视图时 helix 自然退出 ✓
+                // (原语:`Editor::close(ViewId)` ✓ 见 helix-view/src/editor.rs:2161)
+                job::dispatch_blocking(move |editor, _compositor| {
+                    let view_id = editor.tree.focus;
+                    editor.close(view_id);
+                });
+            }
             helix_js::UiRequest::ClosePanel { id } => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     // popup id ≠ 布局树 leaf id（split 分配）：由 close_panel_by_id 按它找叶

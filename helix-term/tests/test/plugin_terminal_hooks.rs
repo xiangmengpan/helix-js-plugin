@@ -770,6 +770,9 @@ async fn dashboard_popup_opens_and_closes() -> anyhow::Result<()> {
     assert!(d1.contains("opens=1"), "应开过一次,实得 {d1}");
     assert!(d1.contains("popup=closed"), "Esc 应已关闭弹窗,实得 {d1}");
     assert!(d1.contains("keys="), "应有按键经过 onKey,实得 {d1}");
+    // q ⇒ helix.quit() 的接口必须已就位 ✓
+    // (夹具里**不能真按 q** ✗ —— 那会关掉视图 ✓;故只断言接口存在 ✓)
+    assert!(d1.contains("quit=fn"), "helix.quit 应已注册,实得 {d1}");
 
     // ④ 关闭后能再次打开(需求③ ✓)
     pump(&mut app, ":dashboard<ret>").await?;

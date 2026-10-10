@@ -151,6 +151,25 @@ pub(crate) fn js_viewport(
     Ok(arr.into())
 }
 
+/// `helix.quit()` —— 关闭当前视图(关掉最后一个视图即退出 ✓)
+///
+/// 为什么需要:实测 `helix.run_command("quit")` **永远失败** ✗
+/// —— `js_run_command` 只查 **JS 侧注册表**(`helix.register_command` 填的那张 ✓),
+/// 核心的 `:quit` 不在其中 ✓。故为此提供专用接口 ✓
+pub(crate) fn js_quit(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::Quit);
+    Ok(JsValue::undefined())
+}
+
 pub(crate) fn js_plugins_dir(
     _this: &JsValue,
     _args: &[JsValue],
