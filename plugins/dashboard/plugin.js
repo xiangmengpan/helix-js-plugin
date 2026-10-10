@@ -95,7 +95,10 @@ const MENU = [
   ["m", "市场", () => try_command("arsenal")],
   ["l", "布局", () => try_command("layout")],
   ["p", "插件管理", () => try_command("plugin")],
-  ["q", "退出程序", () => try_command("quit")],
+  // ⚠️ 实测:`helix.run_command()` **只能调 JS 注册的命令** ✗
+  //    (`js_run_command` 查的是 `with_registry` 那张表 —— 核心的 `quit` 不在其中 ✓)
+  //    ⇒ 这里先尝试(万一将来注册了 ✓),但**真正能退出的是 `:q`/`:qa`** ✓
+  ["q", "退出程序", () => { try_command("quit"); try_command("q"); }],
 ];
 
 // ── 内容 ──────────────────────────────────────────────────────────────────
@@ -147,8 +150,9 @@ function open_dashboard() {
           for (const it of MENU) {
             if (it[0] === nm) {
               it[2]();          // 执行动作 ✓
-              if (nm !== "q") return "close"; // 除退出外,动作后关闭启动屏 ✓(像 LazyVim ✓)
-              return "handled"; // q ⇒ 已交给 :quit ✓
+              // 一律关闭启动屏 ✓ —— 即使"退出"因平台限制没生效,
+              // 也不该把屏留着不响应(实测教训:q 返回 "handled" ⇒ 看起来"完全没反应" ✗)
+              return "close";
             }
           }
           // ★ 实测发现:弹窗打开时会**吞掉所有按键**(连敲 `:` 都被 onKey 吃掉 ✓)
