@@ -799,9 +799,16 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             matcher.config.set_match_paths()
         }
 
-        // ★ ④ 把状态喂给 JS:**计数 + 可见窗口的行** ✓(载荷只窗口 ⇒ 不随列表规模膨胀 ✓)
-        //   格式(简单、免转义):首行为摘要;其后每个可见项一行,单元格以 \t 分隔 ✓
-        {
+        // ★ ④ 把状态喂给 JS:**仅当确有 JS 渲染器注册时** ✓
+        //   实测教训:此前**无条件**每帧为可见窗口的每行调用 `column.format(...)` ✗
+        //   —— 那是渲染原本不做的额外工作 ⇒ 用户实测"响应慢 10 多秒" ✓
+        //   ⇒ 用与 tabbar 同一个**廉价探针**(`render_component(id,1,1,None).is_ok()` ✓)先问一句 ✓
+        let js_wants_state = match self.js_render_id {
+            Some(id) => helix_js::render_component(id, 1, 1, None).is_ok(),
+            None => false,
+        };
+        if js_wants_state {
+            //   格式(简单、免转义):首行为摘要;其后每个可见项一行,单元格以 \t 分隔 ✓
             // 首行末尾附上**委托 id** ✓(JS 据此调用 set_component_render(id, fn) ✓
             // —— 否则 JS 无法知道该给哪个 id 注册 ✓)
             let mut s = match self.js_render_id {
