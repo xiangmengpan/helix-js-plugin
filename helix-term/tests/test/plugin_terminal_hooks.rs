@@ -833,6 +833,39 @@ async fn quit_request_survives_last_view_close() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// **JS 自绘 picker(策略外移)**:`:pick` 开弹窗;Esc 关闭后再问诊断 ✓
+/// 注:弹窗打开时**会吞掉按键**(A′ 既有性质 ✓)⇒ 命令只能在关闭后敲 ✓
+#[tokio::test(flavor = "multi_thread")]
+async fn picker_ui_opens() -> anyhow::Result<()> {
+    let _g = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/picker-ui/plugin.js");
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    let loaded = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(!loaded.contains("error"), "插件应加载成功,实得 {loaded}");
+
+    pump(&mut app, ":pick<ret>").await?;
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, ":pick-diag<ret>").await?;
+    let d = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(d.contains("opens=1"), "应开过一次,实得 {d}");
+    assert!(d.contains("open=closed"), "Esc 后应已关闭,实得 {d}");
+    // 数据源确实取到了东西(read_tree 的形状若不符,这里会暴露 ✓)
+    assert!(!d.contains("all=0"), "应取到文件条目,实得 {d}");
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {
