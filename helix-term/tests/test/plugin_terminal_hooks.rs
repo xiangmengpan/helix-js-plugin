@@ -813,6 +813,26 @@ async fn dash_verify_diag() -> anyhow::Result<()> {
     panic!("AFTER_OPEN={n1} AFTER_CLOSE={n2} STATUS=[{st}]");
 }
 
+/// 回归测试:`UiRequest::Quit` 关掉最后一个视图后,**主循环必须先检查 should_close 再渲染** ✓
+/// (修复前此测试**必崩**:Tree::get ← active_leaf_info ← render ✓ —— 已用 RUST_BACKTRACE 复现 ✓)
+#[tokio::test(flavor = "multi_thread")]
+async fn quit_request_survives_last_view_close() -> anyhow::Result<()> {
+    let _g = PLUGIN_TEST_LOCK.lock().await;
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, ":plugin-load /tmp/probe_quit.js<ret>").await?;
+    pump(&mut app, ":probe-quit<ret>").await?;
+    let st = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(
+        st.contains("typeof helix.quit = function"),
+        "接口应在,实得 {st}"
+    );
+    Ok(())
+}
+
 /// Pane 模式:`Esc` 退出回 normal
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_confirms_and_exits() -> anyhow::Result<()> {

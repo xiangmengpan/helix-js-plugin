@@ -600,6 +600,11 @@ impl Application {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback))) {
                         self.jobs.add(job);
                     }
+                    // 请求处理可能已关掉最后一个视图(如 UiRequest::Quit ✓)⇒ 渲染前先按既有条件早退 ✓
+                    // (RUST_BACKTRACE 实得:Tree::get ← active_leaf_info ← render ✓ —— 否则会查死视图 ⇒ panic ✗)
+                    if self.editor.should_close() {
+                        return false;
+                    }
                     self.render().await;
                 }
                 Some(msg) = self.jobs.status_messages.recv() => {
@@ -616,6 +621,11 @@ impl Application {
                 Some(callback) = self.jobs.wait_futures.next() => {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback) {
                         self.jobs.add(job);
+                    }
+                    // 请求处理可能已关掉最后一个视图(如 UiRequest::Quit ✓)⇒ 渲染前先按既有条件早退 ✓
+                    // (RUST_BACKTRACE 实得:Tree::get ← active_leaf_info ← render ✓ —— 否则会查死视图 ⇒ panic ✗)
+                    if self.editor.should_close() {
+                        return false;
                     }
                     self.render().await;
                 }
