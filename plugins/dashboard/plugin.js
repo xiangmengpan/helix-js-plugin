@@ -37,6 +37,7 @@ let n_startup = 0; // startup 事件次数
 let n_buffer_open = 0; // buffer-open 事件次数
 let n_open_calls = 0; // open_dashboard 被调用次数
 let n_open_drew = 0; // 其中"真的插入成功"的次数
+let defer_tries = 0; // "推迟到首次交互"的尝试次数(只试一次 ✓)
 let bound = false; // 键位是否已绑(精确解绑用 ✓)
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
@@ -305,6 +306,19 @@ helix.on("buffer-open", () => {
   guard(() => helix.run_command("dashboard"));
 });
 helix.on("buffer-close", () => dismiss_on_others());
+
+/// **启动自动显示的落地方式**(真机读数决定 ✓):
+///  - `startup` 事件里 `run_command("dashboard")` 拿不到可编辑的 `ctx.doc` ✗(drew=0 ✓)
+///  - `buffer-open` 在启动时**根本不触发** ✗(bufOpen=0 ✓)
+///  - 而**命令路径**经探针真机验证**完全可用** ✓(PROBE-OK / D-REAL 都显示了 ✓)
+/// ⇒ 于是:等**第一次交互**(那时编辑器已定型、有可用 ctx ✓)再自动触发一次 ✓
+/// 用 `mode-change` 作为"用户已开始操作"的信号 ✓;只在**从没画过**且 buffer 仍空白时触发 ✓
+helix.on("mode-change", () => {
+  if (n_open_drew > 0 || dash_open) return; // 已经画过/正在屏上 ⇒ 不再打扰 ✓
+  defer_tries++;
+  if (defer_tries > 1) return; // 只试一次,避免反复打扰 ✓
+  guard(() => helix.run_command("dashboard"));
+});
 helix.register_command("dashboard-close", (ctx) => close_dashboard(ctx));
 
 /// **最小探针**:真机上"JS 发起的编辑到底会不会被应用" ✓
@@ -358,7 +372,7 @@ helix.register_command("dashboard-diag", (ctx) => {
   }, "err");
   guard(() =>
     helix.echo(
-      "startup=" + n_startup + " bufOpen=" + n_buffer_open +
+      "startup=" + n_startup + " defer=" + defer_tries + " bufOpen=" + n_buffer_open +
       " openCalls=" + n_open_calls + " drew=" + n_open_drew +
       " dashOpen=" + (dash_open ? 1 : 0) +
       " | vw=" + (v ? v[0] : "n/a") + " vh=" + (v ? v[1] : "n/a") +
