@@ -269,6 +269,9 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     default_action: Action,
 
     pub truncate_start: bool,
+    /// **JS 渲染委托 id**(为"UI 归 JS"铺路 ✓);未设(默认)⇒ 原渲染路径一字不改 ✓
+    /// 本片只加字段与构建器,**无任何读取者** ⇒ **零行为变化** ✓
+    js_render_id: Option<u64>,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
@@ -383,6 +386,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let query = PickerQuery::new(columns.iter().map(|col| &col.name).cloned(), default_column);
 
         Self {
+            js_render_id: None,
             columns,
             primary_column: default_column,
             matcher,
@@ -414,6 +418,17 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             picker_version: self.version.clone(),
             _redraw: helix_event::RequestRedrawOnDrop,
         }
+    }
+
+    /// 标记"本 picker 的渲染可由 JS 代劳"(默认不设 ⇒ 原路径 ✓)
+    pub fn with_js_render_id(mut self, id: u64) -> Self {
+        self.js_render_id = Some(id);
+        self
+    }
+
+    /// 供后续渲染分支使用(本片暂无读取者 ✓)
+    pub fn js_render_id(&self) -> Option<u64> {
+        self.js_render_id
     }
 
     pub fn truncate_start(mut self, truncate_start: bool) -> Self {

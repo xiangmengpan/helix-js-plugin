@@ -82,6 +82,11 @@ pub(crate) fn open_picker(
         .collect();
     let action_src = source.to_string();
     let preview_src = source.to_string();
+    // 仅**标记**该 picker 可由 JS 代绘 ✓(本片无读取者 ⇒ 零行为变化 ✓)
+    // 本地原子计数器——`helix-js` 的 `state::next_term_id` 在 helix-term 不可达 ✗(跨 crate 私有 ✓)
+    // 本片只需一个**稳定的标记 id**(无读取者 ✓)⇒ 自己发号即可 ✓,不引入任何依赖 ✓
+    static NEXT_RENDER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let render_id = NEXT_RENDER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let picker = Picker::new(
         build_columns(&columns),
         0,
@@ -107,7 +112,7 @@ pub(crate) fn open_picker(
         });
         Some((PathOrId::Path(path), Some((line, 0))))
     });
-    compositor.push(Box::new(overlaid(picker)));
+    compositor.push(Box::new(overlaid(picker.with_js_render_id(render_id))));
 }
 
 #[cfg(test)]
