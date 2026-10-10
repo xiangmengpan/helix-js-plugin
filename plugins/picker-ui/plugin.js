@@ -334,6 +334,10 @@ helix.register_command("pick-diag", () => {
       " opens=" + n_open + " typed=" + n_typed + " accepted=" + n_accepted +
       " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query) +
       " src=" + cur_source +
-      " bufs=" + (typeof helix.buffers === "function" ? JSON.stringify(guard(() => (helix.buffers() || []).length, -1)) : "none")
+      " bufs=" + (typeof helix.buffers === "function" ? JSON.stringify(guard(() => (helix.buffers() || []).length, -1)) : "none") +
+      // ★ 核心 picker 的**状态馈送**(每帧由 render_picker 推送 ✓):
+      //   打开核心 picker(如 helix.picker.run("files"))后即可读到它;
+      //   关闭后仍保留**最后一次**快照(本实现只写不清 ✓)—— 故可关屏后再查 ✓
+      " core=" + JSON.stringify(guard(() => helix.picker_state(), "n/a"))
   );
 });

@@ -134,6 +134,17 @@ pub(crate) fn js_write_plugin_file(
 
 /// `helix.plugins_dir()` → 插件目录绝对路径(未推入 → null)。
 /// `:plugin` 管理器用它定位 `manifest.json` 与插件文件。
+/// `helix.picker_state() -> string` —— picker 的状态摘要(query/命中/总数/选中)✓
+/// 由核心渲染路径每帧推送 ✓;picker 未开启时为空串 ✓
+/// 签名照抄同文件 `js_viewport`(**boa 引擎** ✓)
+pub(crate) fn js_picker_state(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    Ok(JsValue::from(JsString::from(crate::state::picker_state())))
+}
+
 /// `helix.viewport() -> [width, height]` —— 视口列数/行数 ✓
 ///
 /// 为什么需要:插件要"真正居中/铺满"就必须读得到列数,而此前**没有任何接口** ✗

@@ -452,6 +452,11 @@ pub fn init() {
                     0,
                 )
                 .function(
+                    NativeFunction::from_fn_ptr(commands::js_picker_state),
+                    JsString::from("picker_state"),
+                    0,
+                )
+                .function(
                     NativeFunction::from_fn_ptr(commands::js_quit),
                     JsString::from("quit"),
                     0,

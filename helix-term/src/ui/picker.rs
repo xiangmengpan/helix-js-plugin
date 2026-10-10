@@ -710,6 +710,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     fn render_picker(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let status = self.matcher.tick(10);
         let snapshot = self.matcher.snapshot();
+        // 把状态喂给 JS ✓(每帧一次,≈一次加锁+分配;要"绘 UI 交 JS"就必须有这一步 ✓)
+        helix_js::set_picker_state(&self.state_summary());
         if status.changed {
             self.cursor = self
                 .cursor

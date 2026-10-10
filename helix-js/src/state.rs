@@ -465,6 +465,30 @@ pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
 }
 
 pub(crate) static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+/// **picker 状态摘要** —— 由核心在渲染 picker 时推进来 ✓
+///
+/// 为什么需要:渲染回调只拿到 `(focus, {width,height})` ✗ —— **没有数据** ✗
+/// (弹窗探针实测:`POP-RENDER focus=null w=96 h=105` ✓)
+/// ⇒ 要把"绘 UI"交给 JS,必须先把**状态**喂过去 ✓ —— 这正是本字段的作用 ✓
+pub(crate) static PICKER_STATE: OnceLock<Mutex<String>> = OnceLock::new();
+
+/// 记录 picker 的状态摘要(由核心渲染路径调用 ✓;每帧一次,代价≈一次加锁+分配 ✓)
+pub fn set_picker_state(s: &str) {
+    let cell = PICKER_STATE.get_or_init(|| Mutex::new(String::new()));
+    if let Ok(mut v) = cell.lock() {
+        v.clear();
+        v.push_str(s);
+    }
+}
+
+/// 读取 picker 状态摘要(JS 侧 `helix.picker_state()` 用 ✓)
+pub(crate) fn picker_state() -> String {
+    PICKER_STATE
+        .get()
+        .and_then(|c| c.lock().ok().map(|v| v.clone()))
+        .unwrap_or_default()
+}
+
 /// 最近一次的**视口尺寸** (width, height) —— 由 `Compositor::resize` 推进来 ✓
 /// 为什么需要:插件要"真正居中/铺满"就必须知道列数,而此前**没有任何接口**能读到 ✗
 /// (曾据此猜过 `helix.width`/`helix.rows` ⇒ 都是 undefined ✗ —— 探针实测过)
