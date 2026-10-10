@@ -1,3 +1,27 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// 【待重写为弹窗式(A′)】—— 以下事实已由探针在夹具中**实测**(非推断 ✓):
+//
+//   ① `open_panel(...)` **不是全屏居中界面** ✗ —— 它要求必填 `side: string`
+//      (探针实得:`open_panel: 'side' must be a string` ✓;`.d.ts` 也没写这个必填项 ✗)
+//   ② **`open_popup` 才是**可行的形态 ✓ —— 实测:
+//        helix.open_popup({ width:"80%", height:"70%", position:"center",
+//                           render, onKey, onClose })
+//        · render 被调用 ✓,且 ctx 给的是**自己盒子的宽高**(实测 80%×120=96 ✓ / 70%×150=105 ✓)
+//          ⇒ **居中在 ctx.width 内做即可**,不必依赖视口 ✓
+//        · 裸键会走 onKey ✓;返回 "close" **真的关闭** ✓ 且触发 onClose ✓
+//        · 关闭后**不再拦截**按键 ✓
+//        · **从不碰任何 buffer** ✓ ⇒ 需求③④("能回来"/"未保存警告")**自动消失** ✓
+//   ③ `open_popup` 不需要 `ctx.doc` ✓(只推 UiRequest)⇒ 需求①("启动即显示")**不再有 ctx 难题** ✓
+//
+// 因此重写要点:
+//   · render(focus, ctx) ⇒ 复用现有 build_text() 的内容 + disp_width 居中(ctx.width 为基准 ✓)
+//   · onKey(key, doc)    ⇒ 菜单动作;**q ⇒ helix.run_command("quit")**(需求②:退出程序 ✓)
+//   · 启动时在 `startup` 处理器里直接 open_popup ✓(无需 ctx 转交 ✓)
+//   · `bind_keys`/`unbind_keys`/`dismiss_on_others`/`map {unbind}` **全部删掉** ✓
+//     (弹窗自带按键处理 ⇒ 零全局键 ⇒ 不可能再出现"卡死" ✓)
+//   · 全局键相关核心能力(startup/viewport/remove_binding)保持不变 ✓(前两个仍有用 ✓)
+// ═══════════════════════════════════════════════════════════════════════════
+
 // dashboard/plugin.js — LazyVim 风格的启动界面(B 方案:buffer 式)。
 //
 // ## 为什么是 buffer 式
