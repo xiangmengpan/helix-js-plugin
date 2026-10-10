@@ -336,6 +336,16 @@ helix.register_command("pick", (ctx) => {
 });
 helix.register_command("pick-close", () => close_picker());
 /// 自诊断:把 v1 依赖的事实打出来 ✓
+/// 按**显示宽度**截断(CJK 感知 ✓;复用本文件的 dw() ✓)
+function clip(s, width) {
+  let out = "";
+  for (const ch of String(s)) {
+    if (dw(out + ch) > Math.max(1, width)) return out;
+    out += ch;
+  }
+  return out;
+}
+
 /// **给核心 picker 定义一个源并打开它** —— 用来验证"核心状态是否喂到 JS" ✓
 /// 结构**照抄** plugins/examples/picker.js ✓(columns/items/preview/action ✓)
 helix.register_command("pick-core", () => {
@@ -377,16 +387,30 @@ helix.register_command("pick-core-draw", () => {
       const lines = s.split("\n");
       const head = lines.shift() || "";
       const rows = lines;
-      const w = ctx && ctx.width ? ctx.width : 60;
+      const w = (ctx && ctx.width) ? ctx.width : 60;
+      // 从摘要里读**选中下标 + 查询**(核心已给 ✓ ⇒ JS 不必自己算 ✓)
+      const cur = Number((/cursor=(\d+)/.exec(head) || [])[1] ?? -1);
+      const q = (/query="([^"]*)"/.exec(head) || [])[1] || "";
       const out = [];
-      // 首行:摘要(JS 自己排版 ⇒ UI 归 JS ✓)
-      out.push({ type: "text", text: "JS-DRAWN  " + head.slice(0, Math.max(1, w - 12)) });
-      // 其后:可见窗口的行(**核心已按 \t 分好单元格** ✓)—— 我在这里加自己的前缀/高亮 ✓
-      for (const r of rows) {
-        const cells = r.split("\t").join("  ");
-        out.push({ type: "text", text: cells.slice(0, Math.max(1, w)) });
+      // ① 提示行:JS 自己排版(可加自己的记号 ✓)
+      out.push({ type: "text", text: clip("JS-DRAWN  q=" + q, w) });
+      // ② 可见行:**CJK 感知对齐 + 逐列截断** ✓(复用本插件的 dw() ✓)
+      //    单元格由核心以 \t 分好 ✓;这里只做"列对齐 + 标记选中" ✓
+      for (let i = 0; i < rows.length; i++) {
+        const cells = rows[i].split("\t");
+        const mark = i === cur ? "▸ " : "  ";
+        const body = clip(cells.join("   "), Math.max(1, w - 2));
+        const padN = Math.max(0, w - dw(mark + body) - 1);
+        const line = { type: "text", text: mark + body + " ".repeat(padN) };
+        // ③ 选中行用**主题里的焦点样式** ✓(经 get_style 读 ⇒ 跟随主题 ✓,而非硬编码颜色 ✗)
+        if (i === cur) {
+          const st = guard(() => helix.get_style("ui.text.focus"), null);
+          if (st) line.style = st;      // comp_layout 的节点支持 style ✓(见 docs/api/ui.md 的 el() ✓)
+          else line.text = "» " + body; // 读不到样式 ⇒ 退化为可见标记 ✓(不静默 ✗)
+        }
+        out.push(line);
       }
-      if (rows.length === 0) out.push({ type: "text", text: "(无可见项)" });
+      if (rows.length === 0) out.push({ type: "text", text: clip("  (无可见项)", w) });
       return out;
     });
     return true;
