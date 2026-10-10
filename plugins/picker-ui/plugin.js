@@ -91,12 +91,40 @@ function fuzzy(query, target) {
 }
 
 // ── 状态 ──────────────────────────────────────────────────────────────────
+/// **源注册表**(策略层的一等公民 ✓):每个源给出"取条目"与"打开条目" ✓
+/// 加新源只需在此加一项 ⇒ 这正是"策略可插拔"的落点 ✓
+const SOURCES = {
+  files: {
+    label: "文件",
+    // 先例:plugins/examples/picker.js 用的是 read_tree(".").then(...) ✓
+    load: (done) => {
+      let p = null;
+      try { p = helix.read_tree("."); } catch (e) { say("pick: read_tree 不可用 —— " + (e && e.message ? e.message : e)); }
+      if (p && typeof p.then === "function") {
+        p.then((es) => done(normalize(es))).catch((e) => {
+          say("pick: read_tree 失败,改用同步兜底 —— " + (e && e.message ? e.message : e));
+          done(files_sync());
+        });
+        return;
+      }
+      done(files_sync());
+    },
+    open: (item) => guard(() => helix.open_file(item, {})),
+  },
+  buffers: {
+    label: "缓冲",
+    load: (done) => done(buffers_list()),
+    open: (item) => guard(() => helix.open_file(item, {})),
+  },
+};
+
 let popup = null;     // 弹窗 id
 let all = [];         // 全部条目(字符串)
 let shown = [];       // 过滤后的条目
 let sel = 0;          // 当前选中下标
 let query = "";       // 当前查询
 let n_open = 0, n_typed = 0, n_accepted = 0;
+let cur_source = "files"; // 当前源 ✓
 
 function refilter() {
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
@@ -122,7 +150,8 @@ function accept() {
   }
   const target = shown[sel];
   n_accepted++;
-  guard(() => helix.open_file(target, {}));
+  const src = SOURCES[cur_source] || SOURCES.files;
+  guard(() => src.open(target));
   return "close";
 }
 
@@ -153,6 +182,22 @@ function load_files() {
     return;
   }
   sync_fallback();
+}
+
+/// 打开的缓冲区列表 —— 形状未验证 ✗ ⇒ 兼容三种形态并在诊断里报告 ✓
+function buffers_list() {
+  let raw = null;
+  try { raw = helix.buffers ? helix.buffers() : null; }
+  catch (e) { say("pick: buffers 不可用 —— " + (e && e.message ? e.message : e)); }
+  if (!raw) {
+    const cur = guard(() => helix.buffer.current(), null);
+    const p = cur ? cur.path || cur.name : null;
+    return p ? [String(p)] : [];
+  }
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr
+    .map((b) => (typeof b === "string" ? b : b && (b.path || b.name) ? b.path || b.name : null))
+    .filter((x) => typeof x === "string" && x.length > 0);
 }
 
 /// 同步兜底:rg --files(gitignore 友好 ✓)→ git ls-files → find ✓;全部失败则空表 ✓
@@ -194,8 +239,10 @@ function render(_focus, ctx) {
   return rows;
 }
 
-function open_picker() {
+function open_picker(source_name) {
   if (popup !== null) return;
+  const src = SOURCES[source_name] ? source_name : "files";
+  cur_source = src;
   n_open++;
   query = "";
   sel = 0;
@@ -205,7 +252,7 @@ function open_picker() {
   // ⇒ 改成:先给空列表 ⇒ 数据到了再重过滤(render 每帧都调 ⇒ 自然刷新 ✓)
   all = [];
   shown = [];
-  load_files();
+  guard(() => SOURCES[cur_source].load((items) => { all = items; refilter(); }));
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
   const id = guard(
     () =>
@@ -270,13 +317,23 @@ function close_picker() {
 }
 
 // ── 命令(不依赖 startup ⇒ 随时可用 ✓)────────────────────────────────────
-helix.register_command("pick", () => open_picker());
+helix.register_command("pick", (ctx) => {
+  let arg = "";
+  guard(() => {
+    const a = ctx && ctx.args !== undefined ? ctx.args : ctx && ctx.text;
+    if (typeof a === "string") arg = a.trim();
+    else if (Array.isArray(a)) arg = a.join(" ").trim();
+  });
+  open_picker(arg);
+});
 helix.register_command("pick-close", () => close_picker());
 /// 自诊断:把 v1 依赖的事实打出来 ✓
 helix.register_command("pick-diag", () => {
   say(
     "pick-diag: open=" + (popup === null ? "closed" : popup) +
       " opens=" + n_open + " typed=" + n_typed + " accepted=" + n_accepted +
-      " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query)
+      " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query) +
+      " src=" + cur_source +
+      " bufs=" + (typeof helix.buffers === "function" ? JSON.stringify(guard(() => (helix.buffers() || []).length, -1)) : "none")
   );
 });
