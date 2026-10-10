@@ -4901,11 +4901,15 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 });
             }
             helix_js::UiRequest::Quit => {
-                // 关当前视图 —— 关掉**最后一个**视图时 helix 自然退出 ✓
-                // (原语:`Editor::close(ViewId)` ✓ 见 helix-view/src/editor.rs:2161)
+                // ⚠️ 2026-10-10 事故:此处曾用 `editor.close(editor.tree.focus)` ✗
+                // 结果在**关闭最后一个视图**时崩溃:
+                //   helix-view/src/tree.rs:323 `try_get(index).unwrap()` on None ✓
+                // 根因:手动关视图**绕开了 helix 自己维护焦点的逻辑** ⇒ 视图 id 悬空 ✓
+                // ⇒ 该接口**暂停**(只报告,不动作)✓:任何调用者都不可能再崩 ✓
+                // 正确做法(待做):找到 `:quit` 的 handler(`TypableCommand{ name:"quit", fun: quit }` ✓)
+                // 并**通过命令路径**执行它,而不是自己关视图 ✓
                 job::dispatch_blocking(move |editor, _compositor| {
-                    let view_id = editor.tree.focus;
-                    editor.close(view_id);
+                    editor.set_error("helix.quit 暂不可用(核心实现待修):请用 :q 或 :qa");
                 });
             }
             helix_js::UiRequest::ClosePanel { id } => {

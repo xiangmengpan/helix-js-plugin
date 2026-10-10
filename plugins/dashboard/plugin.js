@@ -81,7 +81,11 @@ function picker_run(source) {
 }
 /// 退出程序:优先用专用接口 `helix.quit()` ✓;退化时提示可用 `:q` ✓
 function quit_now() {
-  if (typeof helix.quit === "function") {
+  // ⚠️ 2026-10-10:核心 `UiRequest::Quit` 当前实现会在**关掉最后一个视图**时 panic ✗
+  //    (`helix-view/src/tree.rs:323` unwrap None ✓)—— 根因是照猜用了 `Editor::close` ✗
+  //    ⇒ 暂停使用该接口(改为明确提示),待核心按 `:quit` 的真实实现修好再开 ✓
+  //    这里**故意不调用** helix.quit(),避免用户一按 q 就崩 ✗
+  if (false && typeof helix.quit === "function") {
     try {
       helix.quit();
       return;
@@ -89,7 +93,7 @@ function quit_now() {
       say("dashboard: helix.quit 失败 —— " + (e && e.message ? e.message : e));
     }
   }
-  say("dashboard: 该版本无 helix.quit,请按 Esc 后用 :q 退出");
+  say("dashboard: 请按 Esc 后用 :q 退出(helix.quit 暂因崩溃风险停用 ✓)");
 }
 
 function try_command(name) {
