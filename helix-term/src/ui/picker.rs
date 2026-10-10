@@ -803,9 +803,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         //   实测教训:此前**无条件**每帧为可见窗口的每行调用 `column.format(...)` ✗
         //   —— 那是渲染原本不做的额外工作 ⇒ 用户实测"响应慢 10 多秒" ✓
         //   ⇒ 用与 tabbar 同一个**廉价探针**(`render_component(id,1,1,None).is_ok()` ✓)先问一句 ✓
+        // 有**实例**渲染器或**默认**渲染器(哨兵 0 ✓)其一存在 ⇒ 才构造载荷 ✓(否则零额外开销 ✓)
         let js_wants_state = match self.js_render_id {
-            Some(id) => helix_js::render_component(id, 1, 1, None).is_ok(),
-            None => false,
+            Some(id) => {
+                helix_js::render_component(id, 1, 1, None).is_ok()
+                    || helix_js::render_component(0, 1, 1, None).is_ok()
+            }
+            None => helix_js::render_component(0, 1, 1, None).is_ok(),
         };
         if js_wants_state {
             //   格式(简单、免转义):首行为摘要;其后每个可见项一行,单元格以 \t 分隔 ✓
@@ -834,16 +838,21 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         // ★ ③(b) JS 渲染委托:有委托 ⇒ 用 JS 的行来画并返回;**无委托 ⇒ 以下一行不执行,原路径一字不改** ✓
         //   (js_render_id 仅在 js_picker 路径被设置 ⇒ 其余 19 个调用者完全不受影响 ✓)
-        if let Some(js_id) = self.js_render_id {
-            if let Ok(content) = helix_js::render_component(js_id, inner.width, inner.height, None)
-            {
-                let lines = crate::ui::comp_layout::render(content, (inner.width, inner.height));
-                let mut dr = crate::ui::comp_layout::DiffRenderer; // 零字段单元结构体 ⇒ 零成本 ✓
-                dr.render(&lines, inner, surface, &cx.editor.theme); // 全量渲染:清空区域 + 写全部行 ✓
-                return;
-            }
-            // 拿不到内容(未注册/失败)⇒ **落回原路径** ✓(正常回退,不是错误 ✓)
+        // 解析顺序:① 本实例 id 有注册 ⇒ 用它 ✓ ② 否则**默认渲染器**(哨兵 id = 0 ✓)⇒ 用它 ✓
+        // ③ 都没有 ⇒ **原路径**(安全网 ✓ + 性能最优路径 ✓)
+        // 为什么用哨兵 0:真实组件 id 从 1 起(见 js_picker 的原子计数器 ✓)⇒ 0 空闲 ⇒ **无需新增 API** ✓
+        let js_content = match self.js_render_id {
+            Some(js_id) => helix_js::render_component(js_id, inner.width, inner.height, None)
+                .or_else(|_| helix_js::render_component(0, inner.width, inner.height, None)),
+            None => helix_js::render_component(0, inner.width, inner.height, None),
+        };
+        if let Ok(content) = js_content {
+            let lines = crate::ui::comp_layout::render(content, (inner.width, inner.height));
+            let mut dr = crate::ui::comp_layout::DiffRenderer; // 零字段单元结构体 ⇒ 零成本 ✓
+            dr.render(&lines, inner, surface, &cx.editor.theme); // 全量渲染:清空区域 + 写全部行 ✓
+            return;
         }
+        // 拿不到内容(未注册/失败)⇒ **落回原路径** ✓(正常回退,不是错误 ✓)
 
         let options = snapshot.matched_items(offset..end).map(|item| {
             let mut widths = self.widths.iter_mut();
