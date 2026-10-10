@@ -5,3 +5,6 @@ result
 runtime/grammars
 .DS_Store
 .worktrees
+
+# agent 工具产物(非项目内容)
+.pi/
