@@ -232,7 +232,10 @@ function open_dashboard(ctx) {
   // **不新开 buffer** —— 启动屏就是"启动时那个空白无名 buffer 本身" ✓(LazyVim 也是这个模型)
   // 先前新开一张的写法有个隐蔽 bug:`ctx.doc` 是在处理器运行**之前**构造的 ✗
   // ⇒ 它指向**开屏前**的 buffer ⇒ 内容写进了旧的,新 buffer 仍是空的 ✗(E2E 实得 LEN=1)
-  dash_open = true;
+  // ★★ 注意:dash_open **不在此处置位** ✗
+  // 真机计数器证明:自动路径的插入会失败(drew=0)⇒ 若此处就置位,
+  // 之后手动 `:dashboard` 会直接 early-return ⇒ "没有反应" ✓(实测 ✓)
+  // ⇒ 只有**真的画上去之后**才算"已开屏" ✓
 
   // **内容写入必须报错可见** —— 先前这里包了 guard(),于是"内容没写进去"被**静默吞掉** ✗
   // (E2E 第一次运行就发现:buffer 开对了,但文本只有 "\n")⇒ 改成显式 try/catch + echo ✓
@@ -331,6 +334,7 @@ helix.register_command("dashboard-probe", (ctx) => {
     for (const [, s] of cases) doc.insert(0, 0, s + "\n");
     if (typeof helix.end_edit === "function") helix.end_edit();
     n_open_drew++; // 真的插入成功(诊断计数 ✓)
+    dash_open = true; // ★ 到这里才算"已开屏"(失败不占坑 ✓)
     guard(() => helix.echo("dashboard-probe: 已依次插入 A-SHORT / B-MULTI / C-LONG / D-REAL ⇒ 看主区域出现了哪几个"));
   } catch (e) {
     guard(() => helix.echo("dashboard-probe: insert 抛错 —— " + (e && e.message ? e.message : e)));
