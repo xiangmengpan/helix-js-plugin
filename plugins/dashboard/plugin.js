@@ -151,7 +151,10 @@ function open_dashboard() {
               return "handled"; // q ⇒ 已交给 :quit ✓
             }
           }
-          return "handled"; // 未知键不吞不关(安全 ✓)
+          // ★ 实测发现:弹窗打开时会**吞掉所有按键**(连敲 `:` 都被 onKey 吃掉 ✓)
+          // ⇒ 若对未知键返回 "handled",用户会觉得"键盘失灵" ✗
+          // ⇒ 改为 **LazyVim 行为:任意其它键即关闭** ✓("想干什么就按什么,屏自己让开" ✓)
+          return "close";
         },
         onClose: () => {
           popup_id = null;

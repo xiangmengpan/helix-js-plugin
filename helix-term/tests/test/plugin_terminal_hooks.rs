@@ -739,6 +739,55 @@ helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cm
 //   现状:旧的 buffer 式测试断言的行为**已不存在** ✗ ⇒ 已删除(陈旧测试比没有测试更糟 ✓);
 //   新测试待写。渲染观感(居中/logo)无法在无头夹具断言 ⇒ 靠真机目视 ✓
 
+/// **dashboard(弹窗式 A′)端到端** —— 断言点全部来自**夹具实测的真实行为** ✓:
+///   · `:dashboard` ⇒ 弹窗打开(`opens` +1)✓
+///   · 弹窗打开时**会吞掉按键**(实测:敲 `:dashboard-diag` 的字符被 `onKey` 吃掉,`keys` 计数 ✓)
+///     ⇒ **测试里绝不能在弹窗开着时敲命令** ✓(这正是我第一版测试空状态的原因 ✓)
+///   · 裸 `Esc` ⇒ `onKey` 返回 "close" ⇒ 真的关闭 ✓(探针已验证 ✓,此处端到端复现 ✓)
+///   · 关闭后能再次 `:dashboard`(需求③ ✓)
+/// 渲染观感(居中/logo)无头夹具断言不了 ⇒ 靠真机目视 ✓
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_popup_opens_and_closes() -> anyhow::Result<()> {
+    let _g = PLUGIN_TEST_LOCK.lock().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/dashboard/plugin.js");
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+
+    // ① 打开(此刻弹窗开着 ⇒ 之后不要再敲命令 ✗)
+    pump(&mut app, ":dashboard<ret>").await?;
+    // ② Esc 关掉它
+    pump(&mut app, "<esc>").await?;
+    // ③ 现在可以敲命令了:应看到 opens=1 且已关闭
+    pump(&mut app, ":dashboard-diag<ret>").await?;
+    let d1 = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(d1.contains("opens=1"), "应开过一次,实得 {d1}");
+    assert!(d1.contains("popup=closed"), "Esc 应已关闭弹窗,实得 {d1}");
+    assert!(d1.contains("keys="), "应有按键经过 onKey,实得 {d1}");
+
+    // ④ 关闭后能再次打开(需求③ ✓)
+    pump(&mut app, ":dashboard<ret>").await?;
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, ":dashboard-diag<ret>").await?;
+    let d2 = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(d2.contains("opens=2"), "应能再次打开,实得 {d2}");
+    assert!(
+        d2.contains("popup=closed"),
+        "第二次也应被 Esc 关掉,实得 {d2}"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn dash_verify_diag() -> anyhow::Result<()> {
     let _g = PLUGIN_TEST_LOCK.lock().await;
