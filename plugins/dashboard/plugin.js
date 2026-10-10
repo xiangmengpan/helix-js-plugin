@@ -89,6 +89,12 @@ function quit_now() {
   //    (`helix-view/src/tree.rs:323` try_get().unwrap() on None ✓)
   //    ⇒ 说明"关视图"这条路在**插件请求**上下文里本质上不安全 ✗(与 :quit 的执行环境不同 ✓)
   //    ⇒ **停用**,改用绝对安全的路径;真因待 `RUST_BACKTRACE=1` 的栈定位 ✓
+  // ⚠️ 2026-10-10:核心守卫**尚未加上**(见下方"待做"),故此处仍停用 ✓
+  //    真因已由 RUST_BACKTRACE **定位清楚**(不再是猜测 ✓):
+  //      Tree::get ← Compositor::active_leaf_info ← Compositor::render
+  //    ⇒ 关掉最后一个视图后,主循环**还没检查 should_close() 就先渲染** ⇒ 查死视图 ⇒ panic ✓
+  //    ⇒ 修法:在 event_loop_until_idle 的 render 调用前加 `if should_close { return false }` ✓
+  //      (3 行 ✓;本文件 1086 行已有同款守卫,风格一致 ✓)—— 等核心改好再开 ✓
   if (false && typeof helix.quit === "function") {
     try {
       helix.quit();
