@@ -688,6 +688,25 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         }
     }
 
+    /// **状态快照**(把 picker 的内部状态变成可读字符串)✓
+    ///
+    /// 为什么先做它:目标是"核心引擎不变、只把绘 UI 交给 JS" ✓
+    /// ⇒ 第一步必须先证明**状态可被读出**(query / 命中数 / 总数 / 选中下标)✓
+    /// 本方法**不参与渲染**、不影响任何行为 ✓(只读 ✓),故为零风险的第一步 ✓
+    ///
+    /// 读法**照抄同文件 `render_picker`** ✓(`matcher.tick` → `snapshot()` →
+    /// `matched_item_count()` / `item_count()` ✓),不猜 API ✓
+    pub fn state_summary(&self) -> String {
+        let snapshot = self.matcher.snapshot();
+        format!(
+            "query={:?} matched={} total={} cursor={}",
+            self.prompt.line(),
+            snapshot.matched_item_count(),
+            snapshot.item_count(),
+            self.cursor
+        )
+    }
+
     fn render_picker(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let status = self.matcher.tick(10);
         let snapshot = self.matcher.snapshot();
