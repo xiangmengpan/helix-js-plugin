@@ -732,83 +732,12 @@ helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cm
     Ok(())
 }
 
-/// **dashboard(B 方案)端到端**:无文件启动后 `:dashboard` ⇒ 在**那个空白无名 buffer**
-/// 上写出启动屏(断言:无路径 + 文本含菜单)✓
-///
-/// 注:必须用**无文件启动** —— 插件有安全闸,当前 buffer **有路径**时会**拒绝绘制** ✓
-/// (键位"开屏绑 / 关屏解绑"由 `keymap::tests::remove_binding_is_inverse_of_insert` 覆盖 ✓)
-#[tokio::test(flavor = "multi_thread")]
-async fn dashboard_opens_scratch_screen() -> anyhow::Result<()> {
-    let _g = PLUGIN_TEST_LOCK.lock().await;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let plugin = root.join("plugins/dashboard/plugin.js");
-    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
-
-    // 无文件启动 ⇒ 初始 buffer 无名无路径 ⇒ 启动屏的落点 ✓
-    let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
-    // 先确认插件**加载成功**,否则测的是"没加载"而不是"没开屏"(这个坑踩过 ✗)
-    let after_load = app
-        .editor
-        .get_status()
-        .map(|(s, _)| s.clone())
-        .unwrap_or_default();
-    assert!(
-        !after_load.contains("error"),
-        "插件应先加载成功,实得 {after_load}"
-    );
-
-    pump(&mut app, ":dashboard<ret>").await?;
-
-    let (_, doc) = current_ref!(app.editor);
-    assert!(
-        doc.path().is_none(),
-        "启动屏应在无路径的 buffer 上,实得 {:?}",
-        doc.path()
-    );
-    let text = doc.text().to_string();
-    assert!(
-        text.contains("查找文件"),
-        "应写出菜单文本,实得 {} 字符:{:?}",
-        text.chars().count(),
-        text.chars().take(80).collect::<String>()
-    );
-    Ok(())
-}
-
-/// **dashboard 端到端**:`:dashboard` 在**空白 buffer** 上绘制启动屏 ⇒ `:dashboard-close` **清空它**
-///
-/// 这两条正是用户实测问题的回归:①"得手动输入命令才出屏"⇒ 现在 startup 走命令路径 ✓
-/// ②"q 没效果"⇒ 关闭现在真的清屏(404 → 0 字符)✓
-/// 注:必须无文件启动 —— 插件有安全闸,**非空白 buffer 拒绝绘制** ✓
-#[tokio::test(flavor = "multi_thread")]
-async fn dashboard_draws_and_closes() -> anyhow::Result<()> {
-    let _g = PLUGIN_TEST_LOCK.lock().await;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let plugin = root.join("plugins/dashboard/plugin.js");
-    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
-
-    let mut app = AppBuilder::new().build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
-
-    pump(&mut app, ":dashboard<ret>").await?;
-    let (_, opened) = current_ref!(app.editor);
-    let n_open = opened.text().len_chars();
-    assert!(n_open > 100, "启动屏应写入内容,实得 {n_open} 字符");
-    assert!(
-        opened.text().to_string().contains("查找文件"),
-        "内容应含菜单项"
-    );
-
-    pump(&mut app, ":dashboard-close<ret>").await?;
-    let (_, closed) = current_ref!(app.editor);
-    assert_eq!(
-        closed.text().len_chars(),
-        0,
-        "关闭后应清空启动屏(q 的修复:以前它什么都不做 ✗)"
-    );
-    Ok(())
-}
+// 【待补】dashboard(弹窗式 A′)的端到端测试:
+//   断言点(已用探针在夹具中验证过契约 ✓):`:dashboard` ⇒ 弹窗打开;
+//   裸 `Esc` ⇒ onKey 返回 "close" ⇒ 关闭;`q` ⇒ 走 `:quit`;
+//   关闭后能再次 `:dashboard`(需求③ ✓)。
+//   现状:旧的 buffer 式测试断言的行为**已不存在** ✗ ⇒ 已删除(陈旧测试比没有测试更糟 ✓);
+//   新测试待写。渲染观感(居中/logo)无法在无头夹具断言 ⇒ 靠真机目视 ✓
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dash_verify_diag() -> anyhow::Result<()> {
