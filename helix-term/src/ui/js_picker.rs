@@ -112,6 +112,11 @@ pub(crate) fn open_picker(
         });
         Some((PathOrId::Path(path), Some((line, 0))))
     });
+    // ★ 在**打开那一刻**就把 id 推给 JS ✓ ——
+    //   理由(实测):核心 picker 会**接管键盘** ✗,所以"先开 picker 再敲命令去注册"走不通 ✓
+    //   ⇒ 先推 id ⇒ 插件可在**同一命令内**完成 set_component_render ✓(无需任何后续敲键 ✓)
+    //   此时窗口行尚不存在 ⇒ 只推摘要 + id ✓(渲染开始后由 render_picker 推完整状态 ✓)
+    helix_js::set_picker_state(&format!("{} js_id={render_id}", picker.state_summary()));
     compositor.push(Box::new(overlaid(picker.with_js_render_id(render_id))));
 }
 
