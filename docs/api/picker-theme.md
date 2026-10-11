@@ -42,6 +42,37 @@ helix.picker.define("grep", {
 - 优点：性能原生(nucleo/滚动/预览全 Rust);插件可定义任意源;行格式数组/对象分离;空列表/无匹配正常展示。
 - 局限：候选一次性返回(非流式,万级目录启动延迟);无 builder 旋钮透传(历史/默认动作核心默认);预览仅文件(无任意文本预览);grep 不做"按输入重跑"(一次性加载 + nucleo 过滤)。
 
+### 源的可选键位钩子:`onKey`
+
+```js
+helix.picker.define("my-src", {
+  columns: ["name"],
+  items: () => [["one"]],
+  onKey: (e) => {                       // 可选:核心不认识的键会先问它
+    // e = { key, ctrl, alt, shift, query, selected }
+    if (e.ctrl && e.key === "y") { helix.echo("y"); return "handled"; }
+    return undefined;                   // 不认领 => 交回核心 / 查询框
+  },
+});
+```
+
+**契约**
+
+- 只有**返回字符串 `"handled"`** 才算消费该键;返回其它 / 抛错 / 不返回 => **未处理**(不上抛、不静默改状态)
+- 只收到**事实**(只读):`key`(字符,或键名如 `"Escape"`/`"Up"`)、`ctrl`/`alt`/`shift`、`query`、`selected`
+- **可选**:不声明 => 零行为变化
+
+**边界(重要)**
+
+- 只有**核心不认识的键**会问插件。`Esc` / `Enter` / `Tab` / `Shift-Tab` / `Up` / `Down` /
+  `C-n` / `C-p` / `C-d` / `C-u` / `PageUp` / `PageDown` / `Home` / `End` / `C-c` / `C-s` /
+  `C-v` / `C-t` 都是**核心先处理** => 插件**无法**覆盖它们,也就**无法**破坏
+  「Esc 能关 / Enter 能接受 / 翻页」这些不变量
+- **纯字符输入永不交给插件**(无 Ctrl/Alt 的字符键)=> 从契约上杜绝「插件吞掉打字」
+- 只在**按键那一刻**调用 => **不在每帧路径**上(与渲染委托不同,这个没有每帧代价)
+
+**典型用途**:给 picker 加自有快捷键(复制路径、跳转、切排序、打标记…)
+
 ## 主题
 
 ### `helix.set_theme({ scope: color | { fg?, bg?, modifiers? } })`

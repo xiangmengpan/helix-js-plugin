@@ -97,10 +97,10 @@
 `:config-reload` 不重推(再 `:plugin-reload` 即可);终态是把 `[icons]` 收进 `helix-view`
 的 Config、启动时由 Rust 直接设置,届时那个薄壳与 init 里的显式加载都可删。
 
-`helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/键位全核心;行格式数组或 `{cells, payload}` 分离;四个常用源 files/grep/buffers/symbols **本身就是 JS**(`plugins/examples/picker.js` 用 `helix.picker.define` 定义);核心只提供**注册表 + 分发**与**原生 UI**(nucleo 模糊匹配/滚动/预览/键位));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
+`helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/核心键位(插件可用源的 onKey 认领**核心不认识的**键);行格式数组或 `{cells, payload}` 分离;四个常用源 files/grep/buffers/symbols **本身就是 JS**(`plugins/examples/picker.js` 用 `helix.picker.define` 定义);核心只提供**注册表 + 分发**与**原生 UI**(nucleo 模糊匹配/滚动/预览/键位));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
 
 - 优点:picker 性能原生 + 插件可定义任意源;主题覆盖即时生效。
-- 局限:picker 候选一次性返回;无旋钮透传;预览仅文件;主题颜色不支持引用 scope。
+- 局限:picker 候选一次性返回;无旋钮透传;预览仅文件;主题颜色不支持引用 scope;`onKey` 只能**加**键,不能**改**核心键。
 
 → 详细见 [`api/picker-theme.md`](api/picker-theme.md)
 
@@ -200,6 +200,7 @@ helix.register_command("filetree", () => {
 | **`move_panel` 只支持 rail** | 面板住在布局树里(`open_panel` → rail 叶子或普通叶子);`move_panel` 走树后已可用,但**只有 rail 面板**能换边(普通叶分裂换边会牵动布局树结构),非 rail 会明确拒绝 |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |
 | **堆叠未持久化** | `C-p s` 建的堆叠组未进 `get_layout`/`restore_layout`(浮窗已进),重启后不保留;也无 header 行 |
+| **picker 键位只可「加」不可「改」** | 源可选的 `onKey` 只能认领**核心不认识的键**(`Esc`/`Enter`/`Tab`/翻页等核心先处理,插件拿不到)=> 无法重绑核心键;纯字符输入也永不交给插件(防吞打字)。详见 [`api/picker-theme.md`](api/picker-theme.md) |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
 | **事件 ctx 范围** | 事件只带当前文档(其他分屏文档不触发) |
 | **`layout-change` 回调形状会变** | 带种类时 `(kind, doc)`、不带时 `(doc)`(无占位参数)⇒ `(kind) => …` 会在无种类路径拿到**事件对象**而不报错;`sync_layout_cache()` 37 处调用点仅 10 处设种类(实测 2026-10-10) |
