@@ -1428,14 +1428,16 @@ mod engine_ownership_tests {
             "init() 不得重建引擎"
         );
     }
-
-
-
+    /// **对照实验**(自审时从临时探针改造而来):新造的 `Context` 丢弃是**安全**的。
+    ///
+    /// 为什么留着它:`CONTEXT` 的注释断言"drop 已用过的**共享**引擎会破坏堆" ——
+    /// 本测试是那个结论的**对照组**(新鲜引擎的 drop 正常)。没有对照组,"引擎必须不朽"
+    /// 看起来像偷懒而不是结论;有人想删掉那句注释时,会先被这条测试问到"那为什么这个能 drop?"
     #[test]
-    fn probe_drop_context_with_objects() {
+    fn dropping_a_fresh_context_is_safe() {
         let mut e = Context::default();
-        e.eval(Source::from_bytes("globalThis.x = {a:1, b:'yy', c:[1,2,3]};")).unwrap();
+        e.eval(Source::from_bytes("globalThis.x = {a:1, b:'yy', c:[1,2,3]};"))
+            .unwrap();
         drop(e);
-        eprintln!("PROBE2: 含对象的 Context drop 之后仍活着");
     }
 }
