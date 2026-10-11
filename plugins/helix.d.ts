@@ -490,3 +490,17 @@ interface Helix {
   // ── 插件管理 ──
   plugin: HelixPlugin;
 }
+  /** 可选键位钩子:核心**不认识**的键会先问它。
+   *  仅返回字符串 "handled" 才算消费;抛错/返回其它 => 未处理。
+   *  核心键(Esc/Enter/Tab/翻页…)由核心先处理 => 插件拿不到,无法重绑;
+   *  纯字符输入永不交给插件。仅在按键时调用(不在每帧路径)。 */
+  onKey?: (e: PickerKeyEvent) => "handled" | undefined;
+}
+/** onKey 收到的事实(只读) */
+interface PickerKeyEvent {
+  key: string;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  query: string;
+  selected: number;
