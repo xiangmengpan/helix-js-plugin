@@ -67,6 +67,11 @@ pub fn init() {
         }
     });
     state::with_engine_slot(|slot| {
+        // 幂等:引擎只建**一次**。注意不能用"槽为空"当"没建过" —— guard 借出引擎期间
+        // 槽本来就是空的(见 state::with_engine),那时再建一个就是浪费 + 泄漏。
+        if state::engine_inited() {
+            return;
+        }
         if slot.is_none() {
             // 有主的引擎（不再 `Box::leak` 成 `&'static mut`）：先放进槽，再借出来用
             *slot = Some(Box::new(Context::default()));
@@ -830,7 +835,8 @@ pub fn init() {
                     Attribute::READONLY | Attribute::NON_ENUMERABLE,
                 )
                 .expect("register TABBAR_ID");
-            // 引擎已经在槽里（上一行不再把引用放回）
+            // 引擎已在槽里(不再"把引用放回")
+            state::mark_engine_inited();
         }
     });
 }

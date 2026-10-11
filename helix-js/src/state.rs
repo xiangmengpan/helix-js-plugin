@@ -71,6 +71,9 @@ thread_local! {
     // ⇒ 在"JsValue 生命周期与 drop 次序"单独解决之前,引擎必须与它们同寿。
     static CONTEXT: ManuallyDrop<RefCell<Option<Box<Context>>>> =
         const { ManuallyDrop::new(RefCell::new(None)) };
+    // 引擎是否**建过**。与"槽为空"不是同一件事:槽为空可能只是被借出了(见 `with_engine`)。
+    // 没有它,`init()` 在借出期间会另建一个引擎(浪费 + 泄漏 + 语义混乱) —— 有测试守着。
+    static ENGINE_EVER_INIT: Cell<bool> = const { Cell::new(false) };
     // 持有 JsValue：线程退出时内容泄漏，不随线程 drop（与 CONTEXT 同哲学，见上）
     static REGISTRY: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -134,12 +137,58 @@ thread_local! {
     static THEME_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
 
-/// 访问 CONTEXT 引擎（init() 后 Some；未初始化 panic——所有入口先调 init）
+/// 借出的引擎:Drop 时自动**归还**(panic 安全 —— 闭包 panic 也不会把引擎弄丢)。
+struct EngineBorrow(Option<Box<Context>>);
+
+impl std::ops::Deref for EngineBorrow {
+    type Target = Context;
+    fn deref(&self) -> &Context {
+        self.0.as_deref().expect("EngineBorrow 非空")
+    }
+}
+impl std::ops::DerefMut for EngineBorrow {
+    fn deref_mut(&mut self) -> &mut Context {
+        self.0.as_deref_mut().expect("EngineBorrow 非空")
+    }
+}
+impl Drop for EngineBorrow {
+    fn drop(&mut self) {
+        if let Some(engine) = self.0.take() {
+            CONTEXT.with(|cell| *cell.borrow_mut() = Some(engine));
+        }
+    }
+}
+
+/// 借出引擎执行 `f`;**同一线程重入会得到指名道姓的报错**(而不是 `RefCell already borrowed`)。
+///
+/// 为什么用"取出→归还"而不是"一直持着借用":借用跨越整棵 JS 调用树,重入时的 panic 落在本函数
+/// 内部、看不出是谁在占用;取出后全局槽为空,重入能被**明确识别**,加上 `#[track_caller]` 直指调用点。
+#[track_caller]
 pub(crate) fn with_engine<T>(f: impl FnOnce(&mut Context) -> T) -> T {
     CONTEXT.with(|cell| {
-        let mut binding = cell.borrow_mut();
-        f(binding.as_deref_mut().expect("CONTEXT initialized by init()"))
+        let taken = cell.borrow_mut().take();
+        let Some(engine) = taken else {
+            if engine_inited() {
+                panic!(
+                    "helix-js: engine used again while already borrowed \
+                     (同一线程在 JS 调用树内重入;见 commands.rs 里 helix.load 的注释)"
+                );
+            }
+            panic!("helix-js: engine not initialized — call init() first");
+        };
+        let mut guard = EngineBorrow(Some(engine));
+        f(&mut guard)
     })
+}
+
+/// 引擎是否**建过**(与"槽是否为空"不同:槽为空可能只是被借出了)
+pub(crate) fn engine_inited() -> bool {
+    ENGINE_EVER_INIT.with(|c| c.get())
+}
+
+/// 标记引擎已建(由 `init()` 建完后调用)
+pub(crate) fn mark_engine_inited() {
+    ENGINE_EVER_INIT.with(|c| c.set(true));
 }
 
 /// 访问 CONTEXT 槽位（init() 创建引擎用；None → 惰性创建）
@@ -1318,6 +1367,53 @@ mod engine_ownership_tests {
             let v = e.eval(Source::from_bytes("typeof helix")).unwrap();
             assert_eq!(v.to_string(e).unwrap().to_std_string_escaped(), "object");
         });
+    }
+
+    /// 重入必须**点名**:消息含 "again while already borrowed",且 panic 位置在**调用点**
+    /// (`#[track_caller]`;今天 panic 落在 `state.rs` 内部,毫无线索)。
+    #[test]
+    fn nested_borrow_is_named_not_opaque() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        let err = std::panic::catch_unwind(|| with_engine(|_| with_engine(|_| {})))
+            .expect_err("重入必须报错");
+        let msg = err
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(
+            msg.contains("again while already borrowed"),
+            "错误信息应点名重入,实得: {msg}"
+        );
+    }
+
+    /// `f` 里 panic ⇒ 借出的引擎**必须归还**(否则之后所有插件调用都坏)。
+    ///
+    /// 这条挡的是"不用 RAII"的实现:`let e = take(); f(&mut e); put_back(e)` —— panic 时引擎永久丢失。
+    #[test]
+    fn engine_returned_after_panic_in_closure() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        let r = std::panic::catch_unwind(|| with_engine(|_| panic!("boom")));
+        assert!(r.is_err(), "闭包应当 panic");
+        with_engine(|e| assert!(e.eval(Source::from_bytes("1+1")).is_ok()));
+    }
+
+    /// **借出期间**调用 `init()` 不得重建引擎:guard 化后全局槽在借出期是空的,
+    /// 若 `init()` 仍以"槽为空"当作"没建过"就会另建一个(浪费 + 泄漏 + 语义混乱)。
+    #[test]
+    fn init_while_borrowed_does_not_rebuild() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        with_engine(|_| {
+            crate::init(); // 借出期间再调
+            assert!(
+                take_engine_for_test().is_none(),
+                "init() 不得在引擎借出期间重建引擎"
+            );
+        });
+        with_engine(|e| assert!(e.eval(Source::from_bytes("1+1")).is_ok()));
     }
 
     /// `init()` 幂等:第二次不得重建引擎(重建会把注册命令/事件/键位全清掉)。
