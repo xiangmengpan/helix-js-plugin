@@ -161,8 +161,45 @@ interface SplitLeafOptions {
 }
 interface BufferInfo {
   id: number;
-  name?: string;
-  path?: string | null;
+  name: string; // 无名 buffer 的占位名,如 "[scratch]"
+  path: string | null; // 未绑定路径(scratch)为 null
+  dirty: boolean;
+  language: string | null; // 未识别语言为 null
+}
+
+/** `helix.server.rows(cb)` 回调收到的行(字段来自 Rust 侧 `ServerRow`) */
+interface ServerRow {
+  name: string;
+  kind: string;
+  languages: string[];
+  installed: boolean;
+  local: boolean;
+  version: string | null;
+  description: string;
+  homepage: string | null;
+  installable: boolean;
+  upgradable: boolean;
+  needs_version: boolean;
+  bin: string | null;
+  source: string | null;
+}
+
+/** `helix.server.task(items, cb)` 的入参项 */
+interface ServerTaskItem {
+  op: string; // 批处理动作;具体取值由 server 管理器决定
+  name: string;
+  version?: string; // 配方 needs_version 时必填(给非字符串会抛错,不静默丢弃)
+}
+
+/** `helix.server.task(items, cb)` 回调收到的事件 */
+interface ServerTaskEvent {
+  task_id: number;
+  seq: number; // 同批次内从 0 递增
+  name: string;
+  kind: "phase" | "progress" | "done" | "error";
+  msg?: string | null;
+  bytes?: number | null;
+  total?: number | null;
 }
 
 // ────────────────────────── picker ──────────────────────────
@@ -172,6 +209,20 @@ interface PickerOptions {
   items: () => PickerRow[] | Promise<PickerRow[]>;
   preview?: (...payload: unknown[]) => unknown;
   action?: (...payload: unknown[]) => unknown;
+  /** 可选键位钩子:核心**不认识**的键会先问它。
+   *  仅返回字符串 "handled" 才算消费;抛错/返回其它 => 未处理。
+   *  核心键(Esc/Enter/Tab/翻页…)由核心先处理 => 插件拿不到,无法重绑;
+   *  纯字符输入永不交给插件。仅在按键时调用(不在每帧路径)。 */
+  onKey?: (e: PickerKeyEvent) => "handled" | undefined;
+}
+/** onKey 收到的事实(只读) */
+interface PickerKeyEvent {
+  key: string;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  query: string;
+  selected: number;
 }
 type PickerRow = unknown[] | { cells: unknown[]; payload?: unknown[] };
 
@@ -239,6 +290,7 @@ type EventName =
   | "term-resize"
   | "term-title"
   | "term-key"
+  | "pane-mode-change"
   | "component-event";
 
 // ────────────────────────── 主接口 ──────────────────────────
@@ -261,14 +313,9 @@ interface HelixPlugin {
    * 与 `:plugin remove <name>` 同一实现。
    */
   remove(name: string): void;
-  /** 声明加载依赖(文件 key,拓扑加载) */
+  /** 声明加载依赖(拓扑加载)。`deps` 用**插件名**(如 `"icons"`)或文件 key;
+   *  ⚠️ 依赖在**本脚本 eval 之后**才加载 ⇒ 顶层代码不能假定依赖已执行(要放到回调/命令里用) */
   (name: string, opts: { deps: string[]; version?: string }): void;
-  /** 安装插件(本地路径或 git-url),结果经状态栏显示 */
-  install(arg: string): void;
-  /** 更新插件(不传 = 全部) */
-  update(name?: string): void;
-  /** 删除插件 */
-  remove(name: string): void;
 }
 
 interface Helix {
@@ -303,6 +350,10 @@ interface Helix {
   run_async(cmd: string): Promise<string>; // 失败 reject Error
   spawn(opts: SpawnOptions): number; // 返回 id
   read_dir(path: string): DirEntry[]; // 同步
+  /** 同步读整个文件(UTF-8);读不到 **throw**(不返回 null)。同族异步:`read_file_async` */
+  read_file(path: string): string;
+  /** 同步写文件(父目录按需创建);失败 **throw** */
+  write_file(path: string, text: string): void;
   read_file_async(path: string): Promise<string>; // UTF-8 lossy
   write_file_async(path: string, content: string): Promise<void>;
   stat_async(path: string): Promise<Stat>;
@@ -311,7 +362,8 @@ interface Helix {
 
   // ── 弹窗 / 组件 / 面板 ──
   open_popup(opts: PopupOptions): number; // 返回 id;重复打开替换前一个
-  close_popup(id: number): void;
+  // 注:`helix.close_popup(id)` **不存在**(核心未注册;2026-10 对账核实)。
+  //     关面板用 `close_panel(id)` / `pane.close(id)`;弹窗目前只能由自身键位(如 Esc)关。
   open_panel(opts: PanelOptions): number;
   close_panel(id: number): void;
   move_panel(id: number, side: PanelSide): void;
@@ -343,35 +395,44 @@ interface Helix {
   set_terminal_mode(view_id: number, mode: TerminalMode): void;
   resize_term(id: number, size: number): void;
 
-  // ── 布局 ──
+  // ── 布局(扁平名只剩没有新对应物的这三个)──
   split(dir: SplitDir, leaf: SplitLeafOptions): number; // 返回 leaf_id
   buffer_open(path: string, opts?: unknown): number;
-  close_leaf(id: number): void;
-  zoom(id: number): void;
-  unzoom(): void;
-  resize_leaf(id: number, ratio: number): void;
   layout_resize(dir: SplitDir, amount: number, id?: number): void;
   layout_swap(a: number, b: number): void;
-  layout_minimize(id: number, side?: PanelSide): void;
-  layout_focus(dir: SplitDir, id?: number): void;
-  layout_swap_dir(dir: SplitDir, id?: number): void;
-  layout_equalize(id?: number): void;
-  layout_fix(dir: SplitDir, id?: number): void;
-  focus(id: number): void;
-  get_layout(): {
-    tree: unknown; active: unknown; zoomed: unknown; minimized: unknown;
-    floats: unknown[]; leafs: unknown[];
-  } | null;
-  restore_layout(layout: unknown): void; // 真重建:按 dump 重塑布局树 + 浮窗槽位
-  buffers(): BufferInfo[];
   /** 视口尺寸 `[width, height]` ✓ —— 由核心在 `Compositor::new`/`resize` 推送 ✓
    *  **真机实测可用** ✓(`vw=120` ✓);测试夹具里为 `[0,0]`(无真实终端 ✓) */
   viewport(): [number, number];
-  /** ⚠️ 实测:**不是** `helix.current_buffer` ✗(探针:`typeof helix.current_buffer === "undefined"` ✓)
-   *  真正可用的是 **`helix.buffer.current()`** ✓ —— 与 `helix.buffer_open()` 同族 ✓ */
-  buffer: { current(): BufferInfo | null; };
-  focus_buffer(id: number): void;
-  // ── ③ 新命名空间(与上面扁平 API 等价;扁平名待删) ──
+  /** ⚠️ 实测:**不是** `helix.current_buffer` ✗(探针:`typeof helix.current_buffer === "undefined"` ✓) */
+  buffer: {
+    /** 已打开文档快照(核心每帧推来);**一帧都没渲染过时为 null** */
+    list(): BufferInfo[] | null;
+    /** 当前文档的 **id**(不是对象!);拿不到快照时为 null。要详情请用 `list()` 里同 id 那项 */
+    current(): number | null;
+    /** 把当前视图切到该文档 */
+    focus(id: number): void;
+  };
+
+  // ── 已删除的旧扁平根名(@ 2026-10 对账核实:核心**未注册**这些名字)──
+  // 照旧名调用 = 运行期 undefined。迁移对照(注意两条参数顺序相反):
+  //   focus(id)          → helix.pane.focus(id)
+  //   zoom(id)/unzoom()  → helix.pane.zoom(id)/helix.pane.unzoom()
+  //   close_leaf(id)     → helix.pane.close(id)
+  //   resize_leaf(id,r)  → helix.pane.resize(id,r)
+  //   layout_minimize(id, side?)  → helix.pane.minimize(id, on?)   ← 语义变了:bool 不是方向
+  //   layout_focus(dir, id?)      → helix.pane.focus_dir(id, dir)  ← **参数顺序相反**
+  //   layout_swap_dir(dir, id?)   → helix.pane.move(id, dir)       ← **参数顺序相反**
+  //   layout_equalize(id?)        → helix.pane.equalize(id)
+  //   layout_fix(dir, id?)        → helix.pane.fix(id, fixed)
+  //   get_layout()       → helix.layout.get()
+  //   restore_layout(x)  → helix.layout.restore(x)
+  //   buffers()          → helix.buffer.list()
+  //   focus_buffer(id)   → helix.buffer.focus(id)
+  //   close_popup(id)    → ✗ **无对应**:核心没注册这个名,内置插件自己也在探测它
+  //                        (plugins/dashboard/plugin.js:210 先 `typeof helix.close_popup`
+  //                         再退到 close_panel)。面板用 close_panel(id) / pane.close(id)。
+
+  // ── 命名空间(③ 的最终命名;与旧扁平 API 是同一批原生函数) ──
   /** pane 操作 —— 词汇对齐 zellij 插件 API(`float` / `embed`) */
   pane: {
     /** 统一 pane 清单(含浮窗;字段取自 Rust 侧推来的快照) */
@@ -410,8 +471,8 @@ interface Helix {
       /** 透传给底层 split 的内容：`{terminal: {cmd, size}}` 或 `{panel: {...}}` */
       content?: { terminal?: { cmd: string; size?: number }; panel?: PanelOptions };
     }): void;
-    /** 按方向分裂（**需给内容**：`{terminal|panel}`；空对象会被拒） */
-    split(dir: SplitDir, opts: { terminal?: { cmd: string; size?: number }; panel?: PanelOptions }): void;
+    // 注:`pane.split` **不存在**(核心未注册;2026-10 对账核实)。按方向分裂用顶层
+    //     `helix.split(dir, {terminal|panel})`;要统一创建入口用上面 `open({place, content})`。
     /** 该 pane 的详情（与 `list()` 的单项同构） */
     info(id: number): { id: number; kind: string; place: string; focused: boolean } | null;
     /** 提到最前（浮窗层序 / 堆叠可见位） */
@@ -443,6 +504,14 @@ interface Helix {
   layout: {
     get(): unknown;
     restore(layout: unknown): void;
+    /** 把当前布局存成命名会话(还没渲染过一帧 → 抛错) */
+    save(name: string): boolean;
+    /** 按名字重建布局(不存在 → 抛错) */
+    load(name: string): boolean;
+    /** 已存会话名列表 */
+    list(): string[];
+    /** `true`=删了,`false`=本来就不存在(幂等) */
+    delete(name: string): boolean;
   };
   /** compositor 的平级模式 —— 键位表的**唯一来源**(插件不要自建第二份) */
   pane_mode: {
@@ -454,7 +523,39 @@ interface Helix {
     } | null;
   };
 
+  /** server 管理器(LSP/DAP/linter/formatter)—— 镜像 `:server` 命令族。
+   *  **单向请求**:调用即入队,结果经**状态栏**显示,不回传 JS(要结构化数据请用 `rows`)。 */
+  server: {
+    list(filter?: string): void;
+    search(keyword: string): void;
+    install(name: string): void;
+    update(name?: string): void; // 省略 = 全部(pinned 的会跳过)
+    remove(name: string): void;
+    status(filter?: string): void;
+    /** 请求当前行数据 → **回调一次**(随后接口失效);返回请求 id */
+    rows(cb: (rows: ServerRow[]) => void): number;
+    /** 批量安装/升级/卸载:`items` 必须非空,每项必须有 op/name;返回任务 id */
+    task(items: ServerTaskItem[], cb: (event: ServerTaskEvent) => void): number;
+  };
+  /** 堆叠组(与 `C-p s` 同一机制;**每组恒为两个 pane**) */
+  stack: {
+    list(): { anchor: number; members: number[] }[];
+    /** 与**兄弟** pane 组堆叠(非兄弟 = 不做事) */
+    create(id: number): void;
+    /** 把 `member` 设为可见的那个(参数不合法抛错) */
+    activate(id: number, member: number): void;
+    remove(id: number): void;
+  };
+
   // ── 其他 ──
+  /** 自带 runtime 目录内的文件路径(内容型插件打开随软件分发的资源,如 tutor);找不到 null */
+  runtime_path(name: string): string | null;
+  /** 本次命令的**键入参数**(`:foo a b` → `["a","b"]`);命令之外为空数组 */
+  command_args(): string[];
+  /** picker 状态摘要(核心渲染 picker 时推来:首行摘要 + 后续可见行,`\t` 分隔) */
+  picker_state(): string;
+  /** 退出编辑器(入队 Quit;关掉最后一个视图即退出) */
+  quit(): void;
   watch(path: string, fn: (event: unknown) => void): void;
   unwatch(id: unknown): void;
   diagnostics(): unknown;
@@ -488,19 +589,14 @@ interface Helix {
   };
 
   // ── 插件管理 ──
+  /** 用户层插件根目录;未推入根时 null。注意写入**只落最后一个根**(用户层) */
+  plugins_dir(): string | null;
+  /** 已加载脚本名(按加载顺序;与 `:plugin list` 同一数据源) */
+  loaded_plugins(): string[];
+  /** 往插件根写文件(父目录按需创建),返回**写入的绝对路径**;
+   *  只收相对路径、拒 `..`、越出插件根 → 抛错 */
+  write_plugin_file(rel: string, text: string): string;
+  /** 删插件根内文件或目录:`true`=删了,`false`=本来不存在(幂等);非法路径 → 抛错 */
+  remove_plugin_file(rel: string): boolean;
   plugin: HelixPlugin;
 }
-  /** 可选键位钩子:核心**不认识**的键会先问它。
-   *  仅返回字符串 "handled" 才算消费;抛错/返回其它 => 未处理。
-   *  核心键(Esc/Enter/Tab/翻页…)由核心先处理 => 插件拿不到,无法重绑;
-   *  纯字符输入永不交给插件。仅在按键时调用(不在每帧路径)。 */
-  onKey?: (e: PickerKeyEvent) => "handled" | undefined;
-}
-/** onKey 收到的事实(只读) */
-interface PickerKeyEvent {
-  key: string;
-  ctrl: boolean;
-  alt: boolean;
-  shift: boolean;
-  query: string;
-  selected: number;
