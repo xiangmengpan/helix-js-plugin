@@ -68,7 +68,9 @@ pub fn init() {
     });
     state::with_engine_slot(|slot| {
         if slot.is_none() {
-            let engine = Box::leak(Box::new(Context::default()));
+            // 有主的引擎（不再 `Box::leak` 成 `&'static mut`）：先放进槽，再借出来用
+            *slot = Some(Box::new(Context::default()));
+            let engine: &mut Context = slot.as_deref_mut().expect("just inserted");
             // helix.lsp 命名空间：先独立构建对象（ObjectInitializer 独占 &mut Context），
             // 再作为属性挂到 helix 对象上
             let lsp_obj = {
@@ -828,7 +830,7 @@ pub fn init() {
                     Attribute::READONLY | Attribute::NON_ENUMERABLE,
                 )
                 .expect("register TABBAR_ID");
-            *slot = Some(engine);
+            // 引擎已经在槽里（上一行不再把引用放回）
         }
     });
 }

@@ -4,6 +4,7 @@
 use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
+use std::mem::ManuallyDrop;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -61,7 +62,15 @@ thread_local! {
         const { RefCell::new(None) };
 }
 thread_local! {
-    static CONTEXT: RefCell<Option<&'static mut Context>> = const { RefCell::new(None) };
+    // 引擎的所有权归位到 Box(不再是 Box::leak 出来的 &'static mut),但**整个槽永不 drop**:
+    // 实测(2026-10-11)把已用过的共享引擎在线程退出时 drop ⇒ glibc 报
+    //   tcache_thread_shutdown(): unaligned tcache chunk detected / corrupted double-linked list
+    //   (对照实验:新造的 Context 裸 drop / 带对象 drop 都正常 ⇒ 不是 boa 的 drop 本身,
+    //    而是"引擎先走、仍然引用其 realm 的那些 JsValue 表后走"的次序问题;
+    //    那 22 处 Box::leak 的 JsValue 表是**刻意**不朽的,见本文件各处注释)
+    // ⇒ 在"JsValue 生命周期与 drop 次序"单独解决之前,引擎必须与它们同寿。
+    static CONTEXT: ManuallyDrop<RefCell<Option<Box<Context>>>> =
+        const { ManuallyDrop::new(RefCell::new(None)) };
     // 持有 JsValue：线程退出时内容泄漏，不随线程 drop（与 CONTEXT 同哲学，见上）
     static REGISTRY: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -129,13 +138,27 @@ thread_local! {
 pub(crate) fn with_engine<T>(f: impl FnOnce(&mut Context) -> T) -> T {
     CONTEXT.with(|cell| {
         let mut binding = cell.borrow_mut();
-        f(binding.as_mut().expect("CONTEXT initialized by init()"))
+        f(binding.as_deref_mut().expect("CONTEXT initialized by init()"))
     })
 }
 
 /// 访问 CONTEXT 槽位（init() 创建引擎用；None → 惰性创建）
-pub(crate) fn with_engine_slot<T>(f: impl FnOnce(&mut Option<&'static mut Context>) -> T) -> T {
+pub(crate) fn with_engine_slot<T>(f: impl FnOnce(&mut Option<Box<Context>>) -> T) -> T {
     CONTEXT.with(|cell| f(&mut cell.borrow_mut()))
+}
+
+/// 测试专用:把引擎**整体取出**（槽置 None）。用于验证"所有权真的在槽里"。
+///
+/// ⚠️ **取出后必须原物放回,不得 drop**:drop 已用过的引擎会破坏堆(证据见 `CONTEXT` 的注释)。
+#[cfg(test)]
+pub(crate) fn take_engine_for_test() -> Option<Box<Context>> {
+    CONTEXT.with(|cell| cell.borrow_mut().take())
+}
+
+/// 测试专用:把引擎放回槽里（应当与 [`take_engine_for_test`] 取出的是同一个）。
+#[cfg(test)]
+pub(crate) fn set_engine_for_test(engine: Box<Context>) {
+    CONTEXT.with(|cell| *cell.borrow_mut() = Some(engine));
 }
 
 /// 访问 REGISTRY：首次触达惰性 Box::leak 创建；线程退出时内容泄漏（见上）
@@ -1260,5 +1283,63 @@ mod write_plugin_file_tests {
 
         // 空根列表 → 报错而非 panic
         assert!(write_plugin_file_in(&[], "x.js", "x").is_err());
+    }
+}
+
+#[cfg(test)]
+mod engine_ownership_tests {
+    use super::*;
+    use boa_engine::Source;
+
+    /// 槽里是**有主的** `Box<Context>`:能整体取出、**原物放回**,且期间状态不丢。
+    ///
+    /// 旧实现是 `RefCell<Option<&'static mut Context>>` ⇒ 这段代码根本**不编译**(红灯)。
+    /// 之所以“取出→原物放回”而不是“取出→丢弃”:同进程内全部单测共用一个引擎,
+    /// 丢掉它会让后面的测试找不到 `helix` 全局(丢失"可丢弃"那条另标 `#[ignore]`)。
+    #[test]
+    fn engine_slot_is_owned_and_reusable() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::load_script(r#"helix.register_command("survives-take", () => {});"#)
+            .expect("注册一个命令用做“引擎身份”的标记");
+
+        let taken = take_engine_for_test().expect("init() 后引擎应在槽里");
+        assert!(
+            std::panic::catch_unwind(|| with_engine(|_| {})).is_err(),
+            "引擎已取出 ⇒ 再借必须报错,而不是给一个“已初始化”的误导 expect"
+        );
+
+        set_engine_for_test(taken); // 原物放回
+        assert!(
+            crate::command_names().iter().any(|n| n == "survives-take"),
+            "放回的必须是同一个引擎(否则注册表随旧引擎一起没了)"
+        );
+        with_engine(|e| {
+            let v = e.eval(Source::from_bytes("typeof helix")).unwrap();
+            assert_eq!(v.to_string(e).unwrap().to_std_string_escaped(), "object");
+        });
+    }
+
+    /// `init()` 幂等:第二次不得重建引擎(重建会把注册命令/事件/键位全清掉)。
+    #[test]
+    fn init_is_idempotent_and_keeps_registry() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::load_script(r#"helix.register_command("keep-me", () => {});"#).unwrap();
+        crate::init(); // 再来一次
+        assert!(
+            crate::command_names().iter().any(|n| n == "keep-me"),
+            "init() 不得重建引擎"
+        );
+    }
+
+
+
+    #[test]
+    fn probe_drop_context_with_objects() {
+        let mut e = Context::default();
+        e.eval(Source::from_bytes("globalThis.x = {a:1, b:'yy', c:[1,2,3]};")).unwrap();
+        drop(e);
+        eprintln!("PROBE2: 含对象的 Context drop 之后仍活着");
     }
 }
