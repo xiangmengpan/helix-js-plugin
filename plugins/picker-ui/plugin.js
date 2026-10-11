@@ -127,6 +127,7 @@ let n_open = 0, n_typed = 0, n_accepted = 0;
 let cur_source = "files"; // 当前源 ✓
 // JS 渲染器是否已成功注册(供 :pick-diag 断言 ✓ —— 不依赖易被覆盖的状态栏文案 ✗)
 let core_draw = 0;
+let def_draw = 0;   // ② 默认渲染器是否已注册 ✓
 
 function refilter() {
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
@@ -375,16 +376,10 @@ helix.register_command("pick-core", () => {
 ///   2) `:pick-core-draw`(本命令:读状态里的 js_id ⇒ 注册渲染函数 ✓)
 ///      ⇒ 此后核心 picker 的**列表内容由 JS 决定** ✓(核心仍负责匹配/窗口/预览 ✓)
 /// 说明:核心的 render 回调只收到 `(focus,{width,height})` ✗ ⇒ 数据一律经 `helix.picker_state()` 取 ✓
-helix.register_command("pick-core-draw", () => {
-  const st = guard(() => helix.picker_state(), "");
-  const idm = /js_id=(\d+)/.exec(st || "");
-  if (!idm) {
-    say("pick-core-draw: 状态里没有 js_id ⇒ 请先 :pick-core 让核心 picker 渲染一次");
-    return;
-  }
-  const id = Number(idm[1]);
-  const ok = guard(() => {
-    helix.set_component_render(id, (_focus, ctx) => {
+/// ② 通用**默认**渲染器(核心哨兵 id = 0 ✓)
+///   真实组件 id 从 1 起(核心原子计数器 ✓)⇒ 0 空闲 ⇒ 注册 0 即为"默认" ✓
+///   ⇒ 此后**所有** picker 的列表都由 JS 画 ✓(不必逐个实例注册 ✓)
+function pickRender(_focus, ctx) {
       const s = guard(() => helix.picker_state(), "") || "";
       const lines = s.split("\n");
       const head = lines.shift() || "";
@@ -414,7 +409,18 @@ helix.register_command("pick-core-draw", () => {
       }
       if (rows.length === 0) out.push({ type: "text", text: clip("  (无可见项)", w) });
       return out;
-    });
+    }
+
+helix.register_command("pick-core-draw", () => {
+  const st = guard(() => helix.picker_state(), "");
+  const idm = /js_id=(\d+)/.exec(st || "");
+  if (!idm) {
+    say("pick-core-draw: 状态里没有 js_id ⇒ 请先 :pick-core 让核心 picker 渲染一次");
+    return;
+  }
+  const id = Number(idm[1]);
+  const ok = guard(() => {
+    helix.set_component_render(id, pickRender);
     return true;
   }, false);
   if (ok) core_draw = 1;   // ← 供 :pick-diag 断言 ✓
@@ -422,12 +428,22 @@ helix.register_command("pick-core-draw", () => {
          : "pick-core-draw: set_component_render 失败(该版本?)");
 });
 
+/// ② 注册**默认**渲染器 ⇒ **所有** picker(含 :diagnostics / 文件选择 / 符号 等)都归 JS 画 ✓
+///   ⚠️ 代价:每帧一次状态馈送 + 一次组件渲染 ⇒ **必须实测**(见 :pick-diag 的 perFrame)
+///   ⇒ 若某类 picker 卡顿 ⇒ **不要**用本命令,改用 :pick-core-draw 按实例注册 ✓
+helix.register_command("pick-default-draw", () => {
+  const ok = guard(() => { helix.set_component_render(0, pickRender); return true; }, false);
+  if (ok) def_draw = 1;
+  say(ok ? "pick-default-draw: 已注册**默认**渲染器(id=0)⇒ 所有 picker 现在由 JS 画 ✓"
+         : "pick-default-draw: set_component_render(0,…) 失败(核心版本过旧?)");
+});
+
 helix.register_command("pick-diag", () => {
   say(
     "pick-diag: open=" + (popup === null ? "closed" : popup) +
       " opens=" + n_open + " typed=" + n_typed + " accepted=" + n_accepted +
       " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query) +
-      " src=" + cur_source + " coreDraw=" + core_draw +
+      " src=" + cur_source + " coreDraw=" + core_draw + " defDraw=" + def_draw +
       // ★ 修正:此前这里查的是 `helix.buffers` ✗ —— 但**真名是 `helix.buffer.list()`** ✓
       //   ⇒ 仪表在说谎(源已修、字段没修)⇒ 按"核查你自己的工具"这条纪律修 ✓
       " bufs=" + JSON.stringify(guard(() => (helix.buffer && helix.buffer.list ? helix.buffer.list().length : -1), -2)) +
