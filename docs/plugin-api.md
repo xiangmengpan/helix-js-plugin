@@ -115,10 +115,10 @@
 
 ### 插件管理
 
-`:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源,依赖解析 plugin.json 递归 + 循环检测);JS API `helix.plugin(name, {deps})` + `helix.plugin.install/update/remove`。
+`:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源;**实现全在 JS 侧** `plugins/plugin/plugin.js`);JS API `helix.plugin(name, {deps})`(加载期依赖,核心)+ `helix.plugin.install/update/remove`(**该插件挂上的**兼容层)。
 
-- 优点:来源追踪;卸载/更新闭环;依赖自动装;装后即用。
-- 局限:JS API fire-and-forget(结果看状态栏);git 操作同步阻塞;依赖不自动加载。
+- 优点:来源追踪(manifest:source/kind/installed_at/pinned/commit/files);卸载/更新闭环;写/删走核心的**限域**文件 API(相对路径 + 拒 `..` + 必须在插件根内)。
+- 局限:JS API fire-and-forget(结果看状态栏);git 操作同步阻塞;装完不自动加载(需 `:plugin-reload`);**安装期依赖解析(git 仓库 `plugin.json` 递归)已删除**,只剩加载期 `deps`;`:plugin reload` 仍是提示用 `:plugin-reload` 的桩。
 
 → 详细见 [`api/plugin.md`](api/plugin.md)
 
