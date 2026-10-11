@@ -10,6 +10,7 @@
 | [`plugin-api.md`](plugin-api.md) | **插件 API 总览与索引** —— 从这里进 |
 | [`api/`](api/) | 按域详细(签名 / 示例 / 优缺点):`plugin` · `events` · `loading-commands` · `ui` · `editing` · `lsp` · `terminal-layout` · `picker-theme` · `process-fs` |
 | [`plugin-layout.md`](plugin-layout.md) | **插件布局与命名约定**:一个插件 = 一个目录 + `plugin.js` · 入口如何点名 · `deps` 用插件名 · **两层覆盖**(内置 / 用户) · 分发(`contrib/install-plugins.sh`) |
+| [`plugin-vs-core.md`](plugin-vs-core.md) | **该插件化 vs 该留核心** —— 判定清单:三闸门 + 分类判定表 + 四条红线(每条对应一次真实事故)· 附实测数字出处 |
 | [`guide/`](guide/) | 教程 01–10:概览 → 启动 / 按键 / 编辑 / 渲染 → 深入(core / view / term / lsp) |
 | [`../plugins/helix.d.ts`](../plugins/helix.d.ts) | 类型定义(编辑器补全用)。改动后用 `tsc --noEmit` 验 |
 
