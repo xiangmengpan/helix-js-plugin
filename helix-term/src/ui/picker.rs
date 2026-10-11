@@ -272,6 +272,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// **JS 渲染委托 id**(为"UI 归 JS"铺路 ✓);未设(默认)⇒ 原渲染路径一字不改 ✓
     /// 本片只加字段与构建器,**无任何读取者** ⇒ **零行为变化** ✓
     js_render_id: Option<u64>,
+    /// S4:插件源名(有则核心不认识的键先问其 onKey);None 则完全不影响
+    js_key_source: Option<String>,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
@@ -387,6 +389,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         Self {
             js_render_id: None,
+            js_key_source: None,
             columns,
             primary_column: default_column,
             matcher,
@@ -423,6 +426,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// 标记"本 picker 的渲染可由 JS 代劳"(默认不设 ⇒ 原路径 ✓)
     pub fn with_js_render_id(mut self, id: u64) -> Self {
         self.js_render_id = Some(id);
+        self
+    }
+
+    /// S4:绑定插件源名(照 with_js_render_id 同款)
+    pub fn with_js_key_source(mut self, src: String) -> Self {
+        self.js_key_source = Some(src);
         self
     }
 
@@ -1259,6 +1268,37 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                 self.toggle_preview();
             }
             _ => {
+                // S4:核心**不认识的**键 => 先问插件 onKey;插件不认则照旧进查询框
+                // D3 打字安全阀:纯字符输入(无 Ctrl/Alt 的 Char)**永不**交给插件
+                //   => 契约上杜绝"插件吞掉打字";且 Esc/Enter/Tab/翻页走不到这里 => 不变量留核心
+                if let Some(src) = self.js_key_source.as_deref() {
+                    if let Event::Key(ke) = event {
+                        use helix_view::input::{KeyCode, KeyModifiers};
+                        let plain = matches!(ke.code, KeyCode::Char(_))
+                            && !ke
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                        if !plain {
+                            let key = match ke.code {
+                                KeyCode::Char(c) => c.to_string(),
+                                other => format!("{other:?}"),
+                            };
+                            let m = ke.modifiers;
+                            let handled = helix_js::picker::picker_key_hook(
+                                src,
+                                &key,
+                                m.contains(KeyModifiers::CONTROL),
+                                m.contains(KeyModifiers::ALT),
+                                m.contains(KeyModifiers::SHIFT),
+                                self.prompt.line(),
+                                self.cursor as i64,
+                            );
+                            if handled {
+                                return EventResult::Consumed(None);
+                            }
+                        }
+                    }
+                }
                 self.prompt_handle_event(event, ctx);
             }
         }

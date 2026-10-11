@@ -117,7 +117,11 @@ pub(crate) fn open_picker(
     //   ⇒ 先推 id ⇒ 插件可在**同一命令内**完成 set_component_render ✓(无需任何后续敲键 ✓)
     //   此时窗口行尚不存在 ⇒ 只推摘要 + id ✓(渲染开始后由 render_picker 推完整状态 ✓)
     helix_js::set_picker_state(&format!("{} js_id={render_id}", picker.state_summary()));
-    compositor.push(Box::new(overlaid(picker.with_js_render_id(render_id))));
+    compositor.push(Box::new(overlaid(
+        picker
+            .with_js_render_id(render_id)
+            .with_js_key_source(source.to_string()),
+    )));
 }
 
 #[cfg(test)]
