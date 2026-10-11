@@ -53,6 +53,15 @@ pub(crate) fn js_picker_define(
             "picker.define: items must be a function",
         ))));
     }
+    // S2:校验**可选** onKey —— 存在则必须是函数 ✓(absent/undefined 合法 ⇒ 零行为变化 ✓)
+    // 契约见 picker_key_hook:返回 "handled" 才消费;抛错 = 未处理 ✓
+    if let Ok(cb) = config.get(JsString::from("onKey"), context) {
+        if !cb.is_undefined() && cb.as_callable().is_none() {
+            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                "picker.define: onKey must be a function",
+            ))));
+        }
+    }
     with_picker_sources(|m| {
         m.insert(name, config.into());
     });
@@ -60,6 +69,78 @@ pub(crate) fn js_picker_define(
 }
 
 /// helix.picker.run(name)：取源 → 调 items（同步数组或 Promise）→ push UiRequest::OpenPicker
+/// S1(简化):**不新建注册表** —— 源 config 本身已存在 `PICKER_SOURCES` 中 ✓
+/// ⇒ `onKey` 随之存好,这里只做**查询** ✓
+/// (并列再存一份 = 踩 R3「留两套实现」红线 ✗ ⇒ 故不这么做 ✓)
+pub fn picker_has_on_key(source: &str) -> bool {
+    crate::init();
+    crate::state::with_engine(|engine| {
+        let Some(config) = crate::state::with_picker_sources(|m| m.get(source).cloned()) else {
+            return false;
+        };
+        let Some(obj) = config.as_object() else {
+            return false;
+        };
+        obj.get(JsString::from("onKey"), engine)
+            .map(|v| v.is_callable())
+            .unwrap_or(false)
+    })
+}
+
+/// S3:核心把**核心不认识的键**交给插件的钩子(派发点在 `handle_event` 的 `_ =>` 臂 ✓)。
+///
+/// 契约:
+///   - 仅当插件**返回字符串 `"handled"`** 才返回 true(消费该键)✓
+///   - 无该源 / 无 onKey / 抛错 / 返回其它 ⇒ **false = 未处理** ✓(不静默改状态、不上抛 ✓)
+///   - 只在**事件回调**里被调用 ⇒ **不在每帧路径** ✓(无 3.2 ms 那类代价 ✓)
+pub fn picker_key_hook(
+    source: &str,
+    key: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    query: &str,
+    selected: i64,
+) -> bool {
+    crate::init();
+    crate::state::with_engine(|engine| {
+        let Some(config) = crate::state::with_picker_sources(|m| m.get(source).cloned()) else {
+            return false;
+        };
+        let Some(obj) = config.as_object() else {
+            return false;
+        };
+        let Ok(cb) = obj.get(JsString::from("onKey"), engine) else {
+            return false;
+        };
+        let Some(func) = cb
+            .as_callable()
+            .and_then(boa_engine::object::builtins::JsFunction::from_object)
+        else {
+            return false;
+        };
+        // 只暴露**事实**(只读 ✓):不给"阻止关闭"之类的口子 ⇒ 不变量留核心 ✓
+        use boa_engine::object::ObjectInitializer;
+        use boa_engine::property::Attribute;
+        let facts = ObjectInitializer::new(engine)
+            .property(JsString::from("key"), JsString::from(key), Attribute::all())
+            .property(JsString::from("ctrl"), ctrl, Attribute::all())
+            .property(JsString::from("alt"), alt, Attribute::all())
+            .property(JsString::from("shift"), shift, Attribute::all())
+            .property(
+                JsString::from("query"),
+                JsString::from(query),
+                Attribute::all(),
+            )
+            .property(JsString::from("selected"), selected, Attribute::all())
+            .build();
+        match func.call(&JsValue::undefined(), &[JsValue::from(facts)], engine) {
+            Ok(v) => v.strict_equals(&JsValue::from(JsString::from("handled"))),
+            Err(_) => false, // 抛错 = 未处理 ✓
+        }
+    })
+}
+
 pub(crate) fn js_picker_run(
     _this: &JsValue,
     args: &[JsValue],

@@ -4268,7 +4268,96 @@ helix.set_component_render(0, function (_focus, ctx) {
             us / 16667.0 * 100.0
         );
         // 只做"灾难级回归"的哨兵(实测约 3.3 ms;> 20 ms 才算异常)⇒ 避免把基准变成红灯测试 ✓
-        assert!(us < 20000.0, "每帧 JS 渲染异常慢(> 20ms),疑似灾难级回归: {us} µs");
+        assert!(
+            us < 20000.0,
+            "每帧 JS 渲染异常慢(> 20ms),疑似灾难级回归: {us} µs"
+        );
+    }
+
+    /// S1–S3:插件源的可选 `onKey` —— 校验 + 钩子契约
+    /// 验收:A1(无 onKey ⇒ 行为不变 ✓)/ A2(认领 ⇒ 消费 ✓)/ A3(不认领 ⇒ 不消费 ✓)
+    ///       A4' 事实只读暴露 ✓ / A6(抛错 ⇒ 未处理,不上抛不崩 ✓)/ A8(无源 ⇒ 回退 ✓)
+    #[test]
+    fn picker_on_key_hook_contract() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+
+        // A1 前置(S2 校验):onKey 存在但**不是函数** ⇒ define 报错
+        assert!(
+            load_script(
+                r#"helix.picker.define("s-bad", { columns: ["a"], items: () => [], onKey: 42 });"#
+            )
+            .is_err(),
+            "onKey 非函数必须报错"
+        );
+
+        // A1:未声明 onKey 的源 ⇒ has=false 且钩子一律 false(**零行为变化** ✓)
+        load_script(r#"helix.picker.define("s-plain", { columns: ["a"], items: () => [] });"#)
+            .unwrap();
+        assert!(!crate::picker::picker_has_on_key("s-plain"));
+        assert!(!crate::picker::picker_key_hook(
+            "s-plain", "y", true, false, false, "", -1
+        ));
+
+        // A8:源不存在 ⇒ 回退(false),不 panic ✓
+        assert!(!crate::picker::picker_has_on_key("s-nonexistent"));
+        assert!(!crate::picker::picker_key_hook(
+            "s-nonexistent",
+            "y",
+            true,
+            false,
+            false,
+            "",
+            -1
+        ));
+
+        // A2/A3:声明了 onKey ⇒ 仅当返回 "handled" 才消费 ✓
+        load_script(
+            r#"helix.picker.define("s-key", { columns: ["a"], items: () => [],
+                 onKey: (e) => (e.ctrl && e.key === "y") ? "handled" : undefined });"#,
+        )
+        .unwrap();
+        assert!(crate::picker::picker_has_on_key("s-key"));
+        assert!(
+            crate::picker::picker_key_hook("s-key", "y", true, false, false, "", -1),
+            "C-y 应被消费"
+        );
+        assert!(
+            !crate::picker::picker_key_hook("s-key", "z", true, false, false, "", -1),
+            "未认领的键不得消费"
+        );
+        assert!(
+            !crate::picker::picker_key_hook("s-key", "y", false, false, false, "", -1),
+            "无 ctrl 时不得消费"
+        );
+
+        // A6:钩子抛错 ⇒ **未处理**(不上抛、不崩 ✓)
+        load_script(
+            r#"helix.picker.define("s-throw", { columns: ["a"], items: () => [],
+                 onKey: () => { throw new Error("boom"); } });"#,
+        )
+        .unwrap();
+        assert!(
+            !crate::picker::picker_key_hook("s-throw", "y", true, false, false, "", -1),
+            "抛错必须等于未处理"
+        );
+
+        // A4':只暴露**事实** —— 用钩子自身的判定来证明实参原样送到 ✓(无需读回辅助 ✓)
+        load_script(
+            r#"helix.picker.define("s-facts", { columns: ["a"], items: () => [],
+                 onKey: (e) => (e.key === "x" && e.alt === true && e.ctrl === false
+                                && e.shift === false && e.query === "abc"
+                                && e.selected === 7) ? "handled" : undefined });"#,
+        )
+        .unwrap();
+        assert!(
+            crate::picker::picker_key_hook("s-facts", "x", false, true, false, "abc", 7),
+            "事实应原样传给插件"
+        );
+        assert!(
+            !crate::picker::picker_key_hook("s-facts", "x", true, true, false, "abc", 7),
+            "任一事实不符即不应命中"
+        );
     }
 
     /// 组件视图回调:set_component_render(id, fn) → render_component 读取
