@@ -67,7 +67,8 @@ thread_local! {
     //   tcache_thread_shutdown(): unaligned tcache chunk detected / corrupted double-linked list
     //   (对照实验:新造的 Context 裸 drop / 带对象 drop 都正常 ⇒ 不是 boa 的 drop 本身,
     //    而是"引擎先走、仍然引用其 realm 的那些 JsValue 表后走"的次序问题;
-    //    那 22 处 Box::leak 的 JsValue 表是**刻意**不朽的,见本文件各处注释)
+    //    那 20 处 `Box::leak(Box::default())` 的 JsValue 表是**刻意**不朽的(实测:
+    //    17 处在本文件 + watch / server_rows / server_tasks 各 1;见本文件各处注释)
     // ⇒ 在"JsValue 生命周期与 drop 次序"单独解决之前,引擎必须与它们同寿。
     static CONTEXT: ManuallyDrop<RefCell<Option<Box<Context>>>> =
         const { ManuallyDrop::new(RefCell::new(None)) };
