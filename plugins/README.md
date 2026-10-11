@@ -1,125 +1,150 @@
-# plugins/ — JS 插件（helix 魔改版插件系统）
+# plugins/ —— 内置 JS 插件(源目录)
 
-插件系统说明见 [`docs/plugin-api.md`](../docs/plugin-api.md)。
+> **这个目录是「随软件分发的内置插件」的源。** 运行时用的是副本,有两层:
+>
+> | 层 | 位置 | 说明 |
+> |---|---|---|
+> | 内置层 | `<runtime>/plugins/` | 由 `contrib/install-plugins.sh` 从本目录装入 |
+> | 用户层 | `~/.config/helix/plugins/` | **同名目录整体覆盖内置层**(不是逐文件覆盖)|
+>
+> 插件 **API 手册**在 [`docs/plugin-api.md`](../docs/plugin-api.md) 与 [`docs/api/`](../docs/api/)(按域分文件);
+> 本文件只讲**这个目录本身**:约定 / 清单 / 工具 / 坑。
 
-## 安装
+## 1. 目录约定
 
-把 `.js` 文件复制到 `~/.config/helix/plugins/`，并在 `~/.config/helix/init.js` 中 `helix.load(...)`：
-
-```bash
-cp plugins/{icons.js,filetree.js} ~/.config/helix/plugins/
-cp plugins/init.js ~/.config/helix/init.js   # 入口示例（自动加载 icons + filetree）
+```
+plugins/
+├── init.js            # 入口:只做"点名"(裸名 → <name>/plugin.js)
+├── <name>/plugin.js   # 一个插件 = 一个目录 + 固定入口 plugin.js
+├── <name>/tests/      # 该插件自己的 node 测试(可跑,不参与加载)
+├── examples/          # 示例 / 模板 —— **不参与加载**
+├── tools/             # 开发脚本(不随软件分发)
+├── helix.d.ts         # 类型定义(编辑器补全;tsc 校验)
+└── jsconfig.json      # `tsc --noEmit -p plugins/jsconfig.json` 用
 ```
 
-> 启动只自动加载 `~/.config/helix/init.js`；其他插件必须经 `helix.load` 导入。
-> 修改插件后 `:plugin-reload` 生效（重读磁盘 + 重置插件状态）。
+四条可判定的规则:
 
-## icons.js — 统一图标映射表（nerd font）
+1. 目录名 = 插件名 = `helix.plugin("<name>")` 的 name(kebab-case,发布后不改)
+2. 入口文件**一律 `plugin.js`**(不再 `index.js` / `<name>.js`)
+3. `deps` 写**插件名**(如 `["icons"]`),不写文件路径
+4. 用户层覆盖是**目录级**:有就是全有,没有就全用内置 —— 避免"用户的 plugin.js + 内置的 lib/"这种混合体
 
-唯一图标源：方案 1（bufferline 文件类型图标，load 即自动注册）、方案 2（filetree 树内图标）、
-方案 3（状态栏 mode 图标）、方案 4（诊断标记图标，Rust 侧 `helix.set_diagnostic_icons`）都从这里取。
+细则与理由见 [`docs/plugin-layout.md`](../docs/plugin-layout.md) §3–§5。
 
-| 映射 | 内容 | 获取 |
-|------|------|------|
-| `ICONS.file` | 扩展名 → 文件类型图标（rust/js/ts/md/py/...） | `getFileIcon(path)` |
-| `ICONS.special` | 特殊文件名（README/Dockerfile/Cargo.toml/...） | `getFileIcon(path)`（优先匹配） |
-| `ICONS.dir` | 目录图标（折叠/展开） | `getDirIcon(expanded)` |
-| `ICONS.mode` | 状态栏模式图标 | `getModeIcon(mode)` |
-| `ICONS.diagnostic` | 诊断标记图标 | `getDiagnosticIcon(sev)` |
-| `ICONS.git` | git 变更状态图标 | `getGitIcon(status)` |
+## 2. 内置插件一览(13 个)
+
+| 插件 | 提供 | 自带 `init.js` 自动加载? |
+|---|---|---|
+| `icons` | `[icons] nerd_font` 配置通道 + 6 个图标函数**兼容薄壳**(图标数据已收进核心 `helix.icons.*`,新代码零依赖直接用) | ✅ |
+| `tutor` | `:tutor`(教程;打开随软件分发的内容,不绑定路径) | ✅ |
+| `layout` | `:layout save\|load\|list\|delete <name>`(命名布局会话) | ✅ |
+| `plugin` | `:plugin`(插件管理器的 JS 侧实现:list/install/update/remove/pin/status/reload) | ✅ |
+| `pane-open` | 给 `helix.pane` 补统一创建入口 `open({place, content})` | ✅ |
+| `dashboard` | `:dashboard` `:dashboard-close` `:dashboard-diag`(LazyVim 风格启动屏) | ✅ |
+| `picker-ui` | `:pick*` 系列(JS 自绘 picker:`:pick` `:pick-close` `:pick-core` `:pick-core-draw` `:pick-default-draw` `:pick-diag`) | ✅ |
+| `terminal` | `:term` `:vterm` `:hterm` `:term-list` `:term-close` `:term-save`(浮动/分屏终端) | ✅ |
+| `statusline` | 状态栏三段分栏(`set_statusline`) | ✅ |
+| `filetree` | `:filetree` `:filetree-reveal`(侧边文件树 rail 面板) | ✅ |
+| `which-key` | 按键提示(`set_keymap_hint` 接管原生 Info,含中文说明) | ❌ 需自己加一行 |
+| `arsenal` | `:arsenal`(工具市场窗,server 管理前端) | ❌ 需自己加一行 |
+| `tabbar` | 布局标签条示范组件(`helix.TABBAR_ID` 槽位) | ❌ 需自己加一行 |
+
+每个插件的细节(键位、设计取舍、已知天花板)写在**该插件 `plugin.js` 的文件头注释**里 —— 就近维护,不在本文件重复。
+
+## 3. 启动时加载什么
+
+`init.js` 的查找顺序(**用户优先**):
+
+```
+~/.config/helix/init.js  →  ~/.config/helix/plugins/init.js  →  <runtime>/plugins/init.js
+```
+
+内置 `init.js` 用 `safe_load` 把每次加载**逐个包住**:单个插件抛错只 `helix.echo` 一条状态栏消息,然后继续。
+
+> 由来(实测事故):某条 `load` 抛错会让 `init.js` 整体失败 ⇒ 下面所有插件都不加载,
+> 一次版本错配就变成"插件全灭"。Neovim 也不会因一个插件报错就让其余全不加载。
+
+改完插件:
+
+```
+:plugin-reload          # 重读磁盘 + 重置插件状态(命令 = 一次撤销的边界)
+```
+
+## 4. 装 / 覆盖 / 分发
+
+| 目的 | 做法 |
+|---|---|
+| 把本目录装成**内置层** | `sh contrib/install-plugins.sh [<runtime>]`(`DRY_RUN=1` 预览) |
+| 同步到**用户层** | `plugins/tools/sync_runtime.sh`(只更新**已有**文件,不新建 —— 首次安装用上面那条) |
+| 让某个插件**开机加载** | 在自己的 `~/.config/helix/init.js` 里加一行 `safe_load("<name>")` |
+| 装**第三方**插件 | `:plugin install <path\|git-url>`(管理链/来源追踪见 [`docs/api/plugin.md`](../docs/api/plugin.md)) |
+| 用户**覆盖**某个内置插件 | 在 `~/.config/helix/plugins/<name>/` 放自己的版本(整目录覆盖) |
+
+## 5. 写一个插件(最小骨架)
 
 ```js
-helix.load("icons.js");                          // 自动注册 bufferline 图标
-const icons = helix.load("icons.js");            // 其他插件取映射表
-icons.getFileIcon("src/main.rs");                // rust 图标
-helix.set_diagnostic_icons(icons.ICONS.diagnostic); // 方案 4：诊断标记列图标
+helix.plugin("my-plugin", { deps: [], version: "1.0" });   // name 与目录名一致;deps 用插件名
+
+helix.register_command("my-cmd", (ctx) => {               // :my-cmd;第三个参数是提示里显示的说明
+  ctx.doc.insert(0, 0, "hi");                             // 一个命令 = 一次撤销
+}, "我的命令");
+
+helix.export({ helper: () => {} });                        // 可选:供别的插件 helix.load 取用
 ```
 
-**前提**：终端使用 nerd font（Windows Terminal 设置字体 / vscode `terminal.integrated.fontFamily`）。
-图标表可自行增删（`ICONS.file` 是普通对象）。
+- `ctx` 是**只读快照** + 编辑队列(越界会 clamp;快照坐标跨 `await` 会过期)——见 [`docs/api/editing.md`](../docs/api/editing.md)
+- 依赖用**插件名**:`helix.plugin("x", { deps: ["icons"] })`。
+  ⚠️ **依赖在本脚本 `eval` 之后才加载** ⇒ 顶层代码不能假定依赖已执行(要放到回调/命令里用)
+- 类型:`plugins/helix.d.ts`。改完跑 `tsc --noEmit -p plugins/jsconfig.json`(见 §6)
 
-## statusline.js — 状态栏美化（lazyvim 风格右侧信息）
+## 6. 自检工具(`plugins/tools/`)
 
-依赖 `set_statusline` 分段样式（Rust 增强）：右侧从右到左显示
-mode 色块 → 文件名（带类型图标）→ git 分支（异步缓存）→ 诊断计数（红/黄）→ 行:列 → 百分比 → 总行数。
+| 脚本 | 查什么 | 用法 |
+|---|---|---|
+| `check_api_surface.mjs` | **注册表 ↔ `helix.d.ts` 对账**(少写的 API / 不存在的名字 / 位置过时的旧名 / 由插件补的名字)+ `runtime/plugins` 与源**逐文件**一致 | `node plugins/tools/check_api_surface.mjs` |
+| `check_signatures.mjs` | 插件 JS 语法 + `icons` 6 个函数的参数名/函数体使用/导出一致性 | `node plugins/tools/check_signatures.mjs` |
+| `sync_runtime.sh` | 把源的**已有副本**更新到最新:`.js` + `helix.d.ts` / `README.md` / `jsconfig.json`(**只更新,不新建**)| `bash plugins/tools/sync_runtime.sh` |
 
-```js
-helix.load("statusline.js");   // init.js 已含；依赖 icons.js
-```
+> 为什么要有这两个 `check_*`:它们都是**一次事故**固化下来的 —— 前者因为 `helix.d.ts` 是手工维护且曾**说谎**
+> (声明了核心没注册的名字),后者因为一次机械替换改坏了函数参数名而事后没人能复跑。
 
-- mode 色块用主题自带 `ui.statusline.normal/insert/select` scope（跟随主题）
-- git 分支在 buffer-open 时 `run_async` 查询一次并缓存（状态栏渲染零开销）
-- 左侧保持 helix 默认（可在 `config.toml` 的 `[statusline]` 调整元素）
-- 自定义分段：`helix.set_statusline((ctx) => [{ text, style? }, "str", ...])`
+## 7. 测试
 
-## terminal.js — 终端管理器（lazyvim 风格）
+| 层 | 命令 | 注意 |
+|---|---|---|
+| 纯逻辑(node) | `node --test plugins/<name>/tests/*.test.js` | **node ≥ 24 不接受目录参数**,必须指到文件或 glob |
+| 集成(真编辑器) | `cargo test -p helix-term --features integration --test integration plugin` | **必须带 `--features integration`**,否则 `running 0 tests` 假绿 |
+| 类型 | `tsc --noEmit -p plugins/jsconfig.json` | 与 cargo 无关,秒级 |
 
-依赖 Rust 增强：浮动终端层、C-\ 模式穿透、滚动缓冲、term_list/term_close、宽字符。Unix pty。
+纯逻辑测试的做法:插件把纯函数放在文件底部 `module.exports`(engine 加载时 `module` 未定义会自动跳过),
+node 侧注入最小 `global.helix` 桩即可直接 require —— 例子见 `plugins/arsenal/tests/arsenal.test.js`。
 
-| 命令 | 行为 |
-|------|------|
-| `:term` | 浮动终端 toggle（单例复用：开 → 居中浮窗；再开 → 关闭） |
-| `:vterm` / `:hterm` | 右侧 / 底部 分屏终端 |
-| `:term-list` | 列出所有终端（view_id + cmd） |
-| `:term-close` | 关闭浮动单例（无则最近打开的） |
+## 8. 改这个目录时的四个坑(都踩过)
 
-终端内按键：`C-\` 切 normal（j/k/gg/G/PageUp/PageDown 滚动缓冲查看）；normal 再 `C-\` 回编辑器（收起浮窗）；
-normal 内 `i`/`a`/`Esc` 回输入、`q` 关闭；insert 模式 `Esc` 关闭。
+1. **镜像漂移**:`plugins/` 是源,`<runtime>/plugins` 与 `~/.config/helix/plugins` 是**副本** ⇒
+   改了源没同步 = "改了却不生效"。真实事故:`picker-ui` 的一处改动就是这么一直没生效的。
+   → 用 `sync_runtime.sh` 同步,或让 `check_api_surface.mjs` 替你查(它会逐文件比)。
+2. **`deps` 的时序反直觉**:依赖在本脚本 `eval` **之后**才加载(见 §5)。
+3. **每帧路径别引 JS**:实测 JS 自绘 picker ≈ **3.2 ms/帧/个可见 picker** = 60fps 预算的 **19.2%**
+   ⇒ 核心渲染仍是默认路径;判定清单见 [`docs/plugin-vs-core.md`](../docs/plugin-vs-core.md)。
+4. **改了 API 忘了改 `helix.d.ts`**:d.ts 是**手工维护**的 ⇒ 加/改/删 API 后跑 §6 的对账脚本。
 
-## filetree.js — 侧边文件树面板
+## 9. 已知不一致(待收)
 
-类 lazyvim/neo-tree 的目录树。`:filetree` 开关面板，`:filetree-reveal` 定位当前文件。
+- `plugins/plugin/plugin.js` 里写的是 `helix.plugin("plugin-manager")`,与目录名 `plugin` 不一致
+  (约定要求二者一致,§1 规则 1)。实际生效的是**目录名**(`helix.load("plugin")`),name 目前只作元数据。
+- 内置 `init.js` 只加载 10 个插件,**未加载 `which-key` / `arsenal` / `tabbar`**;
+  而顶层 `README.md` 把 which-key 中文提示列为已实现特性 ⇒ 全新安装(直接用内置 init.js)看不到它,
+  需要自己加 `safe_load("which-key")`(见 §4)。
 
-| 操作 | 键位 |
-|------|------|
-| 打开文件 / 展开折叠目录 | `Enter` / `o` |
-| 展开并选中首子项 / 折叠或回父节点 | `l` / `Right`、`h` / `Left` |
-| 移动选中行 | `↑` / `↓`、`j` / `k`、`PageUp` / `PageDown`、`Home` / `End` |
-| 上级目录（重设树根） | `P` / `Backspace` |
-| 切换隐藏文件 | `H` |
-| 刷新（保留展开态与光标） | `R` |
-| 新建文件 / 新建目录 | `a` / `A`（输入弹窗） |
-| 重命名 / 删除 | `m` / `d`（删除有确认弹窗） |
-| 跟随当前文件 | `F` 开关（buffer-open 自动 reveal） |
-| 键位帮助 | `?` |
-| 关闭面板 | `q` / `Esc` |
+## 10. 相关文档
 
-未映射的键穿透给编辑器：面板打开时 `:命令`、`i` 插入等照常可用。
-
-### 设计说明
-
-- **纯逻辑与运行时分离**：排序/扁平化/路径链/转义为纯函数（无 helix 依赖），可被 node 直接测试：
-  ```bash
-  node --check plugins/filetree.js
-  node -e "require('./plugins/filetree.test.js')"  # 或直接跑仓库测试
-  ```
-  （`filetree.test.js` 在 `~/.config/helix/plugins/`，未入仓——自检方式见下）
-- **选中行由 JS 维护**：面板无节点点击命中（API 限制，见 plugin-api.md §18），渲染按行号高亮 `ui.selection`。
-- **虚拟化渲染**：以光标为中心截取面板高度窗口，`scroll` 只布局窗口行；超过 2 万可见行截断提示。
-- **懒加载**：目录首次展开才 `read_dir`（同步，每层一次）；折叠不丢 children（缓存）。
-- **已知天花板**：纯键盘（无鼠标命中）；删除 `rm -rf` 无回收站；`helix.run("pwd")` 首次开面板时同步一次。
-
-### 自检
-
-纯逻辑断言（node，无需 helix）：
-
-```bash
-node -e "
-const assert = require('assert');
-const m = require('./plugins/filetree.js');
-assert.deepStrictEqual(
-  m.visible_rows(m.make_tree('/r', [{name:'a',is_dir:true,path:'/r/a'},{name:'b',is_dir:false,path:'/r/b'}]), false, 0, []).map(r=>r.node.name),
-  ['a','b']
-);
-console.log('ok');
-"
-```
-
-集成测试（真实编辑器环境）：`helix-term/tests/test/filetree.rs`，覆盖 reveal/展开/打开、隐藏切换、新建文件、关闭面板。
-
-### 集成测试里的产品代码修复
-
-开发 filetree 测试时发现并修复了两处真实 bug（含回归测试）：
-
-- `Compositor::reset_plugin_diffs` 只重置 layers 里的面板 diff，漏掉布局树叶子里的面板——新 surface 渲染空白（`plugin_layout2.rs` 回归测试）。
-- 面板/终端叶子吞键的已知问题在面板侧：未映射键现在穿透，面板打开时 `:命令` 仍可用。
+| 文档 | 内容 |
+|---|---|
+| [`docs/plugin-api.md`](../docs/plugin-api.md) | 插件 API 总览与索引(**从这里进**) |
+| [`docs/api/`](../docs/api/) | 按域详细:plugin · events · loading-commands · ui · editing · lsp · terminal-layout · picker-theme · process-fs |
+| [`docs/plugin-layout.md`](../docs/plugin-layout.md) | 本目录的约定与迁移史(§3 约定 / §8 分发) |
+| [`docs/plugin-vs-core.md`](../docs/plugin-vs-core.md) | 什么该插件化、什么该留核心(三闸门 + 四条红线) |
+| [`docs/guide/`](../docs/guide/) | 教程 01–10(概览 → 启动/按键/编辑/渲染 → 深入 core/view/term/lsp) |
+| [`docs/superpowers/`](../docs/superpowers/README.md) | 历史设计规格与交接记录(**不要当当前行为依据**) |
