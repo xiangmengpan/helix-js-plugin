@@ -290,3 +290,75 @@ async fn plugin_picker_width_mismatch_reports_error() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// S6 验收:插件源声明 `onKey` 之后
+//   A9:插件认领的键(ctrl+y)确实被调用 —— 且**只在认领分支里** echo
+//      (否则断言对"未认领"也成立 ⇒ 测试无判别力 ✗ —— 这是第一版犯过的错)
+//   A5:钩子**贪心地试图认领 Escape**,Esc 仍必须能关
+//      ⇒ 若派发顺序变了(Esc 先到钩子),Esc 会被吞掉 ⇒ 本测试**会失败** ⇒ 有判别力 ✓
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_picker_on_key_hook_keeps_esc() -> anyhow::Result<()> {
+    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin = dir.path().join("onkey_test.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.picker.define("t", {
+            columns: ["name"],
+            items: () => [["one"], ["two"]],
+            onKey: (e) => {
+                if (e.ctrl && e.key === "y") { helix.echo("CLAIMED|q=" + e.query); return "handled"; }
+                return (e.key === "Escape") ? "handled" : undefined;   // 贪心:A5 的判别力来源
+            },
+        });
+        helix.register_command("pick", () => helix.picker.run("t"));
+        "#,
+    )?;
+    let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            (
+                Some(":pick<ret>"),
+                Some(&|app| {
+                    assert!(
+                        app.compositor.has_component(picker_type),
+                        "picker layer should be open"
+                    );
+                }),
+            ),
+            (
+                Some("<C-y>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let s = status.as_ref().to_string();
+                    // 只有"认领分支"会 echo ⇒ 未认领时 status 里**不会**出现 CLAIMED ✓
+                    assert!(
+                        s.contains("CLAIMED|q="),
+                        "A9:onKey 的认领分支应被执行(实际 status={s:?})"
+                    );
+                }),
+            ),
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    assert!(
+                        !app.compositor.has_component(picker_type),
+                        "A5:钩子即使贪心认领 Escape,Esc 也必须仍能关闭(派发顺序不变)"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

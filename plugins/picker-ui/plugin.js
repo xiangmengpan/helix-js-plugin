@@ -128,6 +128,8 @@ let cur_source = "files"; // 当前源 ✓
 // JS 渲染器是否已成功注册(供 :pick-diag 断言 ✓ —— 不依赖易被覆盖的状态栏文案 ✗)
 let core_draw = 0;
 let def_draw = 0;   // ② 默认渲染器是否已注册 ✓
+let onkey_hits = 0; // S6 onKey 被调用的次数 ✓
+let onkey_last = ""; // S6 最后一次认领时读到的选中行 ✓
 
 function refilter() {
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
@@ -363,6 +365,24 @@ helix.register_command("pick-core", () => {
         ),
       preview: (row) => ({ path: row[1], line: 0 }),
       action: (row) => helix.open_file(row[1]),
+      // S6 演示:插件决定「**核心不认识的**键」做什么 ✓
+      //   核心的 Esc / Enter / Tab / 翻页**走不到**这里(它们在核心前面的 match 臂里 ✓)
+      //   ⇒ 所以这不会、也不可能破坏"Esc 能关 / Enter 能接受" ✓
+      onKey: (e) => {
+        if (!e.ctrl || e.key !== "y") return undefined;   // 只认领 C-y,其余一律交回 ✓
+        onkey_hits = onkey_hits + 1;
+        let sel = "";
+        try {
+          // 事实都来自核心推的状态馈送 ✓(事件驱动 ⇒ 不在每帧路径上 ✓)
+          const ls = (helix.picker_state() || "").split("\n");
+          const m = /cursor=(\d+)/.exec(ls[0] || "");
+          const cur = m ? Number(m[1]) : -1;
+          if (cur >= 0 && ls[cur + 1]) sel = ls[cur + 1].split("\t").join("  ");
+        } catch (err) { sel = "(读状态失败)"; }
+        onkey_last = sel;
+        say("onKey: C-y 已处理 ⇒ " + (sel || "(无选中)"));
+        return "handled";
+      },
     })
   );
   const ok = guard(() => { helix.picker.run("picker-ui-core-demo"); return true; }, false);
@@ -446,6 +466,7 @@ helix.register_command("pick-diag", () => {
       " opens=" + n_open + " typed=" + n_typed + " accepted=" + n_accepted +
       " all=" + all.length + " shown=" + shown.length + " q=" + JSON.stringify(query) +
       " src=" + cur_source + " coreDraw=" + core_draw + " defDraw=" + def_draw +
+      " onKeyHits=" + onkey_hits + " onKeyLast=" + JSON.stringify(onkey_last) +
       // ★ 修正:此前这里查的是 `helix.buffers` ✗ —— 但**真名是 `helix.buffer.list()`** ✓
       //   ⇒ 仪表在说谎(源已修、字段没修)⇒ 按"核查你自己的工具"这条纪律修 ✓
       " bufs=" + JSON.stringify(guard(() => (helix.buffer && helix.buffer.list ? helix.buffer.list().length : -1), -2)) +
