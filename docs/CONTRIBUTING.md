@@ -47,6 +47,14 @@ and visit [http://localhost:3000](http://localhost:3000).
 
 Run `cargo test --workspace` to run unit tests and documentation tests in all packages.
 
+Note: tests in the `helix-js` crate share the Boa engine's global runtime, so they must run
+serially. Running them in parallel produces spurious failures (observed 2026-10-10: 15 of 135
+failed in parallel, 135/135 passed with `--test-threads=1`):
+
+```shell
+cargo test -p helix-js -- --test-threads=1
+```
+
 ## Integration tests
 
 Integration tests for helix-term can be run with `cargo integration-test`. Code

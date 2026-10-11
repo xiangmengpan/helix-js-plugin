@@ -30,7 +30,7 @@ mod.helper();                       // 42
 
 **优缺点**
 - 优点：init.js 单一入口清晰；懒加载减少启动开销；IIFE 隔离防止插件互相污染。
-- 局限：跨插件状态只能走 `helix.*` API（无共享作用域）；**boa 0.21 嵌套 eval 污染**——依赖必须用 `helix.plugin` 的 `deps` 声明，不要在回调里 `helix.load` 未缓存脚本（见 plugin-api §19）。
+- 局限：跨插件状态只能走 `helix.*` API（无共享作用域）；**boa 0.21 嵌套 eval 污染**——依赖必须用 `helix.plugin` 的 `deps` 声明，不要在回调里 `helix.load` 未缓存脚本（见 plugin-api §4 已知限制）。
 
 ### `helix.run_command(name, ctx?)`
 

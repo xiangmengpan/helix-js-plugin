@@ -71,6 +71,8 @@
 
 `helix.on(event, fn)`:文档系(`save` 前/mode-change/buffer-open/close/doc-change 带合并范围/theme-change)、诊断/光标(`lsp-diagnostics`/`cursor-move`/`selection-change`)、终端系(`term-open/mode-change/exit/close/resize/title/key`)、`component-event`。
 
+- 布局系:`layout-change` —— **回调形状会变**(带种类 `(kind, doc)` / 不带 `(doc)`),详见 [`api/events.md`](api/events.md)。
+
 - 优点:事件丰富;多处理器按序;抛错不阻断;doc-change 带合并范围。
 - 局限:只带当前文档;doc 只读快照;doc-change 250ms 防抖。
 
@@ -194,13 +196,14 @@ helix.register_command("filetree", () => {
 | **同步阻塞** | `helix.run` 阻塞主线程;`spawn` 无超时(挂死命令一直占着 worker) |
 | **终端视图非完整仿真器** | 引擎已给 reflow/鼠标上报/括号粘贴/CJK/组合字符;**仍缺**:OSC 4/10/11 查颜色、OSC52 读剪贴板、DECKPAM 应用小键盘、Kitty 键盘协议 |
 | **Shift-Tab 不可用** | `KeyCode` 无 BackTab,焦点只能 Tab 正向循环 |
-| **面板无节点焦点** | 面板 render 固定收到 `focus = null`(节点焦点只在弹窗生效) |
+| **面板节点焦点需显式开启** | 缺省 `focusable: false` ⇒ 面板 render 收到 `focus = null`;`open_panel({focusable: true})` 后启用节点焦点路由:Tab 移动焦点、Esc 取消、焦点在节点时按键直达(实测 2026-10-10) |
 | **`move_panel` 只支持 rail** | 面板住在布局树里(`open_panel` → rail 叶子或普通叶子);`move_panel` 走树后已可用,但**只有 rail 面板**能换边(普通叶分裂换边会牵动布局树结构),非 rail 会明确拒绝 |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |
 | **堆叠未持久化** | `C-p s` 建的堆叠组未进 `get_layout`/`restore_layout`(浮窗已进),重启后不保留;也无 header 行 |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
 | **事件 ctx 范围** | 事件只带当前文档(其他分屏文档不触发) |
-| **无多光标** | 选区/光标 API 只操作主光标 |
+| **`layout-change` 回调形状会变** | 带种类时 `(kind, doc)`、不带时 `(doc)`(无占位参数)⇒ `(kind) => …` 会在无种类路径拿到**事件对象**而不报错;`sync_layout_cache()` 37 处调用点仅 10 处设种类(实测 2026-10-10) |
+| **无多光标编辑** | `helix.set_selection` **支持多选区数组形态**(`[{anchor, head}, …]`;按 range 起点排序,主光标 = 排序后末位,与原生多光标一致)。缺的是**逐光标各自的编辑** —— 编辑队列只有一份快照坐标(实测 2026-10-10) |
 | **Unix-only** | `helix.run`/`spawn`/PTY 依赖 `sh` 与 libc openpty(Windows 不可用) |
 | **键位不持久** | `helix.map` 绑定重启失效(插件启动时重新注册) |
 | **插件间无共享状态** | 每个插件独立 IIFE 作用域;共享需通过 `helix.*` API 或外部文件 |

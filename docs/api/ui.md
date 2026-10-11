@@ -67,7 +67,7 @@ helix.el("button", "run", { id: "btn1", onPress: () => helix.echo("pressed") })
 - **Tab** 在可聚焦节点间循环(无 Shift-Tab);button 上 Enter/Space → onPress。
 - input 上:字符/Backspace/Delete 编辑触发 onChange;Left/Right/Home/End 移光标不触发;Up/Down/Enter 走 onKey(单行)/行间移动(多行)。
 - 强制改值:`helix.set_input_value(popup_id, node_id, value)`;弹窗关闭自动清理 input 状态。
-- 面板 render 固定收到 `focus = null`(面板无节点焦点,见 plugin-api §19)。
+- 面板节点焦点**需显式开启**：`open_panel({focusable: true})` 后面板 render 才收到 `focus`，并启用 Tab 循环 / Esc 取消 / 节点按键直达；未开启时面板 render 收到 `focus = null`（见 plugin-api §4 已知限制）。
 
 ### 布局与性能
 
@@ -113,7 +113,7 @@ helix.set_statusline(({ mode, path }) => " N " + path);
 
 ### `helix.set_completion_icon(fn)` / `helix.set_completion_render(fn)`
 
-kind 列图标钩子 + 候选行渲染钩子(详见 plugin-api §15):
+kind 列图标钩子 + 候选行渲染钩子(详见 plugin-api §2「弹窗 / 组件树 / 面板 / 界面定制」):
 
 ```js
 helix.set_completion_icon((k) => icons.getCompletionKindIcon(k));  // 轻量,每行一个字符
