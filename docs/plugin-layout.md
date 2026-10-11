@@ -4,6 +4,14 @@
 > 与"用户自己写的插件"是**同一套规则下的两层**,而不是两套东西。
 > 参考:Neovim 的 `runtimepath` / `plugin/` / `autoload/` / `after/` / `pack/*/{start,opt}`。
 
+> **⚠️ 阅读口径(2026-10-10 复核补充)**
+> 本文件是**两段拼起来的**,读前先分清:
+> - **§1–§8 = 当前约定**(目录 / 命名 / 入口 / 依赖 / 覆盖 / 分发)—— 有约束力,写插件照此办。
+> - **§9–§18 = 施工记录与决策账** —— 其中的**行号、测试路径、「⬜ / 待办」都是当时状态**,不是现在的状态。
+>   后来已落地的:`:layout`(§12.1)· `:plugin` 管理器含目录访问器(§12.2)· 状态栏迁移(§12.3 / §17)·
+>   `layout-change`(§18)。**§10 / §12 的行数表已漂移** —— 见各表下的复核注。
+> 分工:`plugin-layout.md` 讲**约定**,历史规格在 `docs/superpowers/`。
+
 ## 1. 先看 Neovim 怎么做的(它的核心是三条)
 
 | 机制 | 作用 | 对我们的意义 |
@@ -199,6 +207,10 @@ DRY_RUN=1 sh contrib/install-plugins.sh       # 只打印将要做什么
 | `prompt.rs` / `popup.rs` / `menu.rs` / `markdown.rs` | 800/583/498/392 | 交互原语 | ❌ 核心原语(插件在其上渲染,`plugin_popup.rs` 379 行已是 JS 侧胶水) |
 | **`statusline.rs`** | **733** | **上游默认状态栏:约 25 个 `render_*` 元素** | 🟡 **唯一真候选** |
 
+> **⏱ 复核注(2026-10-10)**:上表是**当时快照**。现测:`picker.rs` **1288**(+73,后续 picker UI 改动)、
+> `statusline.rs` **562**(−171,§17 迁移到 JS 之后);其余 10 个文件行数与表**一致** ✓;
+> `ui/*.rs` 顶层合计 **15261**(本节开头写的 15349 是当时值)。
+
 ### 关于状态栏(唯一的候选)与我的结论
 
 `statusline.rs` 的 733 行里,hook/zones 只出现 **3 次** —— 它基本是**上游那套完整默认渲染**
@@ -286,6 +298,9 @@ doc_mut!(cx.editor).set_path(None);   // 防止误保存覆盖原始 tutor 文�
 
 ## 12. 三个候选的施工图(按"最容易 → 最难",数据均为实测)
 
+> ✅ **本节三项已全部落地(2026-10-10 复核)**:§12.1 → `plugins/layout/plugin.js`;§12.2 → `plugins/plugin/plugin.js`(见 §16);§12.3 → 见 §17。
+> 下面的**行数与"⬜"是动手前的实测**,保留作决策记录。
+
 ### 12.0 ⚠️ 共同前置:键入参数要能到 JS(**挡住 12.1 与 12.2 两项**)
 
 **实测**:`CommandContext`(`helix-js/src/types.rs:460`)**没有 args 字段** ——
@@ -311,7 +326,7 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 
 > **这条前置不做,12.1 与 12.2 都无法做** —— 但做完它,两件事一起解锁。
 
-### 12.1 `:layout` 会话 —— **建议先做这个**(最小)
+### 12.1 `:layout` 会话 —— **建议先做这个**(最小) → ✅ **已落地**(`typed.rs` 里已无 `fn layout`,2026-10-10 复核)
 
 | 项 | 事实 |
 |---|---|
@@ -323,7 +338,7 @@ JS 侧经一个原生访问器读(如 `helix.command_args()`),**`CommandContext`
 | **测试缺口** | `:layout` 命令当前**无测试**(我加它时点明过)→ 搬迁时按 `tutor_plugin_opens_unbound_doc` 的模式补插件级 E2E(从**仓库路径**加载 → 缺文件即明确失败,不静默跳过) |
 | 难度 / 风险 | **低 / 低**(纯包装,行为可逐字对照;删除有范围断言) |
 
-### 12.2 `:plugin` 管理器(前置已齐;下面是**照抄即可**的移植规格)
+### 12.2 `:plugin` 管理器(前置已齐;下面是**照抄即可**的移植规格) → ✅ **已落地**(见 §16)
 
 #### ⚠️ 一个**顺序约束**(决定了它必须"一次性切换",不能分步)
 
@@ -356,7 +371,9 @@ type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
 `install`(git)→`helix.run("git", …)` ✓ · manifest 读写→`read_file`/`write_file` ✓ ·
 `remove`→`helix.remove_plugin_file`(**限域**)✓ · 参数→`helix.command_args()` ✓
 
-#### ⬜ 还差**一个**薄接口:插件/config 目录的访问器(实测缺)
+#### ~~⬜ 还差**一个**薄接口:插件/config 目录的访问器(实测缺)~~ → ✅ **已补齐**(2026-10-10 复核:`helix.plugins_dir` 已注册)
+
+> 以下正文记录的是**补齐之前**的实测,保留作决策记录。
 
 **实测**:`helix-js` 里**没有任何** config/插件目录的访问器 ——
 `"config_dir"` / `"plugin_dir"` / `"plugins_dir"` / `"config_path"` / `"data_dir"` 的注册数**全为 0**,
@@ -369,7 +386,7 @@ type Manifest = HashMap<String, ManifestEntry>;          // key = 插件名
 加一个 `plugins_dir()`(取其首个根,或直接推入 config 下的 `plugins/`)按 **`set_runtime_dirs` 的同款方式**
 在 `application.rs` 启动时推入即可 ✓ 与 §12.0、限域删除同属"一个薄接口解锁一整项"的情形。
 
-**⇒ 移植前置最终清单**:参数通道 ✓ · 限域删除 ✓ · `reload` 复用 ✓ · **目录访问器 ⬜** · E2E 测试计划 ✓
+**⇒ 移植前置最终清单**:参数通道 ✓ · 限域删除 ✓ · `reload` 复用 ✓ · **目录访问器 ✅(已注册 `helix.plugins_dir`)** · E2E 测试计划 ✓
 
 #### ⛔ 先纠正一处**我自己写错的数**:子命令是 **8 个**,不是 5 个
 
@@ -513,7 +530,7 @@ test_key_sequences(
 | 建议做法 | **分两步**:先搬 `list`/`install`/`remove`(纯文件操作),**`reload` 暂时留在 Rust 作兜底**(它要触发整树重载) |
 | 难度 / 风险 | 中 / 中(自举 + 需要决定兜底策略) |
 
-### 12.3 状态栏丰富元素(视觉收益最大)
+### 12.3 状态栏丰富元素(视觉收益最大) → ✅ **已落地**(见 §17)
 
 | 项 | 事实 |
 |---|---|
@@ -796,7 +813,7 @@ helix_js::UiRequest::PluginOp { op, arg } => {
 
 **结论**:状态栏这条线**不需要再"迁移元素"**;后续若想动,只可能是**布局/样式**上的取舍(那是 JS 插件自己的设计空间)。
 
-## 18. `layout-change` 的实现**未真正生效**(端到端测试抓出,如实记录)
+## 18. `layout-change` 的实现**未真正生效**(端到端测试抓出,如实记录) → ⚠️ **本节结论已被推翻(2026-10-10 复核,见本节末尾)**
 
 提交 `959181de4` 加了 `emit_layout_change()`,并发在 `sync_layout_cache()` 的函数体内 ✓ —— 但**端到端测试证明事件没有到达处理器** ✗。
 
@@ -886,3 +903,81 @@ plugin-load: plugin script '…/lc.js' error: "helix.on: unknown event 'layout-c
    否则它会重演本节的错误:测"没加载"而非"没发事件" ✓
    另外:把 `emit_layout_change` 的失败从 `log::warn` 改成**推入 `MESSAGES`**(可见)✓ ——
    本次正是靠"让错误可见"才走出来的 ✓
+
+---
+
+### ⚠️ 追加更正(2026-10-10):本节结论**已被推翻** —— 实现一直是对的
+
+上面的「下一步」里第二条(按**真实契约**重写探针)才是对的路 —— 重写后的探针就在**同一个测试文件里、至今在测**,并给出了定论:
+`helix-term/tests/test/plugin_terminal_hooks.rs:685-711` 的注释写着:
+
+> ① `helix.on` 有事件名白名单 ⇒ `layout-change` 不在其中 ⇒ 插件**加载即抛** ✗(已修)
+> ② `helix.split(dir, {})` 被拒(缺 `terminal`/`panel`)⇒ split 从未发生 ✗
+> ③ `{panel:{}}` 被拒(缺 render)✗
+> ④ `{terminal:{cmd:"true"}}` ✓ ⇒ **事件如期触发** ✓
+> ⇒ 即:**实现一直是对的,是探针喂了非法参数** ✓
+
+**本节标题里的“未真正生效”是错的** —— 不要把上面的三轮推理当结论读。
+
+实测(2026-10-10):
+
+```shell
+cargo test -p helix-term --features integration --test integration layout_change_event_fires_after_split
+# 1 passed; 0 failed  (不加 --features integration 会显示 "running 0 tests" ⇒ 测的是“没加载”)
+```
+
+三步修法的落地情况:
+
+| 步 | 状态 |
+|---|---|
+| ① 白名单加 `layout-change` | ✅ 已做(`helix-js/src/commands.rs`,现为 `EVENT_WHITELIST: [&str; 20]` 且含该事件) |
+| ② `SplitLeaf` / `CloseLeaf` 各补 `sync_layout_cache()` | ✅ 已做(`typed.rs:5177` / `5184` 两臂均有) |
+| ③ 探针测试加回 | ✅ 已加回(`plugin_terminal_hooks.rs:693`,含“先断言插件加载成功”) |
+| ③(附带) 失败从 `log::warn` 改推 `MESSAGES` | ❌ **未做**(仍为 `helix-term/src/compositor.rs:1427` 的 `log::warn`)—— 真因既非“错误不可见”,该项可判为不必要 |
+
+#### 🆕 由此暴露的一个真坑(**未修**,与本节无关但同源)
+
+跑上述测试时日志里有一条 WARN:
+
+```
+layout-change event failed: event 'layout-change' handler failed: "write_file: text must be a string"
+```
+
+真因在 `emit_event_impl`(`helix-js/src/commands.rs:1142-1145`):
+
+```rust
+let args = match extra {
+    Some(mode) => vec![字符串, doc],   // 带种类 ⇒ handler 收到 (kind, doc)
+    None       => vec![doc],           // 不带种类 ⇒ handler 只收到 (doc)
+};
+```
+
+⇒ **同一个事件名,回调参数形状随“本次变更有没有种类”而变**。插件写 `helix.on("layout-change", (kind) => …)` 时,
+在**无种类**的路径下 `kind` 拿到的是**事件 doc 对象**(不是 `undefined`),不会报错、只会静默出错。
+而实测:`helix-term/src` 里 `sync_layout_cache()` 有 **37 处**调用点,调 `set_layout_change_kind` 的只有 **10 处**
+⇒ **无种类才是多数情形**(测试里那条 WARN 就来自其中之一)。
+
+另:`layout-change` 的契约**已写进 `docs/api/events.md`**(2026-10-10,含"回调形状会变"的坑)。
+
+> 本节可当“不要把推理当结论”的标本:三轮推理全错,而真相在**端到端测试的注释与一行日志**里。
+
+## ③ 实测:JS 渲染每帧的真实代价(2026-10-11)
+
+复现:`cargo test -p helix-js --lib bench_picker_frame -- --ignored --nocapture`
+
+```
+载荷: 30 行 × 3 列 + 每行样式读取(get_style)+ 选中标记   ← 模拟 picker-ui 的真实渲染器
+结果: ≈ 3200 µs/frame    = 60fps 预算(16667 µs)的 19.2%
+```
+
+### 结论(这是一个**否定**的结论 —— 所以它有用 ✓)
+
+- 代价**按"每个可见的 JS 绘制 picker"每帧计** ⇒ 不是一次性开销
+- ⇒ **默认渲染器(`id=0`)不作为默认策略** ✓:只在明确要让 JS 接管某个 picker 时才启用
+- ⇒ 核心渲染保留为**默认路径**(同时是性能最优路径与安全网 ✓)
+- 逃生门:一旦某类 picker 实测卡顿 ⇒ 不用 `id=0`,改用 `:pick-core-draw` 的**按实例注册** ✓
+
+### 这也解释了本会话早先那次"10 秒卡顿"
+
+当时是**每帧**做"状态馈送 + 组件渲染",并且叠加在**其他插件的每帧**工作之上 ✗
+⇒ 现在这条路径上加了**守卫**(无渲染器时零额外开销 ✓),并且代价**已经量出来**而非靠估 ✓

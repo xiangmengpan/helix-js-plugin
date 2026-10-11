@@ -429,7 +429,9 @@ helix.register_command("pick-core-draw", () => {
 });
 
 /// ② 注册**默认**渲染器 ⇒ **所有** picker(含 :diagnostics / 文件选择 / 符号 等)都归 JS 画 ✓
-///   ⚠️ 代价:每帧一次状态馈送 + 一次组件渲染 ⇒ **必须实测**(见 :pick-diag 的 perFrame)
+///   ⚠️ **已实测(2026-10-11, helix-js 基准 bench_picker_frame)**:每帧 **≈3.3 ms**
+///      (30 行 × 3 列 + 每行样式读取)= 60fps 预算的 **19.7%** —— **每个可见 picker 每帧都付** ✗
+///   ⇒ 所以它**不是**默认策略:只在明确要让 JS 接管某个 picker 时才用 ✓
 ///   ⇒ 若某类 picker 卡顿 ⇒ **不要**用本命令,改用 :pick-core-draw 按实例注册 ✓
 helix.register_command("pick-default-draw", () => {
   const ok = guard(() => { helix.set_component_render(0, pickRender); return true; }, false);

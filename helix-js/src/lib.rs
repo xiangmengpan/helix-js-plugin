@@ -4223,6 +4223,54 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         }
         drop(dir);
     }
+    /// ③ 每帧代价(手动基准,不进 CI):
+    /// `cargo test -p helix-js --lib bench_picker_frame -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_picker_frame() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        init();
+        // 模拟 picker-ui 的**真实**渲染器:30 行 × 3 列 + 每行样式读取 + 选中标记
+        load_script(
+            r#"
+helix.set_component_render(0, function (_focus, ctx) {
+  var rows = [];
+  for (var i = 0; i < 30; i++) rows.push("src/file_" + i + ".rs\t12:3\tfn item_" + i);
+  var w = (ctx && ctx.width) ? ctx.width : 80;
+  var cur = 12;
+  var out = [{ type: "text", text: "JS-DRAWN  q=abc" }];
+  for (var i = 0; i < rows.length; i++) {
+    var cells = rows[i].split("\t");
+    var mark = (i === cur) ? "\u25b8 " : "  ";
+    var line = { type: "text", text: mark + cells.join("   ") };
+    if (i === cur) { var st = null; try { st = helix.get_style("ui.text.focus"); } catch (e) {} if (st) line.style = st; }
+    out.push(line);
+  }
+  return out;
+});
+"#,
+        )
+        .unwrap();
+        let (w, h) = (80u16, 30u16);
+        for _ in 0..30 {
+            let _ = render_component(0, w, h, None);
+        }
+        const N: u32 = 300;
+        let t0 = std::time::Instant::now();
+        for _ in 0..N {
+            let c = render_component(0, w, h, None).unwrap();
+            std::hint::black_box(&c);
+        }
+        let el = t0.elapsed();
+        let us = el.as_micros() as f64 / N as f64;
+        println!(
+            "\n③ 每帧 **JS 渲染** 代价: {us:.1} µs/frame ({N} 次, 总 {el:?})\n   载荷: 30 行 × 3 列 + 每行样式读取 + 选中标记\n   ⇒ 60fps 预算 16667 µs ⇒ 占比 {:.3}%\n   ⇒ 裁决: **高于\"免费\"**(约 3 ms/帧/个可见 picker)⇒ 保持`按实例注册`为默认策略,\n             `默认渲染器(id=0)`仅在**明确需要**时启用 ✓(数字见 docs/plugin-layout.md)\n",
+            us / 16667.0 * 100.0
+        );
+        // 只做"灾难级回归"的哨兵(实测约 3.3 ms;> 20 ms 才算异常)⇒ 避免把基准变成红灯测试 ✓
+        assert!(us < 20000.0, "每帧 JS 渲染异常慢(> 20ms),疑似灾难级回归: {us} µs");
+    }
+
     /// 组件视图回调:set_component_render(id, fn) → render_component 读取
     #[test]
     fn component_render_registration() {
