@@ -338,13 +338,16 @@ mod engine_ownership_tests {
         let _g = crate::tests::TEST_LOCK.lock().unwrap();
         crate::init();
         with_engine(|e| {
-            e.eval(Source::from_bytes("globalThis.marker = 1;")).unwrap();
+            e.eval(Source::from_bytes("globalThis.marker = 1;"))
+                .unwrap();
         });
 
         let mut other = JsHost::new();
         set_active(&mut other);
         with_engine(|e| {
-            let v = e.eval(Source::from_bytes("typeof globalThis.marker")).unwrap();
+            let v = e
+                .eval(Source::from_bytes("typeof globalThis.marker"))
+                .unwrap();
             assert_eq!(
                 v.to_string(e).unwrap().to_std_string_escaped(),
                 "undefined",
@@ -354,7 +357,9 @@ mod engine_ownership_tests {
 
         clear_active();
         with_engine(|e| {
-            let v = e.eval(Source::from_bytes("String(globalThis.marker)")).unwrap();
+            let v = e
+                .eval(Source::from_bytes("String(globalThis.marker)"))
+                .unwrap();
             assert_eq!(
                 v.to_string(e).unwrap().to_std_string_escaped(),
                 "1",
@@ -362,6 +367,40 @@ mod engine_ownership_tests {
             );
         });
         // 引擎不可 drop ⇒ 把宿主安全带出去(既不 drop 也不让句柄悬空)
+        std::mem::forget(other);
+    }
+
+    /// **负结果记录**:注册表是进程级(不随宿主持有),里面存的是 `JsValue`;Task 2 之后
+    /// 同一线程上会先后存在多个引擎,于是"用**新引擎**去调**旧引擎**的 JsValue"是可能的。
+    /// 本测试就是那条路径 —— 结论:**boa 容忍它,不会立即崩**。
+    ///
+    /// 为什么留着它:并发 SIGABRT 排查时,"跨引擎 JsValue"是第一个被怀疑的机制;
+    /// 有了这条测试,下次不必再重新推一遍(它同时守住这条路径继续可用)。
+    #[test]
+    fn cross_engine_jsvalue_is_dangerous() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        // ① 在宿主 A 的引擎里注册命令(REGISTRY 里留下一个属于 A 的 JsValue)
+        crate::load_script(r#"helix.register_command("cross-probe", () => helix.echo("x"));"#)
+            .unwrap();
+        // ② 同一线程换到新宿主 B
+        let mut other = JsHost::new();
+        set_active(&mut other);
+        // ③ 用 **B 的引擎**去调 **A 的 JsValue**
+        let ctx = crate::CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        let r = crate::run_command("cross-probe", &ctx);
+        assert!(
+            r.is_ok(),
+            "跨引擎调用目前是**可用**的(负结果;若某天 boa 收紧,这条会红)"
+        );
+        let _ = crate::take_messages();
+        clear_active();
         std::mem::forget(other);
     }
 
