@@ -920,15 +920,30 @@ pub fn take_messages() -> Vec<String> {
     crate::host::with_messages(std::mem::take)
 }
 
-/// 布局文件目录(`<config>/layouts`)。由 helix-term 启动时设置(同 PLUGIN_ROOTS 的做法)。
-pub(crate) static LAYOUTS_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// 布局文件目录(`<config>/layouts`)。**按宿主**记录 —— 原来是进程级 `OnceLock`(首设生效、不可重置)
+/// ⇒ 并行跑时"谁先跑谁赢",后面的测试静默拿到别人的目录(T5-a)。
+/// 值一旦设置就 `Box::leak` 成 `&'static`(与既有 `layouts_dir() -> Option<&'static PathBuf>` 兼容,
+/// 也与本仓"进程期不朽"的既有做法一致)。
+static LAYOUTS_DIR: OnceLock<Mutex<HashMap<u64, &'static PathBuf>>> = OnceLock::new();
 
 pub fn set_layouts_dir(dir: PathBuf) {
-    let _ = LAYOUTS_DIR.set(dir);
+    let key = crate::host::current_host_key_or_init();
+    let leaked: &'static PathBuf = Box::leak(Box::new(dir));
+    LAYOUTS_DIR
+        .get_or_init(Default::default)
+        .lock()
+        .expect("layouts dir lock")
+        .insert(key, leaked);
 }
 
 pub(crate) fn layouts_dir() -> Option<&'static PathBuf> {
-    LAYOUTS_DIR.get()
+    let key = crate::host::current_host_key_or_init();
+    LAYOUTS_DIR
+        .get_or_init(Default::default)
+        .lock()
+        .ok()?
+        .get(&key)
+        .copied()
 }
 
 /// 读当前布局 dump(还没缓存过 → 空串)

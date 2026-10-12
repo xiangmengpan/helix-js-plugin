@@ -172,7 +172,7 @@ pub(crate) fn with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
 }
 
 /// 当前宿主的**稳定标识**(宿主永不 drop ⇒ 地址稳定且不会被复用)。
-fn current_host_key() -> u64 {
+pub(crate) fn current_host_key() -> u64 {
     if let Some(ptr) = ACTIVE.with(|a| a.get()) {
         return ptr.as_ptr() as u64;
     }
@@ -180,6 +180,15 @@ fn current_host_key() -> u64 {
         Some(host) => host as *const JsHost as u64,
         None => panic!("helix-js: host not registered — call init() first"),
     })
+}
+
+/// 取当前宿主 key;没有宿主则**先 `init()`** —— 供 `set_*` 这类可能早于初始化的调用使用
+/// (直接 panic 会把"设置目录"这种无害调用变成致命错误)。
+pub(crate) fn current_host_key_or_init() -> u64 {
+    if ACTIVE.with(|a| a.get()).is_none() && DEFAULT_HOST.with(|h| h.borrow().is_none()) {
+        crate::init();
+    }
+    current_host_key()
 }
 
 /// **按宿主分桶**的 UI 请求队列。
@@ -629,6 +638,36 @@ mod engine_ownership_tests {
             "面板清单应按宿主隔离,而不是进程级共享;实得 {got:?}"
         );
         let _ = crate::state::with_open_panels(std::mem::take);
+    }
+
+    /// **布局目录也要按宿主隔离**(T5-a 的目标行为)。
+    ///
+    /// 今天它是进程级 `OnceLock<PathBuf>`(首设生效、不可重置)⇒ 并行跑时"谁先跑谁赢",
+    /// 后面的测试静默拿到别人的目录 —— 这正是本会话 5 个"单用例偶发"的机制。
+    #[test]
+    fn layouts_dir_is_per_host_not_process_global() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::state::set_layouts_dir(std::path::PathBuf::from("/tmp/LAYOUTS-RED"));
+        assert_eq!(
+            crate::state::layouts_dir().map(|p| p.to_string_lossy().to_string()),
+            Some("/tmp/LAYOUTS-RED".to_string()),
+            "本宿主应看到自己刚设的目录"
+        );
+
+        let got = std::thread::spawn(|| {
+            crate::init(); // 该线程自建宿主
+            crate::state::layouts_dir().map(|p| p.to_string_lossy().to_string())
+        })
+        .join()
+        .expect("子线程不应 panic");
+
+        // ⚠️ 结尾必须覆盖回默认:本测试改的是**本宿主的桶**,不清会污染同进程其它用到 layouts 的测试
+        crate::state::set_layouts_dir(std::env::temp_dir());
+        assert!(
+            got.is_none(),
+            "另一线程的宿主不该看到别人设的 layouts 目录;实得 {got:?}"
+        );
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。
