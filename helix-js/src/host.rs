@@ -120,6 +120,31 @@ pub fn install_default(host: JsHost) {
     DEFAULT_HOST.with(|h| *h.borrow_mut() = Some(Box::new(host)));
 }
 
+/// **接管**已有宿主(若有) —— `Application` 优先用它,而不是新建一个引擎。
+///
+/// 为什么必要:集成测试每个用例都构造一个 `Application`。若每次新建引擎,
+/// ①同线程会先后出现多份引擎(而注册表/队列**仍是进程级** ⇒ 拿不到任何隔离,
+/// 只是白花内存与注册开销,并让"旧引擎的 JsValue 被新引擎调用"成为可能),
+/// ②之前每线程一份、复用的行为被破坏。接管后:**一个线程永远只有一份引擎**。
+pub fn take_existing() -> Option<Box<JsHost>> {
+    DEFAULT_HOST.with(|cell| cell.borrow_mut().take())
+}
+
+/// 把宿主**停放**回默认槽(供下个 `Application` 接管)。
+///
+/// 槽已被占(罕见:同线程两个 Application 同时存在)或宿主不可停放时,**遗忘而不 drop** ——
+/// 与模块根本不变式一致:引擎永不可 drop。
+pub fn park_or_forget(host: Box<JsHost>) {
+    let mut slot = DEFAULT_HOST.with(|cell| cell.borrow_mut().take());
+    match slot {
+        None => DEFAULT_HOST.with(|cell| *cell.borrow_mut() = Some(host)),
+        Some(existing) => {
+            DEFAULT_HOST.with(|cell| *cell.borrow_mut() = Some(existing));
+            std::mem::forget(host);
+        }
+    }
+}
+
 /// 是否已有可用宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
 pub fn engine_exists() -> bool {
     ACTIVE.with(|a| a.get()).is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
@@ -402,6 +427,35 @@ mod engine_ownership_tests {
         let _ = crate::take_messages();
         clear_active();
         std::mem::forget(other);
+    }
+
+    /// **接管/停放往返后必须是同一个引擎**(这是"一个线程一份引擎"的机制保证)。
+    ///
+    /// 由来:集成测试每个用例都构造一个 `Application`;若每个都新建引擎,同线程会先后出现多份
+    /// 引擎 —— 而注册表/队列**仍是进程级**,多份引擎换不来任何隔离,只白花内存与注册开销。
+    #[test]
+    fn park_and_take_reuses_the_same_engine() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        with_engine(|e| {
+            e.eval(Source::from_bytes("globalThis.reuse_marker = 7;"))
+                .unwrap();
+        });
+
+        let host = take_existing().expect("init() 之后应有默认宿主可接管");
+        assert!(take_existing().is_none(), "接管后槽应为空");
+
+        park_or_forget(host);
+        with_engine(|e| {
+            let v = e
+                .eval(Source::from_bytes("String(globalThis.reuse_marker)"))
+                .unwrap();
+            assert_eq!(
+                v.to_string(e).unwrap().to_std_string_escaped(),
+                "7",
+                "接管 + 停放之后必须还是**同一个**引擎"
+            );
+        });
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。

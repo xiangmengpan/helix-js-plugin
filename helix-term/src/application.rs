@@ -91,16 +91,20 @@ pub struct Application {
 
     /// JS 宿主(Step 2):引擎由 `Application` 持有,并在本实例存活期内被注册为**活动宿主**。
     ///
-    /// ⚠️ **永不 drop**(`ManuallyDrop`):drop 已用过的引擎会**破坏堆** —— 见
-    /// `helix-js/src/host.rs` 模块头的两个对照实验(`tcache_thread_shutdown()` /
-    /// `corrupted double-linked list`)。引擎与其 realm 的 20 处刻意不朽 JsValue 表同寿。
-    js_host: std::mem::ManuallyDrop<Box<helix_js::host::JsHost>>,
+    /// ⚠️ **永不 drop**:`Option` 只是为了能在 `Drop` 里把它**停放**回宿主槽(见 `js_host` 的 drop),
+    /// 绝不是为了丢弃它 —— drop 已用过的引擎会**破坏堆**(见 `helix-js/src/host.rs` 模块头)。
+    js_host: Option<Box<helix_js::host::JsHost>>,
 }
 
 impl Drop for Application {
     fn drop(&mut self) {
-        // 先注销句柄(下一行之后宿主就不可达了);宿主本身**故意不 drop**(见字段注释)
+        // 顺序要紧:先注销句柄(下一行之后宿主就不该再被访问),
+        // 再把宿主**停放**回槽 —— 不 drop。停放的意义:下一个 `Application`(集成测试里
+        // 每个用例一个)可以**接管同一份引擎**,而不是再建一个。
         helix_js::host::clear_active();
+        if let Some(host) = self.js_host.take() {
+            helix_js::host::park_or_forget(host);
+        }
     }
 }
 
@@ -172,9 +176,13 @@ impl Application {
         // EditorView 已入 compositor，事件循环启动后生效）。
         // 集成测试跳过：不能加载开发机的 ~/.config/helix/plugins（会污染测试的
         // 全局 JS 运行时——注册的命令/事件处理器/键位绑定跨测试残留）。
-        // JS 宿主(Step 2):引擎由 Application 持有。**必须早于**任何 `helix_js::` 调用 ——
-        // 先建(建引擎 + 在其中注册 `helix` 全局),再注册为活动宿主。
-        let mut js_host = Box::new(helix_js::host::JsHost::new());
+        // JS 宿主(Step 2):引擎由 Application 持有。**必须早于**任何 `helix_js::` 调用。
+        // 优先**接管**本线程已有的宿主(集成测试每用例一个 Application;
+        // 接管 = 一线程一份引擎,而不是每用例新建一个)。
+        let mut js_host = match helix_js::host::take_existing() {
+            Some(h) => h,
+            None => Box::new(helix_js::host::JsHost::new()),
+        };
         helix_js::host::set_active(&mut js_host);
 
         #[cfg(not(feature = "integration"))]
@@ -371,7 +379,7 @@ impl Application {
             theme_mode,
             last_cursor: None,
             last_selection_count: 0,
-            js_host: std::mem::ManuallyDrop::new(js_host),
+            js_host: Some(js_host),
         };
 
         Ok(app)
