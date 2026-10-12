@@ -442,16 +442,10 @@ pub(crate) fn set_last_panel_id(v: Option<u64>) {
     LAST_PANEL_ID.with(|c| c.set(v));
 }
 
-/// 当前打开的面板 id 列表（reload 时全部关闭——只关 last 会残留僵尸面板）。
-/// 全局而非 thread_local：打开与 reload 命令可能在 tokio 不同线程执行，
-/// thread_local 会因线程不同读不到列表 → 面板漏关。
+/// 当前打开的面板 id 列表(reload 时全部关闭 —— 只关 last 会残留僵尸面板)。
+/// **按宿主分桶**(见 `host::with_open_panels`):并发测试各看各的桶,不再互相"抢面板"。
 pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
-    static OPEN_PANELS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
-    let mut v = OPEN_PANELS
-        .get_or_init(Default::default)
-        .lock()
-        .expect("open panels lock");
-    f(&mut v)
+    crate::host::with_open_panels(f)
 }
 
 /// **picker 状态摘要** —— 由核心在渲染 picker 时推进来 ✓

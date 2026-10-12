@@ -226,6 +226,20 @@ impl std::ops::DerefMut for UiRequestsGuard<'_> {
     }
 }
 
+/// **按宿主分桶**的"已打开面板 id"清单(与 `UiRequests` 同款做法)。
+///
+/// 原来是进程级 `OnceLock<Mutex<Vec<u64>>>`;`state.rs` 那条注释说"打开与 reload 可能在 tokio
+/// 不同线程执行"—— 那条前提已在 T1 步骤 1 逐条查证并推翻(见
+/// docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论)。分桶后,并发测试各看各的桶。
+static OPEN_PANELS: OnceLock<Mutex<HashMap<u64, Vec<u64>>>> = OnceLock::new();
+
+pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
+    let key = current_host_key();
+    let map = OPEN_PANELS.get_or_init(Default::default);
+    let mut guard = map.lock().expect("open panels lock");
+    f(guard.entry(key).or_default())
+}
+
 /// 是否已有可用宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
 pub fn engine_exists() -> bool {
     ACTIVE.with(|a| a.get()).is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
@@ -591,6 +605,30 @@ mod engine_ownership_tests {
             got.len()
         );
         let _ = crate::take_ui_requests();
+    }
+
+    /// **打开的面板清单也要按宿主隔离**(T1 步骤 4 的目标行为)。
+    ///
+    /// 今天它是进程级 `OnceLock<Mutex<Vec<u64>>>` ⇒ 主线程记下的面板 id,子线程能读到
+    /// ⇒ 并发测试会互相"抢面板"(任务 1 时代留下的不一致)。
+    #[test]
+    fn open_panels_are_per_host_not_process_global() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::state::with_open_panels(|p| p.push(42));
+
+        let got = std::thread::spawn(|| {
+            crate::init(); // 该线程自建宿主
+            crate::state::with_open_panels(|p| p.clone())
+        })
+        .join()
+        .expect("子线程不应 panic");
+
+        assert!(
+            got.is_empty(),
+            "面板清单应按宿主隔离,而不是进程级共享;实得 {got:?}"
+        );
+        let _ = crate::state::with_open_panels(std::mem::take);
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。
