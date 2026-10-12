@@ -546,10 +546,28 @@ pub fn command_args() -> Vec<String> {
 ///
 /// 为什么必须"推入"而不是自己取:`helix-js` **不依赖 `helix-loader`**(实测其 Cargo.toml),
 /// 所以拿不到 runtime 目录 —— 与 `PLUGIN_ROOTS` / `LAYOUTS_DIR` 同一模式。
-pub(crate) static RUNTIME_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+/// **按宿主**记录(T5-b2 同款模板):原来进程级 `OnceLock` 首设生效 ⇒ 并行测试串台。
+pub(crate) static RUNTIME_DIRS: OnceLock<Mutex<HashMap<u64, &'static [PathBuf]>>> = OnceLock::new();
 
 pub fn set_runtime_dirs(dirs: Vec<PathBuf>) {
-    let _ = RUNTIME_DIRS.set(dirs);
+    let key = crate::host::current_host_key_or_init();
+    let leaked: &'static [PathBuf] = Box::leak(dirs.into_boxed_slice());
+    RUNTIME_DIRS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("runtime dirs lock")
+        .insert(key, leaked);
+}
+
+/// 当前宿主的 runtime 目录(`runtime_path()` 的读取口);未设置 ⇒ 空切片
+pub(crate) fn runtime_dirs() -> &'static [PathBuf] {
+    let key = crate::host::current_host_key_or_init();
+    RUNTIME_DIRS
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).copied())
+        .unwrap_or(&[])
 }
 
 /// `name` → runtime 里的绝对路径(**按序取第一个存在的**)。
@@ -563,10 +581,7 @@ pub(crate) fn runtime_file_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 
 /// 给 JS 侧用的包装:`helix.runtime_path(name)`
 pub fn runtime_path(name: &str) -> Option<PathBuf> {
-    runtime_file_in(
-        RUNTIME_DIRS.get().map(|v| v.as_slice()).unwrap_or(&[]),
-        name,
-    )
+    runtime_file_in(runtime_dirs(), name)
 }
 
 /// 加载参数 → **候选 key(按序尝试)**。
