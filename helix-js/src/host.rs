@@ -13,10 +13,13 @@
 //! `corrupted double-linked list`)。对照组:`dropping_a_fresh_context_is_safe` 证明
 //! "新造 Context 的 drop"本身是安全的 ⇒ 问题在"引擎先走、引用者后走"。
 
+use crate::types::UiRequest;
 use boa_engine::Context;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// 一份 JS 运行时状态。当前只拥有引擎;队列/缓存留在进程级(Phase B)。
 pub struct JsHost {
@@ -166,6 +169,61 @@ fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
 /// echo 消息队列的访问器(**按宿主**隔离)。入队 / 取走都走它。
 pub(crate) fn with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     with_host_ref(|h| f(&mut h.messages.borrow_mut()))
+}
+
+/// 当前宿主的**稳定标识**(宿主永不 drop ⇒ 地址稳定且不会被复用)。
+fn current_host_key() -> u64 {
+    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+        return ptr.as_ptr() as u64;
+    }
+    DEFAULT_HOST.with(|cell| match cell.borrow().as_deref() {
+        Some(host) => host as *const JsHost as u64,
+        None => panic!("helix-js: host not registered — call init() first"),
+    })
+}
+
+/// **按宿主分桶**的 UI 请求队列。
+///
+/// 为什么用"分桶"而不是"把 `UI_REQUESTS` 变成宿主的字段":这个队列的**消费端在 helix-term**
+/// (16 个 `take_ui_requests()` 调用点,签名冻结),而宿主是 `!Send`;分桶让**63 个 push 点
+/// 一行都不用改**(`UI_REQUESTS.get().unwrap().lock().unwrap().push(..)` 原样可用),
+/// 同时让每个宿主(每个线程/每个 Application)只看见自己那一桶 —— 这正是 `PLUGIN_TEST_LOCK`
+/// 一直在手工模拟的隔离。
+pub(crate) struct UiRequests(Mutex<HashMap<u64, Vec<UiRequest>>>);
+
+impl Default for UiRequests {
+    fn default() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+}
+
+impl UiRequests {
+    pub(crate) fn lock(
+        &self,
+    ) -> Result<
+        UiRequestsGuard<'_>,
+        std::sync::PoisonError<MutexGuard<'_, HashMap<u64, Vec<UiRequest>>>>,
+    > {
+        let key = current_host_key();
+        self.0.lock().map(|map| UiRequestsGuard { map, key })
+    }
+}
+
+pub(crate) struct UiRequestsGuard<'a> {
+    map: MutexGuard<'a, HashMap<u64, Vec<UiRequest>>>,
+    key: u64,
+}
+
+impl std::ops::Deref for UiRequestsGuard<'_> {
+    type Target = Vec<UiRequest>;
+    fn deref(&self) -> &Vec<UiRequest> {
+        self.map.get(&self.key).expect("刚 entry 过")
+    }
+}
+impl std::ops::DerefMut for UiRequestsGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Vec<UiRequest> {
+        self.map.entry(self.key).or_default()
+    }
 }
 
 /// 是否已有可用宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
@@ -503,6 +561,36 @@ mod engine_ownership_tests {
             "队列应是**按宿主**隔离的,而不是进程级共享;实得 {got:?}"
         );
         let _ = crate::take_messages(); // 清掉主线程那条,免得污染后续测试
+    }
+
+    /// **UI 请求队列也要按宿主隔离**(T1 步骤 3 的目标行为)。
+    ///
+    /// 今天它是进程级 `OnceLock<Mutex<..>>` ⇒ 主线程排的请求,子线程能取到 ⇒ 本测试红。
+    #[test]
+    fn ui_requests_are_per_host_not_process_global() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        // 走全局名字的队列 —— 它已按宿主分桶(见 UiRequests),所以这行无需改动
+        crate::state::UI_REQUESTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .push(crate::types::UiRequest::Quit);
+
+        let got = std::thread::spawn(|| {
+            crate::init(); // 该线程自建宿主
+            crate::take_ui_requests()
+        })
+        .join()
+        .expect("子线程不应 panic");
+
+        assert!(
+            got.is_empty(),
+            "UI 请求队列应**按宿主**隔离,而不是进程级共享;实得 {} 项",
+            got.len()
+        );
+        let _ = crate::take_ui_requests();
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。

@@ -499,7 +499,9 @@ pub(crate) fn viewport() -> (u16, u16) {
         .unwrap_or((0, 0))
 }
 
-pub(crate) static UI_REQUESTS: OnceLock<Mutex<Vec<UiRequest>>> = OnceLock::new();
+/// UI 请求队列:**按宿主分桶**(见 `host::UiRequests`)—— 63 个 push 点因此无需改动。
+pub(crate) use crate::host::UiRequests;
+pub(crate) static UI_REQUESTS: OnceLock<UiRequests> = OnceLock::new();
 /// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
 /// 插件根目录(**有序**)。语义对齐 Neovim 的 `runtimepath`:自带 runtime 在前、
 /// 用户目录在后,于是**后加的根覆盖先加的**(同名相对名取"最后一个存在的")。
