@@ -583,7 +583,7 @@ pub enum CursorRequest {
 }
 
 // boa 的 Context/JsValue 是 !Send（Rc GC 堆），不能用 static 全局共享，
-// 所以引擎按线程存放（编辑器主线程是唯一调用者）；MESSAGES 跨线程共享。
+// 所以引擎按线程存放（编辑器主线程是唯一调用者）；消息队列随宿主隔离（T1 步骤 2 起）。
 // 进程退出阶段曾约 50% 概率 SIGABRT（glibc tcache corruption）：线程退出时
 // 容器 drop → JsValue drop → boa Gc 堆对象被释放，与 teardown 时序冲突。
 // 故 CONTEXT 及所有持有 JsValue 的容器（REGISTRY/POPUPS/EVENT_HANDLERS/

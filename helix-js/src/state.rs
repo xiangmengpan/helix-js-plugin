@@ -454,7 +454,6 @@ pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
     f(&mut v)
 }
 
-pub(crate) static MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 /// **picker 状态摘要** —— 由核心在渲染 picker 时推进来 ✓
 ///
 /// 为什么需要:渲染回调只拿到 `(focus, {width,height})` ✗ —— **没有数据** ✗
@@ -921,13 +920,8 @@ pub(crate) fn with_lsp_promises<T>(
 /// 取走并清空 echo 消息队列
 pub fn take_messages() -> Vec<String> {
     crate::init();
-    std::mem::take(
-        &mut *MESSAGES
-            .get()
-            .expect("MESSAGES not initialized")
-            .lock()
-            .expect("messages lock poisoned"),
-    )
+    // 队列按宿主隔离(T1 步骤 2):经宿主访问器取走
+    crate::host::with_messages(std::mem::take)
 }
 
 /// 布局文件目录(`<config>/layouts`)。由 helix-term 启动时设置(同 PLUGIN_ROOTS 的做法)。

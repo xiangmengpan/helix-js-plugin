@@ -188,15 +188,9 @@ pub(crate) fn js_picker_run(
     Ok(JsValue::undefined())
 }
 
-/// 把一条消息推入 MESSAGES（term 侧 drain 后 set_status）——异步错误反馈通道（任务 2 审查 I1）
+/// 把一条消息推入**当前宿主**的消息队列（term 侧 drain 后 set_status）——异步错误反馈通道（任务 2 审查 I1）
 fn push_message(msg: String) {
-    let _ = crate::state::MESSAGES.get_or_init(Default::default);
-    crate::state::MESSAGES
-        .get()
-        .unwrap()
-        .lock()
-        .unwrap()
-        .push(msg);
+    crate::host::with_messages(|v| v.push(msg));
 }
 
 /// 字符串切片 → JS 数组（action/preview 的 payload 传参）

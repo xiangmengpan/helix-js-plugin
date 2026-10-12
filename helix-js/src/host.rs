@@ -21,6 +21,10 @@ use std::ptr::NonNull;
 /// 一份 JS 运行时状态。当前只拥有引擎;队列/缓存留在进程级(Phase B)。
 pub struct JsHost {
     engine: RefCell<Option<Box<Context>>>,
+    /// echo 消息队列(**按宿主**隔离 —— 原来是进程级 `OnceLock<Mutex<..>>`)。
+    /// 访问点实测只在主线程(见 docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论),
+    /// 所以用 `RefCell` 而不是 `Mutex`;若将来真有非主线程访问,它会先撞上"host not registered"。
+    messages: RefCell<Vec<String>>,
 }
 
 impl JsHost {
@@ -30,6 +34,7 @@ impl JsHost {
         crate::build_engine(&mut ctx);
         Self {
             engine: RefCell::new(Some(Box::new(ctx))),
+            messages: RefCell::new(Vec::new()),
         }
     }
 }
@@ -143,6 +148,24 @@ pub fn park_or_forget(host: Box<JsHost>) {
             std::mem::forget(host);
         }
     }
+}
+
+/// 按**只读**方式访问当前宿主(不改所有权)。
+fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
+    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+        // SAFETY: 注册期覆盖宿主生存期(见 ACTIVE 的约束)
+        let host: &JsHost = unsafe { &*ptr.as_ptr() };
+        return f(host);
+    }
+    DEFAULT_HOST.with(|cell| match cell.borrow().as_deref() {
+        Some(host) => f(host),
+        None => panic!("helix-js: host not registered — call init() first"),
+    })
+}
+
+/// echo 消息队列的访问器(**按宿主**隔离)。入队 / 取走都走它。
+pub(crate) fn with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    with_host_ref(|h| f(&mut h.messages.borrow_mut()))
 }
 
 /// 是否已有可用宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
@@ -456,6 +479,30 @@ mod engine_ownership_tests {
                 "接管 + 停放之后必须还是**同一个**引擎"
             );
         });
+    }
+
+    /// **队列要按宿主隔离,而不是进程级共享**(T1 步骤 2 的目标行为)。
+    ///
+    /// 今天是 `OnceLock<Mutex<Vec<String>>>`(进程级) ⇒ 一个线程 `echo` 的消息,
+    /// **另一个线程**能取到 ⇒ 本测试会红。搬进宿主后,另一线程自建的宿主看不到它 ⇒ 绿。
+    #[test]
+    fn messages_are_per_host_not_process_global() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::load_script(r#"helix.echo("from-main-thread");"#).unwrap();
+
+        let got = std::thread::spawn(|| {
+            crate::init(); // 该线程自建宿主(与主线程那份是两份)
+            crate::take_messages()
+        })
+        .join()
+        .expect("子线程不应 panic");
+
+        assert!(
+            got.is_empty(),
+            "队列应是**按宿主**隔离的,而不是进程级共享;实得 {got:?}"
+        );
+        let _ = crate::take_messages(); // 清掉主线程那条,免得污染后续测试
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。

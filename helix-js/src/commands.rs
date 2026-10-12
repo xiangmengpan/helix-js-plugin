@@ -35,7 +35,7 @@ const EVENT_WHITELIST: [&str; 20] = [
 
 use crate::state::{
     with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_popups,
-    with_registry, with_script_exports, with_statusline_hook, MESSAGES, UI_REQUESTS,
+    with_registry, with_script_exports, with_statusline_hook, UI_REQUESTS,
 };
 
 use crate::types::*;
@@ -1047,11 +1047,7 @@ pub fn emit_startup() -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）
-            if let Some(m) = crate::state::MESSAGES.get() {
-                if let Ok(mut v) = m.lock() {
-                    v.push(format!("startup emit failed: {e}"));
-                }
-            }
+            crate::host::with_messages(|v| v.push(format!("startup emit failed: {e}")));
             Err(e)
         }
     }
@@ -1086,11 +1082,7 @@ pub fn emit_layout_change() -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) => {
             // **让失败可见**：只 log::warn 会静默（我曾因此误判多轮 ✗）
-            if let Some(m) = crate::state::MESSAGES.get() {
-                if let Ok(mut v) = m.lock() {
-                    v.push(format!("layout-change emit failed: {e}"));
-                }
-            }
+            crate::host::with_messages(|v| v.push(format!("layout-change emit failed: {e}")));
             Err(e)
         }
     }
@@ -1655,12 +1647,7 @@ pub(crate) fn js_echo(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
-    MESSAGES
-        .get()
-        .expect("MESSAGES initialized")
-        .lock()
-        .expect("messages lock")
-        .push(text);
+    crate::host::with_messages(|v| v.push(text));
     Ok(JsValue::undefined())
 }
 

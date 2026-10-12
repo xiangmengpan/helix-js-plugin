@@ -43,7 +43,6 @@ use boa_engine::{Context, JsString, JsValue, NativeFunction};
 
 /// 初始化线程局部运行时（幂等）：消息/UI 队列、事件通道、boa 引擎与全局 `helix` 对象。
 pub fn init() {
-    state::MESSAGES.get_or_init(Default::default);
     state::UI_REQUESTS.get_or_init(Default::default);
     let _ = state::LAST_LAYOUT.get_or_init(Default::default);
     state::with_term_events(|t| {
