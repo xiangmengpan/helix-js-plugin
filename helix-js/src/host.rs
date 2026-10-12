@@ -14,7 +14,7 @@
 //! "新造 Context 的 drop"本身是安全的 ⇒ 问题在"引擎先走、引用者后走"。
 
 use crate::types::UiRequest;
-use boa_engine::Context;
+use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
@@ -28,6 +28,10 @@ pub struct JsHost {
     /// 访问点实测只在主线程(见 docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论),
     /// 所以用 `RefCell` 而不是 `Mutex`;若将来真有非主线程访问,它会先撞上"host not registered"。
     messages: RefCell<Vec<String>>,
+    /// 加载缓存:脚本名 → `helix.export(...)` 的值(**按宿主**隔离;原来是 thread_local)
+    exports: RefCell<HashMap<String, JsValue>>,
+    /// 已加载脚本清单(名, 源码)—— 热重载按它重跑(**按宿主**隔离)
+    loaded_scripts: RefCell<Vec<(String, String)>>,
 }
 
 impl JsHost {
@@ -38,6 +42,8 @@ impl JsHost {
         Self {
             engine: RefCell::new(Some(Box::new(ctx))),
             messages: RefCell::new(Vec::new()),
+            exports: RefCell::new(HashMap::new()),
+            loaded_scripts: RefCell::new(Vec::new()),
         }
     }
 }
@@ -169,6 +175,19 @@ fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
 /// echo 消息队列的访问器(**按宿主**隔离)。入队 / 取走都走它。
 pub(crate) fn with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     with_host_ref(|h| f(&mut h.messages.borrow_mut()))
+}
+
+/// 加载缓存的访问器(**按宿主**隔离)。
+///
+/// `helix.load` 按**脚本名**命中这个缓存,而且**换根不会失效** ⇒ 它必须是每宿主一份:
+/// 否则同一线程上先跑的测试会把属于**另一个引擎**的 export 留给后面的测试(T5-b1 的由来)。
+pub(crate) fn with_script_exports<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
+    with_host_ref(|h| f(&mut h.exports.borrow_mut()))
+}
+
+/// 已加载脚本清单的访问器(**按宿主**隔离)
+pub(crate) fn with_loaded_scripts<T>(f: impl FnOnce(&mut Vec<(String, String)>) -> T) -> T {
+    with_host_ref(|h| f(&mut h.loaded_scripts.borrow_mut()))
 }
 
 /// 当前宿主的**稳定标识**(宿主永不 drop ⇒ 地址稳定且不会被复用)。
@@ -668,6 +687,43 @@ mod engine_ownership_tests {
             got.is_none(),
             "另一线程的宿主不该看到别人设的 layouts 目录;实得 {got:?}"
         );
+    }
+
+    /// **加载缓存 / 已加载脚本清单要按宿主隔离**(T5-b1)。
+    ///
+    /// 关键:必须**同一线程换宿主**才算数 —— 第一版测试用子线程,天然被 `thread_local` 隔离,
+    /// 于是"改造前就通过"(一条关于测试本身的发现,已记入账本)。
+    /// `SCRIPT_EXPORTS` 按**脚本名**命中、换根不失效 ⇒ 同一线程上先跑的测试会把属于**另一个引擎**
+    /// 的 export 留在缓存里,后面的测试 `helix.load(同名)` 拿到陈旧对象 —— 这正是 4 个 `reload_*`
+    /// 测试删掉"跳过 guard"后变红的原因。
+    #[test]
+    fn load_caches_are_per_host_not_process_global() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::state::with_script_exports(|m| {
+            m.insert(
+                "probe.js".to_string(),
+                boa_engine::JsValue::from(boa_engine::JsString::from("A")),
+            );
+        });
+        crate::state::with_loaded_scripts(|s| s.push(("probe.js".to_string(), "src".to_string())));
+
+        // 同一线程,换到另一个宿主(这才是真实污染场景:--test-threads=1 下所有测试共用一个线程)
+        let mut other = JsHost::new();
+        set_active(&mut other);
+        let got = (
+            crate::state::with_script_exports(|m| m.contains_key("probe.js")),
+            crate::state::with_loaded_scripts(|s| s.iter().any(|(n, _)| n == "probe.js")),
+        );
+        clear_active();
+        std::mem::forget(other); // 引擎不可 drop
+
+        // ⚠️ 清理本宿主的桶,免得污染同进程其它测试
+        crate::state::with_script_exports(|m| {
+            m.remove("probe.js");
+        });
+        crate::state::with_loaded_scripts(|s| s.retain(|(n, _)| n != "probe.js"));
+        assert_eq!(got, (false, false), "加载缓存应按宿主隔离;实得 {got:?}");
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。

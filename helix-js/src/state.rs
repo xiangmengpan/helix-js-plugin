@@ -8,6 +8,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+// 加载缓存 / 已加载脚本清单已按宿主分桶(T5-b1),见 host.rs
+pub(crate) use crate::host::{with_loaded_scripts, with_script_exports};
+
 use crate::types::{
     AsyncEvent, CursorRequest, DecorationRequest, DocSnapshot, Edit, NodeHandlers, PopupCallbacks,
     TermCallbacks, TermCtrl, TermEvent, UiRequest,
@@ -103,15 +106,12 @@ thread_local! {
     static NEXT_TERM_ID: Cell<u64> = const { Cell::new(1) };
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static LOADED_SCRIPTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     // 加载中的脚本 key 栈（跨脚本共享）：嵌套 helix.load 期间保持祖先在栈上，
     // 循环依赖（A load B, B load A）在此检出——否则嵌套 eval 无限递归栈溢出崩溃。
     static LOAD_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// 与 LOAD_STACK **一一对应**的"提供根"栈(§4-2)。两栈只在 commands.rs 同一处
     /// push/pop,便于保持同步;空 Path 表示"绝对路径加载,无提供根"。
     static LOAD_ROOTS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
-    // 持有 JsValue：线程退出时内容泄漏（同上）
-    static SCRIPT_EXPORTS: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static LAST_EXPORT: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 主题覆盖：scope → 颜色字符串（set_theme 整体替换；reset_theme 清空）。
@@ -132,14 +132,6 @@ pub(crate) use crate::host::with_engine;
 pub(crate) fn with_registry<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
     REGISTRY.with(|r| {
         let mut slot = r.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
-}
-
-/// 访问 SCRIPT_EXPORTS：同上（内容泄漏）
-pub(crate) fn with_script_exports<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
-    SCRIPT_EXPORTS.with(|m| {
-        let mut slot = m.borrow_mut();
         f(slot.get_or_insert_with(|| Box::leak(Box::default())))
     })
 }
@@ -341,11 +333,6 @@ pub(crate) fn with_cursor_requests<T>(f: impl FnOnce(&mut Vec<CursorRequest>) ->
 /// 访问 COMMAND_DOCS（普通 HashMap，随线程 drop）
 pub(crate) fn with_command_docs<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
     COMMAND_DOCS.with(|d| f(&mut d.borrow_mut()))
-}
-
-/// 访问 LOADED_SCRIPTS（普通 Vec，随线程 drop）
-pub(crate) fn with_loaded_scripts<T>(f: impl FnOnce(&mut Vec<(String, String)>) -> T) -> T {
-    LOADED_SCRIPTS.with(|s| f(&mut s.borrow_mut()))
 }
 
 /// 访问 LOAD_STACK（加载中的脚本 key 栈；普通 Vec，随线程 drop）
