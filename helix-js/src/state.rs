@@ -487,15 +487,29 @@ pub(crate) static UI_REQUESTS: OnceLock<UiRequests> = OnceLock::new();
 /// 插件根目录(**有序**)。语义对齐 Neovim 的 `runtimepath`:自带 runtime 在前、
 /// 用户目录在后,于是**后加的根覆盖先加的**(同名相对名取"最后一个存在的")。
 /// 这是"把功能做成随软件分发的内置插件"的地基:内置放前、用户放后即可覆盖。
-pub(crate) static PLUGIN_ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+/// **按宿主**记录(T5-b2):原来是进程级 `OnceLock`(首设生效、不可重置)⇒ 并行跑"谁先跑谁赢"。
+/// 值 `Box::leak` 成 `&'static [PathBuf]` ⇒ 读取点零改动;同宿主重复设置 = 覆盖。
+pub(crate) static PLUGIN_ROOTS: OnceLock<Mutex<HashMap<u64, &'static [PathBuf]>>> = OnceLock::new();
 
-/// 设置插件根(只生效一次;已有则忽略 —— 与原先 `PLUGINS_DIR` 的语义一致)
 pub fn set_plugin_roots(roots: Vec<PathBuf>) {
-    let _ = PLUGIN_ROOTS.set(roots);
+    let key = crate::host::current_host_key_or_init();
+    let leaked: &'static [PathBuf] = Box::leak(roots.into_boxed_slice());
+    PLUGIN_ROOTS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("plugin roots lock")
+        .insert(key, leaked);
 }
 
+/// 当前宿主的插件根;未设置 ⇒ 空切片(集成测试依赖这个语义)
 pub(crate) fn plugin_roots() -> &'static [PathBuf] {
-    PLUGIN_ROOTS.get().map(|v| v.as_slice()).unwrap_or(&[])
+    let key = crate::host::current_host_key_or_init();
+    PLUGIN_ROOTS
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).copied())
+        .unwrap_or(&[])
 }
 
 /// 插件目录(**用户层 = 最后一个根**;`resolve_in` 用 `rev()` 迭代 ⇒ 末位优先级最高)。
