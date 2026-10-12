@@ -14,8 +14,9 @@
 //! "新造 Context 的 drop"本身是安全的 ⇒ 问题在"引擎先走、引用者后走"。
 
 use boa_engine::Context;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
+use std::ptr::NonNull;
 
 /// 一份 JS 运行时状态。当前只拥有引擎;队列/缓存留在进程级(Phase B)。
 pub struct JsHost {
@@ -45,38 +46,106 @@ impl Default for JsHost {
     }
 }
 
+thread_local! {
+    /// **活动宿主**(可选):由 `Application` 注册。未注册时用 `DEFAULT_HOST`(测试 / 无 GUI)。
+    ///
+    /// ⚠️ 安全性约束:`set_active` 的调用者必须保证「注册期覆盖宿主生存期」——
+    /// 宿主析构前要 `clear_active()`(`Application::drop` 已做,由
+    /// `host_cleared_before_drop` 守着)。句柄悬空 = 未定义行为。
+    static ACTIVE: Cell<Option<NonNull<JsHost>>> = const { Cell::new(None) };
+}
+
+/// 把 `host` 注册为当前活动宿主(`Application` 用)。见 `ACTIVE` 的安全性约束。
+pub fn set_active(host: &mut JsHost) {
+    ACTIVE.with(|a| a.set(Some(NonNull::from(host))));
+}
+
+/// 注销活动宿主(必须在宿主析构**之前**调用)
+pub fn clear_active() {
+    ACTIVE.with(|a| a.set(None));
+}
+
+/// 引擎从哪个宿主借出 —— 归还时必须回到**同一个**,否则等于把引擎搬到别的宿主里
+#[derive(Clone, Copy)]
+enum Owner {
+    Active,
+    Default,
+}
+
+fn take_engine() -> Option<(Box<Context>, Owner)> {
+    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+        // SAFETY: 注册期覆盖宿主生存期(见 ACTIVE 的约束)
+        let host: &mut JsHost = unsafe { &mut *ptr.as_ptr() };
+        return host.engine.borrow_mut().take().map(|e| (e, Owner::Active));
+    }
+    DEFAULT_HOST
+        .with(|cell| {
+            cell.borrow_mut()
+                .as_mut()
+                .and_then(|h| h.engine.borrow_mut().take())
+        })
+        .map(|e| (e, Owner::Default))
+}
+
+/// 把引擎归还给它来的那个宿主。
+///
+/// 两个宿主都已不在时**遗忘而不 drop** —— 与本模块的根本不变量一致:
+/// drop 一个用过的引擎会破坏堆,宁可泄漏。
+fn put_engine(engine: Box<Context>, owner: Owner) {
+    match owner {
+        Owner::Active => {
+            if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+                // SAFETY: 同 take_engine
+                let host: &mut JsHost = unsafe { &mut *ptr.as_ptr() };
+                *host.engine.borrow_mut() = Some(engine);
+                return;
+            }
+            std::mem::forget(engine);
+        }
+        Owner::Default => {
+            let mut slot = DEFAULT_HOST.with(|cell| cell.borrow_mut().take());
+            match slot.as_mut() {
+                Some(host) => {
+                    *host.engine.borrow_mut() = Some(engine);
+                    DEFAULT_HOST.with(|cell| *cell.borrow_mut() = slot);
+                }
+                None => std::mem::forget(engine),
+            }
+        }
+    }
+}
+
 /// 安装默认宿主(由 `init()` 调用;幂等由调用方守 —— 已有宿主时不要覆盖)。
 pub fn install_default(host: JsHost) {
     DEFAULT_HOST.with(|h| *h.borrow_mut() = Some(Box::new(host)));
 }
 
-/// 是否已有宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
+/// 是否已有可用宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
 pub fn engine_exists() -> bool {
-    DEFAULT_HOST.with(|h| h.borrow().is_some())
+    ACTIVE.with(|a| a.get()).is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
 }
 
 /// 借出的引擎:Drop 时自动**归还**(panic 安全 —— 闭包 panic 也不会把引擎弄丢)。
-struct EngineBorrow(Option<Box<Context>>);
+struct EngineBorrow {
+    engine: Option<Box<Context>>,
+    owner: Owner,
+}
 
 impl std::ops::Deref for EngineBorrow {
     type Target = Context;
     fn deref(&self) -> &Context {
-        self.0.as_deref().expect("EngineBorrow 非空")
+        self.engine.as_deref().expect("EngineBorrow 非空")
     }
 }
 impl std::ops::DerefMut for EngineBorrow {
     fn deref_mut(&mut self) -> &mut Context {
-        self.0.as_deref_mut().expect("EngineBorrow 非空")
+        self.engine.as_deref_mut().expect("EngineBorrow 非空")
     }
 }
 impl Drop for EngineBorrow {
     fn drop(&mut self) {
-        if let Some(engine) = self.0.take() {
-            DEFAULT_HOST.with(|cell| {
-                if let Some(host) = cell.borrow_mut().as_mut() {
-                    *host.engine.borrow_mut() = Some(engine);
-                }
-            });
+        if let Some(engine) = self.engine.take() {
+            put_engine(engine, self.owner);
         }
     }
 }
@@ -88,25 +157,22 @@ impl Drop for EngineBorrow {
 /// `#[track_caller]` 直指调用点。
 #[track_caller]
 pub(crate) fn with_engine<T>(f: impl FnOnce(&mut Context) -> T) -> T {
-    DEFAULT_HOST.with(|cell| {
-        let taken = cell
-            .borrow_mut()
-            .as_mut()
-            .and_then(|host| host.engine.borrow_mut().take());
-        // 区分两种"取不到":宿主不存在(未 init) vs 引擎已被借出(重入)
-        let exists = engine_exists();
-        let Some(engine) = taken else {
-            if exists {
-                panic!(
-                    "helix-js: engine used again while already borrowed \
-                     (同一线程在 JS 调用树内重入;见 commands.rs 里 helix.load 的注释)"
-                );
-            }
-            panic!("helix-js: host not registered — call init() first");
-        };
-        let mut guard = EngineBorrow(Some(engine));
-        f(&mut guard)
-    })
+    // 区分两种"取不到":宿主不存在(未 init) vs 引擎已被借出(重入)
+    let exists = engine_exists();
+    let Some((engine, owner)) = take_engine() else {
+        if exists {
+            panic!(
+                "helix-js: engine used again while already borrowed \
+                 (同一线程在 JS 调用树内重入;见 commands.rs 里 helix.load 的注释)"
+            );
+        }
+        panic!("helix-js: host not registered — call init() first");
+    };
+    let mut guard = EngineBorrow {
+        engine: Some(engine),
+        owner,
+    };
+    f(&mut guard)
 }
 
 // ── 测试专用访问器 ────────────────────────────────────────────────
@@ -256,6 +322,47 @@ mod engine_ownership_tests {
             );
         });
         with_engine(|e| assert!(e.eval(Source::from_bytes("1+1")).is_ok()));
+    }
+
+    /// **两个宿主的引擎互不干扰**(Task 3:隔离性的第一个可测证据)。
+    ///
+    /// 它同时是「活动宿主句柄」的行为测试:切到新宿主后,旧引擎里的**全局变量**看不见;
+    /// 切回来又看得见。
+    ///
+    /// ⚠️ **边界(实测)**:命令/事件/钩子的注册表(`REGISTRY`/`EVENT_HANDLERS`…)
+    /// **仍在进程级**、不随宿主走 ⇒ 今天能断言的隔离只是**引擎级**的;
+    /// 注册表隔离属 Phase B(队列/缓存搬进宿主)。第一版测试写成断言「命令隔离」⇒ 当场红 ——
+    /// 这个红正好把真实边界钉了下来。
+    #[test]
+    fn two_hosts_are_isolated() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        with_engine(|e| {
+            e.eval(Source::from_bytes("globalThis.marker = 1;")).unwrap();
+        });
+
+        let mut other = JsHost::new();
+        set_active(&mut other);
+        with_engine(|e| {
+            let v = e.eval(Source::from_bytes("typeof globalThis.marker")).unwrap();
+            assert_eq!(
+                v.to_string(e).unwrap().to_std_string_escaped(),
+                "undefined",
+                "新宿主的引擎里不该有旧宿主的全局变量(引擎级隔离)"
+            );
+        });
+
+        clear_active();
+        with_engine(|e| {
+            let v = e.eval(Source::from_bytes("String(globalThis.marker)")).unwrap();
+            assert_eq!(
+                v.to_string(e).unwrap().to_std_string_escaped(),
+                "1",
+                "切回后旧引擎状态应完好"
+            );
+        });
+        // 引擎不可 drop ⇒ 把宿主安全带出去(既不 drop 也不让句柄悬空)
+        std::mem::forget(other);
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。

@@ -88,6 +88,20 @@ pub struct Application {
     last_cursor: Option<(usize, usize)>,
     /// 选区数上次值(selection-change 变化检测)
     last_selection_count: usize,
+
+    /// JS 宿主(Step 2):引擎由 `Application` 持有,并在本实例存活期内被注册为**活动宿主**。
+    ///
+    /// ⚠️ **永不 drop**(`ManuallyDrop`):drop 已用过的引擎会**破坏堆** —— 见
+    /// `helix-js/src/host.rs` 模块头的两个对照实验(`tcache_thread_shutdown()` /
+    /// `corrupted double-linked list`)。引擎与其 realm 的 20 处刻意不朽 JsValue 表同寿。
+    js_host: std::mem::ManuallyDrop<Box<helix_js::host::JsHost>>,
+}
+
+impl Drop for Application {
+    fn drop(&mut self) {
+        // 先注销句柄(下一行之后宿主就不可达了);宿主本身**故意不 drop**(见字段注释)
+        helix_js::host::clear_active();
+    }
 }
 
 #[cfg(feature = "integration")]
@@ -158,6 +172,11 @@ impl Application {
         // EditorView 已入 compositor，事件循环启动后生效）。
         // 集成测试跳过：不能加载开发机的 ~/.config/helix/plugins（会污染测试的
         // 全局 JS 运行时——注册的命令/事件处理器/键位绑定跨测试残留）。
+        // JS 宿主(Step 2):引擎由 Application 持有。**必须早于**任何 `helix_js::` 调用 ——
+        // 先建(建引擎 + 在其中注册 `helix` 全局),再注册为活动宿主。
+        let mut js_host = Box::new(helix_js::host::JsHost::new());
+        helix_js::host::set_active(&mut js_host);
+
         #[cfg(not(feature = "integration"))]
         {
             let plugin_dir = helix_loader::config_dir().join("plugins");
@@ -352,6 +371,7 @@ impl Application {
             theme_mode,
             last_cursor: None,
             last_selection_count: 0,
+            js_host: std::mem::ManuallyDrop::new(js_host),
         };
 
         Ok(app)
