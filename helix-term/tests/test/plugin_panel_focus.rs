@@ -44,7 +44,6 @@ async fn focus_panel_app(plugin: &str) -> anyhow::Result<(tempfile::TempDir, std
 ///    Tab 被焦点路由消费,不经过面板 onKey(count 不变)
 #[tokio::test(flavor = "multi_thread")]
 async fn focusable_panel_tab_focuses_first_node() -> anyhow::Result<()> {
-    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let (_dir, plugin_path) = focus_panel_app(FOCUS_JS).await?;
 
     test_key_sequences(
@@ -90,7 +89,6 @@ async fn focusable_panel_tab_focuses_first_node() -> anyhow::Result<()> {
 /// 2. 焦点在 button → Enter → onPress 触发(消息断言)
 #[tokio::test(flavor = "multi_thread")]
 async fn focusable_panel_button_enter_triggers_onpress() -> anyhow::Result<()> {
-    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let (_dir, plugin_path) = focus_panel_app(FOCUS_JS).await?;
 
     test_key_sequences(
@@ -126,7 +124,6 @@ async fn focusable_panel_button_enter_triggers_onpress() -> anyhow::Result<()> {
 /// 3. 焦点在 input → 单字符 → dispatch_input_key → onChange 更新值(白盒:chg: 回显)
 #[tokio::test(flavor = "multi_thread")]
 async fn focusable_panel_input_insert() -> anyhow::Result<()> {
-    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let (_dir, plugin_path) = focus_panel_app(FOCUS_JS).await?;
 
     test_key_sequences(
@@ -162,7 +159,6 @@ async fn focusable_panel_input_insert() -> anyhow::Result<()> {
 /// 4. Esc 取消焦点(不关闭面板):焦点清空后按键回 onKey;Esc 本身不经过 onKey
 #[tokio::test(flavor = "multi_thread")]
 async fn focusable_panel_esc_cancels_focus() -> anyhow::Result<()> {
-    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let (_dir, plugin_path) = focus_panel_app(FOCUS_JS).await?;
 
     test_key_sequences(
@@ -216,7 +212,6 @@ async fn focusable_panel_esc_cancels_focus() -> anyhow::Result<()> {
 ///    按键穿透编辑器会清 status,不能直接断言瞬态 echo)
 #[tokio::test(flavor = "multi_thread")]
 async fn non_focusable_panel_tab_still_onkey() -> anyhow::Result<()> {
-    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let (_dir, plugin_path) = focus_panel_app(
         r#"
         let nfTabCount = 0;
@@ -265,7 +260,6 @@ async fn non_focusable_panel_tab_still_onkey() -> anyhow::Result<()> {
 /// 6. 焦点失效重置:render 后焦点节点消失 → 焦点清空(按键回 onKey)→ Tab 从头聚焦第一个节点
 #[tokio::test(flavor = "multi_thread")]
 async fn focusable_panel_focus_reset_on_node_change() -> anyhow::Result<()> {
-    let _rl = PLUGIN_TEST_LOCK.lock().await;
     let (_dir, plugin_path) = focus_panel_app(FOCUS_JS).await?;
 
     test_key_sequences(

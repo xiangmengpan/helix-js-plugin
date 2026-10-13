@@ -8,8 +8,6 @@ use helix_term::ui::{js_picker::PickerRow, overlay::Overlay, picker::Picker};
 // （event_loop_until_idle 先把 picker 层推上，再发 Enter 才会落到 picker）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_define_run_enter() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -63,8 +61,6 @@ async fn plugin_picker_define_run_enter() -> anyhow::Result<()> {
 // 端到端覆盖 Promise 路径（JS 单测已覆盖 push 时序，此处验证 term 侧接得住异步请求）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_async_items_enter() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -106,8 +102,6 @@ async fn plugin_picker_async_items_enter() -> anyhow::Result<()> {
 // 未注册源：脚本顶层 helix.picker.run("nope") 抛错 → :plugin-load 失败 → 状态栏 Error
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_run_unknown_source_errors() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -138,8 +132,6 @@ async fn plugin_picker_run_unknown_source_errors() -> anyhow::Result<()> {
 // items → OpenPicker 推层 → Enter → action focus_buffer → 层关闭；全程无 Error 状态。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_builtin_plugin_buffers_source() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -197,8 +189,6 @@ async fn plugin_picker_builtin_plugin_buffers_source() -> anyhow::Result<()> {
 // 审查 I1：items 返回空列表（如 grep 无匹配）→ 仍打开 picker（空列表展示），不静默跳过。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_empty_rows_still_opens() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -244,8 +234,6 @@ async fn plugin_picker_empty_rows_still_opens() -> anyhow::Result<()> {
 // 审查 I2：行宽与列数不匹配 → 状态栏报错（push_message），picker 不打开。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_width_mismatch_reports_error() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -298,7 +286,6 @@ async fn plugin_picker_width_mismatch_reports_error() -> anyhow::Result<()> {
 //      ⇒ 若派发顺序变了(Esc 先到钩子),Esc 会被吞掉 ⇒ 本测试**会失败** ⇒ 有判别力 ✓
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_picker_on_key_hook_keeps_esc() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");

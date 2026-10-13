@@ -36,11 +36,23 @@ fn sm_env(root: &std::path::Path) -> [EnvGuard; 4] {
     ]
 }
 
+/// **server_manager 一族专用窄锁**（原来是 tests/test/helpers.rs 的**全局**
+/// `PLUGIN_TEST_LOCK`，那让整个集成套件串行跑、实测 1881s→≈230s 的代价全为这一族付）。
+///
+/// 这一族为什么仍要互斥（别的插件用例已可全并行）：
+/// · `SM_*`（MANAGED_DIR / LANGS_TOML / SERVER_CONFIG / SERVER_RECIPES / PATH）是
+///   **进程级** env —— `EnvGuard` 能保证 panic 也恢复，但保证不了两个用例**同时**
+///   用各自 tempdir 的值；
+/// · 写流走**全局** `OP_LOCK`（单 worker 队列与主线程同步 `:server` 写共用一把）：
+///   别的用例的安装 job 在跑时，本用例的安装只能排队，而收敛断言等不起。
+/// 收窄成模块级：只串行这一族（8 个用例），其余插件用例恢复并行。
+static SERVER_MANAGER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // :server 命令族——冒烟验证(list/search/status + 惰性配方的负路径 install)。
 // 环境隔离:SM_MANAGED_DIR/SM_LANGS_TOML 指到临时目录,不碰真实 ~/.local/share。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_list_search_status() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -92,7 +104,7 @@ async fn server_list_search_status() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn server_negative_paths() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("b.txt");
@@ -159,7 +171,7 @@ async fn server_negative_paths() -> anyhow::Result<()> {
 // 本地已装识别:install 短路(直接用)、remove 拒绝、unmanage 停挂接(toggle)。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_local_short_circuit_and_unmanage() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
@@ -275,7 +287,7 @@ fn write_fake_tar_gz(path: &std::path::Path, bin_name: &str, version: &str) -> a
 // languages.toml 收敛(受管 [language-server.demo-bin] 指向受管绝对路径)。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("arsenal.txt");
@@ -488,7 +500,7 @@ async fn wait_until_rows(
 // q 关闭 → 编辑器仍响应。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -655,7 +667,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
 // v2 行模型按列宽截断(旧 slice() 字符截断会让 CJK 把行撑出可视区)。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("w.txt");
@@ -719,7 +731,7 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
 // 单 worker 串行安装两件 → 收敛后两行均 ✓;managed/bin 落盘断言。
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("b.txt");
@@ -798,7 +810,7 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
 // 独立配方文件在编辑器会话内生效:SM_SERVER_RECIPES 指向 contrib 文件 → :server search 可见
 #[tokio::test(flavor = "multi_thread")]
 async fn server_recipes_file_visible_in_editor() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
+    let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("f.txt");
     std::fs::write(&file, "x\n")?;

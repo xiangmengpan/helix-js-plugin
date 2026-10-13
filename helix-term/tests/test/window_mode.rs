@@ -248,8 +248,6 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
 /// 且编辑器叶渲染不被双画(防双画由 claimed 过滤保证)。
 #[tokio::test(flavor = "multi_thread")]
 async fn buffer_open_leaf_is_editable_targets_own_doc() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     let b = dir.path().join("b.txt");
@@ -297,8 +295,6 @@ async fn buffer_open_leaf_is_editable_targets_own_doc() -> anyhow::Result<()> {
 /// buffer_open:JS 打开文件为新 BufferLeaf 叶子(split:h → 原编辑器右侧新叶)
 #[tokio::test(flavor = "multi_thread")]
 async fn buffer_open_creates_leaf_with_content() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     let b = dir.path().join("b.txt");
@@ -413,8 +409,6 @@ async fn commandline_yields_bottom_row_to_statusline_when_hidden() -> anyhow::Re
 // window mode 创建键:模式内 v/s 同 doc 分屏、n 新空 buffer
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_creates_splits_v_s_n() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;

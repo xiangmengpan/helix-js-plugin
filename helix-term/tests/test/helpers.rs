@@ -23,12 +23,6 @@ use crossterm::event::{Event, KeyEvent};
 #[cfg(not(windows))]
 use termina::event::{Event, KeyEvent};
 
-/// 插件测试共享锁：helix-js 的 open_panels/UI_REQUESTS/MESSAGES 是进程级全局状态
-///（生产设计：命令可能在 tokio 不同线程执行）。多个插件集成测试并发跑在同一进程
-/// 会互相干扰（reload_all 的 take 会抢走并发测试的面板 id → 面板漏关）。插件测试
-/// 必须串行。终端/面板/重载相关测试此前随机/确定性互踩（reload_all + open_panel）。
-pub static PLUGIN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 /// Specify how to set up the input text with line feeds
 #[derive(Clone, Debug)]
 pub enum LineFeedHandling {

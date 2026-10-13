@@ -26,8 +26,6 @@ async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
 // 而非 core view-tree 内部节点;产物可被 window mode 完全控制、编辑互通。
 #[tokio::test(flavor = "multi_thread")]
 async fn vsplit_creates_controllable_same_doc_leaf() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -91,8 +89,6 @@ async fn vsplit_creates_controllable_same_doc_leaf() -> anyhow::Result<()> {
 // :hsplit 同款(下侧新叶,同 doc)
 #[tokio::test(flavor = "multi_thread")]
 async fn hsplit_creates_same_doc_leaf_below() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -111,8 +107,6 @@ async fn hsplit_creates_same_doc_leaf_below() -> anyhow::Result<()> {
 // :vsplit <path> → 新叶打开该文件,可编辑
 #[tokio::test(flavor = "multi_thread")]
 async fn vsplit_path_opens_file_in_new_leaf() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     let b = dir.path().join("b.txt");
@@ -138,8 +132,6 @@ async fn vsplit_path_opens_file_in_new_leaf() -> anyhow::Result<()> {
 // :vsplit-new → 新空 buffer 叶
 #[tokio::test(flavor = "multi_thread")]
 async fn vsplit_new_creates_scratch_leaf() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -164,8 +156,6 @@ async fn vsplit_new_creates_scratch_leaf() -> anyhow::Result<()> {
 // 启动迁移:core 遗留的多 view(无叶)被收编为 BufferLeaf 叶,可被 window mode 控制
 #[tokio::test(flavor = "multi_thread")]
 async fn orphan_views_adopted_into_leaves() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
-
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -196,7 +186,6 @@ async fn orphan_views_adopted_into_leaves() -> anyhow::Result<()> {
 // 压力:反复 分裂→聚焦→关闭→再分裂 (抓 tree.get 317 panic 复现)
 #[tokio::test(flavor = "multi_thread")]
 async fn split_close_stress_no_panic() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "l1\nl2\nl3\n")?;
@@ -220,7 +209,6 @@ async fn split_close_stress_no_panic() -> anyhow::Result<()> {
 // 回归:空 scratch 分屏 → x 关闭 → scratch 文档随窗销毁(ghost buffer/bufferline 残留)
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_scratch_leaf_drops_orphan_scratch_doc() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -275,7 +263,6 @@ fn render_rows_probe(app: &mut Application) -> Vec<String> {
 // bufferline 不得溢出编辑器叶到相邻叶(terminal/BufferLeaf)顶行
 #[tokio::test(flavor = "multi_thread")]
 async fn bufferline_clamped_to_editor_leaf() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;

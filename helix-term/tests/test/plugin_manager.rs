@@ -4,7 +4,6 @@ use super::*;
 // config_dir 是真实 ~/.config，只测无副作用路径。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_manager_list_status() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
@@ -69,7 +68,6 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
 // status 的 manifest 计数后缀（"N installed in manifest"）：无 manifest 时也应显示 0 计数。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_list_and_status() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
@@ -109,7 +107,6 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
 // 无法识别的参数(非路径非 url)→ 报错不崩。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
@@ -146,7 +143,6 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
 // pin/unpin 未安装 → 报错(无副作用路径)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
@@ -193,7 +189,6 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
 // JS API:helix.plugin.remove(未安装)→ 报错经 set_error(plugin-load 里调用,drain 执行)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     // 集成进程**不执行** application.rs 的启动推入 ⇒ `plugin_roots()` 为空 ⇒
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
@@ -205,7 +200,7 @@ async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     let plugin = dir.path().join("api.js");
     std::fs::write(&plugin, r#"helix.plugin.remove("nope-js-api");"#)?;
-    // 本用例**没有** `PLUGIN_TEST_LOCK` 那一行(所以按那行锚定的批量插入漏了它 ✗)
+    // 本用例不靠任何全局锁(原 `PLUGIN_TEST_LOCK` 已删,插件用例现在全并行)
     // ⇒ 单独设插件根:集成进程不执行 application.rs 的启动推入,`plugins_dir()` 会是 null,
     //    JS 侧便早退报"插件目录不可用",断言就看不到预期的 `failed to remove` ✗
     let proot = tempfile::tempdir()?;

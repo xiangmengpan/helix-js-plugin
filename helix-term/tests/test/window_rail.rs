@@ -40,7 +40,6 @@ fn rail_plugin(dir: &std::path::Path, side: &str) -> std::path::PathBuf {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn open_panel_left_registers_full_height_rail() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -71,7 +70,6 @@ async fn open_panel_left_registers_full_height_rail() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rail_close_via_x_and_resplit() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -89,7 +87,6 @@ async fn rail_close_via_x_and_resplit() -> anyhow::Result<()> {
 // T3 焦点:main 最左叶 C-p h 聚焦 rail;rail 上 Esc(未消费)/C-p l 回 main;v/s 分裂落 main
 #[tokio::test(flavor = "multi_thread")]
 async fn rail_focus_enter_leave_and_split_stays_in_main() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -123,7 +120,6 @@ async fn rail_focus_enter_leave_and_split_stays_in_main() -> anyhow::Result<()> 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rail_focused_can_type_colon_commands() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "AAA\n")?;
@@ -145,7 +141,6 @@ async fn rail_focused_can_type_colon_commands() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn probe_key_dispatch_under_rail() -> anyhow::Result<()> {
-    let _plugin_guard = PLUGIN_TEST_LOCK.lock().await;
     let home = std::env::var("HOME").unwrap_or_default();
     let fp = format!("{home}/.config/helix/plugins/filetree/plugin.js");
     let dir = tempfile::tempdir()?;
