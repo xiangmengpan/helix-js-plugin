@@ -6,6 +6,7 @@ use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
 
 use crate::commands::emit_term_exit;
+#[cfg(unix)]
 use crate::pty;
 
 use crate::state::{with_async_promises, with_terms, WakeSender};
@@ -172,6 +173,10 @@ fn spawn_worker(
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+/// worker 持 master File（Drop 关闭）；slave 经 Stdio::from 交给子进程，spawn 后父侧关闭。
+/// 仅 unix:整条路径都是 POSIX(setsid / TIOCSCTTY / AsRawFd / pre_exec);
+/// 非 unix 由调用点的 cfg(not(unix)) 分支报 "pty requires a unix platform"。
+#[cfg(unix)]
 pub(crate) fn spawn_pty_worker(
     id: u64,
     cmd: &str,

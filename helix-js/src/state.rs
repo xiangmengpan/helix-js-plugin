@@ -783,6 +783,8 @@ type ComponentStateMap = HashMap<u64, Box<dyn Fn(u64) -> String>>;
 /// 终端实例注册表（pty_id → (view_id, cmd)；term_kill(pty_id) 清理、term_list 查询）
 static OPEN_TERMS: OnceLock<Mutex<HashMap<u64, (u64, String)>>> = OnceLock::new();
 
+/// 非 unix 下没有 pty ⇒ 无人调用(但函数本身是跨平台注册表的一部分,不整个 cfg 掉)
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn register_term(pty_id: u64, view_id: u64, cmd: String) {
     OPEN_TERMS
         .get_or_init(|| Mutex::new(HashMap::new()))

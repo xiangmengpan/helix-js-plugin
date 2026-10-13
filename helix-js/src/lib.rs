@@ -8,6 +8,9 @@ mod layout;
 mod lsp;
 pub mod picker;
 mod popup;
+// pty.rs 是纯 POSIX 实现(openpt / ioctl / winsize + 裸 fd):只在 unix 编译。
+// 调用点(shell.rs / popup.rs)各自已有 cfg(unix) / cfg(not(unix)) 分支 ✓
+#[cfg(unix)]
 mod pty;
 mod shell;
 mod state;

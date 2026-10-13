@@ -2,15 +2,21 @@ use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue, Source};
+#[cfg(unix)]
+use boa_engine::Source;
+use boa_engine::{Context, JsError, JsString, JsValue};
 
+#[cfg(unix)]
 use crate::pty;
+#[cfg(unix)]
 use crate::shell::spawn_pty_worker;
 
 use crate::state::{
-    with_buffer_icon_hook, with_keymap_hint_hook, with_popups, with_statusline_hook, with_terms,
-    UI_REQUESTS,
+    with_buffer_icon_hook, with_keymap_hint_hook, with_popups, with_statusline_hook, UI_REQUESTS,
 };
+// 仅 open_terminal 的 pty 路径(cfg(unix) 块)里用到 ⇒ 非 unix 下不导入,免得 unused 警告
+#[cfg(unix)]
+use crate::state::with_terms;
 
 use crate::commands::doc_to_js;
 use crate::input::InputState;
@@ -466,9 +472,10 @@ pub(crate) fn js_open_terminal(
     let on_exit = opts.get(JsString::from("onExit"), ctx)?;
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 
-    let view_id = crate::state::next_terminal_view_id();
     #[cfg(unix)]
     {
+        // view_id 只在 unix 分支用 ⇒ 在这里分配(非 unix 直接报错,不必消耗 id)
+        let view_id = crate::state::next_terminal_view_id();
         // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
         let factory = ctx
             .eval(Source::from_bytes(
