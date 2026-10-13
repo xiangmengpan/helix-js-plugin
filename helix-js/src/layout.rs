@@ -1,7 +1,7 @@
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
 use crate::popup::{obj_opt_str, obj_opt_u16};
-use crate::state::{BUFFERS, LAST_LAYOUT};
+use crate::state::{buffers_json, LAST_LAYOUT};
 
 use crate::state::{with_popups, UI_REQUESTS};
 
@@ -769,10 +769,7 @@ pub(crate) fn js_buffers(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = BUFFERS
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = buffers_json();
     if json.is_empty() {
         return Ok(JsValue::null());
     }
@@ -789,10 +786,7 @@ pub(crate) fn js_current_buffer(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = BUFFERS
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = buffers_json();
     if json.is_empty() {
         return Ok(JsValue::undefined());
     }

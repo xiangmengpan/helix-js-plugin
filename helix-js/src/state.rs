@@ -759,7 +759,13 @@ pub fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
 /// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
 pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 /// 打开文档序列化缓存（helix-term 每帧写入；buffers/current_buffer 读取）
-pub(crate) static BUFFERS: OnceLock<Mutex<String>> = OnceLock::new();
+/// 打开文档序列化缓存(`helix.buffer.list()` / `.current()` 的数据源)。
+/// **按宿主**记录 —— 原来是进程级 `OnceLock<Mutex<String>>`:并行时"谁最后写谁赢",
+/// 一个用例会读到**别人的** buffer 列表(T5-c 实测:`buffer_traversal_and_focus` 拿到 z.txt)。
+/// ⚠️ 这里**不照抄** `LAYOUTS_DIR` 的 `Box::leak` 手法:那张表启动时设一次,而这张表
+/// **每帧**写(`cache_buffers`)⇒ leak 会无限增长。故存 `String`、读时 clone
+/// (读者本来就是 clone 语义,开销不变)。
+static BUFFERS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 
 /// 平级模式快照(JSON: `{mode, keys:[{key,desc,enabled,reason?}]}`)。
 /// helix-term 在模式切换时写入;`helix.pane_mode.current()/keymap()` 读。
@@ -981,12 +987,26 @@ pub fn cache_layout(json: &str) {
 
 /// 写入打开文档序列化缓存(helix-term 每帧更新;buffers/current_buffer 读取)
 pub fn cache_buffers(json: &str) {
-    let _ = BUFFERS.get_or_init(Default::default);
     let _ = PANE_MODE.get_or_init(Default::default);
     let _ = PANES.get_or_init(Default::default);
-    if let Some(m) = BUFFERS.get() {
-        *m.lock().unwrap() = json.to_string();
-    }
+    let key = crate::host::current_host_key_or_init();
+    BUFFERS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("buffers lock")
+        .insert(key, json.to_string());
+}
+
+/// 当前宿主的打开文档快照(还没缓存过 → 空串)。
+/// `helix.buffer.list()` / `helix.buffer.current()` 的**唯一读取口** ⇒ 分桶时只改这里。
+pub(crate) fn buffers_json() -> String {
+    let key = crate::host::current_host_key_or_init();
+    BUFFERS
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+        .unwrap_or_default()
 }
 
 /// 写入平级模式快照(模式切换时由 helix-term 调用)

@@ -744,6 +744,41 @@ mod engine_ownership_tests {
         assert_eq!(got, (false, false), "加载缓存应按宿主隔离;实得 {got:?}");
     }
 
+    /// `BUFFERS`(打开文档快照)必须按宿主隔离 —— 这张表是 `helix.buffer.list()` /
+    /// `helix.buffer.current()` 的数据源,原先是**进程级** `OnceLock<Mutex<String>>`:
+    /// 并行跑时"谁最后写谁赢",一个用例会读到**别人的** buffer 列表(实测:
+    /// `plugin_terminal_hooks` 的 `buffer_traversal_and_focus` 拿到另一个用例的 `z.txt`)。
+    ///
+    /// ⚠️ 断言必须**比身份**(各自看到各自那份),不能只比"空/非空" —— 我第一版就是先把自己那份
+    /// 清成空串再换宿主,于是"另一宿主读到空"必然成立 ⇒ **假绿**(本会话第三次踩同类陷阱)。
+    #[test]
+    fn buffers_are_per_host_not_process_global() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        crate::state::cache_buffers(r#"{"current":1,"buffers":[{"name":"A-RED.txt"}]}"#);
+
+        // 同一线程换到另一个宿主(真实污染场景),让**它**写自己那份
+        let mut other = JsHost::new();
+        set_active(&mut other);
+        crate::state::cache_buffers(r#"{"current":2,"buffers":[{"name":"B-BLUE.txt"}]}"#);
+        let other_saw = crate::state::buffers_json();
+        clear_active();
+        std::mem::forget(other); // 引擎不可 drop
+
+        // 回到宿主 A:必须仍看到**自己**那份
+        let a_saw = crate::state::buffers_json();
+        crate::state::cache_buffers(""); // 清理本宿主的桶,免得污染同进程其它测试
+
+        assert!(
+            other_saw.contains("B-BLUE.txt"),
+            "另一宿主应看到自己写的快照;实得 {other_saw:?}"
+        );
+        assert!(
+            a_saw.contains("A-RED.txt"),
+            "宿主 A 的快照不该被别的宿主覆盖;实得 {a_saw:?}"
+        );
+    }
+
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。
     ///
     /// 为什么留着:`DEFAULT_HOST` 的注释断言"drop 已用过的共享引擎会破坏堆" ——
