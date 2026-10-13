@@ -10,7 +10,7 @@
 //! panic 一律转 error 事件；spawn 失败(资源耗尽)退化为提交线程内联执行并重试。
 //! 任何路径都不会让"队列永久静默吞掉"任务事件。
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +27,37 @@ struct Job {
 /// 重试建 worker，成功前批次走内联执行，事件不丢）。
 static WORKER: Mutex<Option<Sender<Job>>> = Mutex::new(None);
 
+/// 在途批次数：`submit` **入队前** +1，批次收尾（[InFlightExit] Drop）−1。
+/// 语义 = "已提交但还没跑完"，`0` 即队列空且当前批已收尾。
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// 已提交但尚未跑完的后台批次数（0 = 队列空且无批在跑）。
+///
+/// 给**集成测试**做确定性收敛等待：先等它回 0，再断言行收敛（比轮询墙钟
+/// 更准也更快——不浪费固定时长，也不靠"猜几帧够"）。生产代码不消费它。
+pub fn pending_jobs() -> usize {
+    IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// 批次收尾的 RAII 计数：放在 `run_batch` 首行，含 `catch_unwind` 也拦不住的
+/// 逃逸路径（事件 push / 清钩子）一起归属——正常路径与 unwind 都会减到。
+/// 饱和减（不是 `fetch_sub`）：单测直接调 `run_batch`（无配对的自增）时
+/// 不得下溢成 `usize::MAX`，那会让集成侧的"队列已空"门永远等不到。
+struct InFlightExit;
+impl Drop for InFlightExit {
+    fn drop(&mut self) {
+        let _ = IN_FLIGHT.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            Some(n.saturating_sub(1))
+        });
+    }
+}
+
+/// 自增在**入队前**（send/inline 都算在途）——顺序反过来的话，worker 抢在自增前
+/// 跑完就会让等待方把"还没开始"看成"已经空"。
+fn in_flight_enter() {
+    IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+}
+
 /// 提交一批后台任务（typed.rs 分发臂调用；非阻塞——worker 线程串行执行，
 /// 事件异步回投，编辑器主线程不等待）。spawn 失败的极端场景回退为当前线程
 /// 内联跑完本批（同步，语义同 :server 同步路径），事件仍照常回投。
@@ -34,6 +65,7 @@ pub(crate) fn submit(task_id: u64, items: Vec<(String, String, Option<String>)>)
     if items.is_empty() {
         return;
     }
+    in_flight_enter();
     // 锁内只做 spawn/发送决策,内联执行在锁外(不持锁跑同步下载)
     let inline = {
         let mut slot = WORKER
@@ -83,6 +115,9 @@ fn worker_loop(rx: Receiver<Job>) {
 /// unmanage/下载前报错)不会把残留钩子留在本线程——内联回退发生在主线程时,
 /// 残留钩子会让后续同步 :server install 消费到死 task_id/seq 的幽灵 progress 事件。
 fn run_batch(task_id: u64, items: Vec<(String, String, Option<String>)>) {
+    // 在途计数收尾(声明在最前 ⇒ 最后 drop:op_lock 先释放,计数后归零,
+    // 等"队列已空"的一方不会在写锁还没放开时就开跑)
+    let _in_flight = InFlightExit;
     // 写互斥：整批(含每 item 的 rewrite)与主线程 :server 同步写/picker Enter 不交错。
     // worker 串行消费时锁多半空闲；与主线程写流同时发生时才是关键串行点。
     let _op = server_manager::op_lock();
@@ -271,5 +306,40 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// B2：`pending_jobs()` 是集成测试的确定性收敛门（等它回 0 再断言行收敛，
+    /// 不靠墙钟猜）。它只有两个不变量，都会静默坏，所以逐条钉住：
+    /// ① 自增发生在**入队前** —— 反了的话 worker 抢跑完 ⇒ 等待方把"还没开始"当
+    ///    "已经空"（假绿）；
+    /// ② 收尾减是**饱和**减 —— 直接调 `run_batch`（无配对自增）时不得下溢成
+    ///    `usize::MAX`（那会让门永远等不到，把红变成 90s 超时）。
+    #[test]
+    fn pending_jobs_counts_unfinished_batches_without_underflow() {
+        let _g = lock();
+        let _ = helix_js::server_tasks::drain_events();
+        assert_eq!(pending_jobs(), 0, "初态无在途批次");
+
+        // ② 无配对自增的直接调用：饱和减，计数仍为 0
+        run_batch(8201, vec![("bogus".to_string(), "z".to_string(), None)]);
+        assert_eq!(pending_jobs(), 0, "直接 run_batch 不得把计数减成负数");
+
+        // ① 入队前自增：+1 立即可见，配对的收尾后归零
+        in_flight_enter();
+        assert_eq!(pending_jobs(), 1, "入队前自增,提交即刻可见");
+        run_batch(8202, vec![("bogus".to_string(), "z".to_string(), None)]);
+        assert_eq!(pending_jobs(), 0, "批次收尾后归零");
+
+        // 真实路径：submit 的批次（bogus 不触网）跑完也归零
+        submit(8203, vec![("bogus".to_string(), "z".to_string(), None)]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pending_jobs() != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "submit 的批次 5s 内在途计数未归零"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let _ = helix_js::server_tasks::drain_events();
     }
 }

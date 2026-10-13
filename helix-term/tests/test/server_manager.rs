@@ -452,6 +452,10 @@ fn arsenal_text(app: &mut Application) -> String {
 /// 由本测试的按键数决定。安静机器上 1 帧就够,满载/慢机上可能几十帧。产品的契约
 /// 本来就是最终收敛;上界 90s 只用于把"真的不收敛"变成一条带最后一帧的失败,绿路径
 /// 仍是毫秒级(命中即返回)。`what` 只进超时消息。
+///
+/// 门 = 「渲染命中」**且**「队列已空」(`pending_jobs()==0`,B2):只等渲染的话,
+/// 旧帧可能恰好含 `want`(上一轮 ✓ 还没被重取覆盖)⇒ 假绿。先等后台批次全部收尾,
+/// 再要求同一帧真的渲染出结果。
 async fn wait_until_rows(
     app: &mut Application,
     key: &str,
@@ -462,12 +466,14 @@ async fn wait_until_rows(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     loop {
         let text = arsenal_text(app);
-        if text.matches(want).count() >= min_hits {
+        if text.matches(want).count() >= min_hits && helix_term::commands::pending_jobs() == 0 {
             return Ok(text);
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "{what}有界收敛超时(90s,期望 `{want}` ×{min_hits});最后一帧: {text:?}"
+            "{what}有界收敛超时(90s,期望 `{want}` ×{min_hits} 且 pending_jobs()==0);\
+             最后一帧: {text:?}(pending_jobs={})",
+            helix_term::commands::pending_jobs()
         );
         // 空转键步只为撑开事件窗口(用不进查询串的键:调用方各自选 <down>/j)
         pump(app, key).await?;

@@ -2,6 +2,7 @@ pub(crate) mod dap;
 pub(crate) mod lsp;
 pub(crate) mod server_manager;
 pub(crate) mod server_tasks;
+pub use server_tasks::pending_jobs;
 pub(crate) mod syntax;
 pub(crate) mod typed;
 
