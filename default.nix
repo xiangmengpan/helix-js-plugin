@@ -11,19 +11,25 @@
 }: let
   fs = lib.fileset;
 
-  src = fs.difference (fs.gitTracked ./.) (fs.unions [
-    ./.envrc
-    ./rustfmt.toml
-    ./screenshot.png
-    ./book
-    ./docs
-    ./runtime
-    ./flake.lock
-    (fs.fileFilter (file: lib.strings.hasInfix ".git" file.name) ./.)
-    (fs.fileFilter (file: file.hasExt "svg") ./.)
-    (fs.fileFilter (file: file.hasExt "md") ./.)
-    (fs.fileFilter (file: file.hasExt "nix") ./.)
-  ]);
+  # `./runtime` 整棵被排除(它由 runtimeDir 单独提供),但 helix-term 用 include_str! 在**编译期**
+  # 读 runtime/server-manager-builtin.toml ⇒ 必须把这一个文件并回源里,否则 nix 构建必失败
+  # ("couldn't read .../runtime/server-manager-builtin.toml")。普通 cargo 构建不受影响——
+  # 整个 checkout 都在,这也正是这条只红 Cachix、不红 Build 的原因。
+  src = fs.union
+    (fs.difference (fs.gitTracked ./.) (fs.unions [
+      ./.envrc
+      ./rustfmt.toml
+      ./screenshot.png
+      ./book
+      ./docs
+      ./runtime
+      ./flake.lock
+      (fs.fileFilter (file: lib.strings.hasInfix ".git" file.name) ./.)
+      (fs.fileFilter (file: file.hasExt "svg") ./.)
+      (fs.fileFilter (file: file.hasExt "md") ./.)
+      (fs.fileFilter (file: file.hasExt "nix") ./.)
+    ]))
+    (fs.gitTracked ./runtime/server-manager-builtin.toml);
 
   # Next we actually need to build the grammars and the runtime directory
   # that they reside in. It is built by calling the derivation in the

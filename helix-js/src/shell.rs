@@ -218,7 +218,11 @@ pub(crate) fn spawn_pty_worker(
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) == -1 {
+                    // request 要显式转一次:**macOS/BSD 的 TIOCSCTTY 是 c_uint(u32),而 ioctl 的
+                    // request 形参是 c_ulong(u64)** ⇒ 编译器直接 E0308(只在 macOS runner 上暴露;
+                    // Linux 上两者同为 c_ulong,不转也能过 —— 这正是 CI 只红 macOS 的原因)。
+                    #[allow(clippy::unnecessary_cast)] // Linux 上该转换是恒等转换,但 macOS 必须
+                    if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
