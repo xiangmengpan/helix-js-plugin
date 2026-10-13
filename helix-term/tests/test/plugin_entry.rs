@@ -260,5 +260,8 @@ async fn application_drop_parks_host_and_engine_stays_usable() -> anyhow::Result
                 }),
             ),
         ],
+        false,
     )
+    .await?;
+    Ok(())
 }
