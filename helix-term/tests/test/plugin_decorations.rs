@@ -124,7 +124,6 @@ async fn plugin_decorations_unknown_path_ignored() -> anyhow::Result<()> {
 // doc-change 监听重推:替换语义保证无残留(插件在 doc-change 里重推)
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_decorations_repush_on_doc_change() -> anyhow::Result<()> {
-    let _guard = DOC_CHANGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("d.txt");
     std::fs::write(&file, "one\n")?;
