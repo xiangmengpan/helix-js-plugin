@@ -725,7 +725,8 @@ mod engine_ownership_tests {
         });
         crate::state::with_loaded_scripts(|s| s.push(("probe.js".to_string(), "src".to_string())));
 
-        // 同一线程,换到另一个宿主(这才是真实污染场景:--test-threads=1 下所有测试共用一个线程)
+        // 同一线程换到另一个宿主(真实污染场景:同一线程先后建多个宿主 —— 串行跑时
+        // 所有测试共用同一条线程)
         let mut other = JsHost::new();
         set_active(&mut other);
         let got = (
