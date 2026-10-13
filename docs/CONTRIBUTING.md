@@ -47,13 +47,19 @@ and visit [http://localhost:3000](http://localhost:3000).
 
 Run `cargo test --workspace` to run unit tests and documentation tests in all packages.
 
-Note: tests in the `helix-js` crate share the Boa engine's global runtime, so they must run
-serially. Running them in parallel produces spurious failures (observed 2026-10-10: 15 of 135
-failed in parallel, 135/135 passed with `--test-threads=1`):
+Note: tests in the `helix-js` crate used to share process-global plugin state (queues, panels,
+load caches, plugin roots), which caused spurious failures when run in parallel and made
+`--test-threads=1` necessary (observed 2026-10-10: 15 of 135 failed in parallel). That state is
+now isolated per JS host, so the tests run cleanly in parallel (verified 2026-10-13: 147 passed /
+0 failed in three consecutive parallel runs, and the same with `--test-threads=1`):
 
 ```shell
-cargo test -p helix-js -- --test-threads=1
+cargo test -p helix-js
 ```
+
+A few tests that depend on a developer's local environment (e.g. the old flat layout under
+`~/.config/helix/plugins/features`) are marked `#[ignore]` instead of silently passing; run them
+explicitly with `cargo test -p helix-js -- --ignored`.
 
 ## Integration tests
 
@@ -62,6 +68,10 @@ contributors are strongly encouraged to write integration tests for their code.
 Existing tests can be used as examples. Helpers can be found in
 [helpers.rs][helpers.rs]. The log level can be set with the `HELIX_LOG_LEVEL`
 environment variable, e.g. `HELIX_LOG_LEVEL=debug cargo integration-test`.
+
+The suite runs fully parallel: 366 tests in ~210s wall time on a 16-thread machine. (It used to
+be serialized by a global test lock, which cost ~1881s.) The `server_manager` family is the only
+part that still serializes, because it shares process-global `SM_*` environment variables.
 
 Contributors using MacOS might encounter `Too many open files (os error 24)`
 failures while running integration tests. This can be resolved by increasing
