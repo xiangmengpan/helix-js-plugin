@@ -1,9 +1,11 @@
 //! server 后台任务模块：`helix.server.task(items, cb)` 注册回调并请求
 //! `UiRequest::ServerTask{task_id, items}`；helix-term 侧单 worker 串行执行，
-//! 事件(phase/progress/done/error)经 `push_event` 跨线程投递回本模块通道，
-//! 主线程 `drain_events` + `resolve_events` 调 JS 回调(单对象事件)。
-//! 回调注册表在编辑器主线程（与 watch.rs 同哲学：全局 mpsc 通道，发送端
-//! 供 worker 任意线程投递；接收端主线程 drain）。
+//! 事件(phase/progress/done/error)经 `push_event` 跨线程投递回
+//! **提交它的那个宿主**的事件桶，主线程 `drain_events` + `resolve_events`
+//! 调 JS 回调(单对象事件)。
+//! 回调注册表在编辑器主线程，按宿主隔离（thread_local）；事件通道同样**按宿主分桶**
+//! （见 `host::UiRequests`/`host::TaskChannels`）——worker 没有宿主，所以事件按
+//! **task_id → 提交它的宿主** 路由（task_id 进程内全局唯一，见 `next_task_id`）。
 //! 唤醒：通道为 WakeSender——worker 每推一条事件即触发宿主注册的 term wake
 //! (request_redraw → 事件循环 33ms 内重绘再 pump)。无此唤醒时 worker 进度/done
 //! 只在下一次按键或单发 idle 才被 resolve(长下载全程冻结)——见 I1。
@@ -20,22 +22,70 @@ use std::sync::{Mutex, OnceLock};
 use crate::state::{wake_sender, with_engine, WakeSender, UI_REQUESTS};
 use crate::types::{ServerTaskEvent, ServerTaskItem, UiRequest};
 
-/// 事件通道（全局；发送端 WakeSender = worker 推事件即唤醒主循环）：
-/// 与 WATCH_CHANNEL 同哲学——回调注册表在编辑器主线程，全局通道免去
-/// "接收端线程归属"坑（worker 先于主线程首次 drain 建通道会把 thread_local
-/// 接收端建错线程，事件静默丢失）；编辑器单线程运行，无并发互偷问题。
-static TASK_CHANNEL: OnceLock<
-    Mutex<(
-        WakeSender<ServerTaskEvent>,
-        std::sync::mpsc::Receiver<ServerTaskEvent>,
-    )>,
-> = OnceLock::new();
+/// 事件桶（**按宿主分桶**）：发送端 WakeSender = worker 推事件即唤醒主循环。
+///
+/// 为什么不能再是"进程级单通道"（原实现，注释写着"编辑器单线程运行，无并发互偷"）：
+/// 集成套件在**同一进程**里并行跑多个 `Application`（各一个宿主，各一个线程）。
+/// 全局通道 + 全局接收端的形态下，**任何**宿主的 `resolve_events()` 都会先把别人的
+/// 事件 drain 走，而它的 `CALLBACKS` 是 thread_local ⇒ 那些事件被"无对应回调，静默
+/// 跳过"丢掉（实测：全并行下 arsenal 批量安装卡在 `0% (0/2)` 且 `pending_jobs()==0`
+/// —— job 跑完了，事件却被别的宿主吃掉）。分桶后每个宿主只看得见自己那一桶。
+type TaskChannel = (
+    WakeSender<ServerTaskEvent>,
+    std::sync::mpsc::Receiver<ServerTaskEvent>,
+);
+static TASK_CHANNELS: OnceLock<Mutex<HashMap<u64, TaskChannel>>> = OnceLock::new();
+
+/// task_id → **提交它的宿主** key。worker 线程没有宿主，不能按"当前宿主"投递；
+/// task_id 在主线程分配（`js_server_task`），分配时顺手记下当下宿主即可。
+/// 未登记的 task_id（纯单测直接 `push_event`）⇒ 回落本线程宿主/哨兵桶。
+static TASK_HOSTS: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
+
+/// "没有宿主"的哨兵桶（worker / 未 `init()` 的单测线程）。真实宿主 key 是堆地址，
+/// 不可能等于 `u64::MAX`。用它而不是 `current_host_key_or_init()`：取事件这种
+/// **读**操作不该在 worker 线程上现建一份引擎。
+const NO_HOST: u64 = u64::MAX;
+
+/// 本线程宿主的桶 key（无宿主 ⇒ 哨兵桶）
+fn local_host_key() -> u64 {
+    crate::host::try_current_host_key().unwrap_or(NO_HOST)
+}
+
+/// 事件归属的宿主：优先用提交时登记值；未登记（单测直接推、同线程 push+drain）
+/// 回落到**本线程**宿主
+fn task_host_key(task_id: u64) -> u64 {
+    TASK_HOSTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&task_id)
+        .copied()
+        .unwrap_or_else(local_host_key)
+}
+
+/// 记下 task_id 归属的宿主（**必须在提交方线程调**：此刻的宿主就是收事件的那个）。
+///
+/// 两处调用点，各自守住一类路径：
+/// · `js_server_task`（JS 提交，task_id 在这里分配）—— 主路径；
+/// · helix-term 的 `server_tasks::submit`（集成/单测直接提交，不经 JS）—— 否则 worker
+///   线程按"当前宿主"回落会落到**它自己的**（空）桶，事件永远到不了提交方。
+pub fn register_task_host(task_id: u64) {
+    TASK_HOSTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(task_id, local_host_key());
+}
 
 // 持有 JsValue：线程退出时内容泄漏（与 CONTEXT 同哲学，见 state.rs 顶部注释）
 thread_local! {
     static CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
-    static NEXT_TASK_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
+
+/// task_id **进程内全局唯一**（原来是 thread_local ⇒ 每个宿主都从 1 重新数）。
+/// 路由表是 `task_id → 宿主`，两个宿主同时用到同一个 id 就会**串台**（事件投给
+/// 另一个宿主的桶，对方拿自己的同 id 回调接收 ⇒ 静默错投）⇒ 必须全局唯一。
+static NEXT_TASK_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn with_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
     CALLBACKS.with(|m| {
@@ -45,29 +95,37 @@ fn with_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
 }
 
 fn next_task_id() -> u64 {
-    NEXT_TASK_ID.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v
-    })
+    NEXT_TASK_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
 /// 供 helix-term 的 worker 线程投递任务事件（任意线程可调；worker 串行执行，
-/// seq 由 worker 每批次内自 0 递增）。无对应回调时事件仍入队，resolve 跳过。
+/// seq 由 worker 每批次内自 0 递增）。按 `task_id` 投回**提交它的宿主**的桶；
+/// 无对应回调时事件仍入队，resolve 跳过。
 pub fn push_event(ev: ServerTaskEvent) {
-    let ch = TASK_CHANNEL.get_or_init(|| {
+    let key = task_host_key(ev.task_id);
+    let mut chans = TASK_CHANNELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (tx, _rx) = chans.entry(key).or_insert_with(|| {
         let (tx, rx) = std::sync::mpsc::channel();
-        Mutex::new((wake_sender(tx), rx))
+        (wake_sender(tx), rx)
     });
-    let (tx, _rx) = &mut *ch.lock().unwrap();
     let _ = tx.send(ev); // WakeSender::send 触发注册的 term wake(主循环重绘)
 }
 
-/// 取走全部待处理任务事件（主线程轮询用；幂等）
+/// 取走并清空**本宿主**待处理的任务事件（主线程轮询用；幂等）。
+/// 别人的桶一行不碰 —— 这是跨宿主互偷的隔离点。
 pub fn drain_events() -> Vec<ServerTaskEvent> {
     let mut events = Vec::new();
-    if let Some(ch) = TASK_CHANNEL.get() {
-        let (_tx, rx) = &mut *ch.lock().unwrap();
+    let Some(chans) = TASK_CHANNELS.get() else {
+        return events;
+    };
+    let key = local_host_key();
+    let mut chans = chans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_tx, rx)) = chans.get_mut(&key) {
         while let Ok(e) = rx.try_recv() {
             events.push(e);
         }
@@ -87,6 +145,8 @@ pub fn resolve_events() -> Result<()> {
         with_engine(|engine| -> Result<()> {
             let cb = with_callbacks(|m| m.get(&task_id).cloned());
             let Some(cb) = cb else {
+                // 无回调(未知 task_id / 已由别的宿主处理)⇒ 静默跳过。
+                // 跨宿主互偷由桶隔离负责(见 TASK_CHANNELS):本宿主只 drain 自己的桶。
                 return Ok(());
             };
             let func = cb
@@ -225,6 +285,8 @@ pub(crate) fn js_server_task(
         items.push(ServerTaskItem { op, name, version });
     }
     let task_id = next_task_id();
+    // 登记归属宿主：worker 回推事件时据此找回正确的事件桶（此刻还在提交方线程）
+    register_task_host(task_id);
     with_callbacks(|m| {
         m.insert(task_id, cb);
     });
@@ -377,7 +439,10 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].op, "install");
         assert_eq!(items[0].name, "demo");
-        assert_eq!(tid, 1, "首个 taskId 从 1 起(与 next_server_task_id 一致)");
+        // task_id 进程内全局递增(next_task_id):**不**假定"首个一定是 1" ——
+        // 同一进程里别的测试可能已提交过任务(故只钉"≥1 且递增";唯一性由
+        // task_events_are_not_stolen_across_hosts 用两次提交的差集守着)。
+        assert!(tid >= 1, "首个 taskId 从 1 起(与 next_task_id 一致)");
         // 模拟 term 回传(带 JS 分配的 task_id)
         deliver_event(ServerTaskEvent {
             task_id: tid,
@@ -399,7 +464,69 @@ mod tests {
         });
         assert_eq!(
             crate::take_messages().join(" "),
-            "id:1 ev:progress:demo:10 ev:done:demo:0"
+            format!("id:{tid} ev:progress:demo:10 ev:done:demo:0"),
+            "JS 侧看到的 id 必须与入队的 task_id 一致(task_id 现在进程内全局递增)"
         );
+    }
+
+    /// **跨宿主隔离(回归)**:A 宿主提交的 task 事件不得被 B 宿主的 `drain_events()` 取走。
+    ///
+    /// 原实现是**进程级单通道**(注释写着"编辑器单线程运行,无并发互偷"):全并行集成跑
+    /// 里同一进程有多个 `Application`,**任何**宿主的 `resolve_events()` 都会先把别人的
+    /// 事件 drain 走,而它的 `CALLBACKS` 在别的线程 ⇒ 事件被"无回调,静默跳过"丢掉。
+    /// 实测症状:arsenal 批量安装卡在 `0% (0/2)` 而 `pending_jobs()==0`(job 已跑完)。
+    ///
+    /// 断言的是**身份**(drain 到的 task_id 必须是自己那条),不只数量 —— 数量相等
+    /// 但内容是别人的,正是这个 bug 的形状。A 的事件**故意留着不 drain** 再切到 B,
+    /// 否则"无事件可偷"也会绿(第一版就是这么写的:变异实验把两个宿主合并成同一个桶,
+    /// 测试照样绿 ⇒ 假绿,已改)。
+    #[test]
+    fn task_events_are_not_stolen_across_hosts() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        // A = 本线程默认宿主。两个 id 必须不同:路由表是 task_id → 宿主,
+        // 两个宿主同时用同一个 id 会把事件投错桶(静默错投)。
+        let a1 = next_task_id();
+        register_task_host(a1);
+        let a2 = next_task_id();
+        register_task_host(a2);
+        assert_ne!(a1, a2, "task_id 必须进程内唯一(task_id→宿主 路由表的前提)");
+        push_event(ServerTaskEvent {
+            task_id: a1,
+            seq: 0,
+            name: "a".into(),
+            kind: "progress".into(),
+            msg: None,
+            bytes: None,
+            total: None,
+        });
+
+        // B = 同线程另一个宿主(既有测试同款做法:host.rs 的 two_hosts_are_isolated)
+        let mut other = crate::host::JsHost::new();
+        crate::host::set_active(&mut other);
+        let b1 = next_task_id();
+        register_task_host(b1);
+        push_event(ServerTaskEvent {
+            task_id: b1,
+            seq: 0,
+            name: "b".into(),
+            kind: "progress".into(),
+            msg: None,
+            bytes: None,
+            total: None,
+        });
+        let seen_b: Vec<u64> = drain_events().iter().map(|e| e.task_id).collect();
+        assert_eq!(
+            seen_b,
+            vec![b1],
+            "B 只能取到自己的事件(旧实现会把 A 的 a1 一起取走;共用同一桶时同理)"
+        );
+
+        crate::host::clear_active();
+        // 回到 A:A 的事件**一直没被动过**(没被 B 吃掉,而是留给了真正的主人)
+        let seen_a: Vec<u64> = drain_events().iter().map(|e| e.task_id).collect();
+        assert_eq!(seen_a, vec![a1], "切回 A 后 A 的桶仍完好");
+        let _ = a2; // 只为见证 id 唯一性,不参与投递
+        std::mem::forget(other); // 引擎不可 drop
     }
 }

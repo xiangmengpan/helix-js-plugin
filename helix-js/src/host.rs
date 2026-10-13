@@ -190,6 +190,22 @@ pub(crate) fn with_loaded_scripts<T>(f: impl FnOnce(&mut Vec<(String, String)>) 
     with_host_ref(|h| f(&mut h.loaded_scripts.borrow_mut()))
 }
 
+/// 当前宿主 key;**没有宿主 ⇒ None**(不进 init、不改状态)。
+///
+/// 给"跨线程投递按 task_id 路由"的回落用:宿主线程一定有宿主(Application::new 里
+/// `set_active`),worker / 纯单测线程可能没有 —— 那种情况不能拿 `current_host_key()`
+/// (会 panic),也不该为了"取个 key"在 worker 上 `init()` 建一份引擎。
+pub(crate) fn try_current_host_key() -> Option<u64> {
+    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+        return Some(ptr.as_ptr() as u64);
+    }
+    DEFAULT_HOST.with(|cell| {
+        cell.borrow()
+            .as_deref()
+            .map(|host| host as *const JsHost as u64)
+    })
+}
+
 /// 当前宿主的**稳定标识**(宿主永不 drop ⇒ 地址稳定且不会被复用)。
 pub(crate) fn current_host_key() -> u64 {
     if let Some(ptr) = ACTIVE.with(|a| a.get()) {
@@ -215,8 +231,8 @@ pub(crate) fn current_host_key_or_init() -> u64 {
 /// 为什么用"分桶"而不是"把 `UI_REQUESTS` 变成宿主的字段":这个队列的**消费端在 helix-term**
 /// (16 个 `take_ui_requests()` 调用点,签名冻结),而宿主是 `!Send`;分桶让**63 个 push 点
 /// 一行都不用改**(`UI_REQUESTS.get().unwrap().lock().unwrap().push(..)` 原样可用),
-/// 同时让每个宿主(每个线程/每个 Application)只看见自己那一桶 —— 这正是 `PLUGIN_TEST_LOCK`
-/// 一直在手工模拟的隔离。
+/// 同时让每个宿主(每个线程/每个 Application)只看见自己那一桶 —— 这正是过去那把
+/// 全局 `PLUGIN_TEST_LOCK`(已删)手工模拟的隔离;分桶后由类型保证,不再需要串行。
 pub(crate) struct UiRequests(Mutex<HashMap<u64, Vec<UiRequest>>>);
 
 impl Default for UiRequests {

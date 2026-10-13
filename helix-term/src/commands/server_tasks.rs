@@ -66,6 +66,10 @@ pub(crate) fn submit(task_id: u64, items: Vec<(String, String, Option<String>)>)
         return;
     }
     in_flight_enter();
+    // 事件回投的落点:登记在**提交方线程**(主线程/调用线程)的宿主桶上 ——
+    // worker 线程没有宿主,不登记的话它只能回落到自己的空桶(事件永远到不了这里)。
+    // 经 JS 提交时 `js_server_task` 已登记过同一个值;不经 JS 的单元测试路径靠这一行。
+    helix_js::server_tasks::register_task_host(task_id);
     // 锁内只做 spawn/发送决策,内联执行在锁外(不持锁跑同步下载)
     let inline = {
         let mut slot = WORKER
