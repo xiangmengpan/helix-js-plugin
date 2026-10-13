@@ -14,7 +14,14 @@ use termina::event::{Event, KeyEvent};
 
 use super::*;
 
-// 终端钩子测试共享全局 JS 引擎/消息队列:串行化避免并行互抢
+// 本文件涉及**尚未按宿主分桶**的进程级表(BUFFERS 等):`helix.buffer.list()` 读的是
+// `helix-js/src/state.rs` 里**单个进程级** `OnceLock<Mutex<String>>`,helix-term 每帧
+// `set_buffers()` 写入 ⇒ 并行时"谁最后写谁赢",一个用例会读到**别人的** buffer 列表。
+// 实测(2026-10-13,摘掉本锁后全并行跑):`buffer_traversal_and_focus` 立刻红,断言里拿到
+// 的是别的用例的文件名(z.txt)⇒ 本锁**仍然需要**。
+// 注意:理由**不是**注释原先写的"全局 JS 引擎/消息队列"(那些已按宿主分桶,见 T5-a/T5-b)。
+// 撤锁前置:把 BUFFERS 按宿主分桶(照 T5-a/T5-b 模板;同类未分桶表还有 PANES/PICKER_STATE/
+// VIEWPORT 等)。
 static HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
