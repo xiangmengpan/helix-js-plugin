@@ -2716,6 +2716,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         );
     }
 
+    #[test]
     fn reload_failed_script_does_not_block_others() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
@@ -2870,7 +2871,6 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     }
 
     #[test]
-    #[test]
     #[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
     fn reload_real_statusline_render_ok() {
         // 用户场景:statusline.js 依赖 icons,reload 后 render(状态栏渲染)不应抛错/返回空
@@ -2897,7 +2897,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         let _ = take_messages();
         let hook_set = crate::state::with_statusline_hook(|h| h.is_some());
         eprintln!("statusline hook registered: {hook_set}");
-        crate::state::with_engine(|e| {
+        crate::state::with_engine(|_e| {
             let callable = crate::state::with_statusline_hook(|h| {
                 h.as_ref().map(|v| v.as_callable().is_some())
             });
@@ -2948,6 +2948,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         assert!(!after.unwrap().is_empty(), "reload 后 statusline 应有内容");
     }
 
+    #[test]
     fn reload_closes_open_panel_layer() {
         let _guard = TEST_LOCK.lock().unwrap();
         init();
@@ -3854,7 +3855,6 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         );
     }
 
-    #[test]
     #[test]
     fn server_api_pushes_server_ops() {
         let _guard = TEST_LOCK.lock().unwrap();

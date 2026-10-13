@@ -135,8 +135,8 @@
 | `extend_to_file_start` | Extend to line number `<n>` else file start | select: `` gg `` |
 | `extend_to_file_end` | Extend to file end |  |
 | `goto_file` | Goto files/URLs in selections | normal: `` gf ``, select: `` gf `` |
-| `goto_file_hsplit` | Goto files in selections (hsplit) | normal: `` <C-w>f ``, `` <space>wf ``, select: `` <C-w>f ``, `` <space>wf `` |
-| `goto_file_vsplit` | Goto files in selections (vsplit) | normal: `` <C-w>F ``, `` <space>wF ``, select: `` <C-w>F ``, `` <space>wF `` |
+| `goto_file_hsplit` | Goto files in selections (hsplit) | normal: `` <space>wf ``, select: `` <space>wf `` |
+| `goto_file_vsplit` | Goto files in selections (vsplit) | normal: `` <space>wF ``, select: `` <space>wF `` |
 | `goto_reference` | Goto references | normal: `` gr ``, select: `` gr `` |
 | `goto_window_top` | Goto window top | normal: `` gt ``, select: `` gt `` |
 | `goto_window_center` | Goto window center | normal: `` gc ``, select: `` gc `` |
@@ -231,23 +231,23 @@
 | `jump_forward` | Jump forward on jumplist | normal: `` <C-i> ``, `` <tab> ``, select: `` <C-i> ``, `` <tab> `` |
 | `jump_backward` | Jump backward on jumplist | normal: `` <C-o> ``, select: `` <C-o> `` |
 | `save_selection` | Save current selection to jumplist | normal: `` <C-s> ``, select: `` <C-s> `` |
-| `jump_view_right` | Jump to right split | normal: `` <C-w>l ``, `` <space>wl ``, `` <C-w><C-l> ``, `` <C-w><right> ``, `` <space>w<C-l> ``, `` <space>w<right> ``, select: `` <C-w>l ``, `` <space>wl ``, `` <C-w><C-l> ``, `` <C-w><right> ``, `` <space>w<C-l> ``, `` <space>w<right> `` |
-| `jump_view_left` | Jump to left split | normal: `` <C-w>h ``, `` <space>wh ``, `` <C-w><C-h> ``, `` <C-w><left> ``, `` <space>w<C-h> ``, `` <space>w<left> ``, select: `` <C-w>h ``, `` <space>wh ``, `` <C-w><C-h> ``, `` <C-w><left> ``, `` <space>w<C-h> ``, `` <space>w<left> `` |
-| `jump_view_up` | Jump to split above | normal: `` <C-w>k ``, `` <C-w><up> ``, `` <space>wk ``, `` <C-w><C-k> ``, `` <space>w<up> ``, `` <space>w<C-k> ``, select: `` <C-w>k ``, `` <C-w><up> ``, `` <space>wk ``, `` <C-w><C-k> ``, `` <space>w<up> ``, `` <space>w<C-k> `` |
-| `jump_view_down` | Jump to split below | normal: `` <C-w>j ``, `` <space>wj ``, `` <C-w><C-j> ``, `` <C-w><down> ``, `` <space>w<C-j> ``, `` <space>w<down> ``, select: `` <C-w>j ``, `` <space>wj ``, `` <C-w><C-j> ``, `` <C-w><down> ``, `` <space>w<C-j> ``, `` <space>w<down> `` |
-| `swap_view_right` | Swap with right split | normal: `` <C-w>L ``, `` <space>wL ``, select: `` <C-w>L ``, `` <space>wL `` |
-| `swap_view_left` | Swap with left split | normal: `` <C-w>H ``, `` <space>wH ``, select: `` <C-w>H ``, `` <space>wH `` |
-| `swap_view_up` | Swap with split above | normal: `` <C-w>K ``, `` <space>wK ``, select: `` <C-w>K ``, `` <space>wK `` |
-| `swap_view_down` | Swap with split below | normal: `` <C-w>J ``, `` <space>wJ ``, select: `` <C-w>J ``, `` <space>wJ `` |
-| `transpose_view` | Transpose splits | normal: `` <C-w>t ``, `` <space>wt ``, `` <C-w><C-t> ``, `` <space>w<C-t> ``, select: `` <C-w>t ``, `` <space>wt ``, `` <C-w><C-t> ``, `` <space>w<C-t> `` |
-| `rotate_view` | Goto next window | normal: `` <C-w>w ``, `` <space>ww ``, `` <C-w><C-w> ``, `` <space>w<C-w> ``, select: `` <C-w>w ``, `` <space>ww ``, `` <C-w><C-w> ``, `` <space>w<C-w> `` |
+| `jump_view_right` | Jump to right split | normal: `` <space>wl ``, `` <space>w<C-l> ``, `` <space>w<right> ``, select: `` <space>wl ``, `` <space>w<C-l> ``, `` <space>w<right> `` |
+| `jump_view_left` | Jump to left split | normal: `` <space>wh ``, `` <space>w<C-h> ``, `` <space>w<left> ``, select: `` <space>wh ``, `` <space>w<C-h> ``, `` <space>w<left> `` |
+| `jump_view_up` | Jump to split above | normal: `` <space>wk ``, `` <space>w<up> ``, `` <space>w<C-k> ``, select: `` <space>wk ``, `` <space>w<up> ``, `` <space>w<C-k> `` |
+| `jump_view_down` | Jump to split below | normal: `` <space>wj ``, `` <space>w<C-j> ``, `` <space>w<down> ``, select: `` <space>wj ``, `` <space>w<C-j> ``, `` <space>w<down> `` |
+| `swap_view_right` | Swap with right split | normal: `` <space>wL ``, select: `` <space>wL `` |
+| `swap_view_left` | Swap with left split | normal: `` <space>wH ``, select: `` <space>wH `` |
+| `swap_view_up` | Swap with split above | normal: `` <space>wK ``, select: `` <space>wK `` |
+| `swap_view_down` | Swap with split below | normal: `` <space>wJ ``, select: `` <space>wJ `` |
+| `transpose_view` | Transpose splits | normal: `` <space>wt ``, `` <space>w<C-t> ``, select: `` <space>wt ``, `` <space>w<C-t> `` |
+| `rotate_view` | Goto next window | normal: `` <space>ww ``, `` <space>w<C-w> ``, select: `` <space>ww ``, `` <space>w<C-w> `` |
 | `rotate_view_reverse` | Goto previous window |  |
-| `hsplit` | Horizontal bottom split | normal: `` <C-w>s ``, `` <space>ws ``, `` <C-w><C-s> ``, `` <space>w<C-s> ``, select: `` <C-w>s ``, `` <space>ws ``, `` <C-w><C-s> ``, `` <space>w<C-s> `` |
-| `hsplit_new` | Horizontal bottom split scratch buffer | normal: `` <C-w>ns ``, `` <space>wns ``, `` <C-w>n<C-s> ``, `` <space>wn<C-s> ``, select: `` <C-w>ns ``, `` <space>wns ``, `` <C-w>n<C-s> ``, `` <space>wn<C-s> `` |
-| `vsplit` | Vertical right split | normal: `` <C-w>v ``, `` <space>wv ``, `` <C-w><C-v> ``, `` <space>w<C-v> ``, select: `` <C-w>v ``, `` <space>wv ``, `` <C-w><C-v> ``, `` <space>w<C-v> `` |
-| `vsplit_new` | Vertical right split scratch buffer | normal: `` <C-w>nv ``, `` <space>wnv ``, `` <C-w>n<C-v> ``, `` <space>wn<C-v> ``, select: `` <C-w>nv ``, `` <space>wnv ``, `` <C-w>n<C-v> ``, `` <space>wn<C-v> `` |
-| `wclose` | Close window | normal: `` <C-w>q ``, `` <space>wq ``, `` <C-w><C-q> ``, `` <space>w<C-q> ``, select: `` <C-w>q ``, `` <space>wq ``, `` <C-w><C-q> ``, `` <space>w<C-q> `` |
-| `wonly` | Close windows except current | normal: `` <C-w>o ``, `` <space>wo ``, `` <C-w><C-o> ``, `` <space>w<C-o> ``, select: `` <C-w>o ``, `` <space>wo ``, `` <C-w><C-o> ``, `` <space>w<C-o> `` |
+| `hsplit` | Horizontal bottom split | normal: `` <space>ws ``, `` <space>w<C-s> ``, select: `` <space>ws ``, `` <space>w<C-s> `` |
+| `hsplit_new` | Horizontal bottom split scratch buffer | normal: `` <space>wns ``, `` <space>wn<C-s> ``, select: `` <space>wns ``, `` <space>wn<C-s> `` |
+| `vsplit` | Vertical right split | normal: `` <space>wv ``, `` <space>w<C-v> ``, select: `` <space>wv ``, `` <space>w<C-v> `` |
+| `vsplit_new` | Vertical right split scratch buffer | normal: `` <space>wnv ``, `` <space>wn<C-v> ``, select: `` <space>wnv ``, `` <space>wn<C-v> `` |
+| `wclose` | Close window | normal: `` <space>wq ``, `` <space>w<C-q> ``, select: `` <space>wq ``, `` <space>w<C-q> `` |
+| `wonly` | Close windows except current | normal: `` <space>wo ``, `` <space>w<C-o> ``, select: `` <space>wo ``, `` <space>w<C-o> `` |
 | `select_register` | Select register | normal: `` " ``, select: `` " `` |
 | `insert_register` | Insert register | insert: `` <C-r> `` |
 | `copy_between_registers` | Copy between two registers |  |

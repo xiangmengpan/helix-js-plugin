@@ -458,6 +458,7 @@ mod tests {
     ///     空表(`Keymaps::new(HashMap::new())`)里永远合不进去 ✗
     ///  2. 探针必须用 **`get`** —— `contains_key` 的语义是"给定 **pending 前缀**后该节点是否含此键",
     ///     前缀为空时**恒为 false** ✗,并且在该模式无条目时还会索引 panic ✗
+    ///
     ///   还有:别假设任何键"默认未绑"(如 `Q` 默认就是绑的 ✗)⇒ 只断言"是否命中**我们绑的那条**" ✓
     #[test]
     fn remove_binding_is_inverse_of_insert() {

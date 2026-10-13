@@ -506,8 +506,10 @@ mod tests {
     fn test_editor(popup_border: helix_view::editor::PopupBorderConfig) -> Editor {
         let theme_loader = Arc::new(theme::Loader::new(&[]));
         let syn_loader = Arc::new(ArcSwap::from_pointee(default_lang_loader()));
-        let mut cfg = helix_view::editor::Config::default();
-        cfg.popup_border = popup_border;
+        let cfg = helix_view::editor::Config {
+            popup_border,
+            ..Default::default()
+        };
         let config = Arc::new(ArcSwap::from_pointee(cfg));
         let (completions_tx, _) = mpsc::channel(32);
         let (signature_hints, _) = mpsc::channel(32);

@@ -45,7 +45,7 @@ enum Dim {
 }
 
 /// 解析单个尺寸字段:缺省 → None;数字 → Px(沿用 opt_u16 的 [0, u16::MAX] 整数约束);
-/// "NN%"(NN∈[1,100] 整数) → Pct;其余(无 % 的字符串、小数 %、越界 %) → Err。
+/// "NN%"(NN∈`[1,100]` 整数) → Pct;其余(无 % 的字符串、小数 %、越界 %) → Err。
 fn opt_dim(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<Option<Dim>> {
     if v.is_null_or_undefined() {
         return Ok(None);
@@ -98,6 +98,7 @@ fn opt_dim(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<O
 ///   "NN%"(0<NN≤100)→ 视口百分比——仅 position:"center" 支持且须两轴成对,否则报错。
 /// - position:缺省或 {row,col} 对象 → 锚点模式(参照光标/锚点,现状);"center" → 居中浮层。
 /// - layer:可选字符串,缺省 "plugin-popup"——同 layer 再 open 替换同层,不同 layer 叠层并存。
+///
 /// 任一字段非法 → 整体报错,不产生半注册(回调不插入、无 UI 请求)。
 pub(crate) fn js_open_popup(
     _this: &JsValue,
@@ -158,15 +159,15 @@ pub(crate) fn js_open_popup(
             (Some((row, col)), false)
         } else {
             let s: String = v.try_js_into(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                JsError::from_opaque(JsValue::from(JsString::from(
                     "open_popup: 'position' must be an object with row/col or the string \"center\""
-                ))))
+                )))
             })?;
             if s == "center" {
                 (None, true)
             } else {
                 return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    format!("open_popup: 'position' must be an object with row/col or \"center\""),
+                    "open_popup: 'position' must be an object with row/col or \"center\"",
                 ))));
             }
         }
@@ -1403,7 +1404,7 @@ fn parse_node(
     }
 }
 
-/// 解析富文本段数组 [{text, style}, ...] 或字符串 → Vec<TextSpan>
+/// 解析富文本段数组 [{text, style}, ...] 或字符串 → `Vec<TextSpan>`
 fn parse_text_spans(
     obj: &boa_engine::JsObject,
     ctx: &mut Context,

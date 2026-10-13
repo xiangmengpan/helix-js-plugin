@@ -1,5 +1,5 @@
 //! 测试用 mock LSP server：stdio JSON-RPC（Content-Length 帧）。
-//! 场景经 argv[1] 选择（per-server 配置，无并行竞争）；argv[2..] 为场景附加参数（如第二文件路径）。
+//! 场景经 `argv[1]` 选择（per-server 配置，无并行竞争）；`argv[2..]` 为场景附加参数（如第二文件路径）。
 //! 不支持的方法 → null；shutdown → null；exit 通知 → 退出；stdin EOF → 退出。
 //! 注：file:// URI 拼接为 Unix 直接拼接（本仓测试环境为 Unix）；Windows 需按 lsp::Url::from_file_path 语义。
 //!
@@ -8,11 +8,11 @@
 //! - hover_basic：hoverProvider；textDocument/hover → markdown "mock hover"
 //! - completion_basic：completionProvider；textDocument/completion → ["mock-item"]
 //! - goto_definition_basic：definitionProvider；textDocument/definition → 自身 uri + range
-//! - symbols_basic：documentSymbolProvider；textDocument/documentSymbol → [MockSymbol]
+//! - symbols_basic：documentSymbolProvider；textDocument/documentSymbol → `[MockSymbol]`
 //! - format_basic：documentFormattingProvider；textDocument/formatting → "one"→"ONE"
 //! - rename_cross_file / rename_stale：renameProvider；textDocument/rename → documentChanges（cross_file 双文件；stale 当前文件 version=1 恒过期）
 //! - code_actions_basic：codeActionProvider(resolveProvider)；textDocument/codeAction → quickfix changes
-//!   (argv[2] 来源标识 tag：title "mock-fix-{tag}" + edit "one"→"ONE-{tag}"，缺省 "A"；codeAction/resolve 返回本 server 的 edit——
+//!   (`argv[2]` 来源标识 tag：title "mock-fix-{tag}" + edit "one"→"ONE-{tag}"，缺省 "A"；codeAction/resolve 返回本 server 的 edit——
 //!   多 server execute 路由判别器)
 //! - no_response：hoverProvider；仅 initialize 正常响应，其余方法挂起不响应 → 客户端 per-server timeout 触发
 

@@ -113,9 +113,12 @@ impl<'a> ProgressAgg<'a> {
 // 主线程若带残留跑同步 :server install 会消费到死 task_id/seq 的幽灵钩子。
 // 主线程 :server 同步路径本身不挂 → 空钩子,与 M2a 行为一致。
 thread_local! {
-    static DL_PROGRESS: std::cell::RefCell<Option<Box<dyn FnMut(u64, Option<u64>) + Send>>> =
+    static DL_PROGRESS: DlProgressSlot =
         const { std::cell::RefCell::new(None) };
 }
+
+/// 下载进度钩子的**线程局部槽**类型 —— 单独起名只为避开 clippy::type_complexity。
+type DlProgressSlot = std::cell::RefCell<Option<Box<dyn FnMut(u64, Option<u64>) + Send>>>;
 
 /// 挂载下载字节进度回调(每次 install_adhoc 下载消费一次;download_to 层已节流)。
 /// 每批结束后须调 [clear_download_progress](run_batch 已在两分支处理)。
@@ -298,9 +301,10 @@ const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 pub fn detect_version(bin: &Path) -> Option<String> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<
-        Mutex<HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Option<String>)>>,
-    > = OnceLock::new();
+    /// (mtime, 版本) 缓存：mtime 未变 ⇒ 直接复用
+    type VersionCache =
+        Mutex<HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Option<String>)>>;
+    static CACHE: OnceLock<VersionCache> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     let mtime = std::fs::metadata(bin).ok().and_then(|m| m.modified().ok());
     if let Ok(guard) = cache.lock() {
@@ -397,7 +401,7 @@ pub fn disk_server_manager_table() -> Option<toml::Table> {
 
 /// 独立配方文件(与代码解耦的数据;config_dir/server-manager-recipes.toml,
 /// 测试/演示可经 SM_SERVER_RECIPES 覆写)。结构同 config.toml 的
-/// [server-manager.registry.<name>](文件顶层即 [server-manager])。
+/// `[server-manager.registry.<name>]`(文件顶层即 [server-manager])。
 pub fn recipes_file_table() -> Option<toml::Table> {
     let path = std::env::var("SM_SERVER_RECIPES")
         .ok()
@@ -422,7 +426,7 @@ fn parse_registry_table(reg: &toml::Table) -> Result<Vec<(String, registry::Spec
     Ok(out)
 }
 
-/// 从 [server-manager] 段读入 mirror + 扩展配方(registry.<name>)；随后合并
+/// 从 [server-manager] 段读入 mirror + 扩展配方(registry.`<name>`)；随后合并
 /// 独立配方文件(server-manager-recipes.toml,后者同名覆盖)。dir 覆写 v1 未支持。
 pub fn apply_server_config(cfg: Option<&toml::Table>) -> Result<()> {
     set_mirror("");
@@ -706,7 +710,7 @@ pub struct LangRewrite {
     pub path: PathBuf,
     /// 是否实际写了文件(false = 无内容可写且文件本不存在)
     pub written: bool,
-    /// 写入的 [language-server.<n>] 表名(已装 LSP 配方,排除用户自带同名)
+    /// 写入的 `[language-server.<n>]` 表名(已装 LSP 配方,排除用户自带同名)
     pub servers: Vec<String>,
     /// 提示:语言已被用户自定义,未自动挂接(附手动引用片段)
     pub conflicts: Vec<String>,
@@ -983,7 +987,7 @@ pub mod registry {
             bin_rel: String,
         },
         /// 包管理器类(pip --target / cargo --root / npm --prefix):cmd 在受管目录内执行,
-        /// args 占位 {version}、{prefix}(= 受管目录);产物须落在 <prefix>/bin/<bin_name>
+        /// args 占位 {version}、{prefix}(= 受管目录);产物须落在 `<prefix>/bin/<bin_name>`
         Tool { cmd: String, args: Vec<String> },
     }
 
@@ -1047,7 +1051,7 @@ pub mod registry {
 
     /// 内置注册表(v1 子集)。配方为"惰性占位":下载源留空 = install 报"未配置"
     /// (避免无校验/误装);真实 URL/版本/校验是 OS 相关数据,经
-    /// [server-manager.registry.<name>] config 扩展(T4)提供可跑源。
+    /// `[server-manager.registry.<name>]` config 扩展(T4)提供可跑源。
     /// M5→数据化:内置配方已迁至 `runtime/server-manager-builtin.toml`(改数据不改代码;
     /// 可在 config_dir/runtime/ 放同名文件整体覆盖,失败回退嵌入版本)。
     pub(crate) fn builtin_specs() -> Vec<Spec> {
@@ -1122,7 +1126,7 @@ pub mod registry {
         all().into_iter().find(|s| s.name == name)
     }
 
-    /// 解析 [server-manager.registry.<name>] 配方表(v1:archive 类)。
+    /// 解析 `[server-manager.registry.<name>]` 配方表(v1:archive 类)。
     pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         use toml::Value;
         let kind = match tbl.get("kind").and_then(Value::as_str) {
@@ -1172,9 +1176,7 @@ pub mod registry {
             .unwrap_or(name)
             .to_string();
         let install = match (cmd, url.as_deref().filter(|u| !u.is_empty())) {
-            (Some(cmd), Some(_url)) => {
-                return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一"))
-            }
+            (Some(_), Some(_)) => return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一")),
             (Some(cmd), None) => {
                 let args: Vec<String> = match tbl.get("args") {
                     Some(Value::Array(a)) => a
@@ -1361,7 +1363,7 @@ pub fn install_adhoc(
     // 字节进度:worker 线程经 with_download_progress 挂的钩子在此 take 一次消费;
     // 未挂(主线程 :server 同步路径/测试) → 空闭包,与 M2a 行为一致
     match DL_PROGRESS.with(|c| c.borrow_mut().take()) {
-        Some(mut cb) => download_to(url, &tmp_archive, |n, t| cb(n, t))?,
+        Some(cb) => download_to(url, &tmp_archive, cb)?,
         None => download_to(url, &tmp_archive, |_, _| {})?,
     }
     if !sha256.is_empty() {
@@ -1404,7 +1406,7 @@ pub fn install_adhoc(
 
 /// tool 类安装内核(不依赖注册表;测试/自定义源走这里)。
 /// 直接在受管目录执行 `cmd args`(args 中 {prefix} → 受管目录、{version} → version),
-/// 产物须生成 <dir>/bin/<bin_name> 后软链 managed/bin——工具自烘焙路径写的是最终路径。
+/// 产物须生成 `<dir>`/bin/`<bin_name>` 后软链 managed/bin——工具自烘焙路径写的是最终路径。
 /// 升级先 mv 旧目录 → .bak;失败删新目录并回滚 .bak(§4:升级失败保留旧版);
 pub fn install_tool_adhoc(
     name: &str,
@@ -2266,12 +2268,13 @@ url = "file://{}"
         // file:// 假 release(tar.gz 顶层 my-ls-1.0.0/,strip=1)
         let arc = root.join("rel.tar.gz");
         let sha = make_tar_gz(&arc, "my-ls").unwrap();
+        let src_uri = format!("file://{}", arc.display());
         let cfg = format!(
             "[server-manager]\nmirror = \"https://mirror.example/\"\n\
              [server-manager.registry.my-ls]\n\
              url = \"{src}\"\nsha256 = \"{sha}\"\nstrip = 1\nbin = \"my-ls\"\n\
              languages = [\"rust\"]\nkind = \"lsp\"\nversion = \"1.0.0\"\n",
-            src = format!("file://{}", arc.display())
+            src = src_uri
         );
         let tbl: toml::Table = toml::from_str(&cfg).unwrap();
         let sm = tbl
@@ -2875,11 +2878,11 @@ url = "file://{}"
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    struct EnvGuard(&'static str, String);
+    struct EnvGuard(&'static str);
     impl EnvGuard {
         fn new(key: &'static str, val: String) -> Self {
             std::env::set_var(key, &val);
-            EnvGuard(key, val)
+            EnvGuard(key)
         }
     }
     impl Drop for EnvGuard {
@@ -2912,8 +2915,8 @@ url = "file://{}"
         let sha = make_tar_gz(&arc, "demo-bin").unwrap();
         let src = format!("file://{}", arc.display());
         let size = std::fs::metadata(&arc).unwrap().len();
-        let hits: std::sync::Arc<std::sync::Mutex<Vec<(u64, Option<u64>)>>> =
-            std::sync::Arc::default();
+        type Hits = std::sync::Arc<std::sync::Mutex<Vec<(u64, Option<u64>)>>>;
+        let hits: Hits = std::sync::Arc::default();
         let hits2 = hits.clone();
         with_download_progress(Box::new(move |n, t| hits2.lock().unwrap().push((n, t))));
         install_adhoc("demo-bin", "demo-bin", "demo-bin", 1, &src, &sha).unwrap();

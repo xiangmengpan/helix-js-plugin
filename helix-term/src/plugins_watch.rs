@@ -91,7 +91,7 @@ fn flush(pending: &[(String, String)], id: u64) {
 
 /// notify Event → (kind, path)。Access/Other/Any 无业务意义，丢弃。
 /// rename 在 notify 7 是 ModifyKind::Name：From/To/Both 事件 paths 含来源与目标，
-/// 取最后一项（目标路径，Both=[from,to] / To=[to]）——filetree 刷新关注新路径。
+/// 取最后一项（目标路径，`Both=[from,to] / To=[to]`）——filetree 刷新关注新路径。
 fn event_to_change(ev: &notify::Event) -> Option<(&'static str, String)> {
     use notify::event::{EventKind, ModifyKind};
     let is_rename = matches!(ev.kind, EventKind::Modify(ModifyKind::Name(_)));

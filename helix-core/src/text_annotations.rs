@@ -176,7 +176,8 @@ pub trait LineAnnotation {
 /// 注解数据来源:借用 doc 的切片(既有调用点,零拷贝)或渲染期构造的 owned Vec
 /// (插件装饰按 style 分组后注入,数据随 TextAnnotations 一起存活)
 #[derive(Debug)]
-enum AnnotationSource<'a, A> {
+/// 注释层来源:借用切片或自有 `Vec` —— 之所以是 pub,是因为它出现在 `add_inline_annotations` 的公有签名里。
+pub enum AnnotationSource<'a, A> {
     Borrowed(&'a [A]),
     Owned(Vec<A>),
 }

@@ -907,8 +907,8 @@ mod tests {
         });
         let row = CompletionItem::format(&mut item, &Style::default());
         assert_eq!(row.cells.len(), 1); // 钩子行单列(原生两列)
-        assert!(item.match_indices().map_or(true, |i| i.is_empty())); // 清空 → 渲染层跳过 patch
-                                                                      // 收尾:重注册无害钩子,防线程复用残留影响后续断言
+        assert!(item.match_indices().is_none_or(|i| i.is_empty())); // 清空 → 渲染层跳过 patch
+                                                                    // 收尾:重注册无害钩子,防线程复用残留影响后续断言
         helix_js::load_script(r#"helix.set_completion_render(() => []);"#).unwrap();
     }
 

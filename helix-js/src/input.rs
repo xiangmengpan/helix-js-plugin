@@ -176,7 +176,7 @@ pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Re
 /// 光标处插入整段文本（粘贴用）：返回新值（单次状态变更，调用方触发一次 onChange）。
 pub fn input_insert_batch(state: &mut InputState, text: &str) -> String {
     let mut chars: Vec<char> = state.value.chars().collect();
-    let mut ins: Vec<char> = text.chars().collect();
+    let ins: Vec<char> = text.chars().collect();
     let rest: Vec<char> = chars.split_off(state.cursor);
     let ins_len = ins.len();
     state.value = chars.into_iter().chain(ins).chain(rest).collect();

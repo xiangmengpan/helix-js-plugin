@@ -324,7 +324,7 @@ fn push_open_picker(
         );
         let f = FunctionObjectBuilder::new(context.realm(), resolve).build();
         let g = FunctionObjectBuilder::new(context.realm(), reject).build();
-        promise.then(Some(f), Some(g), context);
+        promise.then(Some(f), Some(g), context)?;
         Ok(())
     } else {
         let rows = parse_rows(items_result, context)?;
@@ -351,7 +351,7 @@ fn push_request(req: UiRequest) {
         .push(req);
 }
 
-/// items 行 → Vec<RowSpec>；行 = 数组 [c1,c2] 或对象 {cells, payload}
+/// items 行 → `Vec<RowSpec>`；行 = 数组 `[c1,c2]` 或对象 {cells, payload}
 fn parse_rows(value: JsValue, context: &mut Context) -> boa_engine::JsResult<Vec<RowSpec>> {
     let rows_arr = value.as_object().filter(|o| o.is_array()).ok_or_else(|| {
         JsError::from_opaque(JsValue::from(JsString::from(

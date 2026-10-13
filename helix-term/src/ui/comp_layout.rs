@@ -535,7 +535,7 @@ mod tests {
     /// 含中文的行右框/后续列全部错位。
     #[test]
     fn diff_renderer_wide_grapheme_keeps_following_column_aligned() {
-        use helix_view::graphics::{Rect, Style as _};
+        use helix_view::graphics::Rect;
         let mut buf = tui::buffer::Buffer::empty(Rect::new(0, 0, 10, 1));
         let theme = helix_view::Theme::default();
         let line = StyledLine {

@@ -14,7 +14,7 @@ pub struct Config {
     pub theme: Option<theme::Config>,
     pub keys: HashMap<Mode, KeyTrie>,
     pub editor: helix_view::editor::Config,
-    /// config.toml 的 [plugins] / [plugins.<name>] 段(插件配置;原始 TOML 表)
+    /// config.toml 的 `[plugins] / [plugins.<name>]` 段(插件配置;原始 TOML 表)
     pub plugins: Option<toml::Table>,
 }
 

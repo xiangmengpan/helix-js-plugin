@@ -69,7 +69,6 @@
 | `:vsplit-new`, `:vnew` | Open a scratch buffer in a vertical split. |
 | `:hsplit`, `:hs`, `:sp` | Open the file in a horizontal split. |
 | `:hsplit-new`, `:hnew` | Open a scratch buffer in a horizontal split. |
-| `:tutor` | Open the tutorial. |
 | `:goto`, `:g` | Goto line number. |
 | `:set-language`, `:lang` | Set the language of current buffer (show current language if no value specified). |
 | `:set-option`, `:set` | Set a config option at runtime.<br>For example to disable smart case search, use `:set search.smart-case false`. |
@@ -94,9 +93,14 @@
 | `:move`, `:mv` | Move the current buffer and its corresponding file to a different path |
 | `:move!`, `:mv!` | Move the current buffer and its corresponding file to a different path creating necessary subdirectories |
 | `:yank-diagnostic` | Yank diagnostic(s) under primary cursor to register, or clipboard by default |
+| `:yank-error` | Copy the most recent error message to a register, or clipboard by default |
 | `:read`, `:r` | Load a file into buffer |
 | `:echo` | Prints the given arguments to the statusline. |
 | `:noop` | Does nothing. |
 | `:workspace-trust` | Allow language servers and local config for the current workspace. |
 | `:workspace-untrust` | Revoke the current workspace's trust grant or exclusion. |
 | `:workspace-exclude` | Mark the current workspace as never-prompt. Never prompts for trust again. |
+| `:plugin-reload` | Reload all loaded JavaScript plugins. |
+| `:plugin-load` | Load a JavaScript plugin file. |
+| `:server` | Manage LSP/DAP/linter/formatter servers (list|search|install|update|remove|status); sources from [server-manager.registry] config. |
+| `:panel-close` | Close the most recently opened plugin side panel. |

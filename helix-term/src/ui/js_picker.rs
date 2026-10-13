@@ -17,13 +17,13 @@ pub struct PickerRow {
     pub payload: Vec<String>,
 }
 
-/// 列格式：取 row.cells[I]（const 泛型把列索引烘进 fn 指针——ColumnFormatFn 是 fn 指针，闭包不能捕获）
+/// 列格式：取 `row.cells[I]`（const 泛型把列索引烘进 fn 指针——ColumnFormatFn 是 fn 指针，闭包不能捕获）
 fn column_format<const I: usize>() -> ColumnFormatFn<PickerRow, ()> {
     |row: &PickerRow, _: &()| Cell::from(row.cells.get(I).cloned().unwrap_or_default())
 }
 
 /// 列构建：第一列参与过滤（filter），其余列仅展示（without_filtering）。
-/// format 按列索引取 row.cells[i]，越界 → 空串（行间列数不一致不 panic）。
+/// format 按列索引取 `row.cells[i]`，越界 → 空串（行间列数不一致不 panic）。
 fn build_columns(names: &[String]) -> Vec<Column<PickerRow, ()>> {
     names
         .iter()

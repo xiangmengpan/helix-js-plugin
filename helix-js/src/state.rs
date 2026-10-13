@@ -768,7 +768,7 @@ pub(crate) static PANE_MODE: OnceLock<Mutex<String>> = OnceLock::new();
 /// pane 清单快照(JSON: `{panes:[{id,place,focused,fixed,pinned,z?,rect?}]}`)。
 /// 布局变更时由 helix-term 写入;`helix.pane.list()` 读。
 pub(crate) static PANES: OnceLock<Mutex<String>> = OnceLock::new();
-/// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: {"<name>": {...}}
+/// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: `{"<name>": {...}}`
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
 thread_local! {
     // 插件配置 schema 注册表（define_config 写入；build_plugin_configs 读取）name → schema JSON
@@ -1222,19 +1222,13 @@ mod remove_plugin_file_tests {
         assert!(remove_plugin_file_in(&roots, "").is_err());
 
         // 合法:删根内的文件 → true;再删 → false(幂等)
-        assert_eq!(
-            remove_plugin_file_in(&roots, "plug/plugin.js").unwrap(),
-            true
-        );
+        assert!(remove_plugin_file_in(&roots, "plug/plugin.js").unwrap());
         assert!(!root.path().join("plug/plugin.js").exists());
-        assert_eq!(
-            remove_plugin_file_in(&roots, "plug/plugin.js").unwrap(),
-            false
-        );
+        assert!(!remove_plugin_file_in(&roots, "plug/plugin.js").unwrap());
         // 目录也能删(remove_orphan 要删整棵插件目录)
         std::fs::create_dir_all(root.path().join("plug2/sub")).unwrap();
         std::fs::write(root.path().join("plug2/sub/a.js"), "x").unwrap();
-        assert_eq!(remove_plugin_file_in(&roots, "plug2").unwrap(), true);
+        assert!(remove_plugin_file_in(&roots, "plug2").unwrap());
         assert!(!root.path().join("plug2").exists());
     }
 }

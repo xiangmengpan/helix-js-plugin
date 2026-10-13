@@ -762,7 +762,7 @@ pub(crate) fn js_pane_mode_keymap(
 
 /// 组件状态只读:helix.get_component_state(id) → 对象(未注册 → null)。
 /// 状态由 Rust 组件经 JSON 字符串提供(register_component_state),JS 视图层据此画外观。
-/// 打开文档列表:helix.buffer.list() → [{id, path, name, dirty, language}](只读快照)。
+/// 打开文档列表:helix.buffer.list() → [{id, path, name, dirty, language}] (只读快照)。
 /// BUFFERS JSON 形如 {"current": id, "buffers": [...]}
 pub(crate) fn js_buffers(
     _this: &JsValue,

@@ -272,7 +272,7 @@ pub(crate) fn js_load(
 /// **注意顺序**(现场核对代码,而非照抄旧注释):先 `eval_wrapped(脚本)` 收走它声明的 deps,
 /// **然后**才递归加载依赖。所以脚本**顶层的代码不能假定依赖已经执行**(要延迟到
 /// 回调/命令里用)。旧注释写的是"加载目标前先递归加载依赖",与代码不符,已改。
-
+///
 /// 已加载的跳过（with_script_exports 缓存），循环依赖报错。
 /// 加载栈为跨脚本共享的 thread_local（LOAD_STACK）：js_load 不再每次新建空栈，
 /// 嵌套 helix.load（运行时/依赖递归）都能看到祖先——循环依赖报错而非栈溢出崩溃。
@@ -393,13 +393,13 @@ pub(crate) fn js_plugin(
     Ok(JsValue::undefined())
 }
 
-/// helix.plugin.install(arg)：镜像 :plugin install(path 或 git-url)。结果经状态栏显示。
+// helix.plugin.install(arg)：镜像 :plugin install(path 或 git-url)。结果经状态栏显示。
 
-/// helix.plugin.update([name])：镜像 :plugin update(name 可选 = all)
+// helix.plugin.update([name])：镜像 :plugin update(name 可选 = all)
 
-/// helix.plugin.remove(name)：镜像 :plugin remove
+// helix.plugin.remove(name)：镜像 :plugin remove
 
-/// helix.server.<op>：镜像 :server(list/search/install/update/remove/status)。
+/// `helix.server.<op>`：镜像 :server(list/search/install/update/remove/status)。
 /// 单向请求(与 PluginOp 同构)：结果经 editor 状态栏/错误显示,不回传 JS。
 pub(crate) fn js_server_list(
     _this: &JsValue,
@@ -1053,11 +1053,11 @@ pub fn emit_startup() -> Result<()> {
     }
 }
 
-/// 暂存本次布局变更的**种类**（线程局部）。
-///
-/// 为什么不用参数：发射点在 `Compositor::sync_layout_cache` 内，那里**没有变更点**的信息 ✗；
-/// 而调用者（如 `SplitLeaf`/`CloseLeaf` 两臂）在**同一线程、紧邻其前**先 `set` 一下即可 ✓
-/// （若没人 set，`emit_layout_change` 取到 None，事件照发，只是不带种类 ✓）
+// 暂存本次布局变更的**种类**（线程局部）。
+//
+// 为什么不用参数：发射点在 `Compositor::sync_layout_cache` 内，那里**没有变更点**的信息 ✗；
+// 而调用者（如 `SplitLeaf`/`CloseLeaf` 两臂）在**同一线程、紧邻其前**先 `set` 一下即可 ✓
+// （若没人 set，`emit_layout_change` 取到 None，事件照发，只是不带种类 ✓）
 thread_local! {
     static LAYOUT_CHANGE_KIND: std::cell::RefCell<Option<&'static str>> =
         const { std::cell::RefCell::new(None) };
@@ -1408,7 +1408,7 @@ pub fn emit_term_close(pty_id: u64, reason: &str) -> bool {
 
 /// term_state(ptyId, key[, value])：终端任意状态持久化（跨会话存盘）。
 /// 读：值不存在返回 undefined；写：value 必须是字符串（覆盖）。
-/// 存储：~/.local/state/helix/term-state.json（{"<ptyId>": {"<key>": "<value>"}}）。
+/// 存储：~/.local/state/helix/term-state.json（`{"<ptyId>": {"<key>": "<value>"}}`）。
 pub(crate) fn js_term_state(
     _this: &JsValue,
     args: &[JsValue],

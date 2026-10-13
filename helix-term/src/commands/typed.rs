@@ -4821,14 +4821,11 @@ pub(crate) fn apply_plugin_decorations(
     Ok(())
 }
 
-/// 消费插件 UI 请求：MapKey 注入 keymap、OpenPopup 推层都经 job 通道
-/// （闭包只捕获 owned 数据，满足 'static + Send）。
-
 /// 插件弹窗 layer 名 → &'static str 的 intern 表：compositor 层 id 需 &'static str，
 /// 每名字只 leak 一次；同名后续 open 复用同一 id（replace_or_push 同层替换的判据）。
 static LAYER_INTERNS: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
 fn layer_id(layer: &str) -> &'static str {
-    *LAYER_INTERNS
+    LAYER_INTERNS
         .get_or_init(Default::default)
         .lock()
         .unwrap()
@@ -4836,6 +4833,8 @@ fn layer_id(layer: &str) -> &'static str {
         .or_insert_with(|| Box::leak(layer.to_string().into_boxed_str()))
 }
 
+/// 消费插件 UI 请求：MapKey 注入 keymap、OpenPopup 推层都经 job 通道
+/// （闭包只捕获 owned 数据，满足 'static + Send）。
 pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Result<()> {
     for req in reqs {
         match req {
@@ -5591,35 +5590,9 @@ fn reload_plugins(editor: &mut Editor) -> anyhow::Result<()> {
     }
 }
 
-/// 加载新装插件的入口脚本(install 分支共用,本地/git 源)。
-/// 无入口文件(纯 lib)→ 跳过;load 失败 set_error;成功 drain 消息/UI 请求。
-fn load_installed_entry(
-    editor: &mut Editor,
-    name: &str,
-    entry: &std::path::Path,
-    rel: &str,
-) -> anyhow::Result<()> {
-    if !entry.is_file() {
-        return Ok(());
-    }
-    let src =
-        std::fs::read_to_string(entry).map_err(|e| anyhow!("failed to read '{name}': {e}"))?;
-    if let Err(e) = helix_js::load_script_named(rel, &src) {
-        editor.set_error(format!("installed '{name}' but failed to load: {e}"));
-    } else {
-        // 新脚本 eval 也会入队消息/UI 请求(照 plugin_load 模式 drain)
-        let msgs = helix_js::take_messages();
-        if !msgs.is_empty() {
-            editor.set_status(msgs.join(" "));
-        }
-        apply_ui_requests(helix_js::take_ui_requests())?;
-    }
-    Ok(())
-}
+// :plugin 家族：list / install <path> / remove <name> / reload / status
 
-/// :plugin 家族：list / install <path> / remove <name> / reload / status
-
-/// plugin 操作核心(:plugin <op> 命令与 JS API helix.plugin.<op> 共用)
+// plugin 操作核心(:plugin <op> 命令与 JS API helix.plugin.<op> 共用)
 
 fn server(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
@@ -5753,7 +5726,7 @@ fn server_panel(cx: &mut compositor::Context) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// server 操作核心(:server 命令与 JS API helix.server.<op> 共用)。
+/// server 操作核心(:server 命令与 JS API helix.server.`<op>` 共用)。
 /// 每次操作前从 config 的 [server-manager] 段重读 mirror/registry 配方(改配置即生效)。
 pub(crate) fn server_op(
     editor: &mut Editor,
@@ -6076,8 +6049,8 @@ fn panel_close(
 /// 打开文档序列化:{current, buffers:[{id, path, name, dirty, language}]}。
 /// 每帧由 application.render 写入 helix-js 缓存(buffers/current_buffer 读取)。
 /// 构建插件配置合并缓存:对每个 define_config 的 schema,取 config.plugins 的
-/// [plugins.<name>] 表覆盖,逐字段校验类型/enum,错误记入返回的 Vec(显示用)。
-/// 输出 JSON: {"<name>": {字段...}} → helix_js::cache_configs。
+/// `[plugins.<name>]` 表覆盖,逐字段校验类型/enum,错误记入返回的 Vec(显示用)。
+/// 输出 JSON: {"`<name>`": {字段...}} → helix_js::cache_configs。
 pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<String>) {
     let schemas = helix_js::config_schemas();
     let plugins = config.plugins.clone().unwrap_or_default();

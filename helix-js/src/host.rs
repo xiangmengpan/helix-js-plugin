@@ -35,7 +35,7 @@ pub struct JsHost {
 }
 
 impl JsHost {
-    /// 建宿主,并在其中注册 `helix` 全局(建引擎的代码在 [`crate::build_engine`])。
+    /// 建宿主,并在其中注册 `helix` 全局(建引擎的代码在 `crate::build_engine`)。
     pub fn new() -> Self {
         let mut ctx = Context::default();
         crate::build_engine(&mut ctx);
@@ -149,7 +149,7 @@ pub fn take_existing() -> Option<Box<JsHost>> {
 /// 槽已被占(罕见:同线程两个 Application 同时存在)或宿主不可停放时,**遗忘而不 drop** ——
 /// 与模块根本不变式一致:引擎永不可 drop。
 pub fn park_or_forget(host: Box<JsHost>) {
-    let mut slot = DEFAULT_HOST.with(|cell| cell.borrow_mut().take());
+    let slot = DEFAULT_HOST.with(|cell| cell.borrow_mut().take());
     match slot {
         None => DEFAULT_HOST.with(|cell| *cell.borrow_mut() = Some(host)),
         Some(existing) => {
@@ -225,13 +225,14 @@ impl Default for UiRequests {
     }
 }
 
+/// `UiRequests::lock()` 的返回类型 —— 单独起名只为避开 clippy::type_complexity 的超长签名。
+pub(crate) type UiRequestsLock<'a> = Result<
+    UiRequestsGuard<'a>,
+    std::sync::PoisonError<MutexGuard<'a, HashMap<u64, Vec<UiRequest>>>>,
+>;
+
 impl UiRequests {
-    pub(crate) fn lock(
-        &self,
-    ) -> Result<
-        UiRequestsGuard<'_>,
-        std::sync::PoisonError<MutexGuard<'_, HashMap<u64, Vec<UiRequest>>>>,
-    > {
+    pub(crate) fn lock(&self) -> UiRequestsLock<'_> {
         let key = current_host_key();
         self.0.lock().map(|map| UiRequestsGuard { map, key })
     }

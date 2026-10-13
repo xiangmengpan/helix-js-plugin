@@ -1281,12 +1281,7 @@ impl LayoutTree {
     /// rail 占宽份额(0<share<1)
     fn rail_share(&self) -> f32 {
         match &self.root {
-            LayoutNode::Split {
-                ratio,
-                first,
-                second,
-                ..
-            } => {
+            LayoutNode::Split { ratio, first, .. } => {
                 if let Some((rid, _)) = self.rail_edge() {
                     let first_has_rail = matches!(&**first, LayoutNode::Leaf { id } if *id == rid);
                     if first_has_rail {
@@ -2062,6 +2057,7 @@ mod tests {
 
 // ---- rail 单元测试 ----
 
+#[cfg(test)]
 mod rail_tests {
     use super::*;
     use crate::ui::plugin_terminal::PluginTerminal;
