@@ -796,8 +796,25 @@ async fn dashboard_popup_opens_and_closes() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn quit_request_survives_last_view_close() -> anyhow::Result<()> {
     let _g = PLUGIN_TEST_LOCK.lock().await;
+    // 夹具**自带**:原先加载的是机器本地的 /tmp/probe_quit.js —— 而仓库里**没有任何
+    // 代码创建它**,一旦 /tmp 被系统清理,此测试就红(`no such command: 'probe-quit'`)。
+    let dir = tempfile::tempdir()?;
+    let plugin_path = dir.path().join("probe_quit.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.register_command("probe-quit", () => {
+            helix.echo("typeof helix.quit = " + typeof helix.quit);
+            helix.quit();
+        });
+        "#,
+    )?;
     let mut app = AppBuilder::new().build()?;
-    pump(&mut app, ":plugin-load /tmp/probe_quit.js<ret>").await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
     pump(&mut app, ":probe-quit<ret>").await?;
     let st = app
         .editor

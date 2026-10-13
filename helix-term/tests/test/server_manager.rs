@@ -773,10 +773,9 @@ async fn server_recipes_file_visible_in_editor() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("f.txt");
     std::fs::write(&file, "x\n")?;
-    std::env::set_var("SM_MANAGED_DIR", dir.path().join("managed"));
-    std::env::set_var("SM_LANGS_TOML", dir.path().join("languages.toml"));
-    std::env::set_var("SM_PATH", "");
-    std::env::set_var("SM_SERVER_RECIPES", "");
+    // SM_* 是**进程级**变量:裸 set_var 既不恢复,又会把"指向已删 tempdir"的值
+    // 残留给后续测试 ⇒ 一律走 guard(Drop 时恢复)✓
+    let _env = sm_env(dir.path());
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let repo = manifest
         .rsplitn(2, '/')
