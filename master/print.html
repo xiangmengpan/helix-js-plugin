@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-2fe1c435.js";
+            window.path_to_searchindex_js = "searchindex-cdea241e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -1555,7 +1555,6 @@ space.B = ":echo %sh{git blame -L %{cursor_line},+1 %{buffer_name}}"
 <tr><td><code>:vsplit-new</code>, <code>:vnew</code></td><td>Open a scratch buffer in a vertical split.</td></tr>
 <tr><td><code>:hsplit</code>, <code>:hs</code>, <code>:sp</code></td><td>Open the file in a horizontal split.</td></tr>
 <tr><td><code>:hsplit-new</code>, <code>:hnew</code></td><td>Open a scratch buffer in a horizontal split.</td></tr>
-<tr><td><code>:tutor</code></td><td>Open the tutorial.</td></tr>
 <tr><td><code>:goto</code>, <code>:g</code></td><td>Goto line number.</td></tr>
 <tr><td><code>:set-language</code>, <code>:lang</code></td><td>Set the language of current buffer (show current language if no value specified).</td></tr>
 <tr><td><code>:set-option</code>, <code>:set</code></td><td>Set a config option at runtime.<br>For example to disable smart case search, use <code>:set search.smart-case false</code>.</td></tr>
@@ -1580,12 +1579,17 @@ space.B = ":echo %sh{git blame -L %{cursor_line},+1 %{buffer_name}}"
 <tr><td><code>:move</code>, <code>:mv</code></td><td>Move the current buffer and its corresponding file to a different path</td></tr>
 <tr><td><code>:move!</code>, <code>:mv!</code></td><td>Move the current buffer and its corresponding file to a different path creating necessary subdirectories</td></tr>
 <tr><td><code>:yank-diagnostic</code></td><td>Yank diagnostic(s) under primary cursor to register, or clipboard by default</td></tr>
+<tr><td><code>:yank-error</code></td><td>Copy the most recent error message to a register, or clipboard by default</td></tr>
 <tr><td><code>:read</code>, <code>:r</code></td><td>Load a file into buffer</td></tr>
 <tr><td><code>:echo</code></td><td>Prints the given arguments to the statusline.</td></tr>
 <tr><td><code>:noop</code></td><td>Does nothing.</td></tr>
 <tr><td><code>:workspace-trust</code></td><td>Allow language servers and local config for the current workspace.</td></tr>
 <tr><td><code>:workspace-untrust</code></td><td>Revoke the current workspace’s trust grant or exclusion.</td></tr>
 <tr><td><code>:workspace-exclude</code></td><td>Mark the current workspace as never-prompt. Never prompts for trust again.</td></tr>
+<tr><td><code>:plugin-reload</code></td><td>Reload all loaded JavaScript plugins.</td></tr>
+<tr><td><code>:plugin-load</code></td><td>Load a JavaScript plugin file.</td></tr>
+<tr><td><code>:server</code></td><td>Manage LSP/DAP/linter/formatter servers (list</td></tr>
+<tr><td><code>:panel-close</code></td><td>Close the most recently opened plugin side panel.</td></tr>
 </tbody>
 </table>
 </div>
@@ -1732,8 +1736,8 @@ space.B = ":echo %sh{git blame -L %{cursor_line},+1 %{buffer_name}}"
 <tr><td><code>extend_to_file_start</code></td><td>Extend to line number <code>&lt;n&gt;</code> else file start</td><td>select: <code>gg</code></td></tr>
 <tr><td><code>extend_to_file_end</code></td><td>Extend to file end</td><td></td></tr>
 <tr><td><code>goto_file</code></td><td>Goto files/URLs in selections</td><td>normal: <code>gf</code>, select: <code>gf</code></td></tr>
-<tr><td><code>goto_file_hsplit</code></td><td>Goto files in selections (hsplit)</td><td>normal: <code>&lt;C-w&gt;f</code>, <code>&lt;space&gt;wf</code>, select: <code>&lt;C-w&gt;f</code>, <code>&lt;space&gt;wf</code></td></tr>
-<tr><td><code>goto_file_vsplit</code></td><td>Goto files in selections (vsplit)</td><td>normal: <code>&lt;C-w&gt;F</code>, <code>&lt;space&gt;wF</code>, select: <code>&lt;C-w&gt;F</code>, <code>&lt;space&gt;wF</code></td></tr>
+<tr><td><code>goto_file_hsplit</code></td><td>Goto files in selections (hsplit)</td><td>normal: <code>&lt;space&gt;wf</code>, select: <code>&lt;space&gt;wf</code></td></tr>
+<tr><td><code>goto_file_vsplit</code></td><td>Goto files in selections (vsplit)</td><td>normal: <code>&lt;space&gt;wF</code>, select: <code>&lt;space&gt;wF</code></td></tr>
 <tr><td><code>goto_reference</code></td><td>Goto references</td><td>normal: <code>gr</code>, select: <code>gr</code></td></tr>
 <tr><td><code>goto_window_top</code></td><td>Goto window top</td><td>normal: <code>gt</code>, select: <code>gt</code></td></tr>
 <tr><td><code>goto_window_center</code></td><td>Goto window center</td><td>normal: <code>gc</code>, select: <code>gc</code></td></tr>
@@ -1828,23 +1832,23 @@ space.B = ":echo %sh{git blame -L %{cursor_line},+1 %{buffer_name}}"
 <tr><td><code>jump_forward</code></td><td>Jump forward on jumplist</td><td>normal: <code>&lt;C-i&gt;</code>, <code>&lt;tab&gt;</code>, select: <code>&lt;C-i&gt;</code>, <code>&lt;tab&gt;</code></td></tr>
 <tr><td><code>jump_backward</code></td><td>Jump backward on jumplist</td><td>normal: <code>&lt;C-o&gt;</code>, select: <code>&lt;C-o&gt;</code></td></tr>
 <tr><td><code>save_selection</code></td><td>Save current selection to jumplist</td><td>normal: <code>&lt;C-s&gt;</code>, select: <code>&lt;C-s&gt;</code></td></tr>
-<tr><td><code>jump_view_right</code></td><td>Jump to right split</td><td>normal: <code>&lt;C-w&gt;l</code>, <code>&lt;space&gt;wl</code>, <code>&lt;C-w&gt;&lt;C-l&gt;</code>, <code>&lt;C-w&gt;&lt;right&gt;</code>, <code>&lt;space&gt;w&lt;C-l&gt;</code>, <code>&lt;space&gt;w&lt;right&gt;</code>, select: <code>&lt;C-w&gt;l</code>, <code>&lt;space&gt;wl</code>, <code>&lt;C-w&gt;&lt;C-l&gt;</code>, <code>&lt;C-w&gt;&lt;right&gt;</code>, <code>&lt;space&gt;w&lt;C-l&gt;</code>, <code>&lt;space&gt;w&lt;right&gt;</code></td></tr>
-<tr><td><code>jump_view_left</code></td><td>Jump to left split</td><td>normal: <code>&lt;C-w&gt;h</code>, <code>&lt;space&gt;wh</code>, <code>&lt;C-w&gt;&lt;C-h&gt;</code>, <code>&lt;C-w&gt;&lt;left&gt;</code>, <code>&lt;space&gt;w&lt;C-h&gt;</code>, <code>&lt;space&gt;w&lt;left&gt;</code>, select: <code>&lt;C-w&gt;h</code>, <code>&lt;space&gt;wh</code>, <code>&lt;C-w&gt;&lt;C-h&gt;</code>, <code>&lt;C-w&gt;&lt;left&gt;</code>, <code>&lt;space&gt;w&lt;C-h&gt;</code>, <code>&lt;space&gt;w&lt;left&gt;</code></td></tr>
-<tr><td><code>jump_view_up</code></td><td>Jump to split above</td><td>normal: <code>&lt;C-w&gt;k</code>, <code>&lt;C-w&gt;&lt;up&gt;</code>, <code>&lt;space&gt;wk</code>, <code>&lt;C-w&gt;&lt;C-k&gt;</code>, <code>&lt;space&gt;w&lt;up&gt;</code>, <code>&lt;space&gt;w&lt;C-k&gt;</code>, select: <code>&lt;C-w&gt;k</code>, <code>&lt;C-w&gt;&lt;up&gt;</code>, <code>&lt;space&gt;wk</code>, <code>&lt;C-w&gt;&lt;C-k&gt;</code>, <code>&lt;space&gt;w&lt;up&gt;</code>, <code>&lt;space&gt;w&lt;C-k&gt;</code></td></tr>
-<tr><td><code>jump_view_down</code></td><td>Jump to split below</td><td>normal: <code>&lt;C-w&gt;j</code>, <code>&lt;space&gt;wj</code>, <code>&lt;C-w&gt;&lt;C-j&gt;</code>, <code>&lt;C-w&gt;&lt;down&gt;</code>, <code>&lt;space&gt;w&lt;C-j&gt;</code>, <code>&lt;space&gt;w&lt;down&gt;</code>, select: <code>&lt;C-w&gt;j</code>, <code>&lt;space&gt;wj</code>, <code>&lt;C-w&gt;&lt;C-j&gt;</code>, <code>&lt;C-w&gt;&lt;down&gt;</code>, <code>&lt;space&gt;w&lt;C-j&gt;</code>, <code>&lt;space&gt;w&lt;down&gt;</code></td></tr>
-<tr><td><code>swap_view_right</code></td><td>Swap with right split</td><td>normal: <code>&lt;C-w&gt;L</code>, <code>&lt;space&gt;wL</code>, select: <code>&lt;C-w&gt;L</code>, <code>&lt;space&gt;wL</code></td></tr>
-<tr><td><code>swap_view_left</code></td><td>Swap with left split</td><td>normal: <code>&lt;C-w&gt;H</code>, <code>&lt;space&gt;wH</code>, select: <code>&lt;C-w&gt;H</code>, <code>&lt;space&gt;wH</code></td></tr>
-<tr><td><code>swap_view_up</code></td><td>Swap with split above</td><td>normal: <code>&lt;C-w&gt;K</code>, <code>&lt;space&gt;wK</code>, select: <code>&lt;C-w&gt;K</code>, <code>&lt;space&gt;wK</code></td></tr>
-<tr><td><code>swap_view_down</code></td><td>Swap with split below</td><td>normal: <code>&lt;C-w&gt;J</code>, <code>&lt;space&gt;wJ</code>, select: <code>&lt;C-w&gt;J</code>, <code>&lt;space&gt;wJ</code></td></tr>
-<tr><td><code>transpose_view</code></td><td>Transpose splits</td><td>normal: <code>&lt;C-w&gt;t</code>, <code>&lt;space&gt;wt</code>, <code>&lt;C-w&gt;&lt;C-t&gt;</code>, <code>&lt;space&gt;w&lt;C-t&gt;</code>, select: <code>&lt;C-w&gt;t</code>, <code>&lt;space&gt;wt</code>, <code>&lt;C-w&gt;&lt;C-t&gt;</code>, <code>&lt;space&gt;w&lt;C-t&gt;</code></td></tr>
-<tr><td><code>rotate_view</code></td><td>Goto next window</td><td>normal: <code>&lt;C-w&gt;w</code>, <code>&lt;space&gt;ww</code>, <code>&lt;C-w&gt;&lt;C-w&gt;</code>, <code>&lt;space&gt;w&lt;C-w&gt;</code>, select: <code>&lt;C-w&gt;w</code>, <code>&lt;space&gt;ww</code>, <code>&lt;C-w&gt;&lt;C-w&gt;</code>, <code>&lt;space&gt;w&lt;C-w&gt;</code></td></tr>
+<tr><td><code>jump_view_right</code></td><td>Jump to right split</td><td>normal: <code>&lt;space&gt;wl</code>, <code>&lt;space&gt;w&lt;C-l&gt;</code>, <code>&lt;space&gt;w&lt;right&gt;</code>, select: <code>&lt;space&gt;wl</code>, <code>&lt;space&gt;w&lt;C-l&gt;</code>, <code>&lt;space&gt;w&lt;right&gt;</code></td></tr>
+<tr><td><code>jump_view_left</code></td><td>Jump to left split</td><td>normal: <code>&lt;space&gt;wh</code>, <code>&lt;space&gt;w&lt;C-h&gt;</code>, <code>&lt;space&gt;w&lt;left&gt;</code>, select: <code>&lt;space&gt;wh</code>, <code>&lt;space&gt;w&lt;C-h&gt;</code>, <code>&lt;space&gt;w&lt;left&gt;</code></td></tr>
+<tr><td><code>jump_view_up</code></td><td>Jump to split above</td><td>normal: <code>&lt;space&gt;wk</code>, <code>&lt;space&gt;w&lt;up&gt;</code>, <code>&lt;space&gt;w&lt;C-k&gt;</code>, select: <code>&lt;space&gt;wk</code>, <code>&lt;space&gt;w&lt;up&gt;</code>, <code>&lt;space&gt;w&lt;C-k&gt;</code></td></tr>
+<tr><td><code>jump_view_down</code></td><td>Jump to split below</td><td>normal: <code>&lt;space&gt;wj</code>, <code>&lt;space&gt;w&lt;C-j&gt;</code>, <code>&lt;space&gt;w&lt;down&gt;</code>, select: <code>&lt;space&gt;wj</code>, <code>&lt;space&gt;w&lt;C-j&gt;</code>, <code>&lt;space&gt;w&lt;down&gt;</code></td></tr>
+<tr><td><code>swap_view_right</code></td><td>Swap with right split</td><td>normal: <code>&lt;space&gt;wL</code>, select: <code>&lt;space&gt;wL</code></td></tr>
+<tr><td><code>swap_view_left</code></td><td>Swap with left split</td><td>normal: <code>&lt;space&gt;wH</code>, select: <code>&lt;space&gt;wH</code></td></tr>
+<tr><td><code>swap_view_up</code></td><td>Swap with split above</td><td>normal: <code>&lt;space&gt;wK</code>, select: <code>&lt;space&gt;wK</code></td></tr>
+<tr><td><code>swap_view_down</code></td><td>Swap with split below</td><td>normal: <code>&lt;space&gt;wJ</code>, select: <code>&lt;space&gt;wJ</code></td></tr>
+<tr><td><code>transpose_view</code></td><td>Transpose splits</td><td>normal: <code>&lt;space&gt;wt</code>, <code>&lt;space&gt;w&lt;C-t&gt;</code>, select: <code>&lt;space&gt;wt</code>, <code>&lt;space&gt;w&lt;C-t&gt;</code></td></tr>
+<tr><td><code>rotate_view</code></td><td>Goto next window</td><td>normal: <code>&lt;space&gt;ww</code>, <code>&lt;space&gt;w&lt;C-w&gt;</code>, select: <code>&lt;space&gt;ww</code>, <code>&lt;space&gt;w&lt;C-w&gt;</code></td></tr>
 <tr><td><code>rotate_view_reverse</code></td><td>Goto previous window</td><td></td></tr>
-<tr><td><code>hsplit</code></td><td>Horizontal bottom split</td><td>normal: <code>&lt;C-w&gt;s</code>, <code>&lt;space&gt;ws</code>, <code>&lt;C-w&gt;&lt;C-s&gt;</code>, <code>&lt;space&gt;w&lt;C-s&gt;</code>, select: <code>&lt;C-w&gt;s</code>, <code>&lt;space&gt;ws</code>, <code>&lt;C-w&gt;&lt;C-s&gt;</code>, <code>&lt;space&gt;w&lt;C-s&gt;</code></td></tr>
-<tr><td><code>hsplit_new</code></td><td>Horizontal bottom split scratch buffer</td><td>normal: <code>&lt;C-w&gt;ns</code>, <code>&lt;space&gt;wns</code>, <code>&lt;C-w&gt;n&lt;C-s&gt;</code>, <code>&lt;space&gt;wn&lt;C-s&gt;</code>, select: <code>&lt;C-w&gt;ns</code>, <code>&lt;space&gt;wns</code>, <code>&lt;C-w&gt;n&lt;C-s&gt;</code>, <code>&lt;space&gt;wn&lt;C-s&gt;</code></td></tr>
-<tr><td><code>vsplit</code></td><td>Vertical right split</td><td>normal: <code>&lt;C-w&gt;v</code>, <code>&lt;space&gt;wv</code>, <code>&lt;C-w&gt;&lt;C-v&gt;</code>, <code>&lt;space&gt;w&lt;C-v&gt;</code>, select: <code>&lt;C-w&gt;v</code>, <code>&lt;space&gt;wv</code>, <code>&lt;C-w&gt;&lt;C-v&gt;</code>, <code>&lt;space&gt;w&lt;C-v&gt;</code></td></tr>
-<tr><td><code>vsplit_new</code></td><td>Vertical right split scratch buffer</td><td>normal: <code>&lt;C-w&gt;nv</code>, <code>&lt;space&gt;wnv</code>, <code>&lt;C-w&gt;n&lt;C-v&gt;</code>, <code>&lt;space&gt;wn&lt;C-v&gt;</code>, select: <code>&lt;C-w&gt;nv</code>, <code>&lt;space&gt;wnv</code>, <code>&lt;C-w&gt;n&lt;C-v&gt;</code>, <code>&lt;space&gt;wn&lt;C-v&gt;</code></td></tr>
-<tr><td><code>wclose</code></td><td>Close window</td><td>normal: <code>&lt;C-w&gt;q</code>, <code>&lt;space&gt;wq</code>, <code>&lt;C-w&gt;&lt;C-q&gt;</code>, <code>&lt;space&gt;w&lt;C-q&gt;</code>, select: <code>&lt;C-w&gt;q</code>, <code>&lt;space&gt;wq</code>, <code>&lt;C-w&gt;&lt;C-q&gt;</code>, <code>&lt;space&gt;w&lt;C-q&gt;</code></td></tr>
-<tr><td><code>wonly</code></td><td>Close windows except current</td><td>normal: <code>&lt;C-w&gt;o</code>, <code>&lt;space&gt;wo</code>, <code>&lt;C-w&gt;&lt;C-o&gt;</code>, <code>&lt;space&gt;w&lt;C-o&gt;</code>, select: <code>&lt;C-w&gt;o</code>, <code>&lt;space&gt;wo</code>, <code>&lt;C-w&gt;&lt;C-o&gt;</code>, <code>&lt;space&gt;w&lt;C-o&gt;</code></td></tr>
+<tr><td><code>hsplit</code></td><td>Horizontal bottom split</td><td>normal: <code>&lt;space&gt;ws</code>, <code>&lt;space&gt;w&lt;C-s&gt;</code>, select: <code>&lt;space&gt;ws</code>, <code>&lt;space&gt;w&lt;C-s&gt;</code></td></tr>
+<tr><td><code>hsplit_new</code></td><td>Horizontal bottom split scratch buffer</td><td>normal: <code>&lt;space&gt;wns</code>, <code>&lt;space&gt;wn&lt;C-s&gt;</code>, select: <code>&lt;space&gt;wns</code>, <code>&lt;space&gt;wn&lt;C-s&gt;</code></td></tr>
+<tr><td><code>vsplit</code></td><td>Vertical right split</td><td>normal: <code>&lt;space&gt;wv</code>, <code>&lt;space&gt;w&lt;C-v&gt;</code>, select: <code>&lt;space&gt;wv</code>, <code>&lt;space&gt;w&lt;C-v&gt;</code></td></tr>
+<tr><td><code>vsplit_new</code></td><td>Vertical right split scratch buffer</td><td>normal: <code>&lt;space&gt;wnv</code>, <code>&lt;space&gt;wn&lt;C-v&gt;</code>, select: <code>&lt;space&gt;wnv</code>, <code>&lt;space&gt;wn&lt;C-v&gt;</code></td></tr>
+<tr><td><code>wclose</code></td><td>Close window</td><td>normal: <code>&lt;space&gt;wq</code>, <code>&lt;space&gt;w&lt;C-q&gt;</code>, select: <code>&lt;space&gt;wq</code>, <code>&lt;space&gt;w&lt;C-q&gt;</code></td></tr>
+<tr><td><code>wonly</code></td><td>Close windows except current</td><td>normal: <code>&lt;space&gt;wo</code>, <code>&lt;space&gt;w&lt;C-o&gt;</code>, select: <code>&lt;space&gt;wo</code>, <code>&lt;space&gt;w&lt;C-o&gt;</code></td></tr>
 <tr><td><code>select_register</code></td><td>Select register</td><td>normal: <code>"</code>, select: <code>"</code></td></tr>
 <tr><td><code>insert_register</code></td><td>Insert register</td><td>insert: <code>&lt;C-r&gt;</code></td></tr>
 <tr><td><code>copy_between_registers</code></td><td>Copy between two registers</td><td></td></tr>
