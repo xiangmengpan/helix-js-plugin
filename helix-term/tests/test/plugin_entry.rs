@@ -214,3 +214,51 @@ fn bare_plugin_name_loads_plugin_entry_file() {
     helix_js::load_script(r#"helix.load("plug");"#)
         .expect("§4-2:插件自身的文件必须与入口同层(否则会抛'混合体')");
 }
+
+/// 宿主生命周期(Step 2 计划 Task 2 步骤 1):`Application` drop 之后宿主**不会被丢弃** ——
+/// 先注销活动句柄(`host::clear_active`),再把宿主**停放**回槽,供同线程下一个实例接管。
+///
+/// 注:计划原文写的是"drop 后 `with_engine` 报 `host not registered`"。该措辞已被
+/// "停放/接管"语义取代(`Application::drop` 与 `host::take_existing` 的注释:drop 已用过的
+/// 引擎会**破坏堆**,故永不 drop)⇒ 这里按**实际契约**钉,而不是钉一个已被有意放弃的行为;
+/// 计划里那句"报 host not registered"若还想要,只能在**没有**宿主的线程上成立(另有单测覆盖)。
+#[tokio::test(flavor = "multi_thread")]
+async fn application_drop_parks_host_and_engine_stays_usable() -> anyhow::Result<()> {
+    // 反复 create/drop:若 drop 了引擎,这里会以 heap corruption(SIGABRT)收场,而不是断言失败
+    for round in 0..3 {
+        let app = AppBuilder::new().build()?;
+        assert!(
+            helix_js::host::engine_exists(),
+            "第 {round} 轮:存活期应有活动宿主"
+        );
+        drop(app);
+        assert!(
+            helix_js::host::engine_exists(),
+            "第 {round} 轮:drop 后宿主应被**停放**(引擎永不 drop),而不是消失"
+        );
+    }
+
+    // 接管后的引擎仍然可用:端到端加载一个新插件并跑它的命令
+    let dir = tempfile::tempdir()?;
+    let plugin = dir.path().join("parked.js");
+    std::fs::write(
+        &plugin,
+        r#"helix.register_command("parked-cmd", () => { helix.echo("parked-ok"); });"#,
+    )?;
+    test_key_sequences(
+        &mut AppBuilder::new().build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            (
+                Some(":parked-cmd<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "parked-ok");
+                }),
+            ),
+        ],
+    )
+}
