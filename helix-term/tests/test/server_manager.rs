@@ -445,6 +445,36 @@ fn arsenal_text(app: &mut Application) -> String {
         .join("\n")
 }
 
+/// **有界收敛**等待:反复泵 `key` 直到渲染文本里 `want` 出现 `min_hits` 次。
+///
+/// 为什么不是"敲完就断言":后台 install 走 worker 线程(`helix.server.task`),事件回投
+/// 主线程后才调 JS 回调、插件再 fetch_rows 重取行 —— 收敛要几帧由**调度**决定,不
+/// 由本测试的按键数决定。安静机器上 1 帧就够,满载/慢机上可能几十帧。产品的契约
+/// 本来就是最终收敛;上界 90s 只用于把"真的不收敛"变成一条带最后一帧的失败,绿路径
+/// 仍是毫秒级(命中即返回)。`what` 只进超时消息。
+async fn wait_until_rows(
+    app: &mut Application,
+    key: &str,
+    want: &str,
+    min_hits: usize,
+    what: &str,
+) -> anyhow::Result<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        let text = arsenal_text(app);
+        if text.matches(want).count() >= min_hits {
+            return Ok(text);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}有界收敛超时(90s,期望 `{want}` ×{min_hits});最后一帧: {text:?}"
+        );
+        // 空转键步只为撑开事件窗口(用不进查询串的键:调用方各自选 <down>/j)
+        pump(app, key).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 // Arsenal M4 浮层冒烟:主窗 popup v2 居中浮层(78%×75%,layer "arsenal")→
 // 搜索 → Enter 动作链路 → 版本输入(needs_version,内置 rust-analyzer)Esc 取消 →
 // i 信息弹窗(命令路径/下载源占位替换为真实行字段)→ 假源安装收敛(行 ✓)→
@@ -548,15 +578,9 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     assert!(!app.editor.is_err(), "install 提交不应报错");
     // 无害键步撑窗:SEARCH 态字母(j/f 等)是查询字符 → 用 <down> 撑窗
     // (v2 模态;worker(file:// 假源)事件 + done 后 fetch_rows 渲染收敛)
-    for _ in 0..4 {
-        pump(&mut app, "<down>").await?;
-    }
+    // 有界收敛:帧数由调度决定(原写法固定 4 帧 + 立即断言 ⇒ 并行/慢机必脆)
+    wait_until_rows(&mut app, "<down>", "✓ 1.0.0", 1, "安装").await?;
     assert!(!app.editor.is_err(), "后台安装不应报错");
-    let text = arsenal_text(&mut app);
-    assert!(
-        text.contains("✓ 1.0.0"),
-        "安装收敛后行状态 ✓ 1.0.0(版本串已剥 bin 名前缀): {text:?}"
-    );
 
     // 6. 改 bin 检测版本 → 重开市场 → ▲ 可升级标记(upgradable 字段驱动)
     {
@@ -740,11 +764,10 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     pump(&mut app, "t").await?; // 标记 demob
     pump(&mut app, "<ret>").await?; // 批量 Enter(集合快照)
     assert!(!app.editor.is_err(), "批量提交不应报错");
-    for _ in 0..4 {
-        pump(&mut app, "j").await?;
-    }
+    // 有界收敛,**两行**都要 ✓(原写法固定 4 帧 + contains 任一 ⇒ 并行/慢机必脆,
+    // 且"两行均 ✓"的意图只靠 contains 没钉住)
+    let text = wait_until_rows(&mut app, "j", "✓ 1.0.0", 2, "批量安装").await?;
     assert!(!app.editor.is_err(), "批量安装不应报错");
-    let text = arsenal_text(&mut app);
     assert!(
         text.contains("✓ 1.0.0"),
         "批量收敛后两行均 ✓ 1.0.0(版本剥 bin 名前缀): {text:?}"
