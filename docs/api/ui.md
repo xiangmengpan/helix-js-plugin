@@ -134,6 +134,11 @@ helix.set_completion_render((ctx) => [                             // 整行 JS 
 
 ### `helix.set_component_render(id, fn)` / `helix.get_component_state(id)` / `helix.set_keymap_hint(fn)`
 
+**`{ pure: true }`:跳过整次 JS 调用。** 声明"我的渲染**只依赖宿主传入的输入**"(focus + ctx 尺寸 +
+调用前宿主喂给这个组件的快照),宿主才会按输入签名缓存 —— 命中时**连回调都不调**(每帧渲染的组件
+如 picker 受益最大)。声明了却实际读了主题/缓冲区等外部状态 ⇒ UI 不会更新;不声明则永远是安全的
+逐帧真渲染。
+
 **脏渲染**:`fn` 返回**显式 `null`** 表示"自上次以来无变化",宿主会**复用上次内容**并跳过
 本次解析(省一次转换/分配);何时脏由插件决定,因此不会出现"宿主以为没变其实变了"的陈旧 UI。
 注意**首次**调用必须真的返回内容(首次返回 `null` 会报错,因为无内容可复用);而 `undefined`

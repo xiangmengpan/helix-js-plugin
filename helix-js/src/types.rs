@@ -365,6 +365,12 @@ pub(crate) struct PopupCallbacks {
     /// 脏渲染协议的**上次内容**:回调返回 null/undefined 表示"无变化"⇒ 复用这份,不再解析。
     /// 生命周期天然安全:注销(id 移除)与 `reset_plugin_state`(整表 clear)都会丢掉它。
     pub(crate) last: Option<Content>,
+    /// 上次的**输入签名**(只对 `pure` 渲染器有意义):命中则**连 JS 都不调**。
+    pub(crate) last_key: Option<String>,
+    /// 插件声明:渲染**只依赖宿主传入的输入**(focus + ctx{width,height} + 调用前宿主 `set_*`
+    /// 喂进去的快照),不含主题/缓冲区/时间等外部状态 ⇒ 允许按输入签名缓存。见
+    /// `set_component_render` 的第三个参数与 `render_component_cached`。
+    pub(crate) pure: bool,
 }
 
 /// 一段带样式的文本（多 span 行模型：一行可有多段不同样式）

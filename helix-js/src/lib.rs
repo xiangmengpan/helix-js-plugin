@@ -4413,6 +4413,55 @@ helix.set_component_render(0, function (_focus, ctx) {
         assert!(!crate::has_component_render(77), "注销后应报不存在");
     }
 
+    /// `{pure:true}` 的渲染器按**输入签名**命中缓存 ⇒ 命中时**连 JS 都不调**;
+    /// 未声明 `pure` 的渲染器逐帧照常调用(与今天一致,不会因缓存而陈旧)。
+    #[test]
+    fn pure_component_render_skips_js_when_inputs_unchanged() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        load_script(
+            r#"globalThis.__pure_calls = 0;
+               globalThis.__impure_calls = 0;
+               helix.set_component_render(93, () => { globalThis.__pure_calls++; return ["p"]; }, { pure: true });
+               helix.set_component_render(94, () => { globalThis.__impure_calls++; return ["i"]; });"#,
+        )
+        .unwrap();
+        let count = |expr: &str| {
+            crate::with_engine(|e| {
+                e.eval(boa_engine::Source::from_bytes(expr))
+                    .unwrap()
+                    .to_number(e)
+                    .unwrap()
+            })
+        };
+
+        let _ = crate::render_component_cached(93, 10, 3, None, "sig-A").unwrap();
+        let _ = crate::render_component_cached(93, 10, 3, None, "sig-A").unwrap();
+        assert_eq!(
+            count("globalThis.__pure_calls"),
+            1.0,
+            "同一签名第二次应命中缓存(不调 JS)"
+        );
+
+        let _ = crate::render_component_cached(93, 10, 3, None, "sig-B").unwrap();
+        assert_eq!(count("globalThis.__pure_calls"), 2.0, "签名变化应重新渲染");
+
+        let _ = crate::render_component_cached(93, 11, 3, None, "sig-B").unwrap();
+        assert_eq!(
+            count("globalThis.__pure_calls"),
+            3.0,
+            "尺寸变化也是输入变化"
+        );
+
+        let _ = crate::render_component_cached(94, 10, 3, None, "sig-A").unwrap();
+        let _ = crate::render_component_cached(94, 10, 3, None, "sig-A").unwrap();
+        assert_eq!(
+            count("globalThis.__impure_calls"),
+            2.0,
+            "未声明 pure 时不得缓存(逐帧真渲染)"
+        );
+    }
+
     /// `layout-change` 的参数形状**恒定**为 `(kind | null, doc)`:缺种类时第一参是显式 `null`,
     /// 第二参仍是 doc(旧实现缺种类时只传 `[doc]` ⇒ `(kind)=>…` 静默拿到事件对象)。
     #[test]

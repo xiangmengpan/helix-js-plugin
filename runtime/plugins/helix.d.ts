@@ -374,10 +374,21 @@ interface Helix {
   set_input_value(popup_id: number, node_id: string, value: string): void;
   get_component_state(id: number): unknown;
   /**
-   * 注册组件渲染回调。**脏渲染协议**:回调返回**显式 `null`** 表示"自上次以来无变化" ——
-   * 宿主复用上次内容、不再解析(何时脏由插件决定,故不会陈旧);首次调用必须真的给出内容。
+   * 注册组件渲染回调。
+   *
+   * **脏渲染**:返回**显式 `null`** 表示"自上次以来无变化" —— 宿主复用上次内容、不再解析
+   * (何时脏由你决定,故不会陈旧);首次调用必须真的给出内容。`undefined`(忘了 return)仍是错误。
+   *
+   * **`opts.pure: true`** 声明"渲染**只依赖宿主传入的输入**"(focus + ctx 尺寸 + 调用前宿主喂的
+   * 快照),不含主题/缓冲区/配置/时间等外部状态 —— 只有这样声明过,宿主才允许按输入签名缓存并
+   * **跳过整次 JS 调用**(每帧渲染的组件如 picker 受益最大)。声明错(实际读了外部状态)会导致
+   * UI 不更新;不声明就永远是安全的逐帧真渲染。
    */
-  set_component_render(id: number, fn: (ctx: unknown) => (string | StyledText)[] | null): void;
+  set_component_render(
+    id: number,
+    fn: (ctx: unknown) => (string | StyledText)[] | null,
+    opts?: { pure?: boolean },
+  ): void;
 
   // ── 界面定制 ──
   set_statusline(fn: ((ctx: StatuslineCtx) => string | null) | null): void; // null 隐藏

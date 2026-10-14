@@ -209,6 +209,8 @@ pub(crate) fn js_open_popup(
                 on_key,
                 on_close,
                 last: None,
+                last_key: None,
+                pure: false,
             },
         )
     });
@@ -263,6 +265,28 @@ pub(crate) fn js_set_component_render(
             "set_component_render: render must be a function",
         ))));
     }
+    // 第三个可选参数 `{ pure: true }`:插件声明"我的渲染**只依赖宿主传入的输入**"
+    // (focus + ctx{width,height} + 调用前宿主 `set_*` 喂进来、我读到的快照),**不含**主题 /
+    // 缓冲区 / 配置 / 时间等外部状态。只有这样声明过的渲染器,才允许被 `render_component_cached`
+    // 按输入签名命中并**跳过整次 JS 调用**(未声明 ⇒ 逐帧真渲染,行为与今天一致)。
+    let mut pure = false;
+    if let Some(v) = args.get(2) {
+        if !v.is_undefined() && !v.is_null() {
+            let obj = v.as_object().ok_or_else(|| {
+                JsError::from_opaque(JsValue::from(JsString::from(
+                    "set_component_render: opts must be an object",
+                )))
+            })?;
+            let p = obj.get(JsString::from("pure"), ctx)?;
+            if !p.is_undefined() {
+                pure = p.as_boolean().ok_or_else(|| {
+                    JsError::from_opaque(JsValue::from(JsString::from(
+                        "set_component_render: opts.pure must be a boolean",
+                    )))
+                })?;
+            }
+        }
+    }
     with_popups(|p| {
         p.insert(
             id,
@@ -271,6 +295,8 @@ pub(crate) fn js_set_component_render(
                 on_key: None,
                 on_close: None,
                 last: None,
+                last_key: None,
+                pure,
             },
         )
     });
@@ -364,6 +390,8 @@ pub(crate) fn js_open_panel(
                 on_key,
                 on_close,
                 last: None,
+                last_key: None,
+                pure: false,
             },
         )
     });
@@ -1210,6 +1238,49 @@ fn content_from_value(
 /// 命名语义化——JS 视图层渲染任意已注册组件。
 pub fn render_component(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
     render_popup(id, width, height, focus)
+}
+
+/// 同 [`render_component`],但**允许命中"跳过 JS 调用"的缓存** —— 仅当该 id 注册时声明过
+/// `{ pure: true }`(渲染只依赖宿主传入的输入)。
+///
+/// `signature` 必须覆盖**调用方喂给该渲染器的全部输入**(例如 picker 的状态摘要字符串);
+/// 宿主另把 `width/height/focus` 一起算进键。命中 ⇒ 直接返回上次解析好的 Content,**不调 JS**。
+/// 未声明 `pure` ⇒ 退化为逐帧真渲染(与 `render_component` 完全一致)。
+pub fn render_component_cached(
+    id: u64,
+    width: u16,
+    height: u16,
+    focus: Option<&str>,
+    signature: &str,
+) -> Result<Content> {
+    crate::init();
+    let pure = crate::state::with_popups(|p| p.get(&id).map(|cb| cb.pure).unwrap_or(false));
+    if !pure {
+        return render_component(id, width, height, focus);
+    }
+    // 键 = 尺寸 + focus + 调用方签名;分隔符用 \u{1}(普通 `|` 可能出现在签名里)
+    const SEP: char = '\u{1}';
+    let key = format!(
+        "{width}x{height}{SEP}{}{SEP}{signature}",
+        focus.unwrap_or("")
+    );
+    let hit = crate::state::with_popups(|p| {
+        p.get(&id).and_then(|cb| match (&cb.last_key, &cb.last) {
+            (Some(k), Some(c)) if k == &key => Some(c.clone()),
+            _ => None,
+        })
+    });
+    if let Some(content) = hit {
+        return Ok(content);
+    }
+    let content = render_popup(id, width, height, focus)?;
+    crate::state::with_popups(|p| {
+        if let Some(cb) = p.get_mut(&id) {
+            cb.last_key = Some(key);
+            cb.last = Some(content.clone());
+        }
+    });
+    Ok(content)
 }
 
 /// 该 id 是否注册了渲染回调(**只查注册表,不调 JS**)。
