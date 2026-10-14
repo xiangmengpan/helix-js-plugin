@@ -980,8 +980,8 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
 
 /// 已注册的插件命令名（供命令行补全）
 pub fn command_names() -> Vec<String> {
-    // 查询:不需要宿主(表在 thread_local 里)⇒ **不得** init()(那会建整个引擎)
-    with_registry(|r| r.keys().cloned().collect())
+    // 查询:状态在宿主里;无宿主 ⇒ 空列表(**不得**建宿主)
+    crate::state::try_with_registry(|r| r.keys().cloned().collect()).unwrap_or_default()
 }
 
 /// 插件命令说明（未注册返回 None）
@@ -1016,8 +1016,9 @@ pub(crate) fn js_on(
 
 /// 是否有注册的事件处理器（挂点快速跳过）
 pub fn has_handlers(name: &str) -> bool {
-    // 查询:不需要宿主(表在 thread_local 里)⇒ **不得** init()(那会建整个引擎)
-    with_event_handlers(|h| h.get(name).is_some_and(|v| !v.is_empty()))
+    // 查询:同上,无宿主 ⇒ false
+    crate::state::try_with_event_handlers(|h| h.get(name).is_some_and(|v| !v.is_empty()))
+        .unwrap_or(false)
 }
 
 /// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。

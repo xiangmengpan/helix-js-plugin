@@ -1292,12 +1292,13 @@ pub fn render_component_cached(
 /// 语义差异(有意):渲染器**存在但抛错**时,本函数仍返回 true(旧探针返回 false)。
 /// 调用方随后本就会真的渲染一次并处理 Err,所以只影响"错误路径上少省一次载荷构造"。
 pub fn has_component_render(id: u64) -> bool {
-    // 查询:注册表在 thread_local 里 ⇒ **不得** init()(那会建整个引擎)
-    crate::state::with_popups(|p| {
+    // 查询:注册表在宿主里;无宿主 ⇒ false(**不得**建宿主)
+    crate::state::try_with_popups(|p| {
         p.get(&id)
             .map(|cb| cb.render.as_callable().is_some())
             .unwrap_or(false)
     })
+    .unwrap_or(false)
 }
 
 pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
@@ -1682,8 +1683,8 @@ pub fn panel_has_onkey(id: u64) -> bool {
 
 /// 面板/弹窗是否在 JS 注册表（存在但无 onKey 与完全丢失区分：僵尸面板检测用）
 pub fn popup_exists(id: u64) -> bool {
-    // 查询:同上,无需宿主
-    with_popups(|p| p.contains_key(&id))
+    // 查询:同上,无宿主 ⇒ false
+    crate::state::try_with_popups(|p| p.contains_key(&id)).unwrap_or(false)
 }
 
 /// 关闭弹窗：触发 onClose 并移除注册表项。幂等（已关闭返回 Ok）。
@@ -1807,7 +1808,7 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
     if !crate::host::engine_exists() {
         return None;
     }
-    let hook = with_keymap_hint_hook(|h| h.clone())?;
+    let hook = crate::state::try_with_keymap_hint_hook(|h| h.clone())??;
     let func = hook.as_callable().and_then(JsFunction::from_object)?;
     crate::state::with_engine(|engine| {
         let undefined = JsValue::undefined();

@@ -13,7 +13,7 @@
 //! `corrupted double-linked list`)。对照组:`dropping_a_fresh_context_is_safe` 证明
 //! "新造 Context 的 drop"本身是安全的 ⇒ 问题在"引擎先走、引用者后走"。
 
-use crate::types::UiRequest;
+use crate::types::{PopupCallbacks, UiRequest};
 use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -56,6 +56,15 @@ pub struct JsHost {
     pub(crate) runtime_dirs: RefCell<&'static [PathBuf]>,
     /// 布局文件目录(`<config>/layouts`;未设置 ⇒ `None`。1b 同上)
     pub(crate) layouts_dir: RefCell<Option<&'static PathBuf>>,
+    /// 插件命令注册表(name → export)。1b-3:原为 thread_local 的
+    /// `RefCell<Option<&'static mut …>>`(惰性 init + `Box::leak`)⇒ 状态跟**宿主**而不是线程,且不再泄漏。
+    pub(crate) registry: RefCell<HashMap<String, JsValue>>,
+    /// 事件处理器(事件名 → 处理器列表)。1b-3 同上
+    pub(crate) event_handlers: RefCell<HashMap<String, Vec<JsValue>>>,
+    /// 弹窗/面板回调注册表(id → 回调)。1b-3 同上
+    pub(crate) popups: RefCell<HashMap<u64, PopupCallbacks>>,
+    /// keymap 前缀提示回调。1b-3 同上
+    pub(crate) keymap_hint_hook: RefCell<Option<JsValue>>,
 }
 
 impl JsHost {
@@ -76,6 +85,10 @@ impl JsHost {
             plugin_roots: RefCell::new(&[]),
             runtime_dirs: RefCell::new(&[]),
             layouts_dir: RefCell::new(None),
+            registry: RefCell::new(HashMap::new()),
+            event_handlers: RefCell::new(HashMap::new()),
+            popups: RefCell::new(HashMap::new()),
+            keymap_hint_hook: RefCell::new(None),
         }
     }
 }

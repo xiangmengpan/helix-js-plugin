@@ -65,9 +65,7 @@ thread_local! {
 }
 thread_local! {
     // 持有 JsValue：线程退出时内容泄漏，不随线程 drop（与 CONTEXT 同哲学，见上）
-    static REGISTRY: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static POPUPS: RefCell<Option<&'static mut HashMap<u64, PopupCallbacks>>> = const { RefCell::new(None) };
     static NEXT_POPUP_ID: Cell<u64> = const { Cell::new(1) };
     static NEXT_MAP_ID: Cell<u64> = const { Cell::new(1) };
     // 批量编辑事务深度(begin_edit/end_edit);>0 时 take_edits 积压
@@ -87,7 +85,6 @@ thread_local! {
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static STATUSLINE_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // keymap 前缀提示回调(set_keymap_hint):无注册 → 内置 Info
-    static KEYMAP_HINT_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     // 插件装饰请求队列(与编辑队列同 take 点/同 txn 门控/同复位)
     static DECORATION_REQUESTS: RefCell<Vec<DecorationRequest>> = const { RefCell::new(Vec::new()) };
@@ -97,7 +94,6 @@ thread_local! {
     // 当前 eval 脚本声明的依赖（helix.plugin deps；load eval 后 take 递归加载）
     static LAST_PLUGIN_DEPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static EVENT_HANDLERS: RefCell<Option<&'static mut HashMap<String, Vec<JsValue>>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     static TERM_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, TermCallbacks>>> = const { RefCell::new(None) };
     // run_async 的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
@@ -130,10 +126,14 @@ pub(crate) use crate::host::with_engine;
 
 /// 访问 REGISTRY：首次触达惰性 Box::leak 创建；线程退出时内容泄漏（见上）
 pub(crate) fn with_registry<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
-    REGISTRY.with(|r| {
-        let mut slot = r.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.registry.borrow_mut()))
+}
+
+/// 同 [`with_registry`],但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
+pub(crate) fn try_with_registry<T>(
+    f: impl FnOnce(&mut HashMap<String, JsValue>) -> T,
+) -> Option<T> {
+    crate::host::try_with_host_ref(|h| f(&mut h.registry.borrow_mut()))
 }
 
 /// 访问 LAST_EXPORT：同上（内容泄漏）
@@ -179,10 +179,14 @@ pub fn cache_configs(json: &str) {
 
 /// 访问 EVENT_HANDLERS：同上（内容泄漏）
 pub(crate) fn with_event_handlers<T>(f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T) -> T {
-    EVENT_HANDLERS.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.event_handlers.borrow_mut()))
+}
+
+/// 同 [`with_event_handlers`],但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
+pub(crate) fn try_with_event_handlers<T>(
+    f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T,
+) -> Option<T> {
+    crate::host::try_with_host_ref(|h| f(&mut h.event_handlers.borrow_mut()))
 }
 
 /// 注册组件状态提供者：组件 id → 序列化为 JSON 的闭包（helix-term 侧调用）。
@@ -206,10 +210,14 @@ pub fn get_component_state_json(id: u64) -> Option<String> {
 
 /// 访问 POPUPS：同上（内容泄漏）
 pub(crate) fn with_popups<T>(f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -> T) -> T {
-    POPUPS.with(|p| {
-        let mut slot = p.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.popups.borrow_mut()))
+}
+
+/// 同 [`with_popups`],但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
+pub(crate) fn try_with_popups<T>(
+    f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -> T,
+) -> Option<T> {
+    crate::host::try_with_host_ref(|h| f(&mut h.popups.borrow_mut()))
 }
 
 /// 访问 BUFFER_ICON_HOOK：同上（内容泄漏）
@@ -246,10 +254,12 @@ pub(crate) fn with_picker_sources<T>(f: impl FnOnce(&mut HashMap<String, JsValue
 
 /// 访问 KEYMAP_HINT_HOOK：同上（内容泄漏）
 pub(crate) fn with_keymap_hint_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
-    KEYMAP_HINT_HOOK.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.keymap_hint_hook.borrow_mut()))
+}
+
+/// 同 [`with_keymap_hint_hook`],但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
+pub(crate) fn try_with_keymap_hint_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> Option<T> {
+    crate::host::try_with_host_ref(|h| f(&mut h.keymap_hint_hook.borrow_mut()))
 }
 
 /// 访问 STATUSLINE_HOOK：同上（内容泄漏）
