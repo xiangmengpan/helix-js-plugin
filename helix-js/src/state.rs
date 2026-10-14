@@ -769,11 +769,21 @@ static BUFFERS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 
 /// 平级模式快照(JSON: `{mode, keys:[{key,desc,enabled,reason?}]}`)。
 /// helix-term 在模式切换时写入;`helix.pane_mode.current()/keymap()` 读。
-pub(crate) static PANE_MODE: OnceLock<Mutex<String>> = OnceLock::new();
+/// PANE_MODE —— **按宿主**记录(原进程级 `OnceLock<Mutex<String>>`:并行时一个用例会读到
+/// 别人的快照;实测 `which_key_plugin_zh_hints` 因 which-key 键位表取自 `pane_mode`
+/// 而渲染出**别的用例的**键位 ⇒ 2/2 复现)。
+/// ⚠️ 同 `BUFFERS`:这张表**每帧/每次变更写**,不能照抄 `LAYOUTS_DIR` 的 `Box::leak`(会无限增长)
+/// ⇒ 存 `String`、读时 clone。
+pub(crate) static PANE_MODE: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 
 /// pane 清单快照(JSON: `{panes:[{id,place,focused,fixed,pinned,z?,rect?}]}`)。
 /// 布局变更时由 helix-term 写入;`helix.pane.list()` 读。
-pub(crate) static PANES: OnceLock<Mutex<String>> = OnceLock::new();
+/// PANES —— **按宿主**记录(原进程级 `OnceLock<Mutex<String>>`:并行时一个用例会读到
+/// 别人的快照;实测 `which_key_plugin_zh_hints` 因 which-key 键位表取自 `pane_mode`
+/// 而渲染出**别的用例的**键位 ⇒ 2/2 复现)。
+/// ⚠️ 同 `BUFFERS`:这张表**每帧/每次变更写**,不能照抄 `LAYOUTS_DIR` 的 `Box::leak`(会无限增长)
+/// ⇒ 存 `String`、读时 clone。
+pub(crate) static PANES: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 /// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: `{"<name>": {...}}`
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
 thread_local! {
@@ -987,14 +997,34 @@ pub fn cache_layout(json: &str) {
 
 /// 写入打开文档序列化缓存(helix-term 每帧更新;buffers/current_buffer 读取)
 pub fn cache_buffers(json: &str) {
-    let _ = PANE_MODE.get_or_init(Default::default);
-    let _ = PANES.get_or_init(Default::default);
     let key = crate::host::current_host_key_or_init();
     BUFFERS
         .get_or_init(Default::default)
         .lock()
         .expect("buffers lock")
         .insert(key, json.to_string());
+}
+
+/// 当前宿主的 pane 清单快照(还没缓存过 → 空串)。`helix.pane.*` 的读取口。
+pub(crate) fn panes_json() -> String {
+    let key = crate::host::current_host_key_or_init();
+    PANES
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+        .unwrap_or_default()
+}
+
+/// 当前宿主的平级模式快照(还没缓存过 → 空串)。**which-key 的键位表唯一来源**。
+pub(crate) fn pane_mode_json() -> String {
+    let key = crate::host::current_host_key_or_init();
+    PANE_MODE
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+        .unwrap_or_default()
 }
 
 /// 当前宿主的打开文档快照(还没缓存过 → 空串)。
@@ -1012,17 +1042,21 @@ pub(crate) fn buffers_json() -> String {
 /// 写入平级模式快照(模式切换时由 helix-term 调用)
 /// 写入 pane 清单快照(布局变更时由 helix-term 调用)
 pub fn cache_panes(json: &str) {
-    let _ = PANES.get_or_init(Default::default);
-    if let Some(m) = PANES.get() {
-        *m.lock().unwrap() = json.to_string();
-    }
+    let key = crate::host::current_host_key_or_init();
+    PANES
+        .get_or_init(Default::default)
+        .lock()
+        .expect("snapshot lock")
+        .insert(key, json.to_string());
 }
 
 pub fn cache_pane_mode(json: &str) {
-    let _ = PANE_MODE.get_or_init(Default::default);
-    if let Some(m) = PANE_MODE.get() {
-        *m.lock().unwrap() = json.to_string();
-    }
+    let key = crate::host::current_host_key_or_init();
+    PANE_MODE
+        .get_or_init(Default::default)
+        .lock()
+        .expect("snapshot lock")
+        .insert(key, json.to_string());
 }
 
 /// 写入当前文档诊断序列化缓存(helix-term 每帧更新;diagnostics 读取)

@@ -508,10 +508,7 @@ pub(crate) fn js_pane_list(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = crate::state::PANES
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = crate::state::panes_json();
     if json.is_empty() {
         return js_json_parse("{\"panes\":[]}".to_string(), ctx, "pane.list")
             .and_then(|o| o.as_object().unwrap().get(JsString::from("panes"), ctx))
@@ -646,10 +643,7 @@ pub(crate) fn js_stack_list(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = crate::state::PANES
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = crate::state::panes_json();
     let mut seen = std::collections::HashSet::new();
     let mut groups: Vec<serde_json::Value> = Vec::new();
     if !json.is_empty() {
@@ -725,10 +719,7 @@ pub(crate) fn js_pane_mode_current(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = crate::state::PANE_MODE
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = crate::state::pane_mode_json();
     if json.is_empty() {
         return Ok(JsValue::from(JsString::from("Normal")));
     }
@@ -746,10 +737,7 @@ pub(crate) fn js_pane_mode_keymap(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = crate::state::PANE_MODE
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = crate::state::pane_mode_json();
     if json.is_empty() {
         return js_json_parse(
             "{\"mode\":\"Normal\",\"keys\":[]}".to_string(),
