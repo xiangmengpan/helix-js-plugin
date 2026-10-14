@@ -10,6 +10,19 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context as _, Result};
 
+/// 建软链:`std::os::unix::fs::symlink` 在非 unix 不存在 ⇒ 各平台走各自的门面。
+/// Windows 建链需开发者模式/管理员权限,失败照常冒泡成错误(不静默)。
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst)
+    }
+    #[cfg(not(unix))]
+    {
+        std::os::windows::fs::symlink_file(src, dst)
+    }
+}
+
 /// 下载层 mirror 前缀(空 = 直连):经 [server-manager].mirror 配置(T4 读入)
 fn mirror_prefix() -> String {
     MIRROR
@@ -1393,7 +1406,7 @@ pub fn install_adhoc(
     std::fs::create_dir_all(&bin_dir)?;
     let link = bin_dir.join(bin_name);
     let _ = std::fs::remove_file(&link);
-    std::os::unix::fs::symlink(dest.join(bin_rel), &link).with_context(|| {
+    symlink_file(&dest.join(bin_rel), &link).with_context(|| {
         format!(
             "symlink {} -> {}",
             link.display(),
@@ -1468,7 +1481,7 @@ pub fn install_tool_adhoc(
     std::fs::create_dir_all(&bin_dir)?;
     let link = bin_dir.join(bin_name);
     let _ = std::fs::remove_file(&link);
-    std::os::unix::fs::symlink(&bin_in, &link)
+    symlink_file(&bin_in, &link)
         .with_context(|| format!("symlink {} -> {}", link.display(), bin_in.display()))?;
     Ok(())
 }
@@ -1639,7 +1652,7 @@ pub fn install_from_local_dir_for_test(name: &str, dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&bin_dir)?;
     let link = bin_dir.join(&spec.bin_name);
     let _ = std::fs::remove_file(&link);
-    std::os::unix::fs::symlink(dest.join(&spec.bin_name), &link)?;
+    symlink_file(&dest.join(&spec.bin_name), &link)?;
     Ok(())
 }
 
@@ -1913,10 +1926,14 @@ url = "file://{}"
 
     /// 写可执行的假脚本
     fn write_sh(root: &Path, name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
         let p = root.join(name);
         std::fs::write(&p, body).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // 可执行位:非 unix 没有这个概念(可执行性由扩展名决定) ⇒ 只在 unix 设
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         p
     }
 
