@@ -102,7 +102,7 @@ helix.export({ helper: () => {} });                        // 可选:供别的�
 
 | 脚本 | 查什么 | 用法 |
 |---|---|---|
-| `check_api_surface.mjs` | **注册表 ↔ `helix.d.ts` 对账**(少写的 API / 不存在的名字 / 位置过时的旧名 / 由插件补的名字)+ `runtime/plugins` 与源**逐文件**一致 | `node plugins/tools/check_api_surface.mjs` |
+| `check_api_surface.mjs` | **注册表 ↔ `helix.d.ts` 对账**(少写的 API / 不存在的名字 / 位置过时的旧名 / 由插件补的名字)+ `runtime/plugins` 与源**逐文件**一致 | **`cargo xtask api-check`**(门禁入口)/`node plugins/tools/check_api_surface.mjs` 等价 |
 | `check_signatures.mjs` | 插件 JS 语法 + `icons` 6 个函数的参数名/函数体使用/导出一致性 | `node plugins/tools/check_signatures.mjs` |
 | `sync_runtime.sh` | 把源的**已有副本**更新到最新:`.js` + `helix.d.ts` / `README.md` / `jsconfig.json`(**只更新,不新建**)| `bash plugins/tools/sync_runtime.sh` |
 
@@ -124,7 +124,8 @@ node 侧注入最小 `global.helix` 桩即可直接 require —— 例子见 `pl
 
 1. **镜像漂移**:`plugins/` 是源,`<runtime>/plugins` 与 `~/.config/helix/plugins` 是**副本** ⇒
    改了源没同步 = "改了却不生效"。真实事故:`picker-ui` 的一处改动就是这么一直没生效的。
-   → 用 `sync_runtime.sh` 同步,或让 `check_api_surface.mjs` 替你查(它会逐文件比)。
+   → 用 `sync_runtime.sh` 同步,或让 `cargo xtask api-check` 替你查(它会逐文件比;脚本本体在
+     `plugins/tools/check_api_surface.mjs`,xtask 只是它的门禁入口,CI 也跑这一条)。
 2. **`deps` 的时序反直觉**:依赖在本脚本 `eval` **之后**才加载(见 §5)。
 3. **每帧路径别引 JS**:实测 JS 自绘 picker ≈ **3.2 ms/帧/个可见 picker** = 60fps 预算的 **19.2%**
    ⇒ 核心渲染仍是默认路径;判定清单见 [`docs/plugin-vs-core.md`](../docs/plugin-vs-core.md)。

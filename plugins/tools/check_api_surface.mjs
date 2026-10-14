@@ -450,10 +450,18 @@ function main() {
   section("── 镜像副本(仓库头号事故:改了源忘了同步)──");
   const mirror = "runtime/plugins";
   const MIRROR_SKIP = ["tools"]; // 开发脚本不随软件分发(见 contrib/install-plugins.sh)
+  // “已安装”的判据是镜像里有 **helix.d.ts**(install-plugins.sh 必然装它)。
+  // 为什么不能只看目录存不存在:仓库里 `runtime/plugins/` 有一个历史遗留的跟踪文件
+  // (one-dark.js),于是裸 clone 里目录存在、却没有任何插件文件 ⇒ 逐文件比会红一片。
+  // CI 就是这种裸 clone(副本靠 contrib/install-plugins.sh 在本机装,不入 git),本机
+  // 装了副本才真查 —— 这既保住“改了源忘了同步”的告警,又不会在 CI 里假红。
   if (DTS_PATH !== "plugins/helix.d.ts") {
     console.log("  · 跳过:使用了 HELIX_DTS_OVERRIDE(自检模式)");
-  } else if (!existsSync(rel(mirror))) {
-    console.log(`  · 跳过:${mirror} 不存在(未安装运行副本)`);
+  } else if (!existsSync(rel(join(mirror, "helix.d.ts")))) {
+    console.log(
+      `  · 跳过:${mirror} 里没有 helix.d.ts(未安装运行副本)⇒ 装了才查:` +
+        "contrib/install-plugins.sh <runtime>",
+    );
   } else {
     // 整棵树逐文件比(不只 d.ts)——“改了源忘了同步”是这个目录的通病
     const listFiles = (dir, base = "") => {

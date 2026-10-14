@@ -535,6 +535,30 @@ pub mod tasks {
         Ok(())
     }
 
+    /// 对账 `plugins/helix.d.ts` 与 Rust 侧注册的 JS API(`helix-js/src/{lib,icons,commands}.rs`,
+    /// 从源码解析,不需要编译 helix 本体)。真实逻辑在 `plugins/tools/check_api_surface.mjs`,
+    /// 这里只是把它接进 `cargo xtask`,好让 CI 的门禁与本地跑的是同一份脚本。
+    ///
+    /// 注意:该脚本只覆盖 `plugins/` 下的源定义;`runtime/plugins/` 镜像副本仅在本机装了
+    /// 运行副本时才参与对账(CI 的裸 checkout 没有它,脚本会跳过)。
+    /// 需要 PATH 上有 `node`。
+    pub fn apicheck() -> Result<(), DynError> {
+        let script = crate::path::plugin_api_surface_script();
+        let status = std::process::Command::new("node")
+            .arg(&script)
+            .status()
+            .map_err(|err| {
+                format!(
+                    "api-check 需要 node 且脚本存在(脚本 {}):{err}",
+                    script.display()
+                )
+            })?;
+        if !status.success() {
+            return Err(format!("api-check failed ({status}); 脚本:{}", script.display()).into());
+        }
+        Ok(())
+    }
+
     pub fn print_help() {
         println!(
             "
@@ -557,6 +581,9 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
                                    winning capture per span for an arbitrary input file.
         theme-check [themes]       Check that the theme files in runtime/themes/ are valid for the
                                    given themes, or all themes if none are specified.
+        api-check                  Reconcile plugins/helix.d.ts with the JS API registered from
+                                   Rust (helix-js/src/lib.rs · icons.rs · commands.rs); fails on
+                                   drift. Requires `node` on PATH.
 "
         );
     }
@@ -573,6 +600,7 @@ fn main() -> Result<(), DynError> {
             "indent-check" => tasks::indentcheck(args)?,
             "highlight-check" => tasks::highlightcheck(args)?,
             "theme-check" => tasks::themecheck(args)?,
+            "api-check" => tasks::apicheck()?,
             invalid => return Err(format!("Invalid task name: {}", invalid).into()),
         },
     };

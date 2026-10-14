@@ -122,6 +122,13 @@ jobs:
         if: always()
         run: cargo xtask theme-check
 
+      # 强制门禁:plugins/helix.d.ts 是手工维护的,必须与 Rust 侧注册的 JS API 对账
+      # (helix-js/src/lib.rs · icons.rs · commands.rs)。脚本:plugins/tools/check_api_surface.mjs,
+      # 用 ubuntu runner 预装的 node。漂移时退出码 1 ⇒ 这一步红。
+      - name: Check plugin API surface
+        if: always()
+        run: cargo xtask api-check
+
       - name: Generate docs
         if: always()
         run: cargo xtask docgen

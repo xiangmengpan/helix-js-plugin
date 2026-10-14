@@ -7,6 +7,14 @@ pub fn project_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// `plugins/tools/check_api_surface.mjs` —— 对账 `plugins/helix.d.ts` 与 Rust 侧注册的 JS API。
+pub fn plugin_api_surface_script() -> PathBuf {
+    project_root()
+        .join("plugins")
+        .join("tools")
+        .join("check_api_surface.mjs")
+}
+
 pub fn book_gen() -> PathBuf {
     project_root().join("book/src/generated/")
 }
