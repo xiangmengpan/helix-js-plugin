@@ -4413,6 +4413,37 @@ helix.set_component_render(0, function (_focus, ctx) {
         assert!(!crate::has_component_render(77), "注销后应报不存在");
     }
 
+    /// `layout-change` 的参数形状**恒定**为 `(kind | null, doc)`:缺种类时第一参是显式 `null`,
+    /// 第二参仍是 doc(旧实现缺种类时只传 `[doc]` ⇒ `(kind)=>…` 静默拿到事件对象)。
+    #[test]
+    fn layout_change_args_are_kind_or_null_then_doc() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        let _ = crate::take_messages(); // 清掉同线程此前的 echo,免得断言受污染
+        load_script(
+            r#"helix.on("layout-change", (kind, doc) => {
+                 const k = kind === null ? "null" : (typeof kind === "string" ? kind : "NOT-A-KIND:" + typeof kind);
+                 const d = (doc && typeof doc === "object" && typeof doc.text === "string") ? "doc" : "NOT-DOC:" + typeof doc;
+                 helix.echo("lc " + k + " " + d);
+               });"#,
+        )
+        .unwrap();
+
+        crate::set_layout_change_kind("split");
+        crate::emit_layout_change().unwrap();
+        crate::emit_layout_change().unwrap(); // 不带种类
+
+        let msgs = crate::take_messages();
+        assert!(
+            msgs.iter().any(|m| m == "lc split doc"),
+            "带种类应为 (kind, doc);实得 {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m == "lc null doc"),
+            "无种类应为 (null, doc)(第二参仍是 doc);实得 {msgs:?}"
+        );
+    }
+
     /// 脏渲染协议:回调返回 `null`/`undefined` = "无变化" ⇒ 复用上次内容(**不再解析**);
     /// 但**首次**就返回 null ⇒ 明确报错(而不是静默空内容)。是否脏由插件决定 ⇒ 无陈旧风险。
     #[test]

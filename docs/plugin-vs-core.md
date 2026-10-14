@@ -82,4 +82,4 @@ Q3 已有两份实现?  是 → 先合并,再判定
 
 - [`plugin-layout.md`](plugin-layout.md) —— 布局 / 插件的机制边界
 - [`plugin-api.md`](plugin-api.md) —— 插件 API 与已知限制
-- [`api/events.md`](api/events.md) —— `layout-change` 等事件的形状陷阱
+- [`api/events.md`](api/events.md) —— 事件形状(`layout-change` 的形状陷阱已于 2026-10-13 统一为 `(kind|null, doc)`)

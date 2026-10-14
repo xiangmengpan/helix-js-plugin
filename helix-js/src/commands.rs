@@ -1131,9 +1131,24 @@ fn emit_event_impl(
                 .as_callable()
                 .and_then(JsFunction::from_object)
                 .ok_or_else(|| anyhow!("event '{name}' handler not callable"))?;
-            let args: Vec<JsValue> = match extra {
-                Some(mode) => vec![JsValue::from(JsString::from(mode.to_string())), doc.clone()],
-                None => vec![doc.clone()],
+            // 形状统一(**仅 `layout-change`** —— 它是唯一"有种类概念"的事件):永远是
+            // `(kind | null, doc)`。缺种类时第一参是**显式 null**,绝不把 doc 挪到第一参。
+            // 旧实现 `None ⇒ vec![doc]` 会让写 `(kind) => …` 的插件**静默**拿到事件对象:
+            // `sync_layout_cache` 的 40 个调用点里只有 10 处设种类(typed.rs),多数路径命中该坑。
+            // 其它事件没有种类概念 ⇒ 单参形状**保持不变**(改了会打断全部既有订阅者)。
+            let args: Vec<JsValue> = if name == "layout-change" {
+                let kind = match extra {
+                    Some(mode) => JsValue::from(JsString::from(mode.to_string())),
+                    None => JsValue::null(),
+                };
+                vec![kind, doc.clone()]
+            } else {
+                match extra {
+                    Some(mode) => {
+                        vec![JsValue::from(JsString::from(mode.to_string())), doc.clone()]
+                    }
+                    None => vec![doc.clone()],
+                }
             };
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 crate::state::with_edits(|c| c.clear());

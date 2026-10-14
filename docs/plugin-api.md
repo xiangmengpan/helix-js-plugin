@@ -71,7 +71,7 @@
 
 `helix.on(event, fn)`:文档系(`save` 前/mode-change/buffer-open/close/doc-change 带合并范围/theme-change)、诊断/光标(`lsp-diagnostics`/`cursor-move`/`selection-change`)、终端系(`term-open/mode-change/exit/close/resize/title/key`)、`component-event`。
 
-- 布局系:`layout-change` —— **回调形状会变**(带种类 `(kind, doc)` / 不带 `(doc)`),详见 [`api/events.md`](api/events.md)。
+- 布局系:`layout-change` —— 回调形状**恒定** `(kind, doc)`,`kind` 缺省时为 `null`;详见 [`api/events.md`](api/events.md)。
 
 - 优点:事件丰富;多处理器按序;抛错不阻断;doc-change 带合并范围。
 - 局限:只带当前文档;doc 只读快照;doc-change 250ms 防抖。
@@ -203,7 +203,7 @@ helix.register_command("filetree", () => {
 | **picker 键位只可「加」不可「改」** | 源可选的 `onKey` 只能认领**核心不认识的键**(`Esc`/`Enter`/`Tab`/翻页等核心先处理,插件拿不到)=> 无法重绑核心键;纯字符输入也永不交给插件(防吞打字)。详见 [`api/picker-theme.md`](api/picker-theme.md) |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
 | **事件 ctx 范围** | 事件只带当前文档(其他分屏文档不触发) |
-| **`layout-change` 回调形状会变** | 带种类时 `(kind, doc)`、不带时 `(doc)`(无占位参数)⇒ `(kind) => …` 会在无种类路径拿到**事件对象**而不报错;`sync_layout_cache()` 37 处调用点仅 10 处设种类(实测 2026-10-10) |
+| **`layout-change` 的 `kind` 常为 `null`** | 形状**恒定** `(kind, doc)`(2026-10-13 统一;此前缺种类时只传 `(doc)` ⇒ `(kind) => …` 静默拿到事件对象)。`sync_layout_cache()` 40 处调用点仅 10 处设种类 ⇒ 判 `kind === null` 即可 |
 | **无多光标编辑** | `helix.set_selection` **支持多选区数组形态**(`[{anchor, head}, …]`;按 range 起点排序,主光标 = 排序后末位,与原生多光标一致)。缺的是**逐光标各自的编辑** —— 编辑队列只有一份快照坐标(实测 2026-10-10) |
 | **Unix-only** | `helix.run`/`spawn`/PTY 依赖 `sh` 与 libc openpty(Windows 不可用) |
 | **键位不持久** | `helix.map` 绑定重启失效(插件启动时重新注册) |

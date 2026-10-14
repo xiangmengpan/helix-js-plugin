@@ -959,6 +959,11 @@ let args = match extra {
 
 另:`layout-change` 的契约**已写进 `docs/api/events.md`**(2026-10-10,含"回调形状会变"的坑)。
 
+> **更新(2026-10-13):形状已统一。** `emit_event_impl` 现在对 `layout-change` **恒**传
+> `(kind | null, doc)` —— 缺种类时第一参是**显式 `null`**,`doc` 不再被挪到第一参。
+> 上文的"两态形状"已成历史;`docs/api/events.md` / `docs/plugin-api.md` 已同步。
+> 回归测试:`helix-js/src/lib.rs::layout_change_args_are_kind_or_null_then_doc`。
+
 > 本节可当“不要把推理当结论”的标本:三轮推理全错,而真相在**端到端测试的注释与一行日志**里。
 
 ## ③ 实测:JS 渲染每帧的真实代价(2026-10-11)

@@ -327,6 +327,8 @@ interface Helix {
   load(name: string): unknown; // 缓存加载,返回 exports
   export(obj: Record<string, unknown>): void;
   lazy(name: string, ...commands: string[]): void;
+  /** `layout-change` 的形状恒定:`kind` 缺省时是 **null**(不是"没有第一参"),`doc` 恒在第二参。 */
+  on(event: "layout-change", fn: (kind: string | null, doc: Doc) => void): void;
   on(event: EventName, fn: (...args: any[]) => void): void;
 
   // ── 文档编辑与选区 ──

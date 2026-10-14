@@ -153,3 +153,62 @@ async fn plugin_panel_open_edit_close() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// §7.1 端到端:`layout-change` 的实参形状**恒定** `(kind|null, doc)`。
+/// 面板开合走 `sync_layout_cache` 的**不带种类**路径(40 处调用点里 30 处如此)——
+/// 旧实现在这条路径上只传 `[doc]` ⇒ `(kind) => …` 的插件会静默把 doc 当 kind。
+///
+/// 观察点用**写文件**而不是 `helix.echo`:echo 会在命令边界被 drain 进状态栏,
+/// 断言时已取不到(第一版就踩了这个 ⇒ "实得 []")。
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_change_args_shape_end_to_end() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "one\n")?;
+    let marker = dir.path().join("shape.txt");
+    let plugin_path = dir.path().join("lc.js");
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"
+        helix.on("layout-change", (kind, doc) => {{
+            const k = kind === null ? "null" : (typeof kind === "string" ? "str" : "BAD-KIND:" + typeof kind);
+            const d = (doc && typeof doc === "object") ? "doc" : "BAD-DOC:" + typeof doc;
+            helix.write_file("{}", "lc-shape " + k + " " + d);
+        }});
+        helix.register_command("lc-open", () => {{
+            helix.open_panel({{ side: "right", size: 20, render: () => ["== panel =="] }});
+        }});
+        "#,
+            marker.display()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (Some(":lc-open<ret>"), None),
+            (
+                Some("<esc>"),
+                Some(&|_app| {
+                    let got = std::fs::read_to_string(&marker).unwrap_or_default();
+                    assert!(
+                        !got.is_empty(),
+                        "面板开合应触发 layout-change(观察文件为空 ⇒ 事件没发)"
+                    );
+                    assert!(
+                        got.ends_with(" doc") && !got.contains("BAD"),
+                        "形状必须是 (kind|null, doc);实得 {got:?}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
