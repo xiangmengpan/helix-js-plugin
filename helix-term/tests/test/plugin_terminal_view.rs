@@ -55,9 +55,22 @@ async fn term_native_opens_and_renders_feed() -> anyhow::Result<()> {
     for key_event in parse_macro("xyz")? {
         tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
     }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    let all = render_all(&mut app, area);
-    assert!(all.contains("xyz"), "pty echo rendered: {all:?}");
+    // **有界等待**:pty 回显经真实进程回环,"泵一轮就断言"隐含"机器安静"这个前提 ——
+    // 并发满载时回显可能只到一半(实测见过渲染里仅 `hello from ptyx`,期望 `xyz`)。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut all;
+    loop {
+        app.event_loop_until_idle(&mut rx_stream).await;
+        all = render_all(&mut app, area);
+        if all.contains("xyz") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pty echo rendered(30s 内有界等待): {all:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 
     let errs = app.close().await;
     if !errs.is_empty() {
