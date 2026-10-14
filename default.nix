@@ -11,25 +11,62 @@
 }: let
   fs = lib.fileset;
 
-  # `./runtime` 整棵被排除(它由 runtimeDir 单独提供),但 helix-term 用 include_str! 在**编译期**
-  # 读 runtime/server-manager-builtin.toml ⇒ 必须把这一个文件并回源里,否则 nix 构建必失败
-  # ("couldn't read .../runtime/server-manager-builtin.toml")。普通 cargo 构建不受影响——
-  # 整个 checkout 都在,这也正是这条只红 Cachix、不红 Build 的原因。
-  src = fs.union
-    (fs.difference (fs.gitTracked ./.) (fs.unions [
-      ./.envrc
-      ./rustfmt.toml
-      ./screenshot.png
-      ./book
-      ./docs
-      ./runtime
-      ./flake.lock
-      (fs.fileFilter (file: lib.strings.hasInfix ".git" file.name) ./.)
-      (fs.fileFilter (file: file.hasExt "svg") ./.)
-      (fs.fileFilter (file: file.hasExt "md") ./.)
-      (fs.fileFilter (file: file.hasExt "nix") ./.)
-    ]))
-    (fs.gitTracked ./runtime/server-manager-builtin.toml);
+  # 入源内容**显式列举**,不再对文件调用 fs.gitTracked——
+  # fs.gitTracked 的参数必须是**目录**(传文件会直接抛
+  # "lib.fileset.gitTracked: Expected the argument ... to be a directory, but it's a file instead",
+  # 求值期就红,连构建都进不去)。原先"整树 gitTracked 再做 difference"的写法
+  # 一旦要往回转某个文件就必然踩这个坑,所以这里改成白名单式的路径列表。
+  #
+  # 列表内容 = cargo workspace 成员 + 顶层构建配置 + 被 include_str!/include_bytes!
+  # 在**编译期**读入、且位于 crate 目录之外的数据文件。runtime/ 整体不入源
+  # (它由下面的 runtimeDir 提供),唯独 runtime/server-manager-builtin.toml 必须单列:
+  # helix-term/src/commands/server_manager.rs 用 include_str! 在编译期读它,
+  # 缺了就是 "couldn't read .../runtime/server-manager-builtin.toml"。
+  # (普通 cargo 构建看不到这个问题——整个 checkout 都在,这也是它只红 Cachix、
+  #  不红 Build 的原因。)
+  sourcePaths = [
+    # Cargo.toml 里的 workspace 成员:每个成员的 Cargo.toml 都得在,
+    # cargo 才解得开 workspace;src/ 也必须齐,否则 --workspace 构建直接失败。
+    ./helix-core
+    ./helix-view
+    ./helix-term
+    ./helix-tui
+    ./helix-lsp-types
+    ./helix-lsp
+    ./helix-event
+    ./helix-js
+    ./helix-dap-types
+    ./helix-dap
+    ./helix-loader
+    ./helix-vcs
+    ./helix-parsec
+    ./helix-stdx
+    ./xtask
+
+    # 构建配置:Cargo.lock 钉依赖;.cargo/config.toml 供 `--cfg tokio_unstable` 等 rustflags。
+    ./Cargo.toml
+    ./Cargo.lock
+    ./.cargo/config.toml
+    ./rust-toolchain.toml
+
+    # 编译期 include_bytes!/include_str! 的顶层数据文件
+    ./languages.toml # helix-loader/src/config.rs, helix-loader/src/lib.rs
+    ./theme.toml # helix-view/src/theme.rs
+    ./base16_theme.toml # helix-view/src/theme.rs
+    ./contrib/server-manager-recipes.toml # helix-term/src/commands/server_manager.rs(测试断言)
+    ./runtime/server-manager-builtin.toml # helix-term/src/commands/server_manager.rs
+
+    # 测试语料与插件资产:不参与 `cargo build`,但属源的一部分(xtask / 集成测试用)。
+    ./tests
+    ./plugins
+  ];
+
+  # 上游 nixpkgs 也支持 fs.unions 直接吃普通 path(列表里只有显式路径,没有递归扫描),
+  # 所以这里既不需要 gitTracked 也不需要 fileFilter 二次过滤。
+  src = fs.toSource {
+    root = ./.;
+    fileset = fs.unions sourcePaths;
+  };
 
   # Next we actually need to build the grammars and the runtime directory
   # that they reside in. It is built by calling the derivation in the
@@ -62,10 +99,7 @@ in
     buildType = "release";
 
     name = with builtins; (fromTOML (readFile ./helix-term/Cargo.toml)).package.name;
-    src = fs.toSource {
-      root = ./.;
-      fileset = src;
-    };
+    inherit src;
 
     # Helix attempts to reach out to the network and get the grammars. Nix doesn't allow this.
     HELIX_DISABLE_AUTO_GRAMMAR_BUILD = "1";
