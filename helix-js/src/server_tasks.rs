@@ -15,7 +15,6 @@ use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -78,9 +77,7 @@ pub fn register_task_host(task_id: u64) {
 }
 
 // 持有 JsValue：线程退出时内容泄漏（与 CONTEXT 同哲学，见 state.rs 顶部注释）
-thread_local! {
-    static CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
-}
+thread_local! {}
 
 /// task_id **进程内全局唯一**（原来是 thread_local ⇒ 每个宿主都从 1 重新数）。
 /// 路由表是 `task_id → 宿主`，两个宿主同时用到同一个 id 就会**串台**（事件投给
@@ -88,10 +85,7 @@ thread_local! {
 static NEXT_TASK_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn with_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
-    CALLBACKS.with(|m| {
-        let mut slot = m.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.server_task_callbacks.borrow_mut()))
 }
 
 fn next_task_id() -> u64 {

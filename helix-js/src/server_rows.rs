@@ -10,22 +10,17 @@ use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue};
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::state::{with_engine, UI_REQUESTS};
 use crate::types::{ServerRow, UiRequest};
 
 thread_local! {
-    static CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
     static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 
 fn with_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
-    CALLBACKS.with(|m| {
-        let mut slot = m.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.server_rows_callbacks.borrow_mut()))
 }
 
 /// `helix.server.rows(cb)`：注册一次性回调并请求当前行数据；返回 request id。

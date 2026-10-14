@@ -59,10 +59,7 @@ pub(crate) fn wake_sender<T>(inner: std::sync::mpsc::Sender<T>) -> WakeSender<T>
     WakeSender { inner }
 }
 
-thread_local! {
-    static NODE_HANDLERS: RefCell<Option<&'static mut HashMap<(u64, String), NodeHandlers>>> =
-        const { RefCell::new(None) };
-}
+thread_local! {}
 thread_local! {
     // 持有 JsValue：线程退出时内容泄漏，不随线程 drop（与 CONTEXT 同哲学，见上）
     // 持有 JsValue：线程退出时内容泄漏（同上）
@@ -75,15 +72,10 @@ thread_local! {
     // 原生终端视图 id 计数器（open_terminal 返回值；与 pty 进程 id 分开分配）
     static NEXT_TERMINAL_VIEW_ID: Cell<u64> = const { Cell::new(1) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static BUFFER_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static COMPLETION_ICON_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static COMPLETION_RENDER_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static PICKER_SOURCES: RefCell<Option<&'static mut HashMap<String, JsValue>>> = const { RefCell::new(None) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static STATUSLINE_HOOK: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // keymap 前缀提示回调(set_keymap_hint):无注册 → 内置 Info
     static CURRENT_EDITS: RefCell<Vec<Edit>> = const { RefCell::new(Vec::new()) };
     // 插件装饰请求队列(与编辑队列同 take 点/同 txn 门控/同复位)
@@ -95,10 +87,7 @@ thread_local! {
     static LAST_PLUGIN_DEPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static TERM_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, TermCallbacks>>> = const { RefCell::new(None) };
     // run_async 的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
-    static TERM_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
-        const { RefCell::new(None) };
     static NEXT_TERM_ID: Cell<u64> = const { Cell::new(1) };
     // HashMap::new 非 const fn，COMMAND_DOCS 不能用 const 块初始化
     static COMMAND_DOCS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
@@ -109,7 +98,6 @@ thread_local! {
     /// push/pop,便于保持同步;空 Path 表示"绝对路径加载,无提供根"。
     static LOAD_ROOTS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     // 持有 JsValue：线程退出时内容泄漏（同上）
-    static LAST_EXPORT: RefCell<Option<&'static mut Option<JsValue>>> = const { RefCell::new(None) };
     // 主题覆盖：scope → 颜色字符串（set_theme 整体替换；reset_theme 清空）。
     // 只存字符串，无 JsValue，普通 RefCell 即可（随线程 drop）。
     static THEME_OVERRIDES: RefCell<HashMap<String, crate::theme::StyleOverride>> = RefCell::new(HashMap::new());
@@ -138,10 +126,7 @@ pub(crate) fn try_with_registry<T>(
 
 /// 访问 LAST_EXPORT：同上（内容泄漏）
 pub(crate) fn with_last_export<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
-    LAST_EXPORT.with(|l| {
-        let mut slot = l.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.last_export.borrow_mut()))
 }
 
 /// 当前 eval 脚本声明的依赖（helix.plugin deps 累积处；load eval 后 take 递归加载）
@@ -151,10 +136,7 @@ pub(crate) fn with_last_plugin_deps<T>(f: impl FnOnce(&mut Vec<String>) -> T) ->
 
 /// 访问 CONFIG_SCHEMAS：同上
 pub(crate) fn with_config_schemas<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
-    CONFIG_SCHEMAS.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.config_schemas.borrow_mut()))
 }
 
 /// 写入 schema(helix-term 测试/插件预置用;插件正常走 define_config)
@@ -222,34 +204,22 @@ pub(crate) fn try_with_popups<T>(
 
 /// 访问 BUFFER_ICON_HOOK：同上（内容泄漏）
 pub(crate) fn with_buffer_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
-    BUFFER_ICON_HOOK.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.buffer_icon_hook.borrow_mut()))
 }
 
 /// 访问 COMPLETION_ICON_HOOK：同上（内容泄漏）
 pub(crate) fn with_completion_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
-    COMPLETION_ICON_HOOK.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.completion_icon_hook.borrow_mut()))
 }
 
 /// 访问 COMPLETION_RENDER_HOOK：同上（内容泄漏）
 pub(crate) fn with_completion_render_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
-    COMPLETION_RENDER_HOOK.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.completion_render_hook.borrow_mut()))
 }
 
 /// 访问 PICKER_SOURCES：同上（内容泄漏）
 pub(crate) fn with_picker_sources<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
-    PICKER_SOURCES.with(|s| {
-        let mut slot = s.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.picker_sources.borrow_mut()))
 }
 
 /// 访问 KEYMAP_HINT_HOOK：同上（内容泄漏）
@@ -264,10 +234,7 @@ pub(crate) fn try_with_keymap_hint_hook<T>(f: impl FnOnce(&mut Option<JsValue>) 
 
 /// 访问 STATUSLINE_HOOK：同上（内容泄漏）
 pub(crate) fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
-    STATUSLINE_HOOK.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.statusline_hook.borrow_mut()))
 }
 
 thread_local! {
@@ -299,10 +266,7 @@ pub fn statusline_zones() -> [u16; 3] {
 pub(crate) fn with_node_handlers<T>(
     f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T,
 ) -> T {
-    NODE_HANDLERS.with(|h| {
-        let mut slot = h.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.node_handlers.borrow_mut()))
 }
 
 /// 访问批量编辑事务深度(普通 usize,随线程 drop)
@@ -741,7 +705,6 @@ pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
 thread_local! {
     // 插件配置 schema 注册表（define_config 写入；build_plugin_configs 读取）name → schema JSON
-    static CONFIG_SCHEMAS: RefCell<Option<&'static mut HashMap<String, String>>> = const { RefCell::new(None) };
 }
 /// 当前文档诊断序列化缓存（helix-term 每帧写入；diagnostics 读取）
 pub(crate) static DIAGNOSTICS: OnceLock<Mutex<String>> = OnceLock::new();
@@ -796,12 +759,8 @@ thread_local! {
     static ASYNC_EVENTS: RefCell<Option<WakeSender<AsyncEvent>>> = const { RefCell::new(None) };
     static ASYNC_EVENTS_RX: RefCell<Option<std::sync::mpsc::Receiver<AsyncEvent>>> = const { RefCell::new(None) };
     // 异步 fs 的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
-    static ASYNC_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
-        const { RefCell::new(None) };
     static NEXT_ASYNC_ID: Cell<u64> = const { Cell::new(1) };
     // helix.lsp.* 请求的 promise 解析函数（id → resolve/reject）；内容泄漏（同上）
-    static LSP_PROMISES: RefCell<Option<&'static mut HashMap<u64, ResolvingFunctions>>> =
-        const { RefCell::new(None) };
     // LSP 响应通道：与 ASYNC_EVENTS 同模式——发起线程（helix-term 泵）克隆 Sender 给
     // tokio 任务发结果，主线程 drain 消费。
     static LSP_RESULTS: RefCell<Option<WakeSender<crate::lsp::LspResult>>> = const { RefCell::new(None) };
@@ -860,40 +819,28 @@ pub(crate) fn with_lsp_results_rx<T>(
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
 pub(crate) fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
-    TERM_CALLBACKS.with(|t| {
-        let mut slot = t.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.terms.borrow_mut()))
 }
 
 /// 访问 TERM_PROMISES（run_async 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_term_promises<T>(
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
-    TERM_PROMISES.with(|t| {
-        let mut slot = t.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.term_promises.borrow_mut()))
 }
 
 /// 访问 ASYNC_PROMISES（异步 fs 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_async_promises<T>(
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
-    ASYNC_PROMISES.with(|t| {
-        let mut slot = t.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.async_promises.borrow_mut()))
 }
 
 /// 访问 LSP_PROMISES（helix.lsp.* 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_lsp_promises<T>(
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
-    LSP_PROMISES.with(|t| {
-        let mut slot = t.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.lsp_promises.borrow_mut()))
 }
 
 /// 取走并清空 echo 消息队列

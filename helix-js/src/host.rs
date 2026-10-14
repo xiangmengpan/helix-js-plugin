@@ -13,7 +13,8 @@
 //! `corrupted double-linked list`)。对照组:`dropping_a_fresh_context_is_safe` 证明
 //! "新造 Context 的 drop"本身是安全的 ⇒ 问题在"引擎先走、引用者后走"。
 
-use crate::types::{PopupCallbacks, UiRequest};
+use crate::types::{NodeHandlers, PopupCallbacks, TermCallbacks, UiRequest};
+use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -65,6 +66,36 @@ pub struct JsHost {
     pub(crate) popups: RefCell<HashMap<u64, PopupCallbacks>>,
     /// keymap 前缀提示回调。1b-3 同上
     pub(crate) keymap_hint_hook: RefCell<Option<JsValue>>,
+    /// 组件节点事件处理器(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) node_handlers: RefCell<HashMap<(u64, String), NodeHandlers>>,
+    /// bufferline 图标钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) buffer_icon_hook: RefCell<Option<JsValue>>,
+    /// 补全图标钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) completion_icon_hook: RefCell<Option<JsValue>>,
+    /// 补全渲染钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) completion_render_hook: RefCell<Option<JsValue>>,
+    /// picker 源(onKey)(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) picker_sources: RefCell<HashMap<String, JsValue>>,
+    /// 状态栏钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) statusline_hook: RefCell<Option<JsValue>>,
+    /// 终端回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) terms: RefCell<HashMap<u64, TermCallbacks>>,
+    /// 终端 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) term_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
+    /// 最近一次 helix.export(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) last_export: RefCell<Option<JsValue>>,
+    /// 插件配置 schema(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) config_schemas: RefCell<HashMap<String, String>>,
+    /// 异步 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) async_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
+    /// LSP Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) lsp_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
+    /// server rows 一次性回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) server_rows_callbacks: RefCell<HashMap<u64, JsValue>>,
+    /// server task 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) server_task_callbacks: RefCell<HashMap<u64, JsValue>>,
+    /// watch 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) watch_callbacks: RefCell<HashMap<u64, JsValue>>,
 }
 
 impl JsHost {
@@ -89,6 +120,21 @@ impl JsHost {
             event_handlers: RefCell::new(HashMap::new()),
             popups: RefCell::new(HashMap::new()),
             keymap_hint_hook: RefCell::new(None),
+            node_handlers: RefCell::new(HashMap::new()),
+            buffer_icon_hook: RefCell::new(None),
+            completion_icon_hook: RefCell::new(None),
+            completion_render_hook: RefCell::new(None),
+            picker_sources: RefCell::new(HashMap::new()),
+            statusline_hook: RefCell::new(None),
+            terms: RefCell::new(HashMap::new()),
+            term_promises: RefCell::new(HashMap::new()),
+            last_export: RefCell::new(None),
+            config_schemas: RefCell::new(HashMap::new()),
+            async_promises: RefCell::new(HashMap::new()),
+            lsp_promises: RefCell::new(HashMap::new()),
+            server_rows_callbacks: RefCell::new(HashMap::new()),
+            server_task_callbacks: RefCell::new(HashMap::new()),
+            watch_callbacks: RefCell::new(HashMap::new()),
         }
     }
 }

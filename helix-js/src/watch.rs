@@ -9,7 +9,6 @@ use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -30,15 +29,11 @@ static WATCH_CHANNEL: OnceLock<
 
 // 持有 JsValue：线程退出时内容泄漏（与 CONTEXT 同哲学，见 state.rs 顶部注释）
 thread_local! {
-    static WATCH_CALLBACKS: RefCell<Option<&'static mut HashMap<u64, JsValue>>> = const { RefCell::new(None) };
     static NEXT_WATCH_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 
 fn with_watch_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
-    WATCH_CALLBACKS.with(|m| {
-        let mut slot = m.borrow_mut();
-        f(slot.get_or_insert_with(|| Box::leak(Box::default())))
-    })
+    crate::host::with_host_ref_or_init(|h| f(&mut h.watch_callbacks.borrow_mut()))
 }
 
 fn next_watch_id() -> u64 {
