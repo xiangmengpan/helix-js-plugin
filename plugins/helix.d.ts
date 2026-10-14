@@ -371,7 +371,11 @@ interface Helix {
   el(type: string, arg: unknown, opts?: Record<string, unknown>): ElNode;
   set_input_value(popup_id: number, node_id: string, value: string): void;
   get_component_state(id: number): unknown;
-  set_component_render(id: number, fn: (ctx: unknown) => (string | StyledText)[]): void;
+  /**
+   * 注册组件渲染回调。**脏渲染协议**:回调返回**显式 `null`** 表示"自上次以来无变化" ——
+   * 宿主复用上次内容、不再解析(何时脏由插件决定,故不会陈旧);首次调用必须真的给出内容。
+   */
+  set_component_render(id: number, fn: (ctx: unknown) => (string | StyledText)[] | null): void;
 
   // ── 界面定制 ──
   set_statusline(fn: ((ctx: StatuslineCtx) => string | null) | null): void; // null 隐藏

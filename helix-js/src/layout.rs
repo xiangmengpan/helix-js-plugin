@@ -53,6 +53,7 @@ pub(crate) fn js_split(
                         render,
                         on_key: on_key.as_callable().map(|_| on_key),
                         on_close: None,
+                        last: None,
                     },
                 )
             });

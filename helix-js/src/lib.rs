@@ -4413,6 +4413,48 @@ helix.set_component_render(0, function (_focus, ctx) {
         assert!(!crate::has_component_render(77), "注销后应报不存在");
     }
 
+    /// 脏渲染协议:回调返回 `null`/`undefined` = "无变化" ⇒ 复用上次内容(**不再解析**);
+    /// 但**首次**就返回 null ⇒ 明确报错(而不是静默空内容)。是否脏由插件决定 ⇒ 无陈旧风险。
+    #[test]
+    fn component_render_supports_dirty_null_reuse() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        load_script(
+            r#"globalThis.__dirty_calls = 0;
+               helix.set_component_render(88, () => {
+                 globalThis.__dirty_calls++;
+                 return globalThis.__dirty_calls === 1 ? ["first"] : null;
+               });"#,
+        )
+        .unwrap();
+
+        let first = crate::render_component(88, 10, 3, None).expect("首帧应有内容");
+        let second = crate::render_component(88, 10, 3, None).expect("null 应复用上次内容");
+        assert_eq!(first, second, "null 之后应拿到**同一份**内容");
+
+        let calls = crate::with_engine(|e| {
+            e.eval(boa_engine::Source::from_bytes("globalThis.__dirty_calls"))
+                .unwrap()
+                .to_number(e)
+                .unwrap()
+        });
+        assert_eq!(calls, 2.0, "两次渲染都应真的调用回调(脏不脏由插件决定)");
+
+        // `undefined`(忘了 return)仍是**错误** —— 不能退化成静默陈旧
+        load_script(r#"helix.set_component_render(90, () => {});"#).unwrap();
+        assert!(
+            crate::render_component(90, 10, 3, None).is_err(),
+            "undefined 应仍按原样报错(不是'无变化')"
+        );
+
+        load_script(r#"helix.set_component_render(89, () => null);"#).unwrap();
+        let err = crate::render_component(89, 10, 3, None).expect_err("首次返回 null 应报错");
+        assert!(
+            format!("{err}").contains("无变化"),
+            "错误信息应点明脏协议语义: {err}"
+        );
+    }
+
     /// keymap 前缀提示:set_keymap_hint 回调 → keymap_hint 调用;null/无注册 → None
     #[test]
     fn keymap_hint_hook() {

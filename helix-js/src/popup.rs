@@ -208,6 +208,7 @@ pub(crate) fn js_open_popup(
                 render,
                 on_key,
                 on_close,
+                last: None,
             },
         )
     });
@@ -269,6 +270,7 @@ pub(crate) fn js_set_component_render(
                 render: render.clone(),
                 on_key: None,
                 on_close: None,
+                last: None,
             },
         )
     });
@@ -361,6 +363,7 @@ pub(crate) fn js_open_panel(
                 render,
                 on_key,
                 on_close,
+                last: None,
             },
         )
     });
@@ -1248,7 +1251,27 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
         let value: JsValue = func
             .call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine)
             .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
-        content_from_value(&value, engine, id, &format!("popup {id}"))
+
+        // 脏渲染协议(插件声明式):返回**显式 `null`** = "自上次以来无变化" ⇒ 复用上次解析好的
+        // Content,跳过本次转换与分配。**由插件决定何时脏**,所以不存在"宿主按输入猜测导致 UI
+        // 陈旧"的风险(那需要缓存输入签名,而渲染器可能读任意宿主状态)。
+        // ⚠️ 只认 `null`:`undefined`(例如插件忘了 `return`)仍按原样报错 —— 否则"忘记返回"
+        //    这类真 bug 会退化成**静默的陈旧 UI**,比报错难查得多。
+        if value.is_null() {
+            return with_popups(|p| p.get(&id).and_then(|cb| cb.last.clone())).ok_or_else(|| {
+                anyhow!(
+                    "popup {id} render returned null, but there is no previous content \
+                     to reuse —— 脏协议里 null 意为\"无变化\",首次(或内容被清空后)必须真的给出内容"
+                )
+            });
+        }
+        let content = content_from_value(&value, engine, id, &format!("popup {id}"))?;
+        with_popups(|p| {
+            if let Some(cb) = p.get_mut(&id) {
+                cb.last = Some(content.clone());
+            }
+        });
+        Ok(content)
     })
 }
 

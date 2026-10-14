@@ -362,6 +362,9 @@ pub(crate) struct PopupCallbacks {
     pub(crate) render: JsValue,
     pub(crate) on_key: Option<JsValue>,
     pub(crate) on_close: Option<JsValue>,
+    /// 脏渲染协议的**上次内容**:回调返回 null/undefined 表示"无变化"⇒ 复用这份,不再解析。
+    /// 生命周期天然安全:注销(id 移除)与 `reset_plugin_state`(整表 clear)都会丢掉它。
+    pub(crate) last: Option<Content>,
 }
 
 /// 一段带样式的文本（多 span 行模型：一行可有多段不同样式）

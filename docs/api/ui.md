@@ -134,6 +134,11 @@ helix.set_completion_render((ctx) => [                             // 整行 JS 
 
 ### `helix.set_component_render(id, fn)` / `helix.get_component_state(id)` / `helix.set_keymap_hint(fn)`
 
+**脏渲染**:`fn` 返回**显式 `null`** 表示"自上次以来无变化",宿主会**复用上次内容**并跳过
+本次解析(省一次转换/分配);何时脏由插件决定,因此不会出现"宿主以为没变其实变了"的陈旧 UI。
+注意**首次**调用必须真的返回内容(首次返回 `null` 会报错,因为无内容可复用);而 `undefined`
+(例如忘了 `return`)仍按原来的"返回值非法"报错 —— 这是有意的:忘返回是真 bug,不该被静默成陈旧 UI。
+
 组件外观 JS 绘制 + 组件状态读取 + which-key 提示:
 
 ```js
