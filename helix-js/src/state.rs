@@ -125,7 +125,7 @@ thread_local! {
 }
 
 // 引擎的存储/借出/归还已搬进 `host.rs`:
-//   所有权 → `JsHost`;借出协议(DEFAULT_HOST + EngineBorrow)→ `host::with_engine`
+//   所有权 → `JsHost`;排他/重入检测(引擎的 `RefCell` + DEFAULT_HOST)→ `host::with_engine`
 pub(crate) use crate::host::with_engine;
 
 /// 访问 REGISTRY：首次触达惰性 Box::leak 创建；线程退出时内容泄漏（见上）

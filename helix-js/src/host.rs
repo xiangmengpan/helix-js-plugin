@@ -23,7 +23,11 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// 一份 JS 运行时状态。当前只拥有引擎;队列/缓存留在进程级(Phase B)。
 pub struct JsHost {
-    engine: RefCell<Option<Box<Context>>>,
+    /// 引擎(**普通 `RefCell<Context>`**)。`try_borrow_mut()` 就是**排他/重入检测** ——
+    /// 引擎始终留在宿主里,不再有"借出期间槽为空"的中间态,也就不需要 `Owner`/`put_engine`
+    /// 那套"该归还给谁"的判定。宿主字段级的可重入访问(`messages`/`exports`…)仍各走自己的
+    /// `RefCell` ⇒ JS 回调里访问它们不会撞上引擎守卫。
+    engine: RefCell<Context>,
     /// echo 消息队列(**按宿主**隔离 —— 原来是进程级 `OnceLock<Mutex<..>>`)。
     /// 访问点实测只在主线程(见 docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论),
     /// 所以用 `RefCell` 而不是 `Mutex`;若将来真有非主线程访问,它会先撞上"host not registered"。
@@ -40,7 +44,7 @@ impl JsHost {
         let mut ctx = Context::default();
         crate::build_engine(&mut ctx);
         Self {
-            engine: RefCell::new(Some(Box::new(ctx))),
+            engine: RefCell::new(ctx),
             messages: RefCell::new(Vec::new()),
             exports: RefCell::new(HashMap::new()),
             loaded_scripts: RefCell::new(Vec::new()),
@@ -77,56 +81,6 @@ pub fn set_active(host: &mut JsHost) {
 /// 注销活动宿主(必须在宿主析构**之前**调用)
 pub fn clear_active() {
     ACTIVE.with(|a| a.set(None));
-}
-
-/// 引擎从哪个宿主借出 —— 归还时必须回到**同一个**,否则等于把引擎搬到别的宿主里
-#[derive(Clone, Copy)]
-enum Owner {
-    Active,
-    Default,
-}
-
-fn take_engine() -> Option<(Box<Context>, Owner)> {
-    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
-        // SAFETY: 注册期覆盖宿主生存期(见 ACTIVE 的约束)
-        let host: &mut JsHost = unsafe { &mut *ptr.as_ptr() };
-        return host.engine.borrow_mut().take().map(|e| (e, Owner::Active));
-    }
-    DEFAULT_HOST
-        .with(|cell| {
-            cell.borrow_mut()
-                .as_mut()
-                .and_then(|h| h.engine.borrow_mut().take())
-        })
-        .map(|e| (e, Owner::Default))
-}
-
-/// 把引擎归还给它来的那个宿主。
-///
-/// 两个宿主都已不在时**遗忘而不 drop** —— 与本模块的根本不变量一致:
-/// drop 一个用过的引擎会破坏堆,宁可泄漏。
-fn put_engine(engine: Box<Context>, owner: Owner) {
-    match owner {
-        Owner::Active => {
-            if let Some(ptr) = ACTIVE.with(|a| a.get()) {
-                // SAFETY: 同 take_engine
-                let host: &mut JsHost = unsafe { &mut *ptr.as_ptr() };
-                *host.engine.borrow_mut() = Some(engine);
-                return;
-            }
-            std::mem::forget(engine);
-        }
-        Owner::Default => {
-            let mut slot = DEFAULT_HOST.with(|cell| cell.borrow_mut().take());
-            match slot.as_mut() {
-                Some(host) => {
-                    *host.engine.borrow_mut() = Some(engine);
-                    DEFAULT_HOST.with(|cell| *cell.borrow_mut() = slot);
-                }
-                None => std::mem::forget(engine),
-            }
-        }
-    }
 }
 
 /// 安装默认宿主(由 `init()` 调用;幂等由调用方守 —— 已有宿主时不要覆盖)。
@@ -290,79 +244,23 @@ pub fn engine_exists() -> bool {
     ACTIVE.with(|a| a.get()).is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
 }
 
-/// 借出的引擎:Drop 时自动**归还**(panic 安全 —— 闭包 panic 也不会把引擎弄丢)。
-struct EngineBorrow {
-    engine: Option<Box<Context>>,
-    owner: Owner,
-}
-
-impl std::ops::Deref for EngineBorrow {
-    type Target = Context;
-    fn deref(&self) -> &Context {
-        self.engine.as_deref().expect("EngineBorrow 非空")
-    }
-}
-impl std::ops::DerefMut for EngineBorrow {
-    fn deref_mut(&mut self) -> &mut Context {
-        self.engine.as_deref_mut().expect("EngineBorrow 非空")
-    }
-}
-impl Drop for EngineBorrow {
-    fn drop(&mut self) {
-        if let Some(engine) = self.engine.take() {
-            put_engine(engine, self.owner);
-        }
-    }
-}
-
 /// 借出宿主里的引擎执行 `f`;**同一线程重入会得到指名道姓的报错**。
 ///
-/// 为什么用"取出→归还"而不是"一直持着借用":借用会跨越整棵 JS 调用树,重入时的 panic 落在
-/// 本函数内部、看不出是谁在占用;取出后宿主槽为空,重入能被**明确识别**,配合
-/// `#[track_caller]` 直指调用点。
+/// 排他靠 `JsHost::engine` 的 `RefCell` 借用守卫(`try_borrow_mut`),而不是"把引擎取出宿主槽":
+/// 引擎始终留在宿主里 ⇒ 没有"借出期间槽为空"的中间态,也不需要 `Owner`/`put_engine` 判定
+/// "该归还给谁";而重入仍是**运行时可识别**的(借用冲突 ⇒ 下面这条 panic 直指调用点)。
 #[track_caller]
 pub(crate) fn with_engine<T>(f: impl FnOnce(&mut Context) -> T) -> T {
-    // 区分两种"取不到":宿主不存在(未 init) vs 引擎已被借出(重入)
-    let exists = engine_exists();
-    let Some((engine, owner)) = take_engine() else {
-        if exists {
-            panic!(
-                "helix-js: engine used again while already borrowed \
-                 (同一线程在 JS 调用树内重入;见 commands.rs 里 helix.load 的注释)"
-            );
-        }
-        panic!("helix-js: host not registered — call init() first");
-    };
-    let mut guard = EngineBorrow {
-        engine: Some(engine),
-        owner,
-    };
-    f(&mut guard)
-}
-
-// ── 测试专用访问器 ────────────────────────────────────────────────
-/// 测试专用:把引擎**整体取出**(宿主槽置 None)。用于验证"所有权真的在宿主里"。
-///
-/// ⚠️ **取出后必须原物放回,不得 drop**:drop 已用过的引擎会破坏堆(理由见模块头)。
-#[cfg(test)]
-pub(crate) fn take_engine_for_test() -> Option<Box<Context>> {
-    DEFAULT_HOST.with(|cell| {
-        cell.borrow_mut()
-            .as_mut()
-            .and_then(|host| host.engine.borrow_mut().take())
+    with_host_ref(|host| match host.engine.try_borrow_mut() {
+        Ok(mut engine) => f(&mut engine),
+        Err(_) => panic!(
+            "helix-js: engine used again while already borrowed \
+             (同一线程在 JS 调用树内重入;见 commands.rs 里 helix.load 的注释)"
+        ),
     })
 }
 
-/// 测试专用:把引擎放回宿主槽里(应当与 [`take_engine_for_test`] 取出的是同一个)。
-#[cfg(test)]
-pub(crate) fn set_engine_for_test(engine: Box<Context>) {
-    DEFAULT_HOST.with(|cell| {
-        if let Some(host) = cell.borrow_mut().as_mut() {
-            *host.engine.borrow_mut() = Some(engine);
-        }
-    });
-}
-
+// ── 测试专用访问器 ────────────────────────────────────────────────
 /// 测试专用:把默认宿主**摘掉**(模拟"未注册")。用 `forget` 而不是丢弃 ——
 /// 直接 `= None` 会析构 `Box<JsHost>` ⇒ 触发"drop 已用过的引擎"那条破坏堆的路径。
 #[cfg(test)]
@@ -379,28 +277,25 @@ mod engine_ownership_tests {
     use super::*;
     use boa_engine::Source;
 
-    /// 宿主里是**有主的** `Box<Context>`:能整体取出、**原物放回**,且期间状态不丢。
+    /// 引擎是**宿主持有的同一份**:跨多次借用状态不丢(注册的命令还在),且宿主身份不变。
     ///
-    /// 取出→放回而不是取出→丢弃:同进程内全部单测共用一个默认宿主,
-    /// 丢掉它会让后面的测试找不到 `helix` 全局。
+    /// (改自 `engine_slot_is_owned_and_reusable`:那时靠"取出引擎"来证明所有权/可复用,
+    /// 现在引擎是普通 `RefCell<Context>` 字段 ⇒ 用**身份 + 状态延续**来钉同一件事。)
     #[test]
-    fn engine_slot_is_owned_and_reusable() {
+    fn engine_stays_in_host_across_borrows() {
         let _g = crate::tests::TEST_LOCK.lock().unwrap();
         crate::init();
-        crate::load_script(r#"helix.register_command("survives-take", () => {});"#)
+        let key_before = current_host_key();
+        crate::load_script(r#"helix.register_command("survives-reborrow", () => {});"#)
             .expect("注册一个命令用做“引擎身份”的标记");
 
-        let taken = take_engine_for_test().expect("init() 后引擎应在宿主里");
         assert!(
-            std::panic::catch_unwind(|| with_engine(|_| {})).is_err(),
-            "引擎已取出 ⇒ 再借必须报错"
+            crate::command_names()
+                .iter()
+                .any(|n| n == "survives-reborrow"),
+            "跨借用后注册表应仍在(否则引擎被换掉了)"
         );
-
-        set_engine_for_test(taken); // 原物放回
-        assert!(
-            crate::command_names().iter().any(|n| n == "survives-take"),
-            "放回的必须是同一个引擎(否则注册表随旧引擎一起没了)"
-        );
+        assert_eq!(current_host_key(), key_before, "宿主身份不得变");
         with_engine(|e| {
             let v = e.eval(Source::from_bytes("typeof helix")).unwrap();
             assert_eq!(v.to_string(e).unwrap().to_std_string_escaped(), "object");
@@ -479,10 +374,12 @@ mod engine_ownership_tests {
     fn init_while_borrowed_does_not_rebuild_host_engine() {
         let _g = crate::tests::TEST_LOCK.lock().unwrap();
         crate::init();
+        let key_before = current_host_key();
         with_engine(|_| {
             crate::init(); // 借出期间再调
-            assert!(
-                take_engine_for_test().is_none(),
+            assert_eq!(
+                current_host_key(),
+                key_before,
                 "init() 不得在引擎借出期间重建(宿主)"
             );
         });
