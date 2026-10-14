@@ -18,6 +18,7 @@ use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard};
 
@@ -46,6 +47,15 @@ pub struct JsHost {
     pub(crate) panes: RefCell<String>,
     /// 打开的终端:pty_id → (view_id, cmd)(1b;原来这张表的键是 pty id,但状态本就是宿主的)
     pub(crate) open_terms: RefCell<HashMap<u64, (u64, String)>>,
+    /// 插件根(**有序**:自带 runtime 在前、用户目录在后)。1b:原为
+    /// `HashMap<宿主key, &'static [PathBuf]>` 键表。值仍是 `Box::leak` 出来的 `&'static` ——
+    /// 为了**不改** `plugin_roots() -> &'static [PathBuf]` 签名(7 个读取点依赖它);
+    /// 设置是"启动一次/测试每例一次" ⇒ 泄漏有界(比原来"每次 set 都漏"更收敛)。
+    pub(crate) plugin_roots: RefCell<&'static [PathBuf]>,
+    /// runtime 目录(含自带 runtime;1b 同上)
+    pub(crate) runtime_dirs: RefCell<&'static [PathBuf]>,
+    /// 布局文件目录(`<config>/layouts`;未设置 ⇒ `None`。1b 同上)
+    pub(crate) layouts_dir: RefCell<Option<&'static PathBuf>>,
 }
 
 impl JsHost {
@@ -63,6 +73,9 @@ impl JsHost {
             pane_mode: RefCell::new(String::new()),
             panes: RefCell::new(String::new()),
             open_terms: RefCell::new(HashMap::new()),
+            plugin_roots: RefCell::new(&[]),
+            runtime_dirs: RefCell::new(&[]),
+            layouts_dir: RefCell::new(None),
         }
     }
 }
@@ -211,15 +224,6 @@ pub(crate) fn current_host_key() -> u64 {
         Some(host) => host as *const JsHost as u64,
         None => panic!("helix-js: host not registered — call init() first"),
     })
-}
-
-/// 取当前宿主 key;没有宿主则**先 `init()`** —— 供 `set_*` 这类可能早于初始化的调用使用
-/// (直接 panic 会把"设置目录"这种无害调用变成致命错误)。
-pub(crate) fn current_host_key_or_init() -> u64 {
-    if ACTIVE.with(|a| a.get()).is_none() && DEFAULT_HOST.with(|h| h.borrow().is_none()) {
-        crate::init();
-    }
-    current_host_key()
 }
 
 /// **按宿主分桶**的 UI 请求队列。

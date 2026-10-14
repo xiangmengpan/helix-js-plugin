@@ -483,33 +483,18 @@ pub(crate) fn viewport() -> (u16, u16) {
 /// UI 请求队列:**按宿主分桶**(见 `host::UiRequests`)—— 63 个 push 点因此无需改动。
 pub(crate) use crate::host::UiRequests;
 pub(crate) static UI_REQUESTS: OnceLock<UiRequests> = OnceLock::new();
-/// 插件目录（helix-term 启动时设置；js_load 相对名解析用）
-/// 插件根目录(**有序**)。语义对齐 Neovim 的 `runtimepath`:自带 runtime 在前、
-/// 用户目录在后,于是**后加的根覆盖先加的**(同名相对名取"最后一个存在的")。
-/// 这是"把功能做成随软件分发的内置插件"的地基:内置放前、用户放后即可覆盖。
-/// **按宿主**记录(T5-b2):原来是进程级 `OnceLock`(首设生效、不可重置)⇒ 并行跑"谁先跑谁赢"。
-/// 值 `Box::leak` 成 `&'static [PathBuf]` ⇒ 读取点零改动;同宿主重复设置 = 覆盖。
-pub(crate) static PLUGIN_ROOTS: OnceLock<Mutex<HashMap<u64, &'static [PathBuf]>>> = OnceLock::new();
 
+/// 设置插件根(**有序**)。1b:值存进宿主字段;`Box::leak` 保留只为不动 `plugin_roots()` 的
+/// `&'static` 签名。同宿主重复设置 = **覆盖**(与 T5-a/T5-b 的"首设生效"相反,那正是并行串台的根源)。
 pub fn set_plugin_roots(roots: Vec<PathBuf>) {
-    let key = crate::host::current_host_key_or_init();
     let leaked: &'static [PathBuf] = Box::leak(roots.into_boxed_slice());
-    PLUGIN_ROOTS
-        .get_or_init(Default::default)
-        .lock()
-        .expect("plugin roots lock")
-        .insert(key, leaked);
+    crate::host::with_host_ref_or_init(|h| *h.plugin_roots.borrow_mut() = leaked);
 }
 
 /// 当前宿主的插件根;未设置 ⇒ 空切片(集成测试依赖这个语义)
+/// 当前宿主的插件根;未设置 ⇒ 空切片(集成测试依赖这个语义)
 pub(crate) fn plugin_roots() -> &'static [PathBuf] {
-    let key = crate::host::current_host_key_or_init();
-    PLUGIN_ROOTS
-        .get_or_init(Default::default)
-        .lock()
-        .ok()
-        .and_then(|m| m.get(&key).copied())
-        .unwrap_or(&[])
+    crate::host::with_host_ref_or_init(|h| *h.plugin_roots.borrow())
 }
 
 /// 插件目录(**用户层 = 最后一个根**;`resolve_in` 用 `rev()` 迭代 ⇒ 末位优先级最高)。
@@ -542,32 +527,16 @@ pub fn command_args() -> Vec<String> {
     PENDING_COMMAND_ARGS.with(|a| a.borrow().clone())
 }
 
-/// 自带 runtime 目录(**有序**;由 helix-term 启动时推入)。
-///
-/// 为什么必须"推入"而不是自己取:`helix-js` **不依赖 `helix-loader`**(实测其 Cargo.toml),
-/// 所以拿不到 runtime 目录 —— 与 `PLUGIN_ROOTS` / `LAYOUTS_DIR` 同一模式。
-/// **按宿主**记录(T5-b2 同款模板):原来进程级 `OnceLock` 首设生效 ⇒ 并行测试串台。
-pub(crate) static RUNTIME_DIRS: OnceLock<Mutex<HashMap<u64, &'static [PathBuf]>>> = OnceLock::new();
-
+/// 设置 runtime 目录(同上:进宿主字段,`&'static` 签名不变)
 pub fn set_runtime_dirs(dirs: Vec<PathBuf>) {
-    let key = crate::host::current_host_key_or_init();
     let leaked: &'static [PathBuf] = Box::leak(dirs.into_boxed_slice());
-    RUNTIME_DIRS
-        .get_or_init(Default::default)
-        .lock()
-        .expect("runtime dirs lock")
-        .insert(key, leaked);
+    crate::host::with_host_ref_or_init(|h| *h.runtime_dirs.borrow_mut() = leaked);
 }
 
 /// 当前宿主的 runtime 目录(`runtime_path()` 的读取口);未设置 ⇒ 空切片
+/// 当前宿主的 runtime 目录(`runtime_path()` 的读取口);未设置 ⇒ 空切片
 pub(crate) fn runtime_dirs() -> &'static [PathBuf] {
-    let key = crate::host::current_host_key_or_init();
-    RUNTIME_DIRS
-        .get_or_init(Default::default)
-        .lock()
-        .ok()
-        .and_then(|m| m.get(&key).copied())
-        .unwrap_or(&[])
+    crate::host::with_host_ref_or_init(|h| *h.runtime_dirs.borrow())
 }
 
 /// `name` → runtime 里的绝对路径(**按序取第一个存在的**)。
@@ -923,30 +892,15 @@ pub fn take_messages() -> Vec<String> {
     crate::host::try_with_messages(std::mem::take).unwrap_or_default()
 }
 
-/// 布局文件目录(`<config>/layouts`)。**按宿主**记录 —— 原来是进程级 `OnceLock`(首设生效、不可重置)
-/// ⇒ 并行跑时"谁先跑谁赢",后面的测试静默拿到别人的目录(T5-a)。
-/// 值一旦设置就 `Box::leak` 成 `&'static`(与既有 `layouts_dir() -> Option<&'static PathBuf>` 兼容,
-/// 也与本仓"进程期不朽"的既有做法一致)。
-static LAYOUTS_DIR: OnceLock<Mutex<HashMap<u64, &'static PathBuf>>> = OnceLock::new();
-
+/// 设置布局目录(同上:进宿主字段)。同宿主重复设置 = 覆盖(T5-a 的"首设生效"曾导致并行串台)。
 pub fn set_layouts_dir(dir: PathBuf) {
-    let key = crate::host::current_host_key_or_init();
     let leaked: &'static PathBuf = Box::leak(Box::new(dir));
-    LAYOUTS_DIR
-        .get_or_init(Default::default)
-        .lock()
-        .expect("layouts dir lock")
-        .insert(key, leaked);
+    crate::host::with_host_ref_or_init(|h| *h.layouts_dir.borrow_mut() = Some(leaked));
 }
 
+/// 当前宿主的布局目录;未设置 ⇒ `None`
 pub(crate) fn layouts_dir() -> Option<&'static PathBuf> {
-    let key = crate::host::current_host_key_or_init();
-    LAYOUTS_DIR
-        .get_or_init(Default::default)
-        .lock()
-        .ok()?
-        .get(&key)
-        .copied()
+    crate::host::with_host_ref_or_init(|h| *h.layouts_dir.borrow())
 }
 
 /// 读当前布局 dump(还没缓存过 → 空串)
