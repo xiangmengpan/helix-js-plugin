@@ -1,6 +1,5 @@
 //! 输入组件编辑状态：InputState + input_edit 纯函数 + InputStates 存储。
 use boa_engine::{Context, JsError, JsString, JsValue};
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// 单个 input 节点的编辑状态（引擎权威）
@@ -13,13 +12,13 @@ pub struct InputState {
     pub multiline: bool,
 }
 
-thread_local! {
-    // HashMap::new 非 const fn，不能用 const 块初始化（同 state.rs COMMAND_DOCS）
-    static INPUT_STATES: RefCell<HashMap<(u64, String), InputState>> = RefCell::new(HashMap::new());
-}
+// 1b-3c:原为 thread_local;现为宿主字段 `input_states`(状态跟宿主而不跟线程)。
 
 pub fn with_input_states<T>(f: impl FnOnce(&mut HashMap<(u64, String), InputState>) -> T) -> T {
-    INPUT_STATES.with(|m| f(&mut m.borrow_mut()))
+    crate::host::with_host_ref_or_init(|h| {
+        let m = &h.input_states;
+        f(&mut m.borrow_mut())
+    })
 }
 
 /// value 按 \n 分段的每行 char 范围：(start, end)（end 不含 \n；末行含尾部）。

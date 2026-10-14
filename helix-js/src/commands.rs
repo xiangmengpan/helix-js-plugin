@@ -1054,23 +1054,25 @@ pub fn emit_startup() -> Result<()> {
     }
 }
 
-// 暂存本次布局变更的**种类**（线程局部）。
+// 暂存本次布局变更的**种类**(1b-3c:原为 thread_local;现为宿主字段 `layout_change_kind`)。
 //
 // 为什么不用参数：发射点在 `Compositor::sync_layout_cache` 内，那里**没有变更点**的信息 ✗；
 // 而调用者（如 `SplitLeaf`/`CloseLeaf` 两臂）在**同一线程、紧邻其前**先 `set` 一下即可 ✓
 // （若没人 set，`emit_layout_change` 取到 None，事件照发，只是不带种类 ✓）
-thread_local! {
-    static LAYOUT_CHANGE_KIND: std::cell::RefCell<Option<&'static str>> =
-        const { std::cell::RefCell::new(None) };
-}
 
 /// 标注“接下来的布局变更属于哪种”（由 `LayoutTree`/命令臂在**变更后立刻**调用）
 pub fn set_layout_change_kind(kind: &'static str) {
-    LAYOUT_CHANGE_KIND.with(|c| *c.borrow_mut() = Some(kind));
+    crate::host::with_host_ref_or_init(|h| {
+        let c = &h.layout_change_kind;
+        *c.borrow_mut() = Some(kind)
+    });
 }
 
 pub fn emit_layout_change() -> Result<()> {
-    let kind = LAYOUT_CHANGE_KIND.with(|c| c.borrow_mut().take());
+    let kind = crate::host::with_host_ref_or_init(|h| {
+        let c = &h.layout_change_kind;
+        c.borrow_mut().take()
+    });
     let ctx = CommandContext {
         path: None,
         text: String::new(),

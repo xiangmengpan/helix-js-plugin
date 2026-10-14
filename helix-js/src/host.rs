@@ -13,7 +13,13 @@
 //! `corrupted double-linked list`)。对照组:`dropping_a_fresh_context_is_safe` 证明
 //! "新造 Context 的 drop"本身是安全的 ⇒ 问题在"引擎先走、引用者后走"。
 
-use crate::types::{NodeHandlers, PopupCallbacks, TermCallbacks, UiRequest};
+/// 组件状态提供者表(组件 id → JSON 生成器)
+pub(crate) type ComponentStateMap = HashMap<u64, Box<dyn Fn(u64) -> String>>;
+
+use crate::types::{
+    CursorRequest, DecorationRequest, DocSnapshot, Edit, NodeHandlers, PopupCallbacks,
+    TermCallbacks, UiRequest,
+};
 use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
@@ -96,6 +102,33 @@ pub struct JsHost {
     pub(crate) server_task_callbacks: RefCell<HashMap<u64, JsValue>>,
     /// watch 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
     pub(crate) watch_callbacks: RefCell<HashMap<u64, JsValue>>,
+    /// 1b-3c:原 thread_local(`LAYOUT_CHANGE_KIND`);不泄漏,但状态应跟**宿主**
+    pub(crate) layout_change_kind: RefCell<Option<&'static str>>,
+    /// 1b-3c:原 thread_local(`LSP_REQUESTS`)
+    pub(crate) lsp_requests: RefCell<Vec<crate::lsp::LspRequest>>,
+    /// 1b-3c:原 thread_local(`INPUT_STATES`)
+    pub(crate) input_states: RefCell<HashMap<(u64, String), crate::input::InputState>>,
+    /// 1b-3c:原 thread_local;状态改跟**宿主**(不泄漏,但换线程不应丢)
+    pub(crate) current_edits: RefCell<Vec<Edit>>,
+    pub(crate) decoration_requests: RefCell<Vec<DecorationRequest>>,
+    pub(crate) doc_snapshots: RefCell<Vec<DocSnapshot>>,
+    pub(crate) cursor_requests: RefCell<Vec<CursorRequest>>,
+    pub(crate) last_plugin_deps: RefCell<Vec<String>>,
+    pub(crate) pending_command_args: RefCell<Vec<String>>,
+    pub(crate) load_stack: RefCell<Vec<String>>,
+    pub(crate) load_roots: RefCell<Vec<PathBuf>>,
+    pub(crate) command_docs: RefCell<HashMap<String, String>>,
+    pub(crate) theme_overrides: RefCell<HashMap<String, crate::theme::StyleOverride>>,
+    pub(crate) component_states: RefCell<ComponentStateMap>,
+    pub(crate) theme_dirty: Cell<bool>,
+    pub(crate) statusline_replace: Cell<bool>,
+    pub(crate) statusline_zones: RefCell<[u16; 3]>,
+    pub(crate) edit_txn_depth: Cell<usize>,
+    pub(crate) last_panel_id: Cell<Option<u64>>,
+    pub(crate) next_popup_id: Cell<u64>,
+    pub(crate) next_map_id: Cell<u64>,
+    pub(crate) next_term_id: Cell<u64>,
+    pub(crate) next_terminal_view_id: Cell<u64>,
 }
 
 impl JsHost {
@@ -135,6 +168,29 @@ impl JsHost {
             server_rows_callbacks: RefCell::new(HashMap::new()),
             server_task_callbacks: RefCell::new(HashMap::new()),
             watch_callbacks: RefCell::new(HashMap::new()),
+            layout_change_kind: RefCell::new(None),
+            lsp_requests: RefCell::new(Vec::new()),
+            input_states: RefCell::new(HashMap::new()),
+            current_edits: RefCell::new(Vec::new()),
+            decoration_requests: RefCell::new(Vec::new()),
+            doc_snapshots: RefCell::new(Vec::new()),
+            cursor_requests: RefCell::new(Vec::new()),
+            last_plugin_deps: RefCell::new(Vec::new()),
+            pending_command_args: RefCell::new(Vec::new()),
+            load_stack: RefCell::new(Vec::new()),
+            load_roots: RefCell::new(Vec::new()),
+            command_docs: RefCell::new(HashMap::new()),
+            theme_overrides: RefCell::new(HashMap::new()),
+            component_states: RefCell::new(HashMap::new()),
+            theme_dirty: Cell::new(false),
+            statusline_replace: Cell::new(false),
+            statusline_zones: RefCell::new([1, 1, 1]),
+            edit_txn_depth: Cell::new(0),
+            last_panel_id: Cell::new(None),
+            next_popup_id: Cell::new(1),
+            next_map_id: Cell::new(1),
+            next_term_id: Cell::new(1),
+            next_terminal_view_id: Cell::new(1),
         }
     }
 }

@@ -5,7 +5,6 @@
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::JsPromise;
 use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
-use std::cell::RefCell;
 
 use crate::state::WakeSender;
 
@@ -35,13 +34,14 @@ pub struct LspRequest {
     pub params: Option<serde_json::Value>,
 }
 
-thread_local! {
-    static LSP_REQUESTS: RefCell<Vec<LspRequest>> = const { RefCell::new(Vec::new()) };
-}
+// 1b-3c:原为 thread_local;现为宿主字段 `lsp_requests`(状态跟宿主而不跟线程)。
 
 /// 取走并清空待处理请求队列（helix-term 泵循环每帧调用）
 pub fn take_lsp_requests() -> Vec<LspRequest> {
-    LSP_REQUESTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
+    crate::host::with_host_ref_or_init(|h| {
+        let q = &h.lsp_requests;
+        std::mem::take(&mut *q.borrow_mut())
+    })
 }
 
 /// 通用入口：解析可选位置对象与各方法专属参数 → 入队 → 注册 Promise
@@ -101,13 +101,16 @@ fn enqueue_lsp_request(
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     crate::state::with_lsp_promises(|m| m.insert(id, resolving));
-    LSP_REQUESTS.with(|q| {
-        q.borrow_mut().push(LspRequest {
-            id,
-            method,
-            pos,
-            params,
-        })
+    crate::host::with_host_ref_or_init(|h| {
+        let q = &h.lsp_requests;
+        {
+            q.borrow_mut().push(LspRequest {
+                id,
+                method,
+                pos,
+                params,
+            })
+        }
     });
     Ok(promise.into())
 }
