@@ -113,6 +113,24 @@ pub fn park_or_forget(host: Box<JsHost>) {
     }
 }
 
+/// 与 [`with_host_ref`] 相同,但**没有宿主时返回 `None`**(而不是 panic)。
+///
+/// 给**查询类**入口用:它们被放在每帧路径上,**不得**为了回答一个布尔而顺手建宿主
+/// (`crate::init()` 在没有宿主时会 `install_default(JsHost::new())` —— 整个 boa 引擎)。
+pub(crate) fn try_with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> Option<T> {
+    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+        // SAFETY: 同 with_host_ref
+        let host: &JsHost = unsafe { &*ptr.as_ptr() };
+        return Some(f(host));
+    }
+    DEFAULT_HOST.with(|cell| cell.borrow().as_deref().map(f))
+}
+
+/// 同 [`with_messages`],但无宿主时给 `None`(取走/查询路径不得建宿主)。
+pub(crate) fn try_with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> Option<T> {
+    try_with_host_ref(|h| f(&mut h.messages.borrow_mut()))
+}
+
 /// 按**只读**方式访问当前宿主(不改所有权)。
 fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
     if let Some(ptr) = ACTIVE.with(|a| a.get()) {

@@ -4413,6 +4413,39 @@ helix.set_component_render(0, function (_focus, ctx) {
         assert!(!crate::has_component_render(77), "注销后应报不存在");
     }
 
+    /// 查询类入口**不得**创建宿主:`crate::init()` 在没有宿主的线程上会
+    /// `install_default(JsHost::new())` —— 一个布尔查询就能把整个 boa 引擎建起来,
+    /// 而它们全在每帧路径上(`has_handlers`/`has_component_render`/`popup_exists`…)。
+    ///
+    /// 手法:另起一条**没有宿主**的线程调用它们,断言返回空答案**且**宿主仍不存在。
+    #[test]
+    fn queries_do_not_create_a_host() {
+        std::thread::spawn(|| {
+            assert!(!crate::host::engine_exists(), "新线程本不该有宿主");
+
+            assert!(!crate::has_handlers("startup"), "无宿主 ⇒ 无处理器");
+            assert!(!crate::has_component_render(1), "无宿主 ⇒ 无渲染器");
+            assert!(!crate::popup_exists(1), "无宿主 ⇒ 无弹窗");
+            assert!(
+                !crate::picker::picker_has_on_key("no-such-source"),
+                "无宿主 ⇒ 无 onKey"
+            );
+            assert!(crate::command_names().is_empty(), "无宿主 ⇒ 无 JS 命令");
+            assert!(
+                crate::keymap_hint("g", &[]).is_none(),
+                "无宿主 ⇒ 无 JS 提示"
+            );
+            assert!(crate::take_messages().is_empty(), "无宿主 ⇒ 无消息");
+
+            assert!(
+                !crate::host::engine_exists(),
+                "查询把宿主/引擎建起来了 ⇒ 必须避免 init()"
+            );
+        })
+        .join()
+        .expect("查询不得 panic");
+    }
+
     /// `{pure:true}` 的渲染器按**输入签名**命中缓存 ⇒ 命中时**连 JS 都不调**;
     /// 未声明 `pure` 的渲染器逐帧照常调用(与今天一致,不会因缓存而陈旧)。
     #[test]

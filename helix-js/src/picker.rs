@@ -73,7 +73,10 @@ pub(crate) fn js_picker_define(
 /// ⇒ `onKey` 随之存好,这里只做**查询** ✓
 /// (并列再存一份 = 踩 R3「留两套实现」红线 ✗ ⇒ 故不这么做 ✓)
 pub fn picker_has_on_key(source: &str) -> bool {
-    crate::init();
+    // 查询:无宿主 ⇒ 没有 JS onKey ⇒ false(**不得**为回答它而建宿主)
+    if !crate::host::engine_exists() {
+        return false;
+    }
     crate::state::with_engine(|engine| {
         let Some(config) = crate::state::with_picker_sources(|m| m.get(source).cloned()) else {
             return false;

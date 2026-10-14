@@ -949,9 +949,8 @@ pub(crate) fn with_lsp_promises<T>(
 
 /// 取走并清空 echo 消息队列
 pub fn take_messages() -> Vec<String> {
-    crate::init();
-    // 队列按宿主隔离(T1 步骤 2):经宿主访问器取走
-    crate::host::with_messages(std::mem::take)
+    // 取走:队列按宿主隔离(T1 步骤 2);无宿主 ⇒ 空(**不得** init —— 那会建整个引擎)
+    crate::host::try_with_messages(std::mem::take).unwrap_or_default()
 }
 
 /// 布局文件目录(`<config>/layouts`)。**按宿主**记录 —— 原来是进程级 `OnceLock`(首设生效、不可重置)
