@@ -4664,8 +4664,10 @@ pub(crate) fn apply_plugin_edits(
     use helix_core::Change;
 
     // 按目标分组，保持组内顺序
-    // ponytail: ctx.doc 与 by_path(当前 doc 路径)双路由同 doc → 两组 → 两次撤销(罕见,
-    // 与文档"每 buffer 一次撤销"不一致;修法:None 组规范化并入当前 path 组,暂不做)
+    // 两条路由(edit.doc=None = 当前 buffer;Some(path) = by_path)在"当前 buffer 自己的路径"上
+    // 会落到两个组,但**不会**多出一次撤销:实测同一 doc 的两组在 history 里合成一步
+    // (回归测试:plugin_cross_buffer.rs::plugin_edit_same_doc_two_routes_one_undo —— 一次 u
+    //  同时回退两处,第二次 u 无变化)。⇒ 无需归一化 None/Some;原先此处"两次撤销"的顾虑不成立。
     let mut groups: Vec<(Option<String>, Vec<&helix_js::Edit>)> = Vec::new();
     for edit in edits {
         if let Some(g) = groups.iter_mut().find(|(p, _)| p == &edit.doc) {

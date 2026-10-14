@@ -212,6 +212,79 @@ async fn plugin_mixed_edits_undo_independent() -> anyhow::Result<()> {
     Ok(())
 }
 
+// 两条路由指向**同一个** buffer:`ctx.doc`(当前 buffer)与 `helix.by_path(当前文件)` ——
+// 必须归到**一个** Transaction ⇒ **一次撤销**回退两处。
+// (此前的分组按 Edit.doc 原样做键 ⇒ None 与 Some(同一路径) 分成两组 ⇒ 两次撤销,
+//  与 apply_plugin_edits 的"每个被改 buffer 一次撤销"口径不符;仅"两条路由同 buffer"这一格有差异,
+//  两个**不同** buffer 的情形本就该独立撤销,见上一条用例 ✓)
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_edit_same_doc_two_routes_one_undo() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "one\n")?;
+    let plugin_path = dir.path().join("same.js");
+    std::fs::write(
+        &plugin_path,
+        format!(
+            r#"helix.register_command("same", (ctx) => {{
+                ctx.doc.insert(0, 0, "A");
+                const d = helix.by_path("{}");
+                if (d !== null) d.insert(0, 0, "B");
+            }});"#,
+            file.display()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file.clone(), None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (
+                Some(":same<ret>"),
+                Some(&|app| {
+                    // ⚠️ 先钉住"两处编辑真的都生效" —— 否则 by_path 返回 null 时本用例会**空跑**
+                    //(只有一处编辑 ⇒ 一次撤销当然通过),这正是第一版踩到的假绿。
+                    let (_, doc) = current_ref!(app.editor);
+                    let t = doc.text().to_string();
+                    assert!(
+                        t.contains('A') && t.contains('B'),
+                        "两条路由的编辑都应生效(空跑即假绿): {t:?}"
+                    );
+                }),
+            ),
+            (
+                Some("u"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "one\n",
+                        "两条路由指同一 buffer ⇒ 一次撤销应回退 A 与 B 两处"
+                    );
+                }),
+            ),
+            // 第二次 u:证明上面那一步就是**唯一**的一步(撤销栈不因两条路由而多出一格)
+            (
+                Some("u"),
+                Some(&|app| {
+                    let (_, doc) = current_ref!(app.editor);
+                    assert_eq!(
+                        doc.text().to_string(),
+                        "one\n",
+                        "第二次 undo 不该再改变任何东西(说明两处编辑合成了一步)"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
 // async 命令:begin_edit → by_path 改其它 buffer → await → 再改 → end_edit → 一次撤销
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
