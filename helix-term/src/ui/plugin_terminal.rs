@@ -954,7 +954,7 @@ impl Component for PluginTerminal {
         .to_string();
         helix_js::register_component_state(self.view_id, move |_| snap.clone());
         // 标题条：JS 视图回调优先(顶部 1 行,网格下移);无回调 → 无标题条(现状)
-        let has_view = helix_js::render_component(self.view_id, area.width, 1, None).is_ok();
+        let has_view = helix_js::has_component_render(self.view_id);
         if has_view {
             if let Ok(content) = helix_js::render_component(self.view_id, area.width, 1, None) {
                 let lines = crate::ui::comp_layout::render(content, (area.width, 1));

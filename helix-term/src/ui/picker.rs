@@ -811,14 +811,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // ★ ④ 把状态喂给 JS:**仅当确有 JS 渲染器注册时** ✓
         //   实测教训:此前**无条件**每帧为可见窗口的每行调用 `column.format(...)` ✗
         //   —— 那是渲染原本不做的额外工作 ⇒ 用户实测"响应慢 10 多秒" ✓
-        //   ⇒ 用与 tabbar 同一个**廉价探针**(`render_component(id,1,1,None).is_ok()` ✓)先问一句 ✓
+        //   ⇒ 用与 tabbar 同一个**廉价探针**(`has_component_render(id)` ✓ —— 只查注册表、**不调 JS** ✓)先问一句 ✓
         // 有**实例**渲染器或**默认**渲染器(哨兵 0 ✓)其一存在 ⇒ 才构造载荷 ✓(否则零额外开销 ✓)
         let js_wants_state = match self.js_render_id {
-            Some(id) => {
-                helix_js::render_component(id, 1, 1, None).is_ok()
-                    || helix_js::render_component(0, 1, 1, None).is_ok()
-            }
-            None => helix_js::render_component(0, 1, 1, None).is_ok(),
+            Some(id) => helix_js::has_component_render(id) || helix_js::has_component_render(0),
+            None => helix_js::has_component_render(0),
         };
         if js_wants_state {
             //   格式(简单、免转义):首行为摘要;其后每个可见项一行,单元格以 \t 分隔 ✓

@@ -1209,6 +1209,23 @@ pub fn render_component(id: u64, width: u16, height: u16, focus: Option<&str>) -
     render_popup(id, width, height, focus)
 }
 
+/// 该 id 是否注册了渲染回调(**只查注册表,不调 JS**)。
+///
+/// 为什么需要:UI 常要"问一句有没有渲染器"再决定要不要构造载荷 —— 此前是用
+/// `render_component(id, 1, 1, None).is_ok()` 当探针,那会**每帧真的调一次 JS 回调**
+/// (渲染器存在时),只为拿一个布尔。这里直接查注册表:零 JS 调用、零转换、零分配。
+///
+/// 语义差异(有意):渲染器**存在但抛错**时,本函数仍返回 true(旧探针返回 false)。
+/// 调用方随后本就会真的渲染一次并处理 Err,所以只影响"错误路径上少省一次载荷构造"。
+pub fn has_component_render(id: u64) -> bool {
+    crate::init();
+    crate::state::with_popups(|p| {
+        p.get(&id)
+            .map(|cb| cb.render.as_callable().is_some())
+            .unwrap_or(false)
+    })
+}
+
 pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
     crate::init();
     crate::state::with_engine(|engine| {

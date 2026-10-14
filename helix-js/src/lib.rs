@@ -4383,6 +4383,36 @@ helix.set_component_render(0, function (_focus, ctx) {
         assert!(render_component(999, 10, 1, None).is_err());
     }
 
+    /// `has_component_render` 是给"每帧问一句有没有渲染器"用的 ⇒ 它**不得调用 JS 回调**
+    /// (旧做法 `render_component(id,1,1,None).is_ok()` 会真的渲染一次)。这里用副作用计数器钉死。
+    #[test]
+    fn has_component_render_probes_without_calling_js() {
+        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        crate::init();
+        load_script(
+            r#"globalThis.__probe_calls = 0;
+               helix.set_component_render(77, () => { globalThis.__probe_calls++; return ["x"]; });"#,
+        )
+        .unwrap();
+
+        assert!(crate::has_component_render(77), "已注册应报存在");
+        assert!(!crate::has_component_render(78), "未注册应报不存在");
+
+        let calls = crate::with_engine(|e| {
+            e.eval(boa_engine::Source::from_bytes("globalThis.__probe_calls"))
+                .unwrap()
+                .to_number(e)
+                .unwrap()
+        });
+        assert_eq!(
+            calls, 0.0,
+            "存在性查询不得触发渲染回调(调用了几次: {calls})"
+        );
+
+        crate::unregister_component_render(77);
+        assert!(!crate::has_component_render(77), "注销后应报不存在");
+    }
+
     /// keymap 前缀提示:set_keymap_hint 回调 → keymap_hint 调用;null/无注册 → None
     #[test]
     fn keymap_hint_hook() {

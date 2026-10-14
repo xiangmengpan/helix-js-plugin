@@ -308,7 +308,7 @@ impl Compositor {
             if let MouseEventKind::Down(_) = mouse.kind {
                 let (x, y) = (mouse.column, mouse.row);
                 // 标签条：顶部 1 行（有视图回调时）
-                if helix_js::render_component(TABBAR_ID, 1, 1, None).is_ok()
+                if helix_js::has_component_render(TABBAR_ID)
                     && y == self.area.y
                     && helix_js::emit_component_event(TABBAR_ID, "click", x, y)
                 {
@@ -316,7 +316,7 @@ impl Compositor {
                 }
                 // 叶子命中：有视图回调的叶子把点击交给 JS 视图层
                 if let Some(id) = self.main_tree.leaf_id_at(x, y) {
-                    if helix_js::render_component(id, 1, 1, None).is_ok()
+                    if helix_js::has_component_render(id)
                         && helix_js::emit_component_event(id, "click", x, y)
                     {
                         return true;
@@ -390,7 +390,7 @@ impl Compositor {
         // 状态栏永远在最底 1 行（commandline 关闭后自动恢复）
         let bottom_ui = self.bottom_ui_active();
         // 标签条（JS 视图,顶部 1 行；未注册回调 → 树占满）
-        let tabbar = helix_js::render_component(TABBAR_ID, area.width, 1, None).is_ok();
+        let tabbar = helix_js::has_component_render(TABBAR_ID);
         let tree_area = area
             .clip_top(if tabbar { 1 } else { 0 })
             .clip_bottom(if bottom_ui { 2 } else { 1 });
@@ -491,7 +491,7 @@ impl Compositor {
 
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         let bottom_ui = self.bottom_ui_active();
-        let tabbar = helix_js::render_component(TABBAR_ID, 1, 1, None).is_ok();
+        let tabbar = helix_js::has_component_render(TABBAR_ID);
         let tree_area = area
             .clip_top(if tabbar { 1 } else { 0 })
             .clip_bottom(if bottom_ui { 2 } else { 1 });
