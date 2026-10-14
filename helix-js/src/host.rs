@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 
 /// 一份 JS 运行时状态。当前只拥有引擎;队列/缓存留在进程级(Phase B)。
 pub struct JsHost {
@@ -36,6 +36,16 @@ pub struct JsHost {
     exports: RefCell<HashMap<String, JsValue>>,
     /// 已加载脚本清单(名, 源码)—— 热重载按它重跑(**按宿主**隔离)
     loaded_scripts: RefCell<Vec<(String, String)>>,
+    /// 打开的面板 id 列表(1b:原来是一张 `HashMap<宿主key, Vec<u64>>` 的进程级表)
+    pub(crate) open_panels: RefCell<Vec<u64>>,
+    /// 打开文档快照 JSON(1b:同款进程级键表 → 宿主字段)
+    pub(crate) buffers: RefCell<String>,
+    /// 平级模式快照 JSON(1b)
+    pub(crate) pane_mode: RefCell<String>,
+    /// pane 清单快照 JSON(1b)
+    pub(crate) panes: RefCell<String>,
+    /// 打开的终端:pty_id → (view_id, cmd)(1b;原来这张表的键是 pty id,但状态本就是宿主的)
+    pub(crate) open_terms: RefCell<HashMap<u64, (u64, String)>>,
 }
 
 impl JsHost {
@@ -48,6 +58,11 @@ impl JsHost {
             messages: RefCell::new(Vec::new()),
             exports: RefCell::new(HashMap::new()),
             loaded_scripts: RefCell::new(Vec::new()),
+            open_panels: RefCell::new(Vec::new()),
+            buffers: RefCell::new(String::new()),
+            pane_mode: RefCell::new(String::new()),
+            panes: RefCell::new(String::new()),
+            open_terms: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -113,6 +128,15 @@ pub fn park_or_forget(host: Box<JsHost>) {
     }
 }
 
+/// 同 [`with_host_ref`],但**没有宿主时先 `crate::init()`** —— 供 `set_*`/注册这类
+/// "可能早于初始化"的调用使用(与原来的 `current_host_key_or_init()` 语义一致)。
+pub(crate) fn with_host_ref_or_init<T>(f: impl FnOnce(&JsHost) -> T) -> T {
+    if try_with_host_ref(|_| ()).is_none() {
+        crate::init();
+    }
+    with_host_ref(f)
+}
+
 /// 与 [`with_host_ref`] 相同,但**没有宿主时返回 `None`**(而不是 panic)。
 ///
 /// 给**查询类**入口用:它们被放在每帧路径上,**不得**为了回答一个布尔而顺手建宿主
@@ -132,7 +156,7 @@ pub(crate) fn try_with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> Opt
 }
 
 /// 按**只读**方式访问当前宿主(不改所有权)。
-fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
+pub(crate) fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
     if let Some(ptr) = ACTIVE.with(|a| a.get()) {
         // SAFETY: 注册期覆盖宿主生存期(见 ACTIVE 的约束)
         let host: &JsHost = unsafe { &*ptr.as_ptr() };
@@ -248,16 +272,10 @@ impl std::ops::DerefMut for UiRequestsGuard<'_> {
 /// 原来是进程级 `OnceLock<Mutex<Vec<u64>>>`;`state.rs` 那条注释说"打开与 reload 可能在 tokio
 /// 不同线程执行"—— 那条前提已在 T1 步骤 1 逐条查证并推翻(见
 /// docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论)。分桶后,并发测试各看各的桶。
-static OPEN_PANELS: OnceLock<Mutex<HashMap<u64, Vec<u64>>>> = OnceLock::new();
-
 pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
-    let key = current_host_key();
-    let map = OPEN_PANELS.get_or_init(Default::default);
-    let mut guard = map.lock().expect("open panels lock");
-    f(guard.entry(key).or_default())
+    with_host_ref(|h| f(&mut h.open_panels.borrow_mut()))
 }
 
-/// 是否已有可用宿主(`init()` 的幂等判断用它,而**不是**"槽是否为空"—— 引擎借出期间槽也是空的)
 pub fn engine_exists() -> bool {
     ACTIVE.with(|a| a.get()).is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
 }
