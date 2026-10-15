@@ -129,6 +129,12 @@ pub struct JsHost {
     pub(crate) next_map_id: Cell<u64>,
     pub(crate) next_term_id: Cell<u64>,
     pub(crate) next_terminal_view_id: Cell<u64>,
+    /// T0:原 `server_rows::NEXT_ID`(thread_local)—— server rows 一次性回调 id 计数器
+    pub(crate) next_server_row_id: Cell<u64>,
+    /// T0:原 `watch::NEXT_WATCH_ID`(thread_local)—— watcher id 计数器
+    pub(crate) next_watch_id: Cell<u64>,
+    /// C-1/C-2:能力清单与授权状态(按宿主隔离)
+    pub(crate) permissions: RefCell<crate::permissions::PermissionState>,
 }
 
 impl JsHost {
@@ -191,6 +197,9 @@ impl JsHost {
             next_map_id: Cell::new(1),
             next_term_id: Cell::new(1),
             next_terminal_view_id: Cell::new(1),
+            next_server_row_id: Cell::new(1),
+            next_watch_id: Cell::new(1),
+            permissions: RefCell::new(crate::permissions::PermissionState::default()),
         }
     }
 }
@@ -256,6 +265,265 @@ pub fn park_or_forget(host: Box<JsHost>) {
     }
 }
 
+/// **把宿主登记为活动宿主的守卫**(Drop 时恢复上一个)—— 兼作 panic 安全。
+///
+/// 为什么需要它:`helix-js` 内部有一整层“隐式解析当前宿主”的访问器
+/// (`with_host_ref`/`with_engine` …),它们是历史形状,一下子改不完。
+/// 泵方法(`JsHost::*`)用这个守卫把 `self` 绑定进那层隐式路径 ⇒ **外壳是显式排他的**
+/// (要 `&mut JsHost`),内里继续用既有访问器。二者合起来才是 Phase D 的完整形状:
+/// 入口排他靠借用检查器,内部实现不必推倒重来。
+struct ActiveGuard {
+    prev: Option<NonNull<JsHost>>,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        ACTIVE.with(|a| a.set(self.prev));
+    }
+}
+
+/// JS 的**泵入口**(Phase D-2):全部要求 `&mut JsHost`。
+///
+/// 关键性质:这些方法拿的是**独占借用**。同一个宿主在同一棵 Rust 调用树里
+/// 只需两次就会撞上借用检查器 ⇒ “JS 回调里再调一次 `render_component`”
+/// 不再是一个运行期 panic(借用冲突),而是**编译不过**。
+/// 反例见 `helix-term/src/compositor.rs` 的 `Context::with_js` 文档与
+/// `docs/superpowers/plans/2026-10-14-js-host-phaseD-and-boundary.md` §D-4。
+impl JsHost {
+    /// 在 `self` 上执行 `f`,期间 `self` 是活动宿主(嵌套时恢复)。
+    fn pump<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        let prev = ACTIVE.with(|a| a.replace(Some(NonNull::from(&mut *self))));
+        let _guard = ActiveGuard { prev };
+        f()
+    }
+
+    /// 泵入口·运行插件命令(`helix.register_command` 注册的命令)
+    pub fn run_command(
+        &mut self,
+        name: &str,
+        ctx: &crate::types::CommandContext,
+    ) -> anyhow::Result<bool> {
+        self.pump(|| crate::commands::run_command(name, ctx))
+    }
+
+    /// 泵入口·兑现已就绪的 Promise 续体(`.then`/`.catch`)
+    pub fn pump_jobs(&mut self) -> anyhow::Result<()> {
+        self.pump(crate::shell::pump_jobs)
+    }
+
+    /// 泵入口·通知型事件(save / buffer-open / mode-change / theme-change …)
+    pub fn emit_event(
+        &mut self,
+        name: &str,
+        ctx: &crate::types::CommandContext,
+        extra: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_event(name, ctx, extra))
+    }
+
+    /// 泵入口·`doc-change`(带防抖窗口内合并的范围)
+    pub fn emit_doc_change(
+        &mut self,
+        ctx: &crate::types::CommandContext,
+        changes: &[crate::types::DocChange],
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_doc_change(ctx, changes))
+    }
+
+    /// 泵入口·`layout-change`(种类从宿主字段取;与 `set_layout_change_kind` 配对)
+    pub fn emit_layout_change(&mut self) -> anyhow::Result<()> {
+        self.pump(crate::commands::emit_layout_change)
+    }
+
+    /// 泵入口·`startup`
+    pub fn emit_startup(&mut self) -> anyhow::Result<()> {
+        self.pump(crate::commands::emit_startup)
+    }
+
+    /// 泵入口·渲染组件(返回 `Content`)
+    ///
+    /// # 重入为什么是**编译错**(D-4 的反例)
+    ///
+    /// 泵入口拿的是 `&mut JsHost`。JS 回调运行期间,引擎是从**同一个宿主**里借出去的
+    /// (`RefCell` 借用守卫),所以回调再想进一次宿主、就得再要一份 `&mut JsHost` ——
+    /// 而那份宿主正处于排他借用中。下面把“回调体”建模成一个必须与入口**同时存在**的闭包
+    /// (而不是“入口返回后再调一次”—— 那种是先后调用,本来就没问题):
+    ///
+    /// ```compile_fail,E0501
+    /// use helix_js::host::JsHost;
+    ///
+    /// /// 模型:一个“会回到回调里”的泵入口(实际形态就是 `host.*` 泵方法:
+    /// /// 宿主被排他借走,回调由宿主自己调用)。
+    /// fn js_entry(host: &mut JsHost, callback: &dyn Fn()) {
+    ///     let _ = host;
+    ///     callback();
+    /// }
+    ///
+    /// fn from_js_callback(host: &mut JsHost) {
+    ///     js_entry(host, &|| {
+    ///         // 这里就是“JS 回调内部”:手上只有引擎借用,没有宿主。
+    ///         // 再进一次 ⇒ 与外面那份排他借用冲突。
+    ///         js_entry(host, &|| {});
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// 语言上的要点:**归属**的两种写法差别很大 —— “先 `render_component` 拿返回值、
+    /// 再调一次”是合法的(借用已结束),而“在本次入口还在跑的时候再进一次”不合法。
+    /// 后者就是重入,而这里用借用检查器挡住了它。
+    ///
+    /// 边界(不夸大):两条**旧的自由函数**(`helix_js::render_component` 等)走的是
+    /// 那层隐式宿主解析,重入仍会在运行期报“engine used again while already borrowed”。
+    /// 它们的存在理由是 D-3 那三类“拿不到 `cx`”的调用点;新代码应当走 `host.*` 泵方法。
+    ///
+    /// 对照:纯**查询**入口(`has_component_render`/`command_names`/`input_has_state`)
+    /// 不拿宿主也不执行 JS,从回调里调它们合法、也不该被收进来。
+    pub fn render_component(
+        &mut self,
+        id: u64,
+        width: u16,
+        height: u16,
+        focus: Option<&str>,
+    ) -> anyhow::Result<crate::types::Content> {
+        self.pump(|| crate::popup::render_component(id, width, height, focus))
+    }
+
+    /// 泵入口·带输入签名缓存的组件渲染
+    pub fn render_component_cached(
+        &mut self,
+        id: u64,
+        width: u16,
+        height: u16,
+        focus: Option<&str>,
+        sig: &str,
+    ) -> anyhow::Result<crate::types::Content> {
+        self.pump(|| crate::popup::render_component_cached(id, width, height, focus, sig))
+    }
+
+    /// 泵入口·渲染弹窗
+    pub fn render_popup(
+        &mut self,
+        id: u64,
+        width: u16,
+        height: u16,
+        focus: Option<&str>,
+    ) -> anyhow::Result<crate::types::Content> {
+        self.pump(|| crate::popup::render_popup(id, width, height, focus))
+    }
+
+    /// 泵入口·把按键送给节点回调(`onKey`)
+    pub fn dispatch_input_key(
+        &mut self,
+        popup_id: u64,
+        node_id: &str,
+        key: &str,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::input::dispatch_input_key(popup_id, node_id, key))
+    }
+
+    /// 泵入口·把粘贴文本送给节点回调
+    pub fn dispatch_input_paste(
+        &mut self,
+        popup_id: u64,
+        node_id: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::input::dispatch_input_paste(popup_id, node_id, text))
+    }
+
+    /// 泵入口·把节点事件(`onPress`/`onChange`)送给回调
+    pub fn dispatch_node_event(
+        &mut self,
+        view_id: u64,
+        node_id: &str,
+        key: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::dispatch_node_event(view_id, node_id, key))
+    }
+
+    /// 泵入口·弹窗/面板节点按键(`onKey` + 节点路由),返回插件决定
+    pub fn popup_key(
+        &mut self,
+        id: u64,
+        key: &crate::types::PluginKey,
+        ctx: &crate::types::CommandContext,
+    ) -> anyhow::Result<crate::types::PopupKeyResult> {
+        self.pump(|| crate::popup::popup_key(id, key, ctx))
+    }
+
+    /// 泵入口·组件节点上的鼠标/输入事件;返回 true = 插件消费了该事件
+    pub fn emit_component_event(&mut self, id: u64, kind: &str, x: u16, y: u16) -> bool {
+        self.pump(|| crate::commands::emit_component_event(id, kind, x, y))
+    }
+
+    /// 泵入口·终端按键钩子(`term-key`),返回决策
+    pub fn emit_term_key(
+        &mut self,
+        pty_id: u64,
+        code: &str,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) -> Option<crate::commands::TermKeyDecision> {
+        self.pump(|| crate::commands::emit_term_key(pty_id, code, shift, ctrl, alt))
+    }
+
+    /// 泵入口·终端显示模式通知(`term-mode-change`)
+    pub fn emit_term_mode(&mut self, pty_id: u64, mode: &str) {
+        self.pump(|| crate::commands::emit_term_mode(pty_id, mode))
+    }
+
+    /// 泵入口·终端尺寸通知(`term-resize`)
+    pub fn emit_term_resize(&mut self, pty_id: u64, rows: u16, cols: u16) {
+        self.pump(|| crate::commands::emit_term_resize(pty_id, rows, cols))
+    }
+
+    /// 泵入口·终端标题通知(`term-title`)
+    pub fn emit_term_title(&mut self, pty_id: u64, title: &str) {
+        self.pump(|| crate::commands::emit_term_title(pty_id, title))
+    }
+
+    /// 泵入口·终端开门通知(`term-open`)
+    pub fn emit_term_open(&mut self, pty_id: u64, cmd: &str) {
+        self.pump(|| crate::commands::emit_term_open(pty_id, cmd))
+    }
+
+    /// 泵入口·兑现 term 事件(worker 回投)对应的 Promise
+    pub fn resolve_term_event(
+        &mut self,
+        id: u64,
+        event: crate::types::TermEvent,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::shell::resolve_term_event(id, event))
+    }
+
+    /// 泵入口·兑现异步 fs 事件对应的 Promise
+    pub fn resolve_async_event(
+        &mut self,
+        id: u64,
+        event: crate::types::AsyncEvent,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::shell::resolve_async_event(id, event))
+    }
+
+    /// 泵入口·兑现 LSP 请求对应的 Promise
+    pub fn resolve_lsp(
+        &mut self,
+        id: u64,
+        result: Result<Option<String>, String>,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::lsp::resolve_lsp(id, result))
+    }
+
+    /// 泵入口·状态栃插件钩子(`helix.set_statusline`)
+    pub fn statusline_parts(
+        &mut self,
+        ctx: &crate::types::StatuslineCtx,
+    ) -> Option<Vec<crate::types::StatuslinePart>> {
+        self.pump(|| crate::popup::statusline_parts(ctx))
+    }
+}
+
 /// 同 [`with_host_ref`],但**没有宿主时先 `crate::init()`** —— 供 `set_*`/注册这类
 /// "可能早于初始化"的调用使用(与原来的 `current_host_key_or_init()` 语义一致)。
 pub(crate) fn with_host_ref_or_init<T>(f: impl FnOnce(&JsHost) -> T) -> T {
@@ -278,11 +546,44 @@ pub(crate) fn try_with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> Option<T> {
     DEFAULT_HOST.with(|cell| cell.borrow().as_deref().map(f))
 }
 
+/// C-2:能力授权状态的宿主访问器(无宿主 ⇒ `None`,由 `permissions` 模块走兜底表)
+pub(crate) fn try_with_permission_state<T>(
+    f: impl FnOnce(&mut crate::permissions::PermissionState) -> T,
+) -> Option<T> {
+    try_with_host_ref(|h| f(&mut h.permissions.borrow_mut()))
+}
+
 /// 同 [`with_messages`],但无宿主时给 `None`(取走/查询路径不得建宿主)。
 pub(crate) fn try_with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> Option<T> {
     try_with_host_ref(|h| f(&mut h.messages.borrow_mut()))
 }
 
+/// **唯一的 legacy 隐式宿主解析**(Phase D-3 的分类结论)。
+///
+/// 调用点分四类(2026-10-14 逐个核实,不是估算):
+///
+/// 1. **worker / 通道 / `Send` 闭包类 —— 永久保留**。它们要么在别的线程上,要么在
+///    `job::dispatch_blocking` 那种必须 `Send` 的闭包里(`&mut JsHost` 是 `!Send`)⇒
+///    **结构上就拿不到**宿主,而不是"还没改":
+///    * `TERM_EVENTS`/`ASYNC_EVENTS`/`LSP_RESULTS` 的接收与 `push_*`;
+///    * `TermFeed` 臂 → `PluginTerminal::feed` → `term-title`;
+///    * `handle_lsp_*` 自由函数里的 `resolve_lsp(req.id, Ok(None))`;
+///    * `server_tasks::push_event` / `watch::push_watch_event`。
+/// 2. **沿调用链还没透传(可达,留待下一批)**:
+///    * `Compositor::sync_layout_cache` → `layout-change`:它挂在 **28 个布局原语**
+///      (`split`/`close`/`set_leaf_*` …)的 `self.` 方法里,要给那些签名都加宿主参数;
+///    * `load_script_named` 的三条加载路径(启动 init.js / `:plugin load` / term-native):
+///      加载入口(`load_script_checked`)本身不收宿主。
+/// 3. **纯查询 —— 本就不在本路径上**:`has_handlers`/`has_component_render`/
+///    `input_has_state`/`command_names`/`statusline_replaces` 走 `try_with_host_ref`
+///    (无宿主 ⇒ **不建**宿主、返回默认值)。
+/// 4. **状态读写(不执行 JS)**:`take_messages`/`take_ui_requests`/`set_viewport`/
+///    `set_picker_state`/`theme_overrides` 等 —— 拿宿主也只是为了定位队列,不跑 JS。
+///
+/// 换句话说:这条路的名字就应该是“**跨线程通道 / Send 闭包专用 / 待透传的中间层**”,
+/// 而不是“新代码的顺手通道”。需要排他性证明的新代码应调 `JsHost::*` 泵方法
+/// (已接好的入口见 `helix-term/src/compositor.rs` 的 `Context::js_*` 包装)。
+///
 /// 按**只读**方式访问当前宿主(不改所有权)。
 pub(crate) fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
     if let Some(ptr) = ACTIVE.with(|a| a.get()) {
@@ -438,7 +739,9 @@ mod engine_ownership_tests {
     /// 现在引擎是普通 `RefCell<Context>` 字段 ⇒ 用**身份 + 状态延续**来钉同一件事。)
     #[test]
     fn engine_stays_in_host_across_borrows() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         let key_before = current_host_key();
         crate::load_script(r#"helix.register_command("survives-reborrow", () => {});"#)
@@ -460,7 +763,9 @@ mod engine_ownership_tests {
     /// `init()` 幂等:第二次不得重建引擎(重建会把注册命令/事件/键位全清掉)。
     #[test]
     fn init_is_idempotent_and_keeps_registry() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::load_script(r#"helix.register_command("keep-me", () => {});"#).unwrap();
         crate::init(); // 再来一次
@@ -473,7 +778,9 @@ mod engine_ownership_tests {
     /// 重入必须**点名**:消息含 "again while already borrowed"。
     #[test]
     fn nested_borrow_is_named_not_opaque() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         let err = std::panic::catch_unwind(|| with_engine(|_| with_engine(|_| {})))
             .expect_err("重入必须报错");
@@ -491,7 +798,9 @@ mod engine_ownership_tests {
     /// `f` 里 panic ⇒ 借出的引擎**必须归还**(挡"不用 RAII"的实现)。
     #[test]
     fn engine_returned_after_panic_in_closure() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         let r = std::panic::catch_unwind(|| with_engine(|_| panic!("boom")));
         assert!(r.is_err(), "闭包应当 panic");
@@ -502,7 +811,9 @@ mod engine_ownership_tests {
     /// 末尾必须恢复宿主 —— 同进程还有别的测试要用它。
     #[test]
     fn unregistered_host_reports_clearly() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         clear_host_for_test();
         let err =
@@ -527,7 +838,9 @@ mod engine_ownership_tests {
     /// `Box<JsHost>` ⇒ 析构一个**正被借出**的引擎 = 注释里那条破坏堆的路径。
     #[test]
     fn init_while_borrowed_does_not_rebuild_host_engine() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         let key_before = current_host_key();
         with_engine(|_| {
@@ -552,7 +865,9 @@ mod engine_ownership_tests {
     /// 这个红正好把真实边界钉了下来。
     #[test]
     fn two_hosts_are_isolated() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         with_engine(|e| {
             e.eval(Source::from_bytes("globalThis.marker = 1;"))
@@ -595,7 +910,9 @@ mod engine_ownership_tests {
     /// 有了这条测试,下次不必再重新推一遍(它同时守住这条路径继续可用)。
     #[test]
     fn cross_engine_jsvalue_is_dangerous() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // ① 在宿主 A 的引擎里注册命令(REGISTRY 里留下一个属于 A 的 JsValue)
         crate::load_script(r#"helix.register_command("cross-probe", () => helix.echo("x"));"#)
@@ -627,7 +944,9 @@ mod engine_ownership_tests {
     /// 引擎 —— 而注册表/队列**仍是进程级**,多份引擎换不来任何隔离,只白花内存与注册开销。
     #[test]
     fn park_and_take_reuses_the_same_engine() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         with_engine(|e| {
             e.eval(Source::from_bytes("globalThis.reuse_marker = 7;"))
@@ -656,7 +975,9 @@ mod engine_ownership_tests {
     /// **另一个线程**能取到 ⇒ 本测试会红。搬进宿主后,另一线程自建的宿主看不到它 ⇒ 绿。
     #[test]
     fn messages_are_per_host_not_process_global() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::load_script(r#"helix.echo("from-main-thread");"#).unwrap();
 
@@ -679,7 +1000,9 @@ mod engine_ownership_tests {
     /// 今天它是进程级 `OnceLock<Mutex<..>>` ⇒ 主线程排的请求,子线程能取到 ⇒ 本测试红。
     #[test]
     fn ui_requests_are_per_host_not_process_global() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 走全局名字的队列 —— 它已按宿主分桶(见 UiRequests),所以这行无需改动
         crate::state::UI_REQUESTS
@@ -710,7 +1033,9 @@ mod engine_ownership_tests {
     /// ⇒ 并发测试会互相"抢面板"(任务 1 时代留下的不一致)。
     #[test]
     fn open_panels_are_per_host_not_process_global() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::state::with_open_panels(|p| p.push(42));
 
@@ -734,7 +1059,9 @@ mod engine_ownership_tests {
     /// 后面的测试静默拿到别人的目录 —— 这正是本会话 5 个"单用例偶发"的机制。
     #[test]
     fn layouts_dir_is_per_host_not_process_global() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::state::set_layouts_dir(std::path::PathBuf::from("/tmp/LAYOUTS-RED"));
         assert_eq!(
@@ -767,7 +1094,9 @@ mod engine_ownership_tests {
     /// 测试删掉"跳过 guard"后变红的原因。
     #[test]
     fn load_caches_are_per_host_not_process_global() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::state::with_script_exports(|m| {
             m.insert(
@@ -805,7 +1134,9 @@ mod engine_ownership_tests {
     /// 清成空串再换宿主,于是"另一宿主读到空"必然成立 ⇒ **假绿**(本会话第三次踩同类陷阱)。
     #[test]
     fn buffers_are_per_host_not_process_global() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::state::cache_buffers(r#"{"current":1,"buffers":[{"name":"A-RED.txt"}]}"#);
 

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::state::{with_engine, UI_REQUESTS};
-use crate::types::{UiRequest, WatchChange, WatchEvent};
+use crate::types::{UiRequest, UnwatchReq, WatchChange, WatchEvent, WatchReq};
 
 /// 事件通道：全局（发送端供 notify 回调线程投递；接收端主线程 drain）。
 /// 与 TERM_EVENTS 的 thread_local 不同——watch 回调注册表（WATCH_CALLBACKS）在
@@ -28,16 +28,15 @@ static WATCH_CHANNEL: OnceLock<
 > = OnceLock::new();
 
 // 持有 JsValue：线程退出时内容泄漏（与 CONTEXT 同哲学，见 state.rs 顶部注释）
-thread_local! {
-    static NEXT_WATCH_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
-}
 
 fn with_watch_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.watch_callbacks.borrow_mut()))
 }
 
+/// watcher id 计数器(T0:原 thread_local `NEXT_WATCH_ID` ⇒ 宿主字段)
 fn next_watch_id() -> u64 {
-    NEXT_WATCH_ID.with(|c| {
+    crate::host::with_host_ref_or_init(|h| {
+        let c = &h.next_watch_id;
         let v = c.get();
         c.set(v + 1);
         v
@@ -148,7 +147,7 @@ pub(crate) fn js_watch(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::Watch { id, path });
+        .push(UiRequest::Watch(WatchReq { id, path }));
     Ok(JsValue::from(id))
 }
 
@@ -175,7 +174,7 @@ pub(crate) fn js_unwatch(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::Unwatch { id });
+        .push(UiRequest::Unwatch(UnwatchReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -196,7 +195,7 @@ mod tests {
     /// 参数校验：非字符串路径 / 空路径 / 回调非函数 → Err
     #[test]
     fn watch_validates_args() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let mut c = Context::default();
         assert!(
@@ -232,10 +231,10 @@ mod tests {
         );
     }
 
-    /// 注册：返回数字 id；回调入注册表；入队 UiRequest::Watch { id, path }
+    /// 注册：返回数字 id；回调入注册表；入队 UiRequest::Watch(id, path)
     #[test]
     fn watch_registers_and_enqueues() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let mut c = Context::default();
         let cb = c.eval(Source::from_bytes("() => {}")).unwrap();
@@ -251,7 +250,7 @@ mod tests {
         let reqs = take_ui_requests();
         assert!(
             reqs.iter()
-                .any(|r| matches!(r, UiRequest::Watch { id: i, path } if *i == id && path == "/tmp/hx-watch")),
+                .any(|r| matches!(r, UiRequest::Watch(WatchReq { id: i, path }) if *i == id && path == "/tmp/hx-watch")),
             "入队 UiRequest::Watch"
         );
     }
@@ -260,7 +259,7 @@ mod tests {
     /// 未注册 id 静默跳过；resolve 幂等。
     #[test]
     fn watch_resolve_delivers_events() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let cb = eval_fn(
             r#"(events) => { globalThis.__got = (globalThis.__got || "") + events.length + ":" + events[0].kind + ":" + events[0].path + ";"; }"#,
@@ -292,7 +291,7 @@ mod tests {
     /// unwatch：移除回调 + 入队 UiRequest::Unwatch
     #[test]
     fn unwatch_removes_and_enqueues() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let mut c = Context::default();
         let cb = c.eval(Source::from_bytes("() => {}")).unwrap();
@@ -309,7 +308,7 @@ mod tests {
         let reqs = take_ui_requests();
         assert!(
             reqs.iter()
-                .any(|r| matches!(r, UiRequest::Unwatch { id: i } if *i == id)),
+                .any(|r| matches!(r, UiRequest::Unwatch(UnwatchReq { id: i }) if *i == id)),
             "入队 UiRequest::Unwatch"
         );
     }

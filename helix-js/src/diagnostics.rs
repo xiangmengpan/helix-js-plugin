@@ -40,7 +40,26 @@ pub fn emit_lsp_diagnostics(doc_id: u64, diags_json: &str) {
         else {
             return;
         };
-        let args = [JsValue::from(doc_id), diags];
+        let mut args = vec![JsValue::from(doc_id), diags];
+        // B-1:具名 payload 追加为最后一个参数(位置参数不变);diagnostics 字段是原样 JSON
+        match serde_json::from_str::<serde_json::Value>(diags_json) {
+            Ok(v) => {
+                if let Ok(p) = crate::commands::payload_js(
+                    engine,
+                    &crate::types::EventPayload::LspDiagnostics(
+                        crate::types::LspDiagnosticsPayload {
+                            hdr: crate::types::BusHeader::new("lsp-diagnostics"),
+                            doc_id,
+                            diagnostics: v,
+                        },
+                    ),
+                ) {
+                    args.push(p);
+                }
+            }
+            // JSON 解析失败同上:不发半个 payload
+            Err(_) => return,
+        }
         let undefined = JsValue::undefined();
         for handler in &handlers {
             let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
@@ -63,7 +82,7 @@ mod tests {
     /// cache_diagnostics → js_diagnostics 解析；无缓存 → null
     #[test]
     fn diagnostics_cache_roundtrip() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut ctx = Context::default();
         // 无缓存 → null
         let v = js_diagnostics(&JsValue::undefined(), &[], &mut ctx).unwrap();
@@ -90,7 +109,7 @@ mod tests {
     /// emit_lsp_diagnostics 调 handler（docId + 解析后数组）；无 handler 零开销返回
     #[test]
     fn emit_lsp_diagnostics_calls_handler() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 注册 handler 记录参数
         crate::state::with_engine(|engine| {

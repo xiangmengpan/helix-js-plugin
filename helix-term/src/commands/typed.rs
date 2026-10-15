@@ -14,6 +14,15 @@ use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
 use helix_js::CommandContext;
+use helix_js::{
+    CacheLayoutReq, CloseLeafReq, ClosePanelReq, EqualizeLeafReq, FocusBufferReq, FocusLeafDirReq,
+    FocusLeafReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq, MovePanelReq, OpenBufferLeafReq,
+    OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq, OpenScratchFileReq, OpenTerminalReq,
+    PaneEmbedReq, PaneFloatReq, PanePinReq, PaneRaiseReq, ResizeLeafDirReq, ResizeLeafReq,
+    ServerListRowsReq, ServerOpReq, ServerTaskReq, SetThemeReq, SplitLeafReq, StackActivateReq,
+    StackCreateReq, StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq,
+    TermFeedReq, TermModeReq, TermResizeReq, TermSaveReq, UnwatchReq, WatchReq, ZoomLeafReq,
+};
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
@@ -256,7 +265,7 @@ fn quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow
     cx.block_try_flush_writes()?;
     // JS 插件 buffer-close 钩子（quit/force_quit 都汇聚到这里；
     // 文档在此刻仍是当前文档，序列化上下文有效）
-    emit_plugin_event(cx.editor, "buffer-close", None);
+    emit_plugin_event_with(cx.js.as_deref_mut(), cx.editor, "buffer-close", None);
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -269,7 +278,7 @@ fn force_quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
 
     cx.block_try_flush_writes()?;
     // force_quit 不保存直接关：钩子同样先于 close 触发
-    emit_plugin_event(cx.editor, "buffer-close", None);
+    emit_plugin_event_with(cx.js.as_deref_mut(), cx.editor, "buffer-close", None);
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -342,7 +351,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             align_view(doc, view, Align::Center);
             // JS 插件 buffer-open 钩子（仅 :open/:o 命令路径；file picker 选择文件
             // 走 ui/mod.rs 直接调 editor.open，不经此处，不触发）
-            emit_plugin_event(cx.editor, "buffer-open", None);
+            emit_plugin_event_with(cx.js.as_deref_mut(), cx.editor, "buffer-open", None);
         }
     }
     Ok(())
@@ -571,7 +580,7 @@ fn write_impl(
 
     // JS 插件 save 钩子：编辑先应用再保存（与预处理改动同属保存前变更，
     // 同一次撤销可回到保存前状态）。重取 current 以释放上文的 view/doc 借用。
-    emit_plugin_event(cx.editor, "save", None);
+    emit_plugin_event_with(cx.js.as_deref_mut(), cx.editor, "save", None);
 
     // Save an undo checkpoint for any outstanding changes.
     let (view, doc) = current!(cx.editor);
@@ -1313,7 +1322,7 @@ fn theme(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
                 }
                 cx.editor.set_theme(theme)?;
                 sync_theme_snapshot(cx.editor);
-                emit_plugin_event(cx.editor, "theme-change", None);
+                emit_plugin_event_with(cx.js.as_deref_mut(), cx.editor, "theme-change", None);
             } else {
                 let name = cx.editor.theme.name().to_string();
 
@@ -4341,6 +4350,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (1, Some(3)), ..Signature::DEFAULT },
     },
     TypableCommand {
+        name: "js-permission",
+        aliases: &[],
+        doc: "Plugin capabilities (C-2): list | allow <plugin> <cap> | deny <plugin> <cap>. Caps: process, fs_read, fs_write.",
+        fun: js_permission,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (1, Some(3)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
         name: "panel-close",
         aliases: &[],
         doc: "Close the most recently opened plugin side panel.",
@@ -4447,7 +4464,13 @@ pub(crate) fn run_plugin_command(
     // §12.0:把键入参数交给 JS 命令(独立通道,不动 CommandContext)。
     // **先取结果再清空** —— 这样即使下面各分支 early return,也不会漏清。
     helix_js::set_command_args(args.to_vec());
-    let res = helix_js::run_command(name, &ctx);
+    // D-2 **泵入口**:有宿主就走 `&mut JsHost`(泵方法拿独占借用 ⇒ 重入 = 编译错),
+    // 没有宿主才退回那层唯一的 legacy 隐式解析。两者语义相同(后者靠 ACTIVE 找到
+    // 同一个宿主),区别只在“库层面能不能证明排他”。
+    let res = match cx.with_js(|host| host.run_command(name, &ctx)) {
+        Some(res) => res,
+        None => helix_js::run_command(name, &ctx),
+    };
     helix_js::clear_command_args();
     match res {
         Ok(true) => {
@@ -4460,7 +4483,7 @@ pub(crate) fn run_plugin_command(
                 let overrides = helix_js::theme_overrides();
                 apply_theme_overrides(cx.editor, Some(&overrides));
             }
-            apply_ui_requests(helix_js::take_ui_requests())?;
+            apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
             // 应用插件光标/选区请求（在编辑事务之前——事务的 selection 重映射会把
             // 快照坐标的光标正确推进）。只在 Ok(true) 分支消费：Err 时队列残留由下次
             // 命令开始时清空，语义安全。
@@ -4490,7 +4513,19 @@ pub(crate) fn run_plugin_command(
             Ok(true)
         }
         Ok(false) => Ok(false),
-        Err(err) => Err(anyhow!("'{name}': {err}")),
+        Err(err) => {
+            // 失败路径也要 drain 消息:能力询问会先入队一条"怎么授权"的提示,
+            // 若把它留给下一次 drain,命令刚设的 **Error** 会被那条 Info 覆盖
+            // (2026-10-15 集成实测:状态栏只剩 Info,"失败"看不见了)。
+            // 并进错误文本 ⇒ 一条 Error 里同时有原因与修法。
+            let msgs = helix_js::take_messages();
+            let hint = if msgs.is_empty() {
+                String::new()
+            } else {
+                format!(" —— {}", msgs.join(" "))
+            };
+            Err(anyhow!("'{name}': {err}{hint}"))
+        }
     }
 }
 
@@ -4518,15 +4553,32 @@ pub(super) fn execute_command(
 /// 参数用 `&mut Editor` 而非 compositor::Context：commands.rs 的模式命令
 /// 拿到的是 keymap Context（只有 editor 字段），此签名两个调用方都兼容。
 pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&str>) {
-    emit_plugin_event_impl(editor, name, extra, None)
+    emit_plugin_event_impl(None, editor, name, extra, None)
 }
 
 /// doc-change 专用入口：防抖窗口内合并的变更范围随事件序列化（doc.changes）。
-pub(crate) fn emit_plugin_doc_change(editor: &mut Editor, changes: &[helix_js::DocChange]) {
-    emit_plugin_event_impl(editor, "doc-change", None, Some(changes))
+/// `js` 为**宿主**(D-2 泵入口的第一参);调用点没有宿主时传 `None`(legacy 隐式解析)。
+pub(crate) fn emit_plugin_doc_change(
+    js: Option<&mut helix_js::host::JsHost>,
+    editor: &mut Editor,
+    changes: &[helix_js::DocChange],
+) {
+    emit_plugin_event_impl(js, editor, "doc-change", None, Some(changes))
+}
+
+/// D-2：**有宿主**的入口 —— 事件发射走 `&mut JsHost`（泵方法，独占借用 ⇒ 重入是编译错）。
+/// 没有宿主的调用点仍走上面的同名旧入口（legacy 隐式解析），两者语义一致。
+pub(crate) fn emit_plugin_event_with(
+    js: Option<&mut helix_js::host::JsHost>,
+    editor: &mut Editor,
+    name: &str,
+    extra: Option<&str>,
+) {
+    emit_plugin_event_impl(js, editor, name, extra, None)
 }
 
 fn emit_plugin_event_impl(
+    js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
     name: &str,
     extra: Option<&str>,
@@ -4566,10 +4618,13 @@ fn emit_plugin_event_impl(
         docs,
     };
 
-    if let Err(err) = match changes {
-        Some(changes) => helix_js::emit_doc_change(&ctx, changes),
-        None => helix_js::emit_event(name, &ctx, extra),
-    } {
+    let emitted = match (js, changes) {
+        (Some(host), Some(changes)) => host.emit_doc_change(&ctx, changes),
+        (Some(host), None) => host.emit_event(name, &ctx, extra),
+        (None, Some(changes)) => helix_js::emit_doc_change(&ctx, changes),
+        (None, None) => helix_js::emit_event(name, &ctx, extra),
+    };
+    if let Err(err) = emitted {
         editor.set_error(format!("plugin event '{name}' failed: {err}"));
         return;
     }
@@ -4837,10 +4892,13 @@ fn layer_id(layer: &str) -> &'static str {
 
 /// 消费插件 UI 请求：MapKey 注入 keymap、OpenPopup 推层都经 job 通道
 /// （闭包只捕获 owned 数据，满足 'static + Send）。
-pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Result<()> {
+pub(crate) fn apply_ui_requests(
+    mut js: Option<&mut helix_js::host::JsHost>,
+    reqs: Vec<helix_js::UiRequest>,
+) -> anyhow::Result<()> {
     for req in reqs {
         match req {
-            helix_js::UiRequest::OpenPopup {
+            helix_js::UiRequest::OpenPopup(OpenPopupReq {
                 id,
                 width,
                 height,
@@ -4848,7 +4906,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                 layer,
                 center,
                 size_pct,
-            } => {
+            }) => {
                 let lid = layer_id(&layer);
                 // center → 居中浮层(layer 层可叠多张,同层替换);anchor → 现状(参照点/尺寸 hint)
                 let popup =
@@ -4871,13 +4929,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.replace_or_push(lid, popup);
                 });
             }
-            helix_js::UiRequest::OpenPanel {
+            helix_js::UiRequest::OpenPanel(OpenPanelReq {
                 id,
                 side,
                 size,
                 focusable,
                 rail,
-            } => {
+            }) => {
                 // side 已在 JS 侧白名单校验，此处仅防御性映射
                 let side = match side.as_str() {
                     "right" => ui::PanelSide::Right,
@@ -4932,7 +4990,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     editor.close(view_id);
                 });
             }
-            helix_js::UiRequest::ClosePanel { id } => {
+            helix_js::UiRequest::ClosePanel(ClosePanelReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     // popup id ≠ 布局树 leaf id（split 分配）：由 close_panel_by_id 按它找叶
                     // 先清 render 注册表（幂等），再按实例 id 关掉树里的面板叶
@@ -4940,7 +4998,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.close_panel_by_id(id);
                 });
             }
-            helix_js::UiRequest::OpenScratchFile { path } => {
+            helix_js::UiRequest::OpenScratchFile(OpenScratchFileReq { path }) => {
                 job::dispatch_blocking(move |editor, _compositor| {
                     let p = PathBuf::from(&path);
                     match editor.open(&p, Action::Replace) {
@@ -4953,7 +5011,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::OpenFile { path, row, col } => {
+            helix_js::UiRequest::OpenFile(OpenFileReq { path, row, col }) => {
                 // open 是同步的（editor.open 直接返回），:open 语义（Action::Replace）；
                 // 错误经 set_error 上报（闭包内无 Result 传播路径）；
                 // 带行列 → 打开后定位光标（clamp 复用 pos_to_char，JS 输入不可信）
@@ -4971,7 +5029,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::MovePanel { id, side } => {
+            helix_js::UiRequest::MovePanel(MovePanelReq { id, side }) => {
                 // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）
                 let side = match side.as_str() {
                     "right" => ui::PanelSide::Right,
@@ -4985,13 +5043,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::OpenTerminal {
+            helix_js::UiRequest::OpenTerminal(OpenTerminalReq {
                 view_id,
                 pty_id,
                 cmd,
                 side,
                 size,
-            } => {
+            }) => {
                 // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）；
                 // cmd 由 JS 侧 spawn 完成，这里只用于错误提示不真正执行
                 match side.as_str() {
@@ -5007,7 +5065,11 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     _ => crate::ui::plugin_panel::PanelSide::Bottom,
                 };
                 let terminal = PluginTerminal::new(view_id, pty_id, size);
-                helix_js::emit_term_open(pty_id, &cmd);
+                // D-2:term-open 是唯一**从 UI 请求臂**发出的事件 ⇒ 有宿主时走泵入口
+                match js.as_mut() {
+                    Some(host) => host.emit_term_open(pty_id, &cmd),
+                    None => helix_js::emit_term_open(pty_id, &cmd),
+                }
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 布局树：终端成为叶子
                     use crate::ui::layout::SplitDir;
@@ -5019,7 +5081,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal));
                 });
             }
-            helix_js::UiRequest::TermMode { view_id, mode } => {
+            helix_js::UiRequest::TermMode(TermModeReq { view_id, mode }) => {
                 let Some(tm) = crate::ui::plugin_terminal::TermMode::from_str(&mode) else {
                     bail!("set_terminal_mode: unknown mode '{mode}'");
                 };
@@ -5045,7 +5107,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::TermClose { view_id } => {
+            helix_js::UiRequest::TermClose(TermCloseReq { view_id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(id) = compositor
                         .layout_tree()
@@ -5061,22 +5123,22 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            ref request @ (helix_js::UiRequest::Watch { .. }
-            | helix_js::UiRequest::Unwatch { .. }) => {
+            ref request @ (helix_js::UiRequest::Watch(WatchReq { .. })
+            | helix_js::UiRequest::Unwatch(UnwatchReq { .. })) => {
                 crate::plugins_watch::apply_watch(request)?;
             }
             // 任务 3 接入：term 侧 PickerRow 构建 + action/preview 桥；
             // columns 由 JS 侧 define 下发（真实列名 → 表头），空 rows 也建 picker（空列表展示）
-            helix_js::UiRequest::OpenPicker {
+            helix_js::UiRequest::OpenPicker(OpenPickerReq {
                 source,
                 columns,
                 rows,
-            } => {
+            }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     ui::js_picker::open_picker(compositor, &source, rows, columns);
                 });
             }
-            helix_js::UiRequest::FocusBuffer { id } => {
+            helix_js::UiRequest::FocusBuffer(FocusBufferReq { id }) => {
                 job::dispatch_blocking(move |editor, _compositor| {
                     if let Some((doc_id, _)) =
                         editor.documents.iter().find(|(did, _)| did.as_u64() == id)
@@ -5087,7 +5149,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::OpenBufferLeaf { path, split } => {
+            helix_js::UiRequest::OpenBufferLeaf(OpenBufferLeafReq { path, split }) => {
                 job::dispatch_blocking(move |editor, compositor| {
                     let dir = match split.as_deref() {
                         Some("h") => crate::ui::layout::SplitDir::H,
@@ -5096,7 +5158,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.open_doc_in_new_leaf(editor, PathBuf::from(&path), dir, false);
                 });
             }
-            helix_js::UiRequest::TermClear { view_id } => {
+            helix_js::UiRequest::TermClear(TermClearReq { view_id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(term) = compositor
                         .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
@@ -5107,7 +5169,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::TermSave { view_id, path } => {
+            helix_js::UiRequest::TermSave(TermSaveReq { view_id, path }) => {
                 job::dispatch_blocking(move |editor, compositor| {
                     let Some(term) = compositor
                         .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
@@ -5134,7 +5196,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::TermResize { view_id, size } => {
+            helix_js::UiRequest::TermResize(TermResizeReq { view_id, size }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(term) = compositor
                         .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| {
@@ -5145,13 +5207,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::SplitLeaf {
+            helix_js::UiRequest::SplitLeaf(SplitLeafReq {
                 id,
                 dir,
                 kind,
                 size,
                 ..
-            } => {
+            }) => {
                 use crate::ui::layout::SplitDir;
                 let (dir, first) = match dir.as_str() {
                     "right" => (SplitDir::H, false),
@@ -5178,14 +5240,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::CloseLeaf { id } => {
+            helix_js::UiRequest::CloseLeaf(CloseLeafReq { id }) => {
                 job::dispatch_blocking(move |editor, compositor| {
                     compositor.close_leaf_clean(editor, id);
                     helix_js::set_layout_change_kind("close");
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::PaneFloat { id } => {
+            helix_js::UiRequest::PaneFloat(PaneFloatReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 复用 ②-1 的浮窗模型:set_float 给默认居中槽位
                     compositor.set_float(id);
@@ -5193,7 +5255,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::StackCreate { id } => {
+            helix_js::UiRequest::StackCreate(StackCreateReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     // 非兄弟 → None(无效操作);成功才刷新缓存
                     if compositor
@@ -5206,7 +5268,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::StackActivate { id, member } => {
+            helix_js::UiRequest::StackActivate(StackActivateReq { id, member }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     let lt = compositor.layout_tree();
                     if lt.is_stacked(id) {
@@ -5223,35 +5285,35 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::StackRemove { id } => {
+            helix_js::UiRequest::StackRemove(StackRemoveReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().stack_remove_member(id);
                     helix_js::set_layout_change_kind("stack-remove");
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::PaneRaise { id } => {
+            helix_js::UiRequest::PaneRaise(PaneRaiseReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().float_raise(id);
                     helix_js::set_layout_change_kind("raise");
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::PanePin { id, on } => {
+            helix_js::UiRequest::PanePin(PanePinReq { id, on }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().float_set_pinned(id, on);
                     helix_js::set_layout_change_kind("pin");
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::PaneEmbed { id } => {
+            helix_js::UiRequest::PaneEmbed(PaneEmbedReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.layout_tree().remove_float(id);
                     helix_js::set_layout_change_kind("embed");
                     compositor.sync_layout_cache();
                 });
             }
-            helix_js::UiRequest::ZoomLeaf { id } => {
+            helix_js::UiRequest::ZoomLeaf(ZoomLeafReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.zoom_leaf(id);
                 });
@@ -5261,12 +5323,12 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     compositor.unzoom();
                 });
             }
-            helix_js::UiRequest::ResizeLeaf { id, ratio } => {
+            helix_js::UiRequest::ResizeLeaf(ResizeLeafReq { id, ratio }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.resize_leaf(id, ratio);
                 });
             }
-            helix_js::UiRequest::ResizeLeafDir { id, dir, delta } => {
+            helix_js::UiRequest::ResizeLeafDir(ResizeLeafDirReq { id, dir, delta }) => {
                 use crate::ui::layout::SplitDir;
                 let dir = match dir.as_str() {
                     "h" => SplitDir::H,
@@ -5279,24 +5341,24 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::SwapLeaves { id1, id2 } => {
+            helix_js::UiRequest::SwapLeaves(SwapLeavesReq { id1, id2 }) => {
                 job::dispatch_blocking(move |editor, compositor| {
                     if !compositor.swap_leaves(id1, id2) {
                         editor.set_error("layout_swap: 叶子不存在");
                     }
                 });
             }
-            helix_js::UiRequest::MinimizeLeaf { id, minimized } => {
+            helix_js::UiRequest::MinimizeLeaf(MinimizeLeafReq { id, minimized }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.minimize_leaf(id, minimized);
                 });
             }
-            helix_js::UiRequest::LayoutFix { id, fixed } => {
+            helix_js::UiRequest::LayoutFix(LayoutFixReq { id, fixed }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.set_leaf_fixed(id, fixed);
                 });
             }
-            helix_js::UiRequest::FocusLeafDir { id, dir } => {
+            helix_js::UiRequest::FocusLeafDir(FocusLeafDirReq { id, dir }) => {
                 use crate::ui::layout::SplitDir;
                 let (dir, first) = match dir.as_str() {
                     "left" => (SplitDir::H, true),
@@ -5311,7 +5373,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::SwapLeafDir { id, dir } => {
+            helix_js::UiRequest::SwapLeafDir(SwapLeafDirReq { id, dir }) => {
                 use crate::ui::layout::SplitDir;
                 let (dir, first) = match dir.as_str() {
                     "left" => (SplitDir::H, true),
@@ -5326,17 +5388,17 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::EqualizeLeaf { id } => {
+            helix_js::UiRequest::EqualizeLeaf(EqualizeLeafReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.equalize_leaf(id);
                 });
             }
-            helix_js::UiRequest::FocusLeaf { id } => {
+            helix_js::UiRequest::FocusLeaf(FocusLeafReq { id }) => {
                 job::dispatch_blocking(move |_editor, compositor| {
                     compositor.focus_leaf(id);
                 });
             }
-            helix_js::UiRequest::CacheLayout(json) => {
+            helix_js::UiRequest::CacheLayout(CacheLayoutReq { text: json }) => {
                 helix_js::cache_layout(&json);
                 // restore_layout 的「接线」:不只写缓存,真按 dump 重建树
                 // (复用已有组件;已不存在的叶子收敛掉)
@@ -5353,7 +5415,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::SetTheme { name } => {
+            helix_js::UiRequest::SetTheme(SetThemeReq { name }) => {
                 // 复用 :theme Validate 逻辑：加载 + set_theme + 重捕获基准 + 清插件覆盖
                 job::dispatch_blocking(move |editor, _compositor| {
                     let true_color = editor.config.load().true_color || crate::true_color();
@@ -5381,9 +5443,13 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     emit_plugin_event(editor, "theme-change", None);
                 });
             }
-            helix_js::UiRequest::TermFeed { view_id, chunk } => {
+            helix_js::UiRequest::TermFeed(TermFeedReq { view_id, chunk }) => {
                 // 按 view_id 找对应终端层喂进网格；层不存在（feed 早于层 push 的竞态）→ 丢弃。
                 // find_where 按实例的 view_id 字段匹配，不在热路径上每次 leak 一个 id 字符串。
+                // ⚠️ D-3(第一类:worker/通道) —— 这里是 `job::dispatch_blocking` 的
+                // **Send 闭包**(喂网格发生在 job 里,可能不在主线程)⇒ `&mut JsHost`(!Send)
+                // **不能**跨进来。所以 `term-title`(在 `feed` 里发)永久走 legacy 隐式解析:
+                // 这不是"还没做",是这条边界的存在理由。
                 job::dispatch_blocking(move |_editor, compositor| {
                     if let Some(terminal) =
                         compositor.find_where::<PluginTerminal>(|t| t.view_id() == view_id)
@@ -5392,12 +5458,12 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::MapKey {
+            helix_js::UiRequest::MapKey(MapKeyReq {
                 mode,
                 key,
                 command,
                 unbind,
-            } => {
+            }) => {
                 // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
                 let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
                 job::dispatch_blocking(move |_editor, compositor| {
@@ -5411,14 +5477,14 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     }
                 });
             }
-            helix_js::UiRequest::ServerOp { op, arg } => {
+            helix_js::UiRequest::ServerOp(ServerOpReq { op, arg }) => {
                 job::dispatch_blocking(move |editor, _compositor| {
                     if let Err(e) = server_op(editor, &op, arg.as_deref(), None) {
                         editor.set_error(format!("server: {e}"));
                     }
                 });
             }
-            helix_js::UiRequest::ServerListRows { id } => {
+            helix_js::UiRequest::ServerListRows(ServerListRowsReq { id }) => {
                 // 面板行数据:同步算好回投(无 editor 依赖);config 扩展配方先重读
                 if let Err(e) = server_manager::apply_server_config(
                     server_manager::disk_server_manager_table().as_ref(),
@@ -5499,7 +5565,7 @@ pub(crate) fn apply_ui_requests(reqs: Vec<helix_js::UiRequest>) -> anyhow::Resul
                     log::error!("server rows deliver: {e:#}");
                 }
             }
-            helix_js::UiRequest::ServerTask { task_id, items } => {
+            helix_js::UiRequest::ServerTask(ServerTaskReq { task_id, items }) => {
                 // 后台任务批次:入队单 worker(串行)即返回,不阻塞主线程;事件异步回投
                 let mapped: Vec<(String, String, Option<String>)> = items
                     .into_iter()
@@ -5580,19 +5646,82 @@ fn reload_plugins(editor: &mut Editor) -> anyhow::Result<()> {
                 let overrides = helix_js::theme_overrides();
                 apply_theme_overrides(editor, Some(&overrides));
             }
-            apply_ui_requests(helix_js::take_ui_requests())?;
+            // `reload_plugins` 只拿到 `editor`(没有 `cx`/宿主)⇒ legacy 隐式解析
+            apply_ui_requests(None, helix_js::take_ui_requests())?;
             Ok(())
         }
         Err(err) => {
             editor.set_error(format!("plugin-reload: {err}"));
             // reload_all 入队的 ClosePanel（面板清理）即使重跑失败也要处理，否则僵尸面板残留
-            apply_ui_requests(helix_js::take_ui_requests())?;
+            apply_ui_requests(None, helix_js::take_ui_requests())?;
             Ok(())
         }
     }
 }
 
 // :plugin 家族：list / install <path> / remove <name> / reload / status
+
+/// `:js-permission`(C-2 的决定入口):
+/// * `list` —— 已声明的 manifest 与**待授权**列表(失败可见的最后一步);
+/// * `allow|deny <plugin> <cap>` —— 记住一个决定(等价于 zellij 的 request_permission 回答)。
+///
+/// 为什么要有这条命令:首次询问时检查点会**拒绝本次**并把请求记入 pending;
+/// 没有“回答”的入口,那个拒绝就成了死局。
+fn js_permission(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(sub) = args.first() else {
+        return Err(anyhow!(
+            "usage: js-permission <list|allow|deny> [plugin] [cap]"
+        ));
+    };
+    match sub {
+        "list" => {
+            let pending = helix_js::pending_permissions();
+            let manifests = helix_js::plugin_manifests();
+            let mut lines: Vec<String> = Vec::new();
+            for m in &manifests {
+                lines.push(match m.permissions {
+                    Some(p) => format!(
+                        "{}: process={} fs_read={} fs_write={}",
+                        m.name, p.process, p.fs_read, p.fs_write
+                    ),
+                    None => format!("{}: (未声明 permissions ⇒ legacy 放行)", m.name),
+                });
+            }
+            for (plugin, cap) in pending {
+                lines.push(format!("待授权: {plugin} 请求 {cap}"));
+            }
+            if lines.is_empty() {
+                cx.editor.set_status("js-permission: 无声明、无待授权");
+            } else {
+                cx.editor.set_status(lines.join(" | "));
+            }
+        }
+        "allow" | "deny" => {
+            let (Some(plugin), Some(cap)) = (args.get(1), args.get(2)) else {
+                return Err(anyhow!("usage: js-permission {sub} <plugin> <cp>"));
+            };
+            let allow = sub == "allow";
+            helix_js::decide_permission(plugin, cap, allow);
+            cx.editor.set_status(format!(
+                "js-permission: {plugin} {cap} ⇒ {}",
+                if allow { "allow" } else { "deny" }
+            ));
+        }
+        other => {
+            return Err(anyhow!(
+                "js-permission: 未知子命令 '{other}'(list|allow|deny)"
+            ))
+        }
+    }
+    Ok(())
+}
 
 // plugin 操作核心(:plugin <op> 命令与 JS API helix.plugin.<op> 共用)
 
@@ -6029,14 +6158,14 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         cx.editor.set_status(msgs.join(" "));
     }
     // 脚本里的 helix.map 入队 MapKey；OpenPopup 推层也经 job 通道
-    apply_ui_requests(helix_js::take_ui_requests())?;
+    apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
     Ok(())
 }
 
 /// :panel-close 入队 ClosePanel 并手动 drain（与 plugin_reload 同款——命令路径的 drain
 /// 只在 run_command Ok(true) 分支，TypableCommand 需自己触发）
 fn panel_close(
-    _cx: &mut compositor::Context,
+    cx: &mut compositor::Context,
     _args: Args,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
@@ -6044,7 +6173,7 @@ fn panel_close(
         return Ok(());
     }
     helix_js::close_last_panel().map_err(|e| anyhow!("panel-close: {e}"))?;
-    apply_ui_requests(helix_js::take_ui_requests())?;
+    apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
     Ok(())
 }
 
@@ -6261,7 +6390,7 @@ fn term_native(
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));
     }
-    apply_ui_requests(helix_js::take_ui_requests())?;
+    apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
     Ok(())
 }
 

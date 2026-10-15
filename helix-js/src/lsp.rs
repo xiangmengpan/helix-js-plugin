@@ -327,7 +327,7 @@ mod tests {
     /// 请求入队形状：方法/位置快照/id 自增
     #[test]
     fn lsp_request_enqueue_shape() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let mut ctx = Context::default();
         // 无参 → pos=None（helix-term 侧取当前光标）
@@ -355,7 +355,7 @@ mod tests {
     /// 注册名经全局 helix.lsp.* 路径可达（防注册字符串拼错：拼错则 eval 抛错）
     #[test]
     fn lsp_global_registration_names() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 真实 CONTEXT 引擎上 eval 全局路径，四个注册名逐一验证返回 Promise
         crate::state::with_engine(|engine| {
@@ -386,7 +386,7 @@ mod tests {
     /// 响应分发：resolve null / resolve JSON / reject，.then/.catch 经 pump_jobs 兑现
     #[test]
     fn lsp_result_dispatch() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 在 CONTEXT 引擎上建 promise（resolve_lsp 用同一引擎兑现）
         let id = crate::state::with_engine(|engine| {

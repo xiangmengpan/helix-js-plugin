@@ -4,6 +4,7 @@
 //! 设计：docs/superpowers/specs/2026-08-15-fs-watcher-design.md
 
 use anyhow::{anyhow, Result};
+use helix_js::{UnwatchReq, WatchReq};
 use notify::Watcher;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +24,7 @@ static WATCHERS: OnceLock<Mutex<HashMap<u64, (PathBuf, notify::RecommendedWatche
 /// 无需 editor/compositor）。非 Watch/Unwatch 请求直接 Ok（no-op）。
 pub fn apply_watch(request: &helix_js::UiRequest) -> Result<()> {
     match request {
-        helix_js::UiRequest::Watch { id, path } => {
+        helix_js::UiRequest::Watch(WatchReq { id, path }) => {
             // notify 7 无内置防抖（DebouncedEvent 已移除）——用立即 watcher +
             // 防抖转发线程；事件经 mpsc 送达，转发线程按 500ms 静默窗口批量投递
             let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
@@ -46,7 +47,7 @@ pub fn apply_watch(request: &helix_js::UiRequest) -> Result<()> {
                 .insert(wid, (PathBuf::from(path), watcher));
             Ok(())
         }
-        helix_js::UiRequest::Unwatch { id } => {
+        helix_js::UiRequest::Unwatch(UnwatchReq { id }) => {
             // drop watcher → notify 线程停 → 转发线程 rx 断开自动退出
             WATCHERS
                 .get_or_init(Default::default)

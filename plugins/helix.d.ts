@@ -20,6 +20,8 @@ type SplitDir = "right" | "left" | "top" | "bottom";
 type TerminalMode = "dock" | "fullscreen" | "floating" | "minimized";
 type Mode = "normal" | "insert" | "select";
 type KeyResult = "close" | "handled" | "ignore";
+/** `term-key` 钩子的返回值:`pass` 直通 pty / `consume` 消费 / `minimize` 最小化 / `close` 关闭终端 */
+type TermKeyResult = "pass" | "consume" | "minimize" | "close" | void;
 
 /** 0-based 行列坐标 */
 interface Pos {
@@ -271,6 +273,126 @@ interface LspLocation {
 
 // ────────────────────────── 事件 ──────────────────────────
 
+// 边界协议(B-1):事件 payload 具名化 + 版本化。
+//
+// 每个事件的 handler 在**位置参数之后**多收一个 payload 对象:它是 `api_version`
+// 与具名字段的唯一真相,位置参数只是历史形状(向后兼容,不再扩展)。
+// 也可用 `helix.api_version` 在运行时做版本分支。
+
+interface EvPos {
+  row: number;
+  col: number;
+}
+interface EvRange {
+  start: EvPos;
+  end: EvPos;
+}
+/** 与 `doc.changes[i]` 同形(同一份计算)
+ */
+interface EvChange {
+  oldRange: EvRange;
+  newRange: EvRange;
+}
+/** 所有事件 payload 的公共头 */
+interface EventHeader {
+  /** 边界协议版本(== `helix.api_version`) */
+  api_version: number;
+  /** 事件名(= `helix.on` 的第一参) */
+  type: EventName;
+}
+interface EventStartup extends EventHeader {}
+/** `kind` 缺种类时是 **null**(不是 undefined) */
+interface EventLayoutChange extends EventHeader {
+  kind: string | null;
+}
+/** `save` / `buffer-open` / `buffer-close` / `theme-change` 的 payload */
+interface EventDoc extends EventHeader {
+  path: string | null;
+  cursor: EvPos;
+  selection: { anchor: EvPos; head: EvPos };
+}
+interface EventModeChange extends EventDoc {
+  mode: string;
+}
+interface EventDocChange extends EventDoc {
+  changes: EvChange[];
+}
+interface EventPaneModeChange extends EventHeader {
+  mode: string;
+}
+interface EventCursorMove extends EventHeader {
+  doc_id: number;
+  row: number;
+  col: number;
+  mode: string;
+}
+interface EventSelectionChange extends EventHeader {
+  doc_id: number;
+  count: number;
+  primary: EvPos;
+}
+interface EventLspDiagnostics extends EventHeader {
+  doc_id: number;
+  diagnostics: unknown[];
+}
+interface EventTermOpen extends EventHeader {
+  pty_id: number;
+  cmd: string;
+}
+interface EventTermModeChange extends EventHeader {
+  pty_id: number;
+  mode: string;
+}
+interface EventTermExit extends EventHeader {
+  pty_id: number;
+  code: number;
+}
+interface EventTermResize extends EventHeader {
+  pty_id: number;
+  rows: number;
+  cols: number;
+}
+interface EventTermTitle extends EventHeader {
+  pty_id: number;
+  title: string;
+}
+interface EventTermClose extends EventHeader {
+  pty_id: number;
+  reason: string;
+}
+interface EventTermKey extends EventHeader {
+  pty_id: number;
+  code: string;
+  shift: boolean;
+  ctrl: boolean;
+  alt: boolean;
+}
+interface EventComponentEvent extends EventHeader {
+  id: number;
+  kind: string;
+  x: number;
+  y: number;
+}
+/** 全部事件 payload 的并集(按 `type` 区分) */
+type EventPayload =
+  | EventStartup
+  | EventLayoutChange
+  | EventDoc
+  | EventModeChange
+  | EventDocChange
+  | EventPaneModeChange
+  | EventCursorMove
+  | EventSelectionChange
+  | EventLspDiagnostics
+  | EventTermOpen
+  | EventTermModeChange
+  | EventTermExit
+  | EventTermResize
+  | EventTermTitle
+  | EventTermClose
+  | EventTermKey
+  | EventComponentEvent;
+
 type EventName =
   | "startup"
   | "layout-change"
@@ -314,11 +436,47 @@ interface HelixPlugin {
    */
   remove(name: string): void;
   /** 声明加载依赖(拓扑加载)。`deps` 用**插件名**(如 `"icons"`)或文件 key;
-   *  ⚠️ 依赖在**本脚本 eval 之后**才加载 ⇒ 顶层代码不能假定依赖已执行(要放到回调/命令里用) */
-  (name: string, opts: { deps: string[]; version?: string }): void;
+   *  ⚠️ 依赖在**本脚本 eval 之后**才加载 ⇒ 顶层代码不能假定依赖已执行(要放到回调/命令里用)
+   *
+   *  `permissions`(C-1/C-2)是**能力清单**:
+   *  * **不写**该字段 = legacy 语义(不拦截,存量插件零影响);
+   *  * **写了**之后,未列出的能力首次使用时会被**询问**(本次拒绝 +
+   *    记入待授权),用 `:js-permission allow <plugin> <cap>` 授权。
+   *  * 随软件分发的内置插件(用户插件目录以外)永不询问。 */
+  (
+    name: string,
+    opts: {
+      deps: string[];
+      version?: string;
+      /** 声明面版本;高于编辑器支持的版本(`helix.api_version`)⇒ `helix.plugin` 抛错 */
+      schema_version?: number;
+      /** 要求的最低编辑器版本(只记录/展示) */
+      min_editor?: string;
+      /**
+       * 能力清单;不写 = legacy 放行(存量插件零影响)。
+       * 写了之后,未列出的能力**首次使用时会被询问**(失败一次 + 记入待授权,
+       * 用 `:js-permission allow <plugin> <cap>` 授权)。内置插件永不询问。
+       */
+      permissions?: {
+        /** `helix.run` / `helix.run_async` / `helix.spawn` */
+        process?: boolean;
+        /** `helix.read_file` / `helix.read_file_async` / `helix.read_dir` */
+        fs_read?: boolean;
+        /** `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` */
+        fs_write?: boolean;
+      };
+      /** 贡献点(命令/事件/配置名;只记录,供 `:js-permission list` 展示) */
+      contributes?: string[];
+    },
+  ): void;
 }
 
 interface Helix {
+  /**
+   * 边界协议的线格式版本(B-1/B-2 同一份)。
+   * 改字段/改语义 ⇒ 递增;插件可据此分支(`if (helix.api_version >= 2) …`)。
+   */
+  api_version: number;
   // ── 命令 / 消息 / 键位 / 加载 ──
   echo(text: string): void;
   register_command(name: string, fn: (ctx: CommandContext) => void, doc?: string): void;
@@ -327,8 +485,53 @@ interface Helix {
   load(name: string): unknown; // 缓存加载,返回 exports
   export(obj: Record<string, unknown>): void;
   lazy(name: string, ...commands: string[]): void;
-  /** `layout-change` 的形状恒定:`kind` 缺省时是 **null**(不是"没有第一参"),`doc` 恒在第二参。 */
-  on(event: "layout-change", fn: (kind: string | null, doc: Doc) => void): void;
+  // ── 事件订阅(B-1:每个事件的手势与 payload 都**逐字声明**)──
+  //
+  // 形状来自实现(`helix-js/src/commands.rs` 的 emit 点),不是凭印象写的:
+  // **位置参数**是历史形状(向后兼容、不再扩展),**最后一个参数**恒为具名 payload
+  // (`{ api_version, type, … }`,见 `EventPayload`)。位置参数省略尾参在 TS 里合法
+  // ⇒ 写 `() => {}` / `(doc) => {}` 的老插件依旧通过类型检查。
+  /** `startup`:初始文件处理之后(启动完成) */
+  on(event: "startup", fn: (doc: Doc, payload: EventStartup) => void): void;
+  /** `layout-change` 的形状恒定:`kind` 缺省时是 **null**(不是"没有第一参"),`doc` 恒在第二参;第三参是具名 payload。 */
+  on(event: "layout-change", fn: (kind: string | null, doc: Doc, payload: EventLayoutChange) => void): void;
+  /** `save`:文档已保存(`:w`) */
+  on(event: "save", fn: (doc: Doc, payload: EventDoc) => void): void;
+  /** `mode-change`:`mode` = normal | insert | select */
+  on(event: "mode-change", fn: (mode: string, doc: Doc, payload: EventModeChange) => void): void;
+  /** `buffer-open`:新 buffer 打开 */
+  on(event: "buffer-open", fn: (doc: Doc, payload: EventDoc) => void): void;
+  /** `buffer-close`:buffer 关闭 */
+  on(event: "buffer-close", fn: (doc: Doc, payload: EventDoc) => void): void;
+  /** `doc-change`:防抖窗口内合并的变更范围在 `doc.changes` / `payload.changes` */
+  on(event: "doc-change", fn: (doc: Doc, payload: EventDocChange) => void): void;
+  /** `theme-change`:主题切换 */
+  on(event: "theme-change", fn: (doc: Doc, payload: EventDoc) => void): void;
+  /** `lsp-diagnostics`:诊断更新;`diags` 是原样透传的 JSON 数组 */
+  on(event: "lsp-diagnostics", fn: (docId: number, diags: unknown[], payload: EventLspDiagnostics) => void): void;
+  /** `cursor-move`:光标移动 */
+  on(event: "cursor-move", fn: (docId: number, ev: { row: number; col: number; mode: string }, payload: EventCursorMove) => void): void;
+  /** `selection-change`:选区数量/主选区 */
+  on(event: "selection-change", fn: (docId: number, ev: { count: number; primary: EvPos }, payload: EventSelectionChange) => void): void;
+  /** `term-open`:终端面板打开(`id` = pty id) */
+  on(event: "term-open", fn: (id: number, cmd: string, payload: EventTermOpen) => void): void;
+  /** `term-mode-change`:终端显示模式 */
+  on(event: "term-mode-change", fn: (id: number, mode: string, payload: EventTermModeChange) => void): void;
+  /** `term-exit`:终端进程退出 */
+  on(event: "term-exit", fn: (id: number, code: number, payload: EventTermExit) => void): void;
+  /** `term-close`:终端关闭请求;返回 **false** 阻止关闭 */
+  on(event: "term-close", fn: (id: number, reason: string, payload: EventTermClose) => boolean | void): void;
+  /** `term-resize`:终端尺寸变更 */
+  on(event: "term-resize", fn: (id: number, rows: number, cols: number, payload: EventTermResize) => void): void;
+  /** `term-title`:终端标题(OSC) */
+  on(event: "term-title", fn: (id: number, title: string, payload: EventTermTitle) => void): void;
+  /** `term-key`:终端按键;返回 `TermKeyResult` 决定这次按键怎么处理 */
+  on(event: "term-key", fn: (id: number, key: PluginKey, payload: EventTermKey) => TermKeyResult): void;
+  /** `pane-mode-change`:平级 pane 模式切换 */
+  on(event: "pane-mode-change", fn: (mode: string, payload: EventPaneModeChange) => void): void;
+  /** `component-event`:组件节点上的鼠标/点击;返回 **true** 消费该事件 */
+  on(event: "component-event", fn: (id: number, ev: { kind: string; x: number; y: number }, payload: EventComponentEvent) => boolean | void): void;
+  /** 兜底:事件名 / 参数类型未知时(上面每个具体事件都有**更精确的**重载) */
   on(event: EventName, fn: (...args: any[]) => void): void;
 
   // ── 文档编辑与选区 ──

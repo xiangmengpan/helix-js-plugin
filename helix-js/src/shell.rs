@@ -318,6 +318,8 @@ pub(crate) fn js_run_async(
                 "helix.run_async: command must be a string",
             )))
         })?;
+    // C-2 检查点:异步起进程同属 `process`(与 helix.run 同一能力)
+    crate::permissions::check_js("helix.run_async", crate::permissions::CAP_PROCESS)?;
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_term_id();
@@ -350,6 +352,8 @@ pub(crate) fn js_spawn(
                 "helix.spawn: options object required",
             )))
         })?;
+    // C-2 检查点:spawn 同属 `process`
+    crate::permissions::check_js("helix.spawn", crate::permissions::CAP_PROCESS)?;
     let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
     let on_chunk = opts.get(JsString::from("onChunk"), ctx)?;
     if on_chunk.as_callable().is_none() {
@@ -624,6 +628,8 @@ pub(crate) fn js_read_file_async(
                 "helix.read_file_async: path must be a string",
             )))
         })?;
+    // C-2 检查点:异步读同属 `fs_read`
+    crate::permissions::check_js("helix.read_file_async", crate::permissions::CAP_FS_READ)?;
     // 返回 promise：worker 结果经 resolve_async_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
@@ -654,6 +660,8 @@ pub(crate) fn js_write_file_async(
                 "helix.write_file_async: path must be a string",
             )))
         })?;
+    // C-2 检查点:异步写同属 `fs_write`
+    crate::permissions::check_js("helix.write_file_async", crate::permissions::CAP_FS_WRITE)?;
     let content: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())

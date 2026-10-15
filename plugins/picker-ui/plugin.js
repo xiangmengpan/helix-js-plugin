@@ -20,7 +20,13 @@
 //   · 大列表(10 万+)会慢 ✗ ⇒ 那时再上 `helix.fuzzy.filter`(包进程内 nucleo ✓)
 //   · 无预览、无高亮、无多列 ✗(v1 不含)
 //   · 弹窗打开时会**吞掉所有按键** ✓(A′ 的既有性质 ✓)⇒ 对 picker 而言这正是我们要的 ✓
-helix.plugin("picker-ui", { deps: [], version: "0.1" });
+helix.plugin("picker-ui", {
+  deps: [],
+  version: "0.1",
+  schema_version: 1,
+  // 兜底取候选:必要时起进程(rg/git)
+  permissions: { process: true },
+});
 
 // ── 可配置 ────────────────────────────────────────────────────────────────
 helix.define_config("picker-ui", {

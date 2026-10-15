@@ -1525,6 +1525,7 @@ impl Component for EditorView {
             callback: Vec::new(),
             on_next_key_callback: None,
             jobs: context.jobs,
+            js: context.js.as_deref_mut(),
         };
 
         match event {
@@ -1573,6 +1574,7 @@ impl Component for EditorView {
                                         editor: cx.editor,
                                         jobs: cx.jobs,
                                         scroll: None,
+                                        js: None,
                                     };
 
                                     if let EventResult::Consumed(callback) =

@@ -176,6 +176,7 @@ async fn probe_key_dispatch_under_rail() -> anyhow::Result<()> {
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     app.compositor.render(area, &mut buf, &mut cx);
     let w = area.width as usize;

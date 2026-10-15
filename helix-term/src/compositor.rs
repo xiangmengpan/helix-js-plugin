@@ -47,9 +47,171 @@ pub struct Context<'a> {
     pub editor: &'a mut Editor,
     pub scroll: Option<usize>,
     pub jobs: &'a mut Jobs,
+    /// JS 宿主(Phase D-1)。
+    ///
+    /// **刻意是 `Option`**:本仓既有语义是"没有宿主 ⇒ 没有 JS ⇒ 走原路径" ——
+    /// 36 个构造点(18 个集成测试 + 6 个生产 + 其余)本来就没有宿主,填 `None` 行为零变化。
+    ///
+    /// 为什么把宿主放进 `Context`:它是 helix-term 里"一次命令/一帧"的公共载体。
+    /// 宿主一旦跟着 `cx` 走,`cx.js` 就是 **`&mut JsHost`** ⇒ 同一棵调用树里再次拿它
+    /// 是**借用检查期**的错(而不是 JS 回调里那句 `RefCell` 借用冲突的 panic)。
+    /// 见 `docs/superpowers/plans/2026-10-14-js-host-phaseD-and-boundary.md` §T1/D-1。
+    pub js: Option<&'a mut helix_js::host::JsHost>,
 }
 
 impl Context<'_> {
+    /// 在宿主上执行 `f`;没有宿主 ⇒ `None`(不建宿主、不借引擎)。
+    ///
+    /// D-2 的“有 cx 的调用点”统一走这里:拿到的是 **`&mut JsHost`**,
+    /// 所以同一个 `cx` 在同一时刻只能有一条 JS 入口路径 —— 重入在编译期就过不去。
+    ///
+    /// 没有宿主时的**唯一一条 legacy 回退**是显式写在调用点的
+    /// (`None => helix_js::xxx(...)`,即那层隐式活性宿主解析)。它的定位是
+    /// “没有 `cx` 的调用点”与跨线程通道,不是“有 cx 但懒得传宿主”。
+    pub fn with_js<T>(&mut self, f: impl FnOnce(&mut helix_js::host::JsHost) -> T) -> Option<T> {
+        self.js.as_deref_mut().map(f)
+    }
+
+    // ── D-2 的泵包装:有宿主走宿主(`&mut JsHost`),无宿主退回 legacy 隐式解析 ──
+    //
+    // 为什么包一层而不是在每个调用点写 match:调用点有近百个(ui/plugin_panel.rs
+    // 一处就有 8 个分发点),match 糊在各处会把真正的改动淹掉;包装把“走哪条路”
+    // 收敛到一处 ⇒ **legacy 分支只在这些包装里出现**。
+
+    /// 渲染组件(有宿主 ⇒ `JsHost::render_component`,独占借用)
+    pub fn js_render_component(
+        &mut self,
+        id: u64,
+        width: u16,
+        height: u16,
+        focus: Option<&str>,
+    ) -> anyhow::Result<helix_js::Content> {
+        match self.with_js(|h| h.render_component(id, width, height, focus)) {
+            Some(r) => r,
+            None => helix_js::render_component(id, width, height, focus),
+        }
+    }
+
+    /// 带输入签名缓存的组件渲染
+    pub fn js_render_component_cached(
+        &mut self,
+        id: u64,
+        width: u16,
+        height: u16,
+        focus: Option<&str>,
+        sig: &str,
+    ) -> anyhow::Result<helix_js::Content> {
+        match self.with_js(|h| h.render_component_cached(id, width, height, focus, sig)) {
+            Some(r) => r,
+            None => helix_js::render_component_cached(id, width, height, focus, sig),
+        }
+    }
+
+    /// 渲染弹窗
+    pub fn js_render_popup(
+        &mut self,
+        id: u64,
+        width: u16,
+        height: u16,
+        focus: Option<&str>,
+    ) -> anyhow::Result<helix_js::Content> {
+        match self.with_js(|h| h.render_popup(id, width, height, focus)) {
+            Some(r) => r,
+            None => helix_js::render_popup(id, width, height, focus),
+        }
+    }
+
+    /// 把按键送给节点回调(`onKey`/input 光标移动)
+    pub fn js_dispatch_input_key(
+        &mut self,
+        popup_id: u64,
+        node_id: &str,
+        key: &str,
+    ) -> anyhow::Result<()> {
+        match self.with_js(|h| h.dispatch_input_key(popup_id, node_id, key)) {
+            Some(r) => r,
+            None => helix_js::dispatch_input_key(popup_id, node_id, key),
+        }
+    }
+
+    /// 把粘贴文本送给节点回调(`onChange`)
+    pub fn js_dispatch_input_paste(
+        &mut self,
+        popup_id: u64,
+        node_id: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        match self.with_js(|h| h.dispatch_input_paste(popup_id, node_id, text)) {
+            Some(r) => r,
+            None => helix_js::dispatch_input_paste(popup_id, node_id, text),
+        }
+    }
+
+    /// 把节点事件(`onPress`/`onChange`)送给回调
+    pub fn js_dispatch_node_event(
+        &mut self,
+        view_id: u64,
+        node_id: &str,
+        key: Option<&str>,
+    ) -> anyhow::Result<()> {
+        match self.with_js(|h| h.dispatch_node_event(view_id, node_id, key)) {
+            Some(r) => r,
+            None => helix_js::dispatch_node_event(view_id, node_id, key),
+        }
+    }
+
+    /// 弹窗/面板节点按键(`onKey` + 节点路由)
+    pub fn js_popup_key(
+        &mut self,
+        id: u64,
+        key: &helix_js::PluginKey,
+        ctx: &helix_js::CommandContext,
+    ) -> anyhow::Result<helix_js::PopupKeyResult> {
+        match self.with_js(|h| h.popup_key(id, key, ctx)) {
+            Some(r) => r,
+            None => helix_js::popup_key(id, key, ctx),
+        }
+    }
+
+    /// 组件节点上的鼠标/输入事件;返回 true = 插件消费了它
+    pub fn js_emit_component_event(&mut self, id: u64, kind: &str, x: u16, y: u16) -> bool {
+        match self.with_js(|h| h.emit_component_event(id, kind, x, y)) {
+            Some(r) => r,
+            None => helix_js::emit_component_event(id, kind, x, y),
+        }
+    }
+
+    /// 终端按键钩子(`term-key`)
+    pub fn js_emit_term_key(
+        &mut self,
+        pty_id: u64,
+        code: &str,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) -> Option<helix_js::TermKeyDecision> {
+        match self.with_js(|h| h.emit_term_key(pty_id, code, shift, ctrl, alt)) {
+            Some(r) => r,
+            None => helix_js::emit_term_key(pty_id, code, shift, ctrl, alt),
+        }
+    }
+
+    /// 终端显示模式通知(`term-mode-change`)
+    pub fn js_emit_term_mode(&mut self, pty_id: u64, mode: &str) {
+        match self.with_js(|h| h.emit_term_mode(pty_id, mode)) {
+            Some(()) => {}
+            None => helix_js::emit_term_mode(pty_id, mode),
+        }
+    }
+
+    /// 终端尺寸通知(`term-resize`)
+    pub fn js_emit_term_resize(&mut self, pty_id: u64, rows: u16, cols: u16) {
+        match self.with_js(|h| h.emit_term_resize(pty_id, rows, cols)) {
+            Some(()) => {}
+            None => helix_js::emit_term_resize(pty_id, rows, cols),
+        }
+    }
+
     /// Waits on all pending jobs, and then tries to flush all pending write
     /// operations for all documents.
     pub fn block_try_flush_writes(&mut self) -> anyhow::Result<()> {
@@ -310,14 +472,14 @@ impl Compositor {
                 // 标签条：顶部 1 行（有视图回调时）
                 if helix_js::has_component_render(TABBAR_ID)
                     && y == self.area.y
-                    && helix_js::emit_component_event(TABBAR_ID, "click", x, y)
+                    && cx.js_emit_component_event(TABBAR_ID, "click", x, y)
                 {
                     return true;
                 }
                 // 叶子命中：有视图回调的叶子把点击交给 JS 视图层
                 if let Some(id) = self.main_tree.leaf_id_at(x, y) {
                     if helix_js::has_component_render(id)
-                        && helix_js::emit_component_event(id, "click", x, y)
+                        && cx.js_emit_component_event(id, "click", x, y)
                     {
                         return true;
                     }
@@ -395,7 +557,13 @@ impl Compositor {
             .clip_top(if tabbar { 1 } else { 0 })
             .clip_bottom(if bottom_ui { 2 } else { 1 });
         if tabbar {
-            if let Ok(content) = helix_js::render_component(TABBAR_ID, area.width, 1, None) {
+            // D-2:渲染泵走 `cx.js`(有宿主时)；无宿主退回 legacy 隐式解析
+            let rendered =
+                match cx.with_js(|host| host.render_component(TABBAR_ID, area.width, 1, None)) {
+                    Some(r) => r,
+                    None => helix_js::render_component(TABBAR_ID, area.width, 1, None),
+                };
+            if let Ok(content) = rendered {
                 let lines = crate::ui::comp_layout::render(content, (area.width, 1));
                 self.tabbar_diff
                     .render(&lines, area.with_height(1), surface, &cx.editor.theme);
@@ -436,6 +604,7 @@ impl Compositor {
             },
             active_leaf_type,
             active_leaf_path,
+            cx.js.as_deref_mut(),
         );
         crate::ui::statusline::render(&mut context, statusline_area, surface);
         // keymap 前缀提示(Info):全屏坐标渲染,不随叶子区域漂移;位置由 Info.position 决定
@@ -1377,6 +1546,13 @@ impl Compositor {
     }
 
     /// 布局树变更后同步 dump 缓存（get_layout 实时性；否则返回 null/旧值）
+    ///
+    /// **D-3 残留(已核实,不是没做)**:本函数最后会发 `layout-change`,但它有 **28 个
+    /// `self.` 调用点**在 `Compositor` 自己的方法里(`split`/`close`/`set_leaf_*` …),
+    /// 那些签各没有 `cx`(也不应该有:它们是布局原语)。只有 typed.rs 的 10 个调用点
+    /// 手里有 `cx`。若把 `&mut JsHost` 当参数透传,就要给 28 个布局原语各加一个参数
+    /// —— 那是独立一批的改动(D-2 的“compositor.rs 15 点”本该如此拆),本轮不做,
+    /// 因此 `layout-change` 仍走 legacy 隐式解析(语义与泵入口一致,只差排他性证明)。
     pub(crate) fn sync_layout_cache(&mut self) {
         let dump = self.main_tree.dump();
         // pane.list():把树叶子与浮窗统一成"pane"视角(place/focused/pinned)。

@@ -504,6 +504,23 @@ pub(crate) fn plugin_roots() -> &'static [PathBuf] {
     crate::host::with_host_ref_or_init(|h| *h.plugin_roots.borrow())
 }
 
+/// 某个提供根是不是"内置"(随软件分发的 runtime)。
+///
+/// 判据取**根而不是名字**:用户可以用 `config/plugins/<同名>/plugin.js` 覆盖内置插件,
+/// 那份是**第三方代码**,不该继承内置的豁免。
+/// 只剩一个根时(set_plugins_dir 的单根语义 / 单测)那个根就是用户层 ⇒ 都不是内置。
+pub(crate) fn is_builtin_root(root: &std::path::Path) -> bool {
+    // **空根 = 无提供根**(绝对路径加载 / `load_script_named`,如 `:plugin-load /abs/x.js`)
+    // ⇒ 按**第三方**对待:这不是"内置",只是"没有根信息"。
+    // 早先的写法(`last() != root`)会把这个情形判成内置 ⇒ 检查点对 `:plugin-load` 失效(假阴性)。
+    if root.as_os_str().is_empty() {
+        return false;
+    }
+    let roots = plugin_roots();
+    // 内置 = 提供根是**用户插件目录(末位)以外**的已知根(即随软件分发的 runtime roots)
+    roots.len() > 1 && roots[..roots.len() - 1].iter().any(|r| r == root)
+}
+
 /// 插件目录(**用户层 = 最后一个根**;`resolve_in` 用 `rev()` 迭代 ⇒ 末位优先级最高)。
 /// `manifest.json` 与插件文件都在这里 —— `:plugin` 管理器必需
 /// (此前 JS 侧**没有任何** config/插件目录访问器,实测 `config_dir`/`plugin_dir` 注册数为 0)。

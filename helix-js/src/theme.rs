@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use boa_engine::{Context, JsError, JsString, JsValue};
 
 use crate::state::{mark_theme_dirty, take_theme_dirty_flag, with_theme_overrides};
+use crate::types::SetThemeReq;
 
 /// 一个 scope 的覆盖样式（fg/bg/modifiers 均可省略；省略项继承基准主题）
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,6 +281,6 @@ pub(crate) fn js_set_theme_name(
         .expect("UI_REQUESTS initialized")
         .lock()
         .expect("ui requests lock")
-        .push(crate::types::UiRequest::SetTheme { name });
+        .push(crate::types::UiRequest::SetTheme(SetThemeReq { name }));
     Ok(JsValue::undefined())
 }

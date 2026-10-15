@@ -127,6 +127,7 @@ async fn plugin_terminal_floating_and_mode() -> anyhow::Result<()> {
             editor: &mut app.editor,
             scroll: None,
             jobs: &mut jobs,
+            js: None,
         };
         app.compositor.render(area, &mut buf, &mut cx);
         // 浮窗 rect：布局树被状态栏 clip_bottom(1)（120×39），
@@ -696,6 +697,7 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
             editor: &mut app.editor,
             scroll: None,
             jobs: &mut jobs,
+            js: None,
         };
         app.compositor.render(area, &mut buf, &mut cx);
         buf.content
@@ -862,6 +864,7 @@ async fn plugin_filetree_reload_no_zombie() -> anyhow::Result<()> {
             editor: &mut app.editor,
             scroll: None,
             jobs: &mut jobs,
+            js: None,
         };
         app.compositor.render(area, &mut buf, &mut cx);
         let all: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -1054,6 +1057,7 @@ async fn plugin_statusline_global() -> anyhow::Result<()> {
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     app.compositor.render(area, &mut buf, &mut cx);
     // 底部行非空白

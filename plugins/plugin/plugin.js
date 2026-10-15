@@ -24,7 +24,13 @@
 //      不再产生续体,**构造性地**避开 §14 的引擎重入 ✓。要彻底解决,需再加同步 `write_file`。
 //   4. **布局不一致(实测)**:Rust `install_target` 装进 `plugins/**features**/<name>`(旧路径),
 //      而当前仓库布局是 `plugins/<name>/`。搬迁时应统一到现有布局,别把旧路径带过去。
-helix.plugin("plugin-manager", { deps: [], version: "0.1" });
+// 插件管理器:装/更新/移除插件 ⇒ 需要 git(process)与读写插件文件(fs_read/fs_write)
+helix.plugin("plugin-manager", {
+  deps: [],
+  version: "0.1",
+  schema_version: 1,
+  permissions: { process: true, fs_read: true, fs_write: true },
+});
 
 /// shell 单引号引用(与 statusline 插件同款)
 function shq(s) {

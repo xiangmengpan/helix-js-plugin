@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use crate::{
         close_popup, load_script, render_popup, take_messages, take_ui_requests, CompNode, Content,
-        UiRequest,
+        OpenPopupReq, UiRequest,
     };
     use std::sync::Mutex;
 
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn input_edit_basic() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let mut s = InputState {
             value: "abc".into(),
@@ -369,7 +369,7 @@ mod tests {
     /// → set_input_value 强制改值 → close_popup 清理生命周期。
     #[test]
     fn input_dispatch_and_set() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"
@@ -383,7 +383,7 @@ mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         let id = match &reqs[0] {
-            UiRequest::OpenPopup { id, .. } => *id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => *id,
             _ => unreachable!("expected OpenPopup"),
         };
         // 未渲染的 input：无状态（任务 3 按键路由据此判断）
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn input_edit_utf8_and_clamp() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 多字节字符:光标按 char 计
         let mut s = InputState {
@@ -460,7 +460,7 @@ mod tests {
     /// 跨行移动与合并）。光标为全文本 char 索引；行尾（不含 \n）即 \n 位置。
     #[test]
     fn input_edit_multiline() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // Enter：光标处插入 \n，cursor 推进
         let mut s = InputState {
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn input_insert_batch_basic() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 光标中间插入整段(含 \n)
         let mut s = InputState {

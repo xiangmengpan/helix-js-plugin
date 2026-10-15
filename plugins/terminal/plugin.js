@@ -1,6 +1,12 @@
 // terminal.js — 终端管理器（lazyvim 风格）：浮动 toggle、分屏、列表、按 id 关闭
 // 依赖清单：无（独立功能）
-helix.plugin("terminal", { deps: [], version: "1.0" });
+helix.plugin("terminal", {
+  deps: [],
+  version: "1.0",
+  schema_version: 1,
+  // 取默认 shell(`echo ${SHELL:-bash}`)⇒ 起进程
+  permissions: { process: true },
+});
 // 依赖 Rust 增强：浮动终端层（set_terminal_mode "floating"）、C-\ 模式穿透、
 // 滚动缓冲查看、term_list/term_close、宽字符。Unix pty（Windows 不可用）。
 // 交互：

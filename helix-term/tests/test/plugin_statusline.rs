@@ -51,6 +51,7 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
                         None,
                         "editor",
                         None,
+                        None,
                     );
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -102,6 +103,7 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     // 渲染状态栏（RenderContext 构造）
     let spinners = helix_term::ui::ProgressSpinners::default();
@@ -116,6 +118,7 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
             false,
             None,
             "editor",
+            None,
             None,
         );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
@@ -199,6 +202,7 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
             None,
             "editor",
             None,
+            None,
         );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
@@ -253,6 +257,7 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
             None,
             "editor",
             None,
+            None,
         );
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
@@ -299,6 +304,7 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                         None,
                         "editor",
                         None, // window_mode=true
+                        None,
                     );
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -347,6 +353,7 @@ async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
         None, // pane_mode
         "editor",
         Some("/tmp/a.rs".to_string()),
+        None,
     );
     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();

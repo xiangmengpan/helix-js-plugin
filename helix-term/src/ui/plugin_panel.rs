@@ -99,7 +99,7 @@ impl Component for PluginPanel {
             if let Some(fid) = self.focus.as_ref() {
                 if helix_js::input_has_state(self.id, fid) {
                     // 注意：input 状态已变更后才调 onChange——失败绝不能冒泡(否则编辑器正文再插一份)
-                    match helix_js::dispatch_input_paste(self.id, fid, contents) {
+                    match cx.js_dispatch_input_paste(self.id, fid, contents) {
                         Ok(()) => {
                             // drain：消息 + UI 请求（仿节点事件）
                             let msgs = helix_js::take_messages();
@@ -107,6 +107,7 @@ impl Component for PluginPanel {
                                 cx.editor.set_status(msgs.join(" "));
                             }
                             if let Err(err) = crate::commands::typed::apply_ui_requests(
+                                cx.js.as_deref_mut(),
                                 helix_js::take_ui_requests(),
                             ) {
                                 cx.editor.set_error(err.to_string());
@@ -151,9 +152,10 @@ impl Component for PluginPanel {
                         cx.editor.set_status(msgs.join(" "));
                     }
                     // 节点事件（button onPress 等）里发起的 UI 请求同样即时应用
-                    if let Err(err) =
-                        crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
-                    {
+                    if let Err(err) = crate::commands::typed::apply_ui_requests(
+                        cx.js.as_deref_mut(),
+                        helix_js::take_ui_requests(),
+                    ) {
                         cx.editor.set_error(err.to_string());
                     }
                 };
@@ -168,7 +170,7 @@ impl Component for PluginPanel {
                     "Enter" => {
                         if helix_js::input_has_state(self.id, fid)
                             && helix_js::input_is_multiline(self.id, fid)
-                            && helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok()
+                            && cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok()
                         {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
@@ -178,7 +180,7 @@ impl Component for PluginPanel {
                         } else {
                             None
                         };
-                        if helix_js::dispatch_node_event(self.id, fid, event).is_ok() {
+                        if cx.js_dispatch_node_event(self.id, fid, event).is_ok() {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
                         }
@@ -186,7 +188,7 @@ impl Component for PluginPanel {
                     // 水平方向键/Home/End：input 光标移动（input_edit 对这些键返回 None，不触发 onChange）
                     "Left" | "Right" | "Home" | "End" => {
                         if helix_js::input_has_state(self.id, fid)
-                            && helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok()
+                            && cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok()
                         {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
@@ -197,12 +199,14 @@ impl Component for PluginPanel {
                         if helix_js::input_has_state(self.id, fid)
                             && helix_js::input_is_multiline(self.id, fid)
                         {
-                            if helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok() {
+                            if cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok() {
                                 drain_msgs(cx);
                                 return EventResult::Consumed(None);
                             }
                         } else if helix_js::input_has_state(self.id, fid)
-                            && helix_js::dispatch_node_event(self.id, fid, Some(&key.name)).is_ok()
+                            && cx
+                                .js_dispatch_node_event(self.id, fid, Some(&key.name))
+                                .is_ok()
                         {
                             drain_msgs(cx);
                             return EventResult::Consumed(None);
@@ -215,11 +219,12 @@ impl Component for PluginPanel {
                             || key_name == "Delete" =>
                     {
                         if helix_js::input_has_state(self.id, fid) {
-                            if helix_js::dispatch_input_key(self.id, fid, &key.name).is_ok() {
+                            if cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok() {
                                 drain_msgs(cx);
                                 return EventResult::Consumed(None);
                             }
-                        } else if helix_js::dispatch_node_event(self.id, fid, Some(&key.name))
+                        } else if cx
+                            .js_dispatch_node_event(self.id, fid, Some(&key.name))
                             .is_ok()
                         {
                             drain_msgs(cx);
@@ -264,7 +269,7 @@ impl Component for PluginPanel {
                 docs: vec![],
             }
         };
-        let result = helix_js::popup_key(self.id, &key, &ctx);
+        let result = cx.js_popup_key(self.id, &key, &ctx);
         // 应用编辑/光标/消息（在 popup_key 之后：onKey 入队的编辑在本次按键内同步应用）
         let cursor_reqs = helix_js::take_cursor_requests();
         if !cursor_reqs.is_empty() {
@@ -293,7 +298,10 @@ impl Component for PluginPanel {
         }
         // 面板/弹窗 onKey 里发起的 UI 请求（open_file / move_panel / set_terminal_mode 等）
         // 即时应用——否则请求搁置到下一个 :命令才被 drain
-        if let Err(err) = crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests()) {
+        if let Err(err) = crate::commands::typed::apply_ui_requests(
+            cx.js.as_deref_mut(),
+            helix_js::take_ui_requests(),
+        ) {
             cx.editor.set_error(err.to_string());
         }
         match result {
@@ -328,7 +336,7 @@ impl Component for PluginPanel {
         } else {
             None
         };
-        match helix_js::render_popup(self.id, area.width, area.height, focus) {
+        match cx.js_render_popup(self.id, area.width, area.height, focus) {
             Ok(content) => {
                 if self.focusable {
                     self.focusables.clear();

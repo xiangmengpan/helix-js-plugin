@@ -112,6 +112,13 @@ pub struct Context<'a> {
     pub callback: Vec<crate::compositor::Callback>,
     pub on_next_key_callback: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     pub jobs: &'a mut Jobs,
+    /// D-3(第二类:沿调用链透传):**命令执行上下文也带宿主**。
+    ///
+    /// 为什么需要:模式命令(`:i`/`Esc` 等)在 keymap 的 `commands::Context` 上运行,
+    /// 而 `mode-change` 事件必须从那里发出 —— 没有这个字段,事件发射就只能走
+    /// legacy 隐式解析。两个构造点都在 `compositor::Context` 在手的地方
+    /// (`ui/editor.rs` 的 `handle_event` 与命令面板的 picker 回调)⇒ 透传零成本。
+    pub js: Option<&'a mut helix_js::host::JsHost>,
 }
 
 impl Context<'_> {
@@ -176,6 +183,7 @@ impl Context<'_> {
             editor: self.editor,
             jobs: self.jobs,
             scroll: None,
+            js: None,
         }
         .block_try_flush_writes()
     }
@@ -252,10 +260,12 @@ impl MappableCommand {
     pub fn execute(&self, cx: &mut Context) {
         match &self {
             Self::Typable { name, args, doc: _ } => {
+                // D-1:嵌套的命令上下文没有宿主 ⇒ None(无宿主 = 无 JS,行为不变)
                 let mut cx = compositor::Context {
                     editor: cx.editor,
                     jobs: cx.jobs,
                     scroll: None,
+                    js: None,
                 };
                 if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
                     if let Err(e) =
@@ -3156,7 +3166,12 @@ fn insert_mode(cx: &mut Context) {
     // JS 插件 mode-change 钩子（模式已切换完成）
     // ponytail: mode-change 仅覆盖主模式命令（insert/normal/select）；
     // exit_select_mode / append_mode 等其他切换路径按需再挂
-    typed::emit_plugin_event(cx.editor, "mode-change", Some("insert"));
+    typed::emit_plugin_event_with(
+        cx.js.as_deref_mut(),
+        cx.editor,
+        "mode-change",
+        Some("insert"),
+    );
 }
 
 // inserts at the end of each selection
@@ -3674,6 +3689,7 @@ pub fn command_palette(cx: &mut Context) {
                     callback: Vec::new(),
                     on_next_key_callback: None,
                     jobs: cx.jobs,
+                    js: cx.js.as_deref_mut(),
                 };
                 let focus = view!(ctx.editor).id;
 
@@ -4017,7 +4033,12 @@ fn open_above(cx: &mut Context) {
 fn normal_mode(cx: &mut Context) {
     cx.editor.enter_normal_mode();
     // JS 插件 mode-change 钩子
-    typed::emit_plugin_event(cx.editor, "mode-change", Some("normal"));
+    typed::emit_plugin_event_with(
+        cx.js.as_deref_mut(),
+        cx.editor,
+        "mode-change",
+        Some("normal"),
+    );
 }
 
 // Store a jump on the jumplist.
@@ -4172,7 +4193,12 @@ fn select_mode(cx: &mut Context) {
 
     cx.editor.mode = Mode::Select;
     // JS 插件 mode-change 钩子
-    typed::emit_plugin_event(cx.editor, "mode-change", Some("select"));
+    typed::emit_plugin_event_with(
+        cx.js.as_deref_mut(),
+        cx.editor,
+        "mode-change",
+        Some("select"),
+    );
 }
 
 fn exit_select_mode(cx: &mut Context) {

@@ -657,6 +657,8 @@ impl PluginTerminal {
     }
 
     /// 把一块 PTY 输出喂进网格（TermFeed 请求路由到此处）
+    /// ⚠️ 本函数里会发 `term-title`;调用方是 `job::dispatch_blocking` 的 Send 闭包
+    /// (TermFeed 臂)⇒ 拿不到 `&mut JsHost`(宿主 !Send)⇒ 该事件永久走 legacy 隐式解析。
     pub fn feed(&mut self, chunk: &str) {
         self.grid.feed(chunk.as_bytes());
         if let Some(title) = self.grid.take_title() {
@@ -768,7 +770,7 @@ impl Drop for PluginTerminal {
 }
 
 impl Component for PluginTerminal {
-    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         use helix_view::input::{KeyCode, KeyModifiers, MouseEventKind};
         // minimized：不消费按键，编辑器照常工作
         if self.mode == TermMode::Minimized {
@@ -806,8 +808,7 @@ impl Component for PluginTerminal {
         };
         // term-key 钩子（插件决策优先）：pass/consume/minimize/close；无钩子 → 默认流程
         let key_desc = terminal_key_desc(key);
-        match helix_js::emit_term_key(self.pty_id, &key_desc.0, key_desc.1, key_desc.2, key_desc.3)
-        {
+        match cx.js_emit_term_key(self.pty_id, &key_desc.0, key_desc.1, key_desc.2, key_desc.3) {
             Some(helix_js::TermKeyDecision::Pass) => {
                 if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
                     let _ = helix_js::term_write(self.pty_id, &bytes);
@@ -843,12 +844,12 @@ impl Component for PluginTerminal {
             match self.input_mode {
                 TermInputMode::Insert => {
                     self.input_mode = TermInputMode::Normal;
-                    helix_js::emit_term_mode(self.pty_id, "normal");
+                    cx.js_emit_term_mode(self.pty_id, "normal");
                     EventResult::Consumed(None)
                 }
                 TermInputMode::Normal => {
                     self.input_mode = TermInputMode::Insert;
-                    helix_js::emit_term_mode(self.pty_id, "insert");
+                    cx.js_emit_term_mode(self.pty_id, "insert");
                     // 回 helix：收起浮窗（若浮动）+ 焦点切回编辑器叶子（终端保留）
                     EventResult::Consumed(Some(Box::new(
                         |compositor: &mut Compositor, _cx: &mut Context| {
@@ -923,7 +924,7 @@ impl Component for PluginTerminal {
             if key.code == KeyCode::Esc {
                 // Esc → 切 terminal normal 模式（滚动/复制），不关闭（关闭归 window 模式 x）
                 self.input_mode = TermInputMode::Normal;
-                helix_js::emit_term_mode(self.pty_id, "normal");
+                cx.js_emit_term_mode(self.pty_id, "normal");
                 return EventResult::Consumed(None);
             }
             if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
@@ -956,7 +957,7 @@ impl Component for PluginTerminal {
         // 标题条：JS 视图回调优先(顶部 1 行,网格下移);无回调 → 无标题条(现状)
         let has_view = helix_js::has_component_render(self.view_id);
         if has_view {
-            if let Ok(content) = helix_js::render_component(self.view_id, area.width, 1, None) {
+            if let Ok(content) = cx.js_render_component(self.view_id, area.width, 1, None) {
                 let lines = crate::ui::comp_layout::render(content, (area.width, 1));
                 self.diff
                     .render(&lines, area.with_height(1), surface, &cx.editor.theme);
@@ -983,7 +984,7 @@ impl Component for PluginTerminal {
         if self.last_size != Some((rows, cols)) {
             #[cfg(unix)]
             let _ = helix_js::term_resize(self.pty_id, rows, cols);
-            helix_js::emit_term_resize(self.pty_id, rows, cols);
+            cx.js_emit_term_resize(self.pty_id, rows, cols);
             self.grid.resize(rows, cols);
             self.last_size = Some((rows, cols));
         }

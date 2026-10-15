@@ -13,10 +13,16 @@ use boa_engine::{Context, JsError, JsString, JsValue};
 use std::collections::HashMap;
 
 use crate::state::{with_engine, UI_REQUESTS};
-use crate::types::{ServerRow, UiRequest};
+use crate::types::{ServerListRowsReq, ServerRow, UiRequest};
 
-thread_local! {
-    static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+/// server rows 一次性回调 id 计数器(T0:原 thread_local `NEXT_ID` ⇒ 宿主字段)
+fn next_id() -> u64 {
+    crate::host::with_host_ref_or_init(|h| {
+        let c = &h.next_server_row_id;
+        let v = c.get();
+        c.set(v + 1);
+        v
+    })
 }
 
 fn with_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
@@ -35,11 +41,7 @@ pub fn js_server_rows(
             "helix.server.rows: callback function required",
         ))));
     }
-    let id = NEXT_ID.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v
-    });
+    let id = next_id();
     with_callbacks(|m| {
         m.insert(id, cb);
     });
@@ -48,7 +50,7 @@ pub fn js_server_rows(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ServerListRows { id });
+        .push(UiRequest::ServerListRows(ServerListRowsReq { id }));
     Ok(JsValue::from(id))
 }
 
@@ -171,7 +173,9 @@ mod tests {
 
     #[test]
     fn rows_request_pushes_ui_request_and_callback_receives_data() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 缺参报错
         assert!(crate::load_script(r#"helix.server.rows();"#).is_err());
@@ -196,7 +200,7 @@ mod tests {
         assert!(crate::run_command("sm-rows", &ctx).unwrap());
         let reqs = take_ui_requests();
         let id = match &reqs[0] {
-            UiRequest::ServerListRows { id } => *id,
+            UiRequest::ServerListRows(ServerListRowsReq { id }) => *id,
             other => panic!("expected ServerListRows, got {other:?}"),
         };
         deliver(

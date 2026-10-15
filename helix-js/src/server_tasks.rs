@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::state::{wake_sender, with_engine, WakeSender, UI_REQUESTS};
-use crate::types::{ServerTaskEvent, ServerTaskItem, UiRequest};
+use crate::types::{ServerTaskEvent, ServerTaskItem, ServerTaskReq, UiRequest};
 
 /// 事件桶（**按宿主分桶**）：发送端 WakeSender = worker 推事件即唤醒主循环。
 ///
@@ -289,7 +289,7 @@ pub(crate) fn js_server_task(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ServerTask { task_id, items });
+        .push(UiRequest::ServerTask(ServerTaskReq { task_id, items }));
     Ok(JsValue::from(task_id))
 }
 
@@ -311,7 +311,9 @@ mod tests {
     /// M-e:version 字段给了但非字符串 → Err(与 op/name 同款校验;不静默丢弃)
     #[test]
     fn task_version_must_be_string_or_absent() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         with_engine(|ctx| {
             let cb = ctx.eval(Source::from_bytes("() => {}")).unwrap();
@@ -343,7 +345,9 @@ mod tests {
     /// push_event 走 WakeSender 通道(set_term_wake 可重注册,与顺序无关)。
     #[test]
     fn push_event_fires_registered_wake() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         let fired = Arc::new(AtomicBool::new(false));
         let fired2 = fired.clone();
@@ -369,7 +373,9 @@ mod tests {
     /// 参数校验：首参非数组 / 回调不可调 / 空数组 → Err（不消耗 taskId）
     #[test]
     fn task_validates_args() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         with_engine(|ctx| {
             let cb = ctx.eval(Source::from_bytes("() => {}")).unwrap();
@@ -399,7 +405,9 @@ mod tests {
     /// 回传 progress/done，回调按送达顺序 echo，消息序列对上。
     #[test]
     fn task_api_pushes_request_and_events_deliver() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::state::take_ui_requests(); // 清
         crate::load_script(
@@ -426,7 +434,9 @@ mod tests {
         let (tid, items) = reqs
             .into_iter()
             .find_map(|r| match r {
-                crate::types::UiRequest::ServerTask { task_id, items } => Some((task_id, items)),
+                crate::types::UiRequest::ServerTask(ServerTaskReq { task_id, items }) => {
+                    Some((task_id, items))
+                }
                 _ => None,
             })
             .expect("入队 UiRequest::ServerTask");
@@ -476,7 +486,9 @@ mod tests {
     /// 测试照样绿 ⇒ 假绿,已改)。
     #[test]
     fn task_events_are_not_stolen_across_hosts() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // A = 本线程默认宿主。两个 id 必须不同:路由表是 task_id → 宿主,
         // 两个宿主同时用同一个 id 会把事件投错桶(静默错投)。

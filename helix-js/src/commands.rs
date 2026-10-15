@@ -62,6 +62,10 @@ pub(crate) fn js_register_command(
             crate::state::with_command_docs(|d| d.insert(name.clone(), doc));
         }
     }
+    // C-2 归属:命令→属主插件(注册期绑定,这是唯一可靠的时刻)
+    if let Some(owner) = crate::permissions::current_declared() {
+        crate::permissions::bind_command_owner(&name, &owner);
+    }
     with_registry(|r| r.insert(name, func));
     Ok(JsValue::undefined())
 }
@@ -124,6 +128,8 @@ pub(crate) fn js_write_plugin_file(
                 "helix.write_plugin_file: text must be a string",
             )))
         })?;
+    // C-2 检查点:写插件自身文件属于 `fs_write`
+    crate::permissions::check_js("helix.write_plugin_file", crate::permissions::CAP_FS_WRITE)?;
     match crate::state::write_plugin_file(&rel, &text) {
         Ok(p) => Ok(JsValue::from(JsString::from(
             p.to_string_lossy().to_string(),
@@ -313,7 +319,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     let parent_root = crate::state::current_load_root();
     crate::state::with_load_stack(|s| s.push(key.clone()));
     // 与 key **同一处** push/pop,两栈因此始终等长(见 state::LOAD_ROOTS 注释)
-    crate::state::push_load_root(providing_root);
+    crate::state::push_load_root(providing_root.clone());
     let result = (|| -> boa_engine::JsResult<JsValue> {
         let path = if Path::new(&key).is_absolute() {
             PathBuf::from(&key)
@@ -336,11 +342,19 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         })?;
         // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
         crate::state::with_last_plugin_deps(|d| d.clear());
+        // C-1/C-2:同一时刻清空"本次 eval 声明过 manifest 吗"的标记
+        crate::permissions::begin_manifest();
         eval_wrapped(ctx, &src).map_err(|e| {
             JsError::from_opaque(JsValue::from(JsString::from(format!(
                 "helix.load('{key}') failed: {e}"
             ))))
         })?;
+        // C-2 的"内置"判据 = **提供根**是不是用户插件目录(用户层 = 最后一个根)。
+        // 内置 17 个插件随软件分发(runtime/plugins)⇒ 永不询问;用户同名覆盖
+        // (config/plugins 里那份)则按第三方对待。
+        if let Some(name) = crate::permissions::last_declared() {
+            crate::permissions::mark_builtin(&name, crate::state::is_builtin_root(&providing_root));
+        }
         let deps = crate::state::with_last_plugin_deps(std::mem::take);
         // 先取外层 export（递归依赖 eval 会覆盖 LAST_EXPORT，外层 export 必须提前保存）
         let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
@@ -362,16 +376,19 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     result
 }
 
-/// helix.plugin(name, { deps, version })：声明当前脚本的依赖清单（方案 2）。
+/// `helix.plugin(name, { schema_version, min_editor, deps, permissions, contributes })`
+///：声明当前脚本的 manifest(C-1:解析 + 记录,不拦截)。
 /// deps 是**加载参数数组**（插件名如 ["icons"]，或文件 key 如 ["lib/x.js"]），helix.load 自动拓扑加载。
+/// permissions 是**能力清单**（C-2 的判据）:
+/// `{ process: bool, fs_read: bool, fs_write: bool }` —— **不写这个字段 = legacy 语义**
+/// (不拦截,存量插件零影响);写了才开始检查(见 `crate::permissions`)。
 pub(crate) fn js_plugin(
     _this: &JsValue,
     args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    // name 仅校验类型（API 形状：helix.plugin(name, { deps, version })）；
-    // 依赖清单只取 deps（文件 key），version 为元数据保留位暂不消费。
-    let _name: String = args
+    // name 仅校验类型（API 形状：helix.plugin(name, { … })）
+    let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
@@ -380,16 +397,64 @@ pub(crate) fn js_plugin(
                 "helix.plugin: name must be a string",
             )))
         })?;
-    let mut deps: Vec<String> = Vec::new();
+    let mut manifest = crate::types::PluginManifest {
+        name: name.clone(),
+        ..Default::default()
+    };
     if let Some(meta) = args.get(1).unwrap_or(&JsValue::undefined()).as_object() {
         if let Ok(v) = meta
             .get(JsString::from("deps"), ctx)
             .and_then(|v| v.try_js_into::<Vec<String>>(ctx))
         {
-            deps = v;
+            manifest.deps = v;
+        }
+        if let Ok(v) = meta
+            .get(JsString::from("schema_version"), ctx)
+            .and_then(|v| v.try_js_into::<u32>(ctx))
+        {
+            // 声明面版本**要比一比**:高于编辑器支持的版本 ⇒ 直接报错，不默默降级
+            // (插件按它不认识的语义跑，比"加载失败"更糟)。
+            if v > u32::from(crate::types::API_VERSION) {
+                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    "helix.plugin('{name}'): schema_version {v} 高于本编辑器支持的 {}（升级编辑器或降级插件）",
+                    crate::types::API_VERSION
+                )))));
+            }
+            manifest.schema_version = Some(v);
+        }
+        if let Ok(v) = meta
+            .get(JsString::from("min_editor"), ctx)
+            .and_then(|v| v.try_js_into::<String>(ctx))
+        {
+            manifest.min_editor = Some(v);
+        }
+        if let Ok(v) = meta
+            .get(JsString::from("contributes"), ctx)
+            .and_then(|v| v.try_js_into::<Vec<String>>(ctx))
+        {
+            manifest.contributes = v;
+        }
+        // 只看**是不是对象**:写 `permissions: {…}` 才进入检查;不写/写 null 都是 legacy
+        if let Some(perms) = meta
+            .get(JsString::from("permissions"), ctx)
+            .ok()
+            .and_then(|v| v.as_object())
+        {
+            let mut flag = |key: &str| {
+                perms
+                    .get(JsString::from(key), ctx)
+                    .map(|v| v.to_boolean())
+                    .unwrap_or(false)
+            };
+            manifest.permissions = Some(crate::types::PluginPermissions {
+                process: flag("process"),
+                fs_read: flag("fs_read"),
+                fs_write: flag("fs_write"),
+            });
         }
     }
-    crate::state::with_last_plugin_deps(|d| d.extend(deps));
+    crate::state::with_last_plugin_deps(|d| d.extend(manifest.deps.clone()));
+    crate::permissions::record_manifest(manifest);
     Ok(JsValue::undefined())
 }
 
@@ -507,10 +572,10 @@ fn push_server_op(op: &str, arg: Option<String>) {
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ServerOp {
+        .push(UiRequest::ServerOp(ServerOpReq {
             op: op.to_string(),
             arg,
-        });
+        }));
 }
 
 /// helix.export(obj)：声明当前脚本的导出（被 helix.load 的返回值拿到）。undefined/null 清空。
@@ -789,12 +854,12 @@ pub(crate) fn js_map(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::MapKey {
+        .push(UiRequest::MapKey(MapKeyReq {
             mode,
             key,
             command,
             unbind,
-        });
+        }));
     Ok(JsValue::undefined())
 }
 
@@ -952,6 +1017,9 @@ fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
 /// 运行插件命令。返回 Ok(true) 表示已运行，Ok(false) 表示未注册
 pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     crate::init();
+    // C-2 归属:命令的属主(注册期绑定);执行完恢复上一个(嵌套 run_command 也正确)
+    let prev_owner =
+        crate::permissions::set_current_owner(crate::permissions::command_owner(name).as_deref());
     // 命令开始时清空编辑队列，避免跨命令残留
     crate::state::with_edits(|c| c.clear());
     crate::state::with_decoration_requests(|c| c.clear());
@@ -968,14 +1036,16 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
         .and_then(JsFunction::from_object)
         .ok_or_else(|| anyhow!("registered value for '{name}' is not a function"))?;
 
-    crate::state::with_engine(|engine| {
+    let res = crate::state::with_engine(|engine| {
         let arg =
             ctx_to_js(ctx, engine).map_err(|e| anyhow!("failed to build command context: {e}"))?;
         let undefined = JsValue::undefined();
         func.call(&undefined, &[arg], engine)
             .map(|_| true)
             .map_err(|e| anyhow!("plugin command '{name}' failed: {e}"))
-    })
+    });
+    crate::permissions::restore_owner(prev_owner);
+    res
 }
 
 /// 已注册的插件命令名（供命令行补全）
@@ -1009,6 +1079,9 @@ pub(crate) fn js_on(
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "helix.on: handler must be a function",
         ))));
+    }
+    if let Some(owner) = crate::permissions::current_declared() {
+        crate::permissions::bind_handler_owner(&name, &owner);
     }
     with_event_handlers(|h| h.entry(name).or_default().push(handler));
     Ok(JsValue::undefined())
@@ -1120,6 +1193,27 @@ fn emit_event_impl(
     }
     crate::state::with_engine(|engine| {
         let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build event doc: {e}"))?;
+        // B-1:doc 对象也带 `api_version`/`type` —— 单参形状的订阅者(`(doc) => …`)
+        // 不必改签名就能判断协议版本。两个字段都是**追加**,不动既有字段。
+        {
+            let obj = doc
+                .as_object()
+                .ok_or_else(|| anyhow!("event doc is not an object"))?;
+            obj.set(
+                JsString::from("api_version"),
+                JsValue::from(API_VERSION),
+                false,
+                engine,
+            )
+            .map_err(|e| anyhow!("failed to attach api_version: {e}"))?;
+            obj.set(
+                JsString::from("type"),
+                JsValue::from(JsString::from(name.to_string())),
+                false,
+                engine,
+            )
+            .map_err(|e| anyhow!("failed to attach event type: {e}"))?;
+        }
         if let Some(changes) = changes {
             let arr = build_changes_array(changes, ctx, engine)
                 .map_err(|e| anyhow!("failed to build event changes: {e}"))?;
@@ -1128,8 +1222,18 @@ fn emit_event_impl(
                 .set(JsString::from("changes"), arr, false, engine)
                 .map_err(|e| anyhow!("failed to attach event changes: {e}"))?;
         }
+        // B-1:每次事件都附一份**具名 + 版本化**的 payload,作为**最后一个参数**。
+        // 位置参数保持原样(既有订阅者零迁移);payload 是往前兼容的那一面 ——
+        // 它回答"这是哪个事件、协议第几版、字段叫什么",而位置参数回答不了。
+        let ev_changes = changes.map(|c| changes_to_ev(c, ctx)).unwrap_or_default();
+        let payload = payload_js(engine, &build_event_payload(name, ctx, extra, &ev_changes))
+            .map_err(|e| anyhow!("failed to build event payload: {e}"))?;
         let undefined = JsValue::undefined();
-        for handler in &handlers {
+        for (idx, handler) in handlers.iter().enumerate() {
+            // C-2 归属:事件处理器的属主(注册期按下标绑定)
+            let prev_owner = crate::permissions::set_current_owner(
+                crate::permissions::handler_owner(name, idx).as_deref(),
+            );
             let func = handler
                 .as_callable()
                 .and_then(JsFunction::from_object)
@@ -1139,7 +1243,7 @@ fn emit_event_impl(
             // 旧实现 `None ⇒ vec![doc]` 会让写 `(kind) => …` 的插件**静默**拿到事件对象:
             // `sync_layout_cache` 的 40 个调用点里只有 10 处设种类(typed.rs),多数路径命中该坑。
             // 其它事件没有种类概念 ⇒ 单参形状**保持不变**(改了会打断全部既有订阅者)。
-            let args: Vec<JsValue> = if name == "layout-change" {
+            let mut args: Vec<JsValue> = if name == "layout-change" {
                 let kind = match extra {
                     Some(mode) => JsValue::from(JsString::from(mode.to_string())),
                     None => JsValue::null(),
@@ -1153,6 +1257,7 @@ fn emit_event_impl(
                     None => vec![doc.clone()],
                 }
             };
+            args.push(payload.clone());
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 crate::state::with_edits(|c| c.clear());
                 crate::state::with_decoration_requests(|c| c.clear());
@@ -1160,6 +1265,7 @@ fn emit_event_impl(
                 crate::state::with_txn_depth(|d| *d = 0); // 与正常入口复位一致:错误路径也恢复事务深度
                 anyhow!("event '{name}' handler failed: {e}")
             })?;
+            crate::permissions::restore_owner(prev_owner);
         }
         Ok(())
     })
@@ -1175,19 +1281,150 @@ fn build_changes_array(
     if changes.is_empty() {
         return Ok(JsValue::from(JsArray::new(engine)?));
     }
+    let ev = changes_to_ev(changes, ctx);
+    let mut items = Vec::with_capacity(ev.len());
+    for c in &ev {
+        items.push(change_js(engine, c));
+    }
+    Ok(JsValue::from(JsArray::from_iter(items, engine)))
+}
+
+/// 合并窗口 → **具名**变更范围(包围范围;行列,越界 clamp)。
+///
+/// 单一真相:数字在这里算一次,
+/// ① `doc.changes` 的 JS 数组 ② 事件 payload 里的 `changes` —— 都由它派生。
+fn changes_to_ev(changes: &[DocChange], ctx: &CommandContext) -> Vec<EvChange> {
+    if changes.is_empty() {
+        return Vec::new();
+    }
     let old_start = changes.iter().map(|c| c.0 .0).min().unwrap();
     let old_end = changes.iter().map(|c| c.0 .1).max().unwrap();
     let new_start = changes.iter().map(|c| c.1 .0).min().unwrap();
     let new_end = changes.iter().map(|c| c.1 .1).max().unwrap();
-    let old_range = range_point(engine, &ctx.text, old_start, old_end)?;
-    let new_range = range_point(engine, &ctx.text, new_start, new_end)?;
-    let entry = JsValue::from(
+    vec![EvChange {
+        old_range: EvRange {
+            start: pos_to_row_col(&ctx.text, old_start).into(),
+            end: pos_to_row_col(&ctx.text, old_end).into(),
+        },
+        new_range: EvRange {
+            start: pos_to_row_col(&ctx.text, new_start).into(),
+            end: pos_to_row_col(&ctx.text, new_end).into(),
+        },
+    }]
+}
+
+/// 具名点 → JS `{row, col}`
+fn ev_pos_js(engine: &mut Context, p: EvPos) -> JsValue {
+    JsValue::from(
+        ObjectInitializer::new(engine)
+            .property(
+                JsString::from("row"),
+                JsValue::from(p.row),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from("col"),
+                JsValue::from(p.col),
+                Attribute::all(),
+            )
+            .build(),
+    )
+}
+
+/// 具名范围 → JS `{start, end}`
+fn ev_range_js(engine: &mut Context, r: EvRange) -> JsValue {
+    let start = ev_pos_js(engine, r.start);
+    let end = ev_pos_js(engine, r.end);
+    JsValue::from(
+        ObjectInitializer::new(engine)
+            .property(JsString::from("start"), start, Attribute::all())
+            .property(JsString::from("end"), end, Attribute::all())
+            .build(),
+    )
+}
+
+/// 具名变更 → JS `{oldRange, newRange}`(与 payload 的 `EvChange` **同形同源**)
+fn change_js(engine: &mut Context, c: &EvChange) -> JsValue {
+    let old_range = ev_range_js(engine, c.old_range);
+    let new_range = ev_range_js(engine, c.new_range);
+    JsValue::from(
         ObjectInitializer::new(engine)
             .property(JsString::from("oldRange"), old_range, Attribute::all())
             .property(JsString::from("newRange"), new_range, Attribute::all())
             .build(),
-    );
-    Ok(JsValue::from(JsArray::from_iter([entry], engine)))
+    )
+}
+
+/// 事件名 + 上下文 → 具名 payload(B-1)。
+///
+/// 名字只能来自 `EVENT_WHITELIST`(不在表里的名字早在 `helix.on` 就被拒),所以这里
+/// 只覆盖白名单里的**文档类**事件;变体选择**不影响线格式** —— 线上的 `type` 来自 `hdr`。
+fn build_event_payload(
+    name: &str,
+    ctx: &CommandContext,
+    extra: Option<&str>,
+    changes: &[EvChange],
+) -> EventPayload {
+    let hdr = BusHeader::new(name);
+    let cursor = ctx.cursor.into();
+    let selection = ctx.selection.into();
+    let path = || ctx.path.clone();
+    match name {
+        "startup" => EventPayload::Startup(StartupPayload { hdr }),
+        "layout-change" => EventPayload::LayoutChange(LayoutChangePayload {
+            hdr,
+            kind: extra.map(|k| k.to_string()),
+        }),
+        "mode-change" => EventPayload::ModeChange(ModeChangePayload {
+            hdr,
+            mode: extra.unwrap_or("normal").to_string(),
+            path: path(),
+            cursor,
+            selection,
+        }),
+        "doc-change" => EventPayload::DocChange(DocChangePayload {
+            hdr,
+            path: path(),
+            cursor,
+            selection,
+            changes: changes.to_vec(),
+        }),
+        "buffer-open" => EventPayload::BufferOpen(DocEventPayload {
+            hdr,
+            path: path(),
+            cursor,
+            selection,
+        }),
+        "buffer-close" => EventPayload::BufferClose(DocEventPayload {
+            hdr,
+            path: path(),
+            cursor,
+            selection,
+        }),
+        "theme-change" => EventPayload::ThemeChange(DocEventPayload {
+            hdr,
+            path: path(),
+            cursor,
+            selection,
+        }),
+        _ => EventPayload::Save(DocEventPayload {
+            hdr,
+            path: path(),
+            cursor,
+            selection,
+        }),
+    }
+}
+
+/// 具名 payload → JS 对象(`serde` → JSON → boa)。
+///
+/// 走 JSON 而不是手写 `ObjectInitializer`:线格式**只在一处**定义(types.rs 的结构体),
+/// 这里不重复描述字段名 —— 否则"具名"会退化成两份会漂移的形状。
+pub(crate) fn payload_js(
+    engine: &mut Context,
+    payload: &EventPayload,
+) -> boa_engine::JsResult<JsValue> {
+    JsValue::from_json(&payload.to_json(), engine)
 }
 
 /// char 索引 → 0-based (row, col)；越界 clamp 到文本末尾。
@@ -1208,58 +1445,36 @@ fn pos_to_row_col(text: &str, pos: usize) -> (usize, usize) {
     (row, col)
 }
 
-/// { start: {row, col}, end: {row, col} } 范围对象。
-fn range_point(
-    engine: &mut Context,
-    text: &str,
-    start: usize,
-    end: usize,
-) -> boa_engine::JsResult<JsValue> {
-    let start_pt = point_js(engine, text, start)?;
-    let end_pt = point_js(engine, text, end)?;
-    Ok(JsValue::from(
-        ObjectInitializer::new(engine)
-            .property(JsString::from("start"), start_pt, Attribute::all())
-            .property(JsString::from("end"), end_pt, Attribute::all())
-            .build(),
-    ))
-}
-
-/// { row, col } 坐标对象。
-fn point_js(engine: &mut Context, text: &str, pos: usize) -> boa_engine::JsResult<JsValue> {
-    let (row, col) = pos_to_row_col(text, pos);
-    Ok(JsValue::from(
-        ObjectInitializer::new(engine)
-            .property(
-                JsString::from("row"),
-                JsValue::from(row as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("col"),
-                JsValue::from(col as f64),
-                Attribute::all(),
-            )
-            .build(),
-    ))
-}
-
 /// 钩子调用：按注册顺序调用 name 的 handler，返回第一个非 undefined 返回值。
 /// 通知型钩子（term-open/mode-change/exit/resize/title）忽略返回值；
 /// term-close 返回 false 表示阻止关闭。参数由调用方构造（原生 JsValue 无需 engine）。
 pub fn emit_hook(name: &str, args: &[JsValue]) -> Option<JsValue> {
+    emit_hook_args(name, args, None)
+}
+
+/// 钩子调用的公共实现(B-1 后):`payload` 为 Some 时,它就是**追加在位置参数后的最后一个参数**。
+fn emit_hook_args(name: &str, args: &[JsValue], payload: Option<&EventPayload>) -> Option<JsValue> {
     crate::init();
     let handlers = with_event_handlers(|h| h.get(name).cloned())?;
     if handlers.is_empty() {
         return None;
     }
     with_engine(|engine| {
+        let mut args: Vec<JsValue> = args.to_vec();
+        if let Some(payload) = payload {
+            match payload_js(engine, payload) {
+                Ok(p) => args.push(p),
+                // 唯一可能:`serde_json` 序列化失败(字段全是基础类型 ⇒ 实际不会发生)。
+                // 不静默发半个 payload(那会让插件收到形状不全的事件),直接不发。
+                Err(_) => return None,
+            }
+        }
         let undefined = JsValue::undefined();
         for handler in &handlers {
             let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
                 continue;
             };
-            if let Ok(ret) = func.call(&undefined, args, engine) {
+            if let Ok(ret) = func.call(&undefined, &args, engine) {
                 if !ret.is_undefined() {
                     return Some(ret);
                 }
@@ -1315,7 +1530,21 @@ pub fn emit_term_key(
             )
             .property(JsString::from("alt"), JsValue::from(alt), Attribute::all())
             .build();
-        let args = [JsValue::from(pty_id), JsValue::from(key)];
+        let mut args = vec![JsValue::from(pty_id), JsValue::from(key)];
+        // B-1:具名 payload 追加为最后一个参数(位置参数不变)
+        if let Ok(p) = payload_js(
+            engine,
+            &EventPayload::TermKey(TermKeyPayload {
+                hdr: BusHeader::new("term-key"),
+                pty_id,
+                code: code.to_string(),
+                shift,
+                ctrl,
+                alt,
+            }),
+        ) {
+            args.push(p);
+        }
         let undefined = JsValue::undefined();
         for handler in &handlers {
             let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
@@ -1342,41 +1571,79 @@ pub fn emit_term_key(
 
 /// 平级模式切换通知(阶段①/②):插件据此显示模式指示/键位表
 pub fn emit_pane_mode_change(mode: &str) {
-    emit_hook("pane-mode-change", &[JsValue::from(JsString::from(mode))]);
+    emit_hook_args(
+        "pane-mode-change",
+        &[JsValue::from(JsString::from(mode))],
+        Some(&EventPayload::PaneModeChange(PaneModeChangePayload {
+            hdr: BusHeader::new("pane-mode-change"),
+            mode: mode.to_string(),
+        })),
+    );
 }
 
 /// 通知型终端钩子封装（helix-term 侧不依赖 boa，统一走这里）：
 /// term-open / term-mode-change / term-exit / term-resize / term-title 通知；
 /// term-close 返回 true=放行关闭 / false=阻止。
+///
+/// B-1 起：位置参数不变，**末尾**追加一个具名 payload（`{api_version, type, …}`）。
 pub fn emit_term_open(pty_id: u64, cmd: &str) {
-    emit_hook(
+    emit_hook_args(
         "term-open",
         &[JsValue::from(pty_id), JsValue::from(JsString::from(cmd))],
+        Some(&EventPayload::TermOpen(TermOpenPayload {
+            hdr: BusHeader::new("term-open"),
+            pty_id,
+            cmd: cmd.to_string(),
+        })),
     );
 }
 pub fn emit_term_mode(pty_id: u64, mode: &str) {
-    emit_hook(
+    emit_hook_args(
         "term-mode-change",
         &[JsValue::from(pty_id), JsValue::from(JsString::from(mode))],
+        Some(&EventPayload::TermModeChange(TermModeChangePayload {
+            hdr: BusHeader::new("term-mode-change"),
+            pty_id,
+            mode: mode.to_string(),
+        })),
     );
 }
 pub fn emit_term_exit(pty_id: u64, code: i32) {
-    emit_hook("term-exit", &[JsValue::from(pty_id), JsValue::from(code)]);
+    emit_hook_args(
+        "term-exit",
+        &[JsValue::from(pty_id), JsValue::from(code)],
+        Some(&EventPayload::TermExit(TermExitPayload {
+            hdr: BusHeader::new("term-exit"),
+            pty_id,
+            code,
+        })),
+    );
 }
 pub fn emit_term_resize(pty_id: u64, rows: u16, cols: u16) {
-    emit_hook(
+    emit_hook_args(
         "term-resize",
         &[
             JsValue::from(pty_id),
             JsValue::from(rows),
             JsValue::from(cols),
         ],
+        Some(&EventPayload::TermResize(TermResizePayload {
+            hdr: BusHeader::new("term-resize"),
+            pty_id,
+            rows,
+            cols,
+        })),
     );
 }
 pub fn emit_term_title(pty_id: u64, title: &str) {
-    emit_hook(
+    emit_hook_args(
         "term-title",
         &[JsValue::from(pty_id), JsValue::from(JsString::from(title))],
+        Some(&EventPayload::TermTitle(TermTitlePayload {
+            hdr: BusHeader::new("term-title"),
+            pty_id,
+            title: title.to_string(),
+        })),
     );
 }
 /// 组件事件(鼠标点击/滚动等):构造 {kind, x, y} 对象;插件返回 true → 消费该事件。
@@ -1399,7 +1666,20 @@ pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
             .property(JsString::from("x"), JsValue::from(x), Attribute::all())
             .property(JsString::from("y"), JsValue::from(y), Attribute::all())
             .build();
-        let args = [JsValue::from(id), JsValue::from(ev)];
+        let mut args = vec![JsValue::from(id), JsValue::from(ev)];
+        // B-1:具名 payload 追加为最后一个参数(位置参数不变)
+        if let Ok(p) = payload_js(
+            engine,
+            &EventPayload::ComponentEvent(ComponentEventPayload {
+                hdr: BusHeader::new("component-event"),
+                id,
+                kind: kind.to_string(),
+                x,
+                y,
+            }),
+        ) {
+            args.push(p);
+        }
         let undefined = JsValue::undefined();
         for handler in &handlers {
             let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
@@ -1417,9 +1697,14 @@ pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
 
 /// term-close 钩子：插件返回 false → 阻止关闭（返回 true=阻止）
 pub fn emit_term_close(pty_id: u64, reason: &str) -> bool {
-    emit_hook(
+    emit_hook_args(
         "term-close",
         &[JsValue::from(pty_id), JsValue::from(JsString::from(reason))],
+        Some(&EventPayload::TermClose(TermClosePayload {
+            hdr: BusHeader::new("term-close"),
+            pty_id,
+            reason: reason.to_string(),
+        })),
     )
     .is_some_and(|v| v.as_boolean() == Some(false))
 }
@@ -1624,6 +1909,8 @@ pub(crate) fn js_run(
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     use std::process::Command;
+    // C-2 检查点:起进程需要 `process` 能力
+    crate::permissions::check_js("helix.run", crate::permissions::CAP_PROCESS)?;
     let cmd: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -2097,7 +2384,7 @@ pub fn reload_all() -> Result<()> {
             .unwrap()
             .lock()
             .unwrap()
-            .push(UiRequest::ClosePanel { id: panel_id });
+            .push(UiRequest::ClosePanel(ClosePanelReq { id: panel_id }));
     }
     crate::state::set_last_panel_id(None);
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());

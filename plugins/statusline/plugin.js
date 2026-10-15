@@ -1,6 +1,11 @@
 // statusline.js — 状态栏美化（lazyvim 风格三段分栏）
 // 依赖清单：icons（统一图标映射，自动先加载）
-helix.plugin("statusline", { deps: [] }); // 图标已收进核心,不再需要 deps
+// 图标已收进核心,不再需要 deps;git 分支名走 `run_async` ⇒ 起进程
+helix.plugin("statusline", {
+  deps: [],
+  schema_version: 1,
+  permissions: { process: true },
+});
 
 // 插件配置(方案 C):config.toml [plugins.statusline]
 helix.define_config("statusline", {

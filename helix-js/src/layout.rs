@@ -70,13 +70,13 @@ pub(crate) fn js_split(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::SplitLeaf {
+        .push(UiRequest::SplitLeaf(SplitLeafReq {
             id,
             dir,
             kind,
             cmd,
             size,
-        });
+        }));
     Ok(JsValue::from(id))
 }
 
@@ -113,7 +113,7 @@ pub(crate) fn js_buffer_open(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::OpenBufferLeaf { path, split });
+        .push(UiRequest::OpenBufferLeaf(OpenBufferLeafReq { path, split }));
     Ok(JsValue::undefined())
 }
 
@@ -131,7 +131,7 @@ pub(crate) fn js_close_leaf(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::CloseLeaf { id });
+        .push(UiRequest::CloseLeaf(CloseLeafReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -149,7 +149,7 @@ pub(crate) fn js_zoom_leaf(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ZoomLeaf { id });
+        .push(UiRequest::ZoomLeaf(ZoomLeafReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -185,10 +185,10 @@ pub(crate) fn js_resize_leaf(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ResizeLeaf {
+        .push(UiRequest::ResizeLeaf(ResizeLeafReq {
             id,
             ratio: ratio as f32,
-        });
+        }));
     Ok(JsValue::undefined())
 }
 
@@ -206,7 +206,7 @@ pub(crate) fn js_focus_leaf(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::FocusLeaf { id });
+        .push(UiRequest::FocusLeaf(FocusLeafReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -239,11 +239,11 @@ pub(crate) fn js_resize_leaf_dir(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ResizeLeafDir {
+        .push(UiRequest::ResizeLeafDir(ResizeLeafDirReq {
             id,
             dir,
             delta: delta as f32,
-        });
+        }));
     Ok(JsValue::undefined())
 }
 
@@ -266,7 +266,7 @@ pub(crate) fn js_swap_leaves(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::SwapLeaves { id1, id2 });
+        .push(UiRequest::SwapLeaves(SwapLeavesReq { id1, id2 }));
     Ok(JsValue::undefined())
 }
 
@@ -289,7 +289,7 @@ pub(crate) fn js_minimize_leaf(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::MinimizeLeaf { id, minimized });
+        .push(UiRequest::MinimizeLeaf(MinimizeLeafReq { id, minimized }));
     Ok(JsValue::undefined())
 }
 
@@ -328,7 +328,7 @@ pub(crate) fn js_focus_leaf_dir(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::FocusLeafDir { id, dir });
+        .push(UiRequest::FocusLeafDir(FocusLeafDirReq { id, dir }));
     Ok(JsValue::undefined())
 }
 
@@ -356,7 +356,7 @@ pub(crate) fn js_swap_leaf_dir(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::SwapLeafDir { id, dir });
+        .push(UiRequest::SwapLeafDir(SwapLeafDirReq { id, dir }));
     Ok(JsValue::undefined())
 }
 
@@ -375,7 +375,7 @@ pub(crate) fn js_equalize_leaf(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::EqualizeLeaf { id });
+        .push(UiRequest::EqualizeLeaf(EqualizeLeafReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -415,10 +415,10 @@ pub(crate) fn js_layout_fix(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::LayoutFix {
+        .push(UiRequest::LayoutFix(LayoutFixReq {
             id: id as u64,
             fixed,
-        });
+        }));
     Ok(JsValue::undefined())
 }
 
@@ -495,9 +495,9 @@ fn pane_place_req(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)?;
     let req = if float {
-        UiRequest::PaneFloat { id }
+        UiRequest::PaneFloat(PaneFloatReq { id })
     } else {
-        UiRequest::PaneEmbed { id }
+        UiRequest::PaneEmbed(PaneEmbedReq { id })
     };
     let _ = who;
     UI_REQUESTS.get().unwrap().lock().unwrap().push(req);
@@ -539,7 +539,7 @@ pub(crate) fn js_pane_raise(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::PaneRaise { id });
+        .push(UiRequest::PaneRaise(PaneRaiseReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -567,7 +567,7 @@ pub(crate) fn js_pane_pin(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::PanePin { id, on });
+        .push(UiRequest::PanePin(PanePinReq { id, on }));
     Ok(JsValue::undefined())
 }
 
@@ -588,7 +588,7 @@ pub(crate) fn js_stack_create(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::StackCreate { id });
+        .push(UiRequest::StackCreate(StackCreateReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -615,7 +615,7 @@ pub(crate) fn js_stack_activate(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::StackActivate { id, member });
+        .push(UiRequest::StackActivate(StackActivateReq { id, member }));
     Ok(JsValue::undefined())
 }
 
@@ -634,7 +634,7 @@ pub(crate) fn js_stack_remove(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::StackRemove { id });
+        .push(UiRequest::StackRemove(StackRemoveReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -808,7 +808,7 @@ pub(crate) fn js_focus_buffer(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::FocusBuffer { id });
+        .push(UiRequest::FocusBuffer(FocusBufferReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -858,7 +858,7 @@ pub(crate) fn js_restore_layout(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::CacheLayout(json));
+        .push(UiRequest::CacheLayout(CacheLayoutReq { text: json }));
     Ok(JsValue::undefined())
 }
 
@@ -969,7 +969,7 @@ pub(crate) fn js_layout_load(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::CacheLayout(json));
+        .push(UiRequest::CacheLayout(CacheLayoutReq { text: json }));
     Ok(JsValue::from(true))
 }
 
@@ -1025,7 +1025,7 @@ pub fn layout_load(name: &str) -> Result<(), String> {
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::CacheLayout(json));
+        .push(UiRequest::CacheLayout(CacheLayoutReq { text: json }));
     Ok(())
 }
 

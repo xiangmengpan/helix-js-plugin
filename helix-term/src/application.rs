@@ -234,9 +234,10 @@ impl Application {
                         for msg in helix_js::take_messages() {
                             editor.set_status(msg);
                         }
-                        if let Err(err) =
-                            crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
-                        {
+                        if let Err(err) = crate::commands::typed::apply_ui_requests(
+                            Some(&mut js_host),
+                            helix_js::take_ui_requests(),
+                        ) {
                             editor.set_error(format!("plugin '{}': {err}", init_path.display()));
                         }
                     }
@@ -348,7 +349,9 @@ impl Application {
         // ── `startup` 事件 ──
         // 发在初始文件处理**之后**（开屏/无文件的分支有好几处 ✗，所以只在这里发一次 ✓）。
         // “要不要显示启动屏”由**插件**判断（它自己看当前 buffer 是否空白无名）✓
-        if let Err(e) = helix_js::emit_startup() {
+        // D-2:startup 是事件发射 ⇒ 走 `&mut JsHost` 泵入口(独占借用);
+        // 弹窗/面板/命令的快照都在宿主里,与 legacy 路径同一份状态。
+        if let Err(e) = js_host.emit_startup() {
             log::warn!("startup event failed: {e}");
         }
 
@@ -419,7 +422,12 @@ impl Application {
             // 早退路径 resolve,回调可能 echo/编辑(尾部统一 drain 消息/UI 请求)
             let _ = helix_js::server_tasks::resolve_events();
             // 早退路径也要泵纯 JS 微任务(Promise.resolve().then(...) 不经过 term/async 事件)
-            if let Err(err) = helix_js::pump_jobs() {
+            // D-2:泵入口走 `&mut JsHost`(独占借用);无宿主退回 legacy 隐式解析
+            let pumped = match self.js_host.as_deref_mut() {
+                Some(host) => host.pump_jobs(),
+                None => helix_js::pump_jobs(),
+            };
+            if let Err(err) = pumped {
                 log::error!("promise job pump: {err}");
             }
             // 早退路径也须 drain 消息/UI 请求：picker action 等经 compositor 回调的 JS
@@ -429,9 +437,10 @@ impl Application {
             if !msgs.is_empty() {
                 self.editor.set_status(msgs.join(" "));
             }
-            if let Err(err) =
-                crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests())
-            {
+            if let Err(err) = crate::commands::typed::apply_ui_requests(
+                self.js_host.as_deref_mut(),
+                helix_js::take_ui_requests(),
+            ) {
                 self.editor.set_error(err.to_string());
             }
             return theme_changed;
@@ -448,7 +457,12 @@ impl Application {
             let id = match &event {
                 helix_js::TermEvent::Chunk(id, _) | helix_js::TermEvent::Exit(id, _, _) => *id,
             };
-            if let Err(err) = helix_js::resolve_term_event(id, event) {
+            // D-2:兑现 worker 回投的 Promise = 进 JS ⇒ 走泵入口
+            let resolved = match self.js_host.as_deref_mut() {
+                Some(host) => host.resolve_term_event(id, event),
+                None => helix_js::resolve_term_event(id, event),
+            };
+            if let Err(err) = resolved {
                 error = Some(err);
             }
         }
@@ -461,7 +475,11 @@ impl Application {
                 | helix_js::AsyncEvent::FsGlob(id, _)
                 | helix_js::AsyncEvent::FsTree(id, _) => *id,
             };
-            if let Err(err) = helix_js::resolve_async_event(id, event) {
+            let resolved = match self.js_host.as_deref_mut() {
+                Some(host) => host.resolve_async_event(id, event),
+                None => helix_js::resolve_async_event(id, event),
+            };
+            if let Err(err) = resolved {
                 error = Some(err);
             }
         }
@@ -479,7 +497,11 @@ impl Application {
                 },
                 None => result,
             };
-            if let Err(err) = helix_js::resolve_lsp(id, result) {
+            let resolved = match self.js_host.as_deref_mut() {
+                Some(host) => host.resolve_lsp(id, result),
+                None => helix_js::resolve_lsp(id, result),
+            };
+            if let Err(err) = resolved {
                 log::error!("lsp result {id}: {err}");
             }
         }
@@ -490,7 +512,12 @@ impl Application {
         // 泵 promise job 队列（.then/.catch/await 恢复）；空队列即时返回。
         // 放 resolve 之后：promise settle 只是入队，须在 take_messages/take_edits 前泵出，
         // 否则 .then 里 echo/编辑的消息要等下一帧且早退路径不 drain，会滞留。
-        if let Err(err) = helix_js::pump_jobs() {
+        // D-2:同上,泵入口走 `&mut JsHost`
+        let pumped = match self.js_host.as_deref_mut() {
+            Some(host) => host.pump_jobs(),
+            None => helix_js::pump_jobs(),
+        };
+        if let Err(err) = pumped {
             log::error!("promise job pump: {err}");
         }
         let cursor_reqs = helix_js::take_cursor_requests();
@@ -524,7 +551,10 @@ impl Application {
             None if !msgs.is_empty() => self.editor.set_status(msgs.join(" ")),
             _ => {}
         }
-        if let Err(err) = crate::commands::typed::apply_ui_requests(helix_js::take_ui_requests()) {
+        if let Err(err) = crate::commands::typed::apply_ui_requests(
+            self.js_host.as_deref_mut(),
+            helix_js::take_ui_requests(),
+        ) {
             self.editor.set_error(err.to_string());
         }
         true
@@ -566,6 +596,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            js: None,
         };
 
         helix_event::start_frame();
@@ -925,13 +956,18 @@ impl Application {
                     let (_, doc) = helix_view::current!(self.editor);
                     doc.take_pending_changes()
                 };
-                crate::commands::typed::emit_plugin_doc_change(&mut self.editor, &changes);
+                crate::commands::typed::emit_plugin_doc_change(
+                    self.js_host.as_deref_mut(),
+                    &mut self.editor,
+                    &changes,
+                );
             }
         }
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            js: None,
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
         // idle 是 worker 完成后的主要唤醒点；泵过事件时必须重绘（仅 idle 本身不触发渲染）
@@ -1057,6 +1093,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            js: None,
         };
         // Handle key events
         let should_redraw = match event.unwrap() {

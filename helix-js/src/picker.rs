@@ -7,7 +7,7 @@ use boa_engine::object::FunctionObjectBuilder;
 use boa_engine::{Context, JsError, JsObject, JsString, JsValue, NativeFunction};
 
 use crate::state::{with_engine, with_picker_sources};
-use crate::types::UiRequest;
+use crate::types::{OpenPickerReq, UiRequest};
 
 /// picker 候选行（纯数据，跨线程）：cells = 各列文本；payload = 原样数据（action/preview 用）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -294,11 +294,11 @@ fn push_open_picker(
                 let value = args.first().cloned().unwrap_or_default();
                 match parse_rows(value, ctx) {
                     Ok(rows) if validate_row_width(&name, columns, &rows) => {
-                        push_request(UiRequest::OpenPicker {
+                        push_request(UiRequest::OpenPicker(OpenPickerReq {
                             source: name,
                             columns: columns.clone(),
                             rows,
-                        });
+                        }));
                         Ok(JsValue::undefined())
                     }
                     Ok(_) => Ok(JsValue::undefined()),
@@ -332,11 +332,11 @@ fn push_open_picker(
     } else {
         let rows = parse_rows(items_result, context)?;
         if validate_row_width(name, &columns, &rows) {
-            push_request(UiRequest::OpenPicker {
+            push_request(UiRequest::OpenPicker(OpenPickerReq {
                 source: name.to_string(),
                 columns,
                 rows,
-            });
+            }));
         }
         Ok(())
     }
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn picker_define_and_validate() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 非法：columns 非数组 / items 非函数 → 报错
         assert!(
@@ -452,14 +452,14 @@ mod tests {
 
     #[test]
     fn picker_run_unknown_source_errors() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         assert!(load_script(r#"helix.picker.run("nope");"#).is_err());
     }
 
     #[test]
     fn picker_run_pushes_open_picker_sync_rows() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"helix.picker.define("f", { columns: ["name"], items: () => [["a.rs"], { cells: ["b.rs"], payload: ["b.rs", "extra"] }] });"#,
@@ -468,11 +468,11 @@ mod tests {
         load_script(r#"helix.picker.run("f");"#).unwrap();
         let reqs = take_ui_requests();
         let rows = match &reqs[0] {
-            UiRequest::OpenPicker {
+            UiRequest::OpenPicker(OpenPickerReq {
                 source,
                 columns,
                 rows,
-            } => {
+            }) => {
                 assert_eq!(source, "f");
                 // 列名下随请求（表头用真实列名）
                 assert_eq!(columns, &vec!["name".to_string()]);
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn picker_run_async_items_pushes_after_pump() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"helix.picker.define("f", { columns: ["name", "path"], items: async () => [["a.rs", "src/a.rs"]] });"#,
@@ -503,11 +503,11 @@ mod tests {
         pump_jobs().unwrap();
         let reqs = take_ui_requests();
         match &reqs[0] {
-            UiRequest::OpenPicker {
+            UiRequest::OpenPicker(OpenPickerReq {
                 source,
                 columns,
                 rows,
-            } => {
+            }) => {
                 assert_eq!(source, "f");
                 assert_eq!(columns, &vec!["name".to_string(), "path".to_string()]);
                 assert_eq!(rows[0].cells, vec!["a.rs", "src/a.rs"]);
@@ -519,18 +519,18 @@ mod tests {
     #[test]
     fn picker_run_empty_rows_still_opens() {
         // 空 rows（如 grep 无匹配）→ 仍 push OpenPicker（columns 非空,term 侧建空列表展示）
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(r#"helix.picker.define("f", { columns: ["name"], items: () => [] });"#)
             .unwrap();
         load_script(r#"helix.picker.run("f");"#).unwrap();
         let reqs = take_ui_requests();
         match &reqs[0] {
-            UiRequest::OpenPicker {
+            UiRequest::OpenPicker(OpenPickerReq {
                 source,
                 columns,
                 rows,
-            } => {
+            }) => {
                 assert_eq!(source, "f");
                 assert_eq!(columns, &vec!["name".to_string()]);
                 assert!(rows.is_empty());
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn picker_run_width_mismatch_reports_and_skips() {
         // 行宽与列数不匹配 → push_message 报错,不 push OpenPicker（同步路径）
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"helix.picker.define("f", { columns: ["name"], items: () => [["a.rs", "extra"]] });"#,
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn picker_run_async_width_mismatch_reports_and_skips() {
         // 行宽不匹配（Promise 路径）→ 同样报错不 push
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"helix.picker.define("f", { columns: ["name"], items: async () => [["a", "b"]] });"#,
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn picker_run_async_items_rejection_feedback() {
         // 任务 2 审查 I1：Promise reject → push_message 反馈（不静默），且不 push OpenPicker
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"helix.picker.define("f", { columns: ["name"], items: async () => { throw new Error("boom"); } });"#,
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn picker_run_async_items_bad_rows_feedback() {
         // I1：resolve 但行解析失败（非数组）→ 同样反馈，不 push
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(r#"helix.picker.define("f", { columns: ["name"], items: async () => 42 });"#)
             .unwrap();
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn picker_invoke_action_and_preview() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 带 action/preview 的源：action 经 helix.echo 可观察（走 MESSAGES）
         load_script(

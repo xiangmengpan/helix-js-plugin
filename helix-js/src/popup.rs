@@ -219,7 +219,7 @@ pub(crate) fn js_open_popup(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::OpenPopup {
+        .push(UiRequest::OpenPopup(OpenPopupReq {
             id,
             width,
             height,
@@ -227,7 +227,7 @@ pub(crate) fn js_open_popup(
             layer,
             center,
             size_pct,
-        });
+        }));
     Ok(JsValue::from(id))
 }
 
@@ -400,13 +400,13 @@ pub(crate) fn js_open_panel(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::OpenPanel {
+        .push(UiRequest::OpenPanel(OpenPanelReq {
             id,
             side,
             size,
             focusable,
             rail,
-        });
+        }));
     Ok(JsValue::from(id))
 }
 
@@ -434,7 +434,7 @@ pub(crate) fn js_close_panel(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ClosePanel { id });
+        .push(UiRequest::ClosePanel(ClosePanelReq { id }));
     Ok(JsValue::undefined())
 }
 
@@ -562,13 +562,13 @@ pub(crate) fn js_open_terminal(
             .unwrap()
             .lock()
             .unwrap()
-            .push(UiRequest::OpenTerminal {
+            .push(UiRequest::OpenTerminal(OpenTerminalReq {
                 view_id,
                 pty_id,
                 cmd,
                 side,
                 size,
-            });
+            }));
         Ok(JsValue::from(view_id))
     }
     #[cfg(not(unix))]
@@ -610,7 +610,7 @@ pub(crate) fn js_term_feed(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::TermFeed { view_id, chunk });
+        .push(UiRequest::TermFeed(TermFeedReq { view_id, chunk }));
     Ok(JsValue::undefined())
 }
 pub(crate) fn js_set_terminal_mode(
@@ -636,7 +636,7 @@ pub(crate) fn js_set_terminal_mode(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::TermMode { view_id, mode });
+        .push(UiRequest::TermMode(TermModeReq { view_id, mode }));
     Ok(JsValue::undefined())
 }
 
@@ -654,7 +654,7 @@ pub(crate) fn js_term_clear(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::TermClear { view_id });
+        .push(UiRequest::TermClear(TermClearReq { view_id }));
     Ok(JsValue::undefined())
 }
 
@@ -679,7 +679,7 @@ pub(crate) fn js_term_save(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::TermSave { view_id, path });
+        .push(UiRequest::TermSave(TermSaveReq { view_id, path }));
     Ok(JsValue::undefined())
 }
 
@@ -701,7 +701,7 @@ pub(crate) fn js_resize_term(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::TermResize { view_id, size });
+        .push(UiRequest::TermResize(TermResizeReq { view_id, size }));
     Ok(JsValue::undefined())
 }
 /// 布局树 API：split(dir, {terminal:{cmd}} | {panel:{render,onKey}}) -> leaf_id（预分配）
@@ -725,6 +725,8 @@ pub(crate) fn js_read_file(
                 "read_file: path must be a string",
             )))
         })?;
+    // C-2 检查点:读任意文件需要 `fs_read`
+    crate::permissions::check_js("helix.read_file", crate::permissions::CAP_FS_READ)?;
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(JsValue::from(JsString::from(text))),
         Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(
@@ -753,6 +755,8 @@ pub(crate) fn js_write_file(
                 "write_file: path must be a string",
             )))
         })?;
+    // C-2 检查点:写文件需要 `fs_write`
+    crate::permissions::check_js("helix.write_file", crate::permissions::CAP_FS_WRITE)?;
     let text: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
@@ -788,6 +792,8 @@ pub(crate) fn js_read_dir(
                 "read_dir: path must be a string",
             )))
         })?;
+    // C-2 检查点:列目录需要 `fs_read`
+    crate::permissions::check_js("helix.read_dir", crate::permissions::CAP_FS_READ)?;
     let mut entries: Vec<(String, bool, String)> = std::fs::read_dir(&path)
         .map_err(|e| {
             JsError::from_opaque(JsValue::from(JsString::from(format!(
@@ -857,9 +863,9 @@ pub(crate) fn js_open_file(
         _ => (None, None, false),
     };
     UI_REQUESTS.get().unwrap().lock().unwrap().push(if scratch {
-        UiRequest::OpenScratchFile { path }
+        UiRequest::OpenScratchFile(OpenScratchFileReq { path })
     } else {
-        UiRequest::OpenFile { path, row, col }
+        UiRequest::OpenFile(OpenFileReq { path, row, col })
     });
     Ok(JsValue::undefined())
 }
@@ -898,7 +904,7 @@ pub(crate) fn js_move_panel(
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::MovePanel { id, side });
+        .push(UiRequest::MovePanel(MovePanelReq { id, side }));
     Ok(JsValue::undefined())
 }
 
@@ -1729,7 +1735,7 @@ pub fn close_last_panel() -> Result<()> {
         .unwrap()
         .lock()
         .unwrap()
-        .push(UiRequest::ClosePanel { id });
+        .push(UiRequest::ClosePanel(ClosePanelReq { id }));
     Ok(())
 }
 
@@ -2148,9 +2154,9 @@ pub(crate) fn js_term_close(
         .expect("UI_REQUESTS initialized")
         .lock()
         .expect("ui requests lock")
-        .push(crate::types::UiRequest::TermClose {
+        .push(crate::types::UiRequest::TermClose(TermCloseReq {
             view_id: view_id as u64,
-        });
+        }));
     Ok(JsValue::undefined())
 }
 
@@ -2287,11 +2293,13 @@ pub fn render_completion_row(
 
 #[cfg(test)]
 mod tests {
-    use crate::types::UiRequest;
+    use crate::types::{OpenPopupReq, UiRequest};
 
     #[test]
     fn completion_icon_hook() {
-        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        let _guard = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 未注册 → None
         assert!(crate::popup::completion_kind_icon(7).is_none());
@@ -2330,7 +2338,9 @@ mod tests {
 
     #[test]
     fn completion_render_hook() {
-        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        let _guard = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 未注册 → Err(调用方回退原生两列)
         assert!(
@@ -2369,7 +2379,9 @@ mod tests {
     /// size_pct:Some((w,h)), layer} 且 px width/height/position 均为 None
     #[test]
     fn open_popup_v2_center_pct_layer() {
-        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        let _guard = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::load_script(
             r#"
@@ -2380,7 +2392,7 @@ mod tests {
         let reqs = crate::take_ui_requests();
         assert_eq!(reqs.len(), 1);
         match &reqs[0] {
-            UiRequest::OpenPopup {
+            UiRequest::OpenPopup(OpenPopupReq {
                 id: _,
                 width,
                 height,
@@ -2388,7 +2400,7 @@ mod tests {
                 layer,
                 center,
                 size_pct,
-            } => {
+            }) => {
                 assert_eq!(*width, None);
                 assert_eq!(*height, None);
                 assert_eq!(*position, None);
@@ -2403,7 +2415,9 @@ mod tests {
     /// v2 校验失败路径:任一非法 → 整体报错且不产生任何 UI 请求(无半注册)
     #[test]
     fn open_popup_v2_validation_failures() {
-        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        let _guard = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 数字宽高但尺寸为无 % 的非数字字符串
         assert!(
@@ -2460,7 +2474,9 @@ mod tests {
     /// size_pct:None,width/height/position 原值透传(行为与 v1 完全一致)
     #[test]
     fn open_popup_v2_legacy_call_unchanged() {
-        let _guard = crate::tests::TEST_LOCK.lock().unwrap();
+        let _guard = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         crate::load_script(
             r#"
@@ -2471,7 +2487,7 @@ mod tests {
         let reqs = crate::take_ui_requests();
         assert_eq!(reqs.len(), 1);
         match &reqs[0] {
-            UiRequest::OpenPopup {
+            UiRequest::OpenPopup(OpenPopupReq {
                 id: _,
                 width,
                 height,
@@ -2479,7 +2495,7 @@ mod tests {
                 layer,
                 center,
                 size_pct,
-            } => {
+            }) => {
                 assert_eq!(*width, Some(10));
                 assert_eq!(*height, Some(5));
                 assert_eq!(*position, Some((0, 0)));

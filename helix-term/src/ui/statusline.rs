@@ -27,6 +27,9 @@ pub struct RenderContext<'a> {
     /// 活动窗口路径(编辑器/buffer 叶子时为当前文件路径)
     pub active_leaf_path: Option<String>,
     pub parts: RenderBuffer<'a>,
+    /// D-2/D-3:宿主(状态栏是**每帧**钩子,是重入面最大的一条路径)。
+    /// 没有宿主(`None`)时退回 legacy 隐式解析 —— 语义相同,区别只在排他性可否证明。
+    pub js: Option<&'a mut helix_js::host::JsHost>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -41,6 +44,7 @@ impl<'a> RenderContext<'a> {
         pane_mode: Option<&'static str>,
         active_leaf_type: &'static str,
         active_leaf_path: Option<String>,
+        js: Option<&'a mut helix_js::host::JsHost>,
     ) -> Self {
         RenderContext {
             editor,
@@ -53,6 +57,7 @@ impl<'a> RenderContext<'a> {
             active_leaf_type,
             active_leaf_path,
             parts: RenderBuffer::default(),
+            js,
         }
     }
 }
@@ -170,7 +175,11 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             .find_map(|srv| context.spinners.get(srv.id()).and_then(|s| s.frame()))
             .map(|s| s.to_string()),
     };
-    let js_parts = helix_js::statusline_parts(&js_ctx);
+    // D-2:状态栏钩子是最热的 JS 入口(每帧)⇒ 走 `&mut JsHost` 泵入口
+    let js_parts = match context.js.as_deref_mut() {
+        Some(host) => host.statusline_parts(&js_ctx),
+        None => helix_js::statusline_parts(&js_ctx),
+    };
     let js_replace = helix_js::statusline_replaces();
 
     if js_replace {

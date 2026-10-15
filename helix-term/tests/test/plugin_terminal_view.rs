@@ -41,6 +41,7 @@ async fn term_native_opens_and_renders_feed() -> anyhow::Result<()> {
             editor: &mut app.editor,
             scroll: None,
             jobs: &mut jobs,
+            js: None,
         };
         app.compositor.render(area, &mut buf, &mut cx);
         buf.content.iter().map(|c| c.symbol.as_str()).collect()

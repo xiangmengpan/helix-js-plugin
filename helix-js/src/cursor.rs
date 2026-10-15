@@ -9,6 +9,7 @@ use boa_engine::property::Attribute;
 use boa_engine::{Context, JsString, JsValue};
 
 use crate::state::{with_engine, with_event_handlers};
+use crate::types::{BusHeader, CursorMovePayload, EventPayload, SelectionChangePayload};
 
 /// 构造 {row, col, mode} 对象调用 "cursor-move" handler(参数 [docId, ev])。
 /// 返回 true=有 handler 被调用;false=无 handler/空(零开销,无副作用)。
@@ -31,11 +32,21 @@ pub fn emit_cursor_move(doc_id: u64, row: usize, col: usize, mode: &str) -> bool
                 Attribute::all(),
             )
             .build();
-        call_handlers(
-            &handlers,
-            &[JsValue::from(doc_id), JsValue::from(ev)],
+        let mut args = vec![JsValue::from(doc_id), JsValue::from(ev)];
+        // B-1:具名 payload 追加为最后一个参数(位置参数不变)
+        if let Ok(p) = crate::commands::payload_js(
             engine,
-        )
+            &EventPayload::CursorMove(CursorMovePayload {
+                hdr: BusHeader::new("cursor-move"),
+                doc_id,
+                row,
+                col,
+                mode: mode.to_string(),
+            }),
+        ) {
+            args.push(p);
+        }
+        call_handlers(&handlers, &args, engine)
     })
 }
 
@@ -76,11 +87,20 @@ pub fn emit_selection_change(
             )
             .property(JsString::from("primary"), primary, Attribute::all())
             .build();
-        call_handlers(
-            &handlers,
-            &[JsValue::from(doc_id), JsValue::from(ev)],
+        let mut args = vec![JsValue::from(doc_id), JsValue::from(ev)];
+        // B-1:具名 payload 追加为最后一个参数(位置参数不变)
+        if let Ok(p) = crate::commands::payload_js(
             engine,
-        )
+            &EventPayload::SelectionChange(SelectionChangePayload {
+                hdr: BusHeader::new("selection-change"),
+                doc_id,
+                count,
+                primary: (primary_row, primary_col).into(),
+            }),
+        ) {
+            args.push(p);
+        }
+        call_handlers(&handlers, &args, engine)
     })
 }
 
@@ -109,7 +129,7 @@ mod tests {
 
     #[test]
     fn cursor_move_emits_row_col_mode() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"
@@ -125,7 +145,7 @@ mod tests {
 
     #[test]
     fn selection_change_emits_count_and_primary() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"
@@ -141,7 +161,7 @@ mod tests {
 
     #[test]
     fn no_handler_returns_false_without_side_effect() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 未注册任何 handler:直接返回 false,不 panic、无消息
         assert!(!emit_cursor_move(1, 0, 0, "normal"));

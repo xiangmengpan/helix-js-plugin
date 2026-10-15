@@ -11,6 +11,7 @@ mod popup;
 // pty.rs 是纯 POSIX 实现(openpt / ioctl / winsize + 裸 fd):只在 unix 编译。
 // 调用点(shell.rs / popup.rs)各自已有 cfg(unix) / cfg(not(unix)) 分支 ✓
 #[cfg(unix)]
+mod permissions;
 mod pty;
 mod shell;
 mod state;
@@ -36,6 +37,9 @@ pub use shell::*;
 pub use state::*;
 // `:layout` 类型化命令用的 Rust 层入口(与 helix.layout.* 共用内核与目录)
 pub use layout::{layout_delete, layout_list, layout_load, layout_save};
+pub use permissions::{
+    decide as decide_permission, manifests as plugin_manifests, pending as pending_permissions,
+};
 pub use theme::*;
 pub use types::DocChange;
 pub use types::*;
@@ -820,6 +824,13 @@ pub(crate) fn build_engine(engine: &mut Context) {
         pane_mode_obj,
         Attribute::READONLY | Attribute::NON_ENUMERABLE,
     );
+    // 边界协议的线格式版本(B-1/B-2 同一份):插件可在运行时分支
+    // (`if (helix.api_version >= 2) …`),而不必靠"猜哪个版本引入了哪个字段"。
+    builder.property(
+        JsString::from("api_version"),
+        JsValue::from(crate::types::API_VERSION),
+        Attribute::READONLY | Attribute::NON_ENUMERABLE,
+    );
     let helix = builder.build();
     engine
         .register_global_property(
@@ -845,6 +856,13 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     // 多个测试共享全局运行时，用锁串行化避免消息队列竞争
+    //
+    // ⚠️ 取锁一律用 `.unwrap_or_else(|e| e.into_inner())` **不用** `.unwrap()`:
+    // 一个测试 panic 会 poison 这个 Mutex,其后每个 `.lock().unwrap()` 都会以
+    // `PoisonError` 失败 ⇒ **一次抖动被放大成整模块红**。2026-10-14 实测:`cargo test -p
+    // helix-js`(默认并行)下一次进程事件超时 ⇒ 81/161 失败(其中 80 个是 PoisonError
+    // 连锁)。CI 的 macOS `Test Suite` 跑的是并行 `cargo test --workspace`,exit 101 的
+    // 放大机制就是这条 —— 根因往往只有一个超时。
     pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// v13 任务简报验证测试：read_dir 排序/is_dir、open_file、move_panel 入队 + 校验。
@@ -852,7 +870,7 @@ pub(crate) mod tests {
     /// 排序断言 entries[0].name < entries[1].name 不受影响（a.txt < b.js）。
     #[test]
     fn term_wake_fires_on_event() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fired2 = fired.clone();
@@ -875,7 +893,8 @@ pub(crate) mod tests {
             selection: ((0, 0), (0, 0)),
         };
         assert!(run_command("wk", &ctx).unwrap());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // 20s(同 wait_for_term_event 的理由:并行 CI 下 5s 会假红)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while !fired.load(std::sync::atomic::Ordering::SeqCst)
             && std::time::Instant::now() < deadline
         {
@@ -893,7 +912,7 @@ pub(crate) mod tests {
     /// 之前 `get_layout()` 看不到浮窗,插件因此完全不知道浮窗存在。
     #[test]
     fn pane_list_api_reads_snapshot() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let ctx = CommandContext {
             docs: vec![],
@@ -947,7 +966,7 @@ pub(crate) mod tests {
     /// (它的词汇是 float / embed),而不是自造的 `set_place`。
     #[test]
     fn pane_float_and_embed_push_requests() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -968,11 +987,11 @@ pub(crate) mod tests {
         assert!(run_command("pf", &ctx).unwrap());
         let reqs = take_ui_requests();
         assert!(
-            matches!(&reqs[0], UiRequest::PaneFloat { id } if *id == 3),
+            matches!(&reqs[0], UiRequest::PaneFloat(PaneFloatReq { id }) if *id == 3),
             "pane.float(3) → PaneFloat{{id:3}}"
         );
         assert!(
-            matches!(&reqs[1], UiRequest::PaneEmbed { id } if *id == 4),
+            matches!(&reqs[1], UiRequest::PaneEmbed(PaneEmbedReq { id }) if *id == 4),
             "pane.embed(4) → PaneEmbed{{id:4}}"
         );
     }
@@ -982,7 +1001,7 @@ pub(crate) mod tests {
     /// 名字齐全 + 调用真的入队(各 variant 的行为已由旧名测试覆盖)。
     #[test]
     fn pane_namespace_is_wired() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1065,7 +1084,7 @@ pub(crate) mod tests {
     /// 复用 pane.list() 的同一份快照(不新增状态),所以两者必须一致。
     #[test]
     fn pane_info_reads_same_snapshot_as_list() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         crate::state::cache_panes(
             r#"{"panes":[
@@ -1107,7 +1126,7 @@ pub(crate) mod tests {
     /// `pane.raise` / `pane.pin` —— 入队对应请求;`pin` **必须显式 on**。
     #[test]
     fn pane_raise_and_pin_push_requests() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1128,11 +1147,11 @@ pub(crate) mod tests {
         assert!(run_command("pr", &ctx).unwrap());
         let reqs = take_ui_requests();
         assert!(
-            matches!(&reqs[0], UiRequest::PaneRaise { id } if *id == 7),
+            matches!(&reqs[0], UiRequest::PaneRaise(PaneRaiseReq { id }) if *id == 7),
             "pane.raise(7) → PaneRaise{{id:7}}"
         );
         assert!(
-            matches!(&reqs[1], UiRequest::PanePin { id, on } if *id == 7 && *on),
+            matches!(&reqs[1], UiRequest::PanePin(PanePinReq { id, on }) if *id == 7 && *on),
             "pane.pin(7,true) → PanePin{{id:7,on:true}}"
         );
 
@@ -1147,7 +1166,7 @@ pub(crate) mod tests {
     /// (组内每个成员都会报同一份 members,不去重就会重复列出同一组)。
     #[test]
     fn stack_list_groups_and_dedupes_by_anchor() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         crate::state::cache_panes(
             r#"{"panes":[
@@ -1189,7 +1208,7 @@ pub(crate) mod tests {
     /// —— 一个 Split 只有两个子,组不可能多于 2 人。这条注释就是"为什么没有 add"的答案。
     #[test]
     fn stack_namespace_and_write_ops() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1217,11 +1236,11 @@ pub(crate) mod tests {
         assert_eq!(m[0], "missing:", "四个名字必须齐全");
         assert_eq!(m[1], "add:undefined", "**没有 add** —— 2 人组的模型约束");
         let reqs = take_ui_requests();
-        assert!(matches!(&reqs[0], UiRequest::StackCreate { id } if *id == 3));
+        assert!(matches!(&reqs[0], UiRequest::StackCreate(StackCreateReq { id }) if *id == 3));
         assert!(
-            matches!(&reqs[1], UiRequest::StackActivate { id, member } if *id == 3 && *member == 9)
+            matches!(&reqs[1], UiRequest::StackActivate(StackActivateReq { id, member }) if *id == 3 && *member == 9)
         );
-        assert!(matches!(&reqs[2], UiRequest::StackRemove { id } if *id == 3));
+        assert!(matches!(&reqs[2], UiRequest::StackRemove(StackRemoveReq { id }) if *id == 3));
 
         // activate 缺 member → 报错(要显式说清"显示哪个")
         assert!(
@@ -1234,7 +1253,7 @@ pub(crate) mod tests {
     /// (与 `read_dir` 同款约定)
     #[test]
     fn read_file_sync_roundtrip_and_error() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("x.txt");
@@ -1274,7 +1293,7 @@ pub(crate) mod tests {
     /// 读值方式:`helix.echo` + `take_messages()`(与 helix-term 的运行路径同一机制)。
     #[test]
     fn plugin_object_accepts_new_and_existing_properties() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let _ = take_messages(); // 清空上一次残留
 
@@ -1300,7 +1319,7 @@ pub(crate) mod tests {
     /// 这条路由是 `:tutor` 搬迁的**安全前提** —— 走错了,用户 `:w` 会覆盖 runtime 里的原文件。
     #[test]
     fn open_file_scratch_routes_to_scratch_request() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1321,18 +1340,18 @@ pub(crate) mod tests {
         assert!(run_command("ofs", &ctx).unwrap());
         let reqs = take_ui_requests();
         assert!(
-            matches!(&reqs[0], UiRequest::OpenFile { path, .. } if path == "/tmp/plain.txt"),
+            matches!(&reqs[0], UiRequest::OpenFile(OpenFileReq { path, .. }) if path == "/tmp/plain.txt"),
             "不带 scratch → 原 OpenFile 请求"
         );
         assert!(
-            matches!(&reqs[1], UiRequest::OpenScratchFile { path } if path == "/tmp/scratch.txt"),
+            matches!(&reqs[1], UiRequest::OpenScratchFile(OpenScratchFileReq { path }) if path == "/tmp/scratch.txt"),
             "带 scratch → OpenScratchFile(不绑定路径)"
         );
     }
 
     #[test]
     fn open_terminal_api() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1355,9 +1374,11 @@ pub(crate) mod tests {
         assert!(take_messages()[0].starts_with("pid:"));
         let reqs = take_ui_requests();
         assert!(
-            matches!(&reqs[0], UiRequest::OpenTerminal { side, size, .. } if side == "right" && *size == 40)
+            matches!(&reqs[0], UiRequest::OpenTerminal(OpenTerminalReq { side, size, .. }) if side == "right" && *size == 40)
         );
-        assert!(matches!(&reqs[1], UiRequest::TermFeed { chunk, .. } if chunk == "abc"));
+        assert!(
+            matches!(&reqs[1], UiRequest::TermFeed(TermFeedReq { chunk, .. }) if chunk == "abc")
+        );
         // 校验
         assert!(
             load_script(r#"helix.open_terminal({ cmd: "x", side: "top", size: 10 });"#).is_err()
@@ -1370,7 +1391,7 @@ pub(crate) mod tests {
     /// 修复前：bash job control 初始化失败向 stderr 打印该错误。
     #[test]
     fn pty_bash_interactive_no_error() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1391,7 +1412,7 @@ pub(crate) mod tests {
         assert!(run_command("bi", &ctx).unwrap());
         let _ = take_messages();
         let pty_id = match &take_ui_requests()[0] {
-            UiRequest::OpenTerminal { pty_id, .. } => *pty_id,
+            UiRequest::OpenTerminal(OpenTerminalReq { pty_id, .. }) => *pty_id,
             other => panic!("expected OpenTerminal, got {other:?}"),
         };
         // 收集 bash 启动输出直到报错或超时（提示符正常出现即好）。
@@ -1408,7 +1429,7 @@ pub(crate) mod tests {
                 let _ = resolve_term_event(eid, ev);
             }
             for req in take_ui_requests() {
-                if let UiRequest::TermFeed { chunk, .. } = req {
+                if let UiRequest::TermFeed(TermFeedReq { chunk, .. }) = req {
                     output.push_str(&chunk);
                 }
             }
@@ -1436,7 +1457,7 @@ pub(crate) mod tests {
     #[test]
     fn open_terminal_after_kill_repro() {
         // 关闭（term_kill，模拟 Esc/q 关闭终端）后再 open_terminal：应能正常打开。
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1457,7 +1478,7 @@ pub(crate) mod tests {
         assert!(run_command("t3", &ctx).unwrap(), "第一次 open_terminal");
         let _ = take_messages();
         let pty_id = match &take_ui_requests()[0] {
-            UiRequest::OpenTerminal { pty_id, .. } => *pty_id,
+            UiRequest::OpenTerminal(OpenTerminalReq { pty_id, .. }) => *pty_id,
             other => panic!("expected OpenTerminal, got {other:?}"),
         };
         // 模拟关闭：Esc/q → remove_type → PluginTerminal::drop → term_kill(pty_id)
@@ -1478,7 +1499,7 @@ pub(crate) mod tests {
 
     #[test]
     fn sidecar_apis() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = std::env::temp_dir().join(format!("helix-js-sidecar-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1518,9 +1539,11 @@ pub(crate) mod tests {
         assert_eq!(msgs[1], "dirs:1:sub");
         let reqs = take_ui_requests();
         assert!(
-            matches!(&reqs[0], UiRequest::OpenFile { path, row: None, col: None } if path.ends_with("a.txt"))
+            matches!(&reqs[0], UiRequest::OpenFile(OpenFileReq { path, row: None, col: None }) if path.ends_with("a.txt"))
         );
-        assert!(matches!(&reqs[1], UiRequest::MovePanel { id: 7, side } if side == "left"));
+        assert!(
+            matches!(&reqs[1], UiRequest::MovePanel(MovePanelReq { id: 7, side }) if side == "left")
+        );
 
         // 校验：read_dir 不存在路径 → 抛错；move_panel 非法 side → 抛错；open_file 非字符串 → 抛错
         load_script(
@@ -1538,7 +1561,7 @@ pub(crate) mod tests {
 
     #[test]
     fn theme_overrides_api() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 清残留脏位（本测试是唯一 set_theme 的测试，防御顺序依赖）
         let _ = take_theme_dirty();
@@ -1594,7 +1617,7 @@ pub(crate) mod tests {
 
     #[test]
     fn echo_captures_message() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(r#"helix.echo("hello from js");"#).unwrap();
         assert_eq!(take_messages(), vec!["hello from js"]);
@@ -1602,7 +1625,7 @@ pub(crate) mod tests {
 
     #[test]
     fn loaded_scripts_list() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script_named("a.js", r#"helix.register_command("a", () => {});"#).unwrap();
         load_script_named("b.js", r#"helix.register_command("b", () => {});"#).unwrap();
@@ -1613,7 +1636,7 @@ pub(crate) mod tests {
 
     #[test]
     fn register_and_run_command() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1642,7 +1665,7 @@ pub(crate) mod tests {
 
     #[test]
     fn panel_api() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1655,9 +1678,12 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         // 编译器建议：matches! 守卫未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
         assert!(
-            matches!(&reqs[0], UiRequest::OpenPanel { id: _, side, size, .. } if side == "right" && *size == 30)
+            matches!(&reqs[0], UiRequest::OpenPanel(OpenPanelReq { id: _, side, size, .. }) if side == "right" && *size == 30)
         );
-        assert!(matches!(&reqs[1], UiRequest::ClosePanel { id: _ }));
+        assert!(matches!(
+            &reqs[1],
+            UiRequest::ClosePanel(ClosePanelReq { id: _ })
+        ));
         assert!(take_messages()[0].starts_with("id:"));
         // 校验：side 白名单 / size / render
         assert!(
@@ -1674,7 +1700,7 @@ pub(crate) mod tests {
 
     #[test]
     fn panel_onkey() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1689,9 +1715,12 @@ pub(crate) mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         // 编译器建议：matches! 未用 id 绑定 → id: _（简报原文绑了 id，clippy 要求 0 告警）
-        assert!(matches!(&reqs[0], UiRequest::OpenPanel { id: _, .. }));
+        assert!(matches!(
+            &reqs[0],
+            UiRequest::OpenPanel(OpenPanelReq { id: _, .. })
+        ));
         // 编译器要求：单臂 match 非穷尽 → 改 let-else（与 popup_lifecycle 同款）
-        let UiRequest::OpenPanel { id, .. } = reqs[0] else {
+        let UiRequest::OpenPanel(OpenPanelReq { id, .. }) = reqs[0] else {
             unreachable!("expected OpenPanel")
         };
         assert!(take_messages()[0].starts_with("pid:"));
@@ -1716,7 +1745,7 @@ pub(crate) mod tests {
         // 无 onKey 的面板：false（helix-term 侧据此全 Ignore 穿透，不调 popup_key）
         load_script(r#"helix.open_panel({ side: "left", size: 10, render: () => ["x"] });"#)
             .unwrap();
-        let UiRequest::OpenPanel { id: id2, .. } = take_ui_requests()[0] else {
+        let UiRequest::OpenPanel(OpenPanelReq { id: id2, .. }) = take_ui_requests()[0] else {
             unreachable!("expected OpenPanel")
         };
         assert!(!panel_has_onkey(id2));
@@ -1726,7 +1755,7 @@ pub(crate) mod tests {
 
     #[test]
     fn popup_lifecycle() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1741,7 +1770,7 @@ pub(crate) mod tests {
         .unwrap();
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
-        let UiRequest::OpenPopup { id, .. } = reqs[0] else {
+        let UiRequest::OpenPopup(OpenPopupReq { id, .. }) = reqs[0] else {
             unreachable!("expected OpenPopup")
         };
         assert_eq!(id, 1); // 自增从 1 开始
@@ -1785,12 +1814,12 @@ pub(crate) mod tests {
 
     #[test]
     fn popup_default_keys_and_validation() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 未提供 onKey：Esc 默认关闭，其他穿透
         load_script(r#"helix.open_popup({ render: () => ["x"] });"#).unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         let key = PluginKey {
@@ -1819,7 +1848,7 @@ pub(crate) mod tests {
         // render 非数组 → Err
         load_script(r#"helix.open_popup({ render: () => "not an array" });"#).unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10, None).is_err());
@@ -1832,7 +1861,7 @@ pub(crate) mod tests {
 
     #[test]
     fn popup_size_position() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1844,12 +1873,12 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 2);
         match &reqs[0] {
-            UiRequest::OpenPopup {
+            UiRequest::OpenPopup(OpenPopupReq {
                 width,
                 height,
                 position,
                 ..
-            } => {
+            }) => {
                 assert_eq!(*width, Some(40));
                 assert_eq!(*height, Some(10));
                 assert_eq!(*position, Some((3, 4)));
@@ -1857,12 +1886,12 @@ pub(crate) mod tests {
             other => panic!("expected OpenPopup, got {other:?}"),
         }
         match &reqs[1] {
-            UiRequest::OpenPopup {
+            UiRequest::OpenPopup(OpenPopupReq {
                 width,
                 height,
                 position,
                 ..
-            } => {
+            }) => {
                 assert_eq!(*width, None);
                 assert_eq!(*height, None);
                 assert_eq!(*position, None);
@@ -1875,7 +1904,7 @@ pub(crate) mod tests {
 
     #[test]
     fn popup_styled_lines() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1890,7 +1919,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         let lines = render_popup(id, 40, 10, None).unwrap();
@@ -1906,7 +1935,7 @@ pub(crate) mod tests {
         // 非法元素（缺 text / 非字符串非对象）→ Err
         load_script(r#"helix.open_popup({ render: () => [{ style: "error" }] });"#).unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10, None).is_err());
@@ -1915,7 +1944,7 @@ pub(crate) mod tests {
 
     #[test]
     fn popup_onkey_edits_doc() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -1933,7 +1962,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         let ctx = CommandContext {
@@ -1964,7 +1993,7 @@ pub(crate) mod tests {
 
     #[test]
     fn buffer_icon_hook() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         assert_eq!(bufferline_icon(Some("a.rs")), None); // 未注册 → None
 
@@ -1981,7 +2010,7 @@ pub(crate) mod tests {
 
     #[test]
     fn doc_edits_queue() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -2031,7 +2060,7 @@ pub(crate) mod tests {
 
     #[test]
     fn doc_edit_validation() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 类型错误 → 命令失败（run_command 返回 Err），且队列被清空
         load_script(
@@ -2063,7 +2092,7 @@ pub(crate) mod tests {
 
     #[test]
     fn by_path_reads_other_buffer() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -2091,7 +2120,7 @@ pub(crate) mod tests {
 
     #[test]
     fn by_path_edits_target_other_buffer() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -2127,7 +2156,7 @@ pub(crate) mod tests {
 
     #[test]
     fn event_handlers() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         assert!(!has_handlers("save"));
 
@@ -2167,7 +2196,7 @@ pub(crate) mod tests {
 
     #[test]
     fn doc_change_event() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -2191,7 +2220,7 @@ pub(crate) mod tests {
 
     #[test]
     fn doc_change_changes_merged_range() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -2219,9 +2248,314 @@ pub(crate) mod tests {
         assert_eq!(take_messages(), vec!["empty"]);
     }
 
+    /// B-1:事件 payload **具名 + 版本化** —— 处理器在**位置参数之后**收到一个
+    /// `{api_version, type, …}` 对象;doc 对象也带同样两个字段。
+    #[test]
+    fn event_payload_is_named_and_versioned() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        load_script(
+            r#"
+        helix.on("save", (doc, payload) => {
+            helix.echo(
+                "v=" + payload.api_version + " t=" + payload.type
+                + " path=" + payload.path
+                + " cur=" + payload.cursor.row + ":" + payload.cursor.col
+                + " sel=" + payload.selection.anchor.row + "-" + payload.selection.head.col
+                + " docv=" + doc.api_version + " doct=" + doc.type
+            );
+        });
+        "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: Some("/tmp/e.rs".into()),
+            text: "x".into(),
+            cursor: (2, 3),
+            selection: ((1, 1), (4, 5)),
+        };
+        emit_event("save", &ctx, None).unwrap();
+        assert_eq!(
+            take_messages(),
+            vec!["v=1 t=save path=/tmp/e.rs cur=2:3 sel=1-5 docv=1 doct=save"]
+        );
+    }
+
+    /// B-1:`layout-change` 的 kind 在 payload 里是显式 **null**(与位置参数同语义);
+    /// 钩子类事件(term-*)的 payload 字段是具名的(`pty_id`/`cmd` 等)。
+    #[test]
+    fn event_payload_kind_null_and_term_hook_fields() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        load_script(
+            r#"
+        helix.on("layout-change", (kind, doc, payload) => {
+            helix.echo("kind=" + kind + " pkind=" + payload.kind + " t=" + payload.type);
+        });
+        helix.on("term-open", (id, cmd, payload) => {
+            helix.echo("id=" + id + " cmd=" + cmd + " pty=" + payload.pty_id
+                + " pcmd=" + payload.cmd + " t=" + payload.type + " v=" + payload.api_version);
+        });
+        "#,
+        )
+        .unwrap();
+        // 不调 set_layout_change_kind ⇒ kind 为 None("缺种类")
+        emit_layout_change().unwrap();
+        assert_eq!(
+            take_messages(),
+            vec!["kind=null pkind=null t=layout-change"]
+        );
+        emit_term_open(7, "bash");
+        assert_eq!(
+            take_messages(),
+            vec!["id=7 cmd=bash pty=7 pcmd=bash t=term-open v=1"]
+        );
+    }
+
+    /// B-1(纯 Rust):线格式是**扁平等层**对象 —— `api_version`/`type` 与具名字段同层,
+    /// 没有嵌套的 `hdr`;camelCase 的 `oldRange`/`newRange` 与 `doc.changes` 同形。
+    #[test]
+    fn event_payload_json_is_flat_and_named() {
+        let payload = EventPayload::DocChange(DocChangePayload {
+            hdr: BusHeader::new("doc-change"),
+            path: None,
+            cursor: (1, 2).into(),
+            selection: ((0, 0), (1, 2)).into(),
+            changes: vec![EvChange {
+                old_range: EvRange {
+                    start: (0, 0).into(),
+                    end: (0, 1).into(),
+                },
+                new_range: EvRange {
+                    start: (0, 0).into(),
+                    end: (0, 2).into(),
+                },
+            }],
+        });
+        let v = payload.to_json();
+        assert_eq!(v["api_version"], API_VERSION);
+        assert_eq!(v["type"], "doc-change");
+        assert_eq!(payload.event_name(), "doc-change");
+        assert!(v.get("hdr").is_none(), "公共头必须摊平,不能嵌套");
+        assert_eq!(v["changes"][0]["oldRange"]["start"]["row"], 0);
+        assert_eq!(v["changes"][0]["newRange"]["end"]["col"], 2);
+        // 单事件:startup 只有公共头
+        let startup = EventPayload::Startup(StartupPayload {
+            hdr: BusHeader::new("startup"),
+        });
+        let sv = startup.to_json();
+        assert_eq!(sv["type"], "startup");
+        assert_eq!(sv["api_version"], API_VERSION);
+        assert_eq!(sv.as_object().unwrap().len(), 2);
+    }
+
+    /// C-1:`helix.plugin` 的新字段被**解析并记录**(deps/schema_version/min_editor/
+    /// permissions/contributes);`permissions` 不写时是 `None`(= legacy 语义)。
+    #[test]
+    fn plugin_manifest_fields_are_parsed_and_recorded() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        std::fs::write(
+            d.join("rich.js"),
+            r#"helix.plugin("rich", { schema_version: 1, min_editor: "25.7", deps: [],
+                 permissions: { process: true, fs_read: false, fs_write: true },
+                 contributes: ["cmd:rich", "event:save"] });
+               helix.register_command("rich", () => {});"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("legacy.js"),
+            r#"helix.plugin("legacy", { deps: [] });"#,
+        )
+        .unwrap();
+        load_script_named("rich", &std::fs::read_to_string(d.join("rich.js")).unwrap()).unwrap();
+        load_script_named(
+            "legacy",
+            &std::fs::read_to_string(d.join("legacy.js")).unwrap(),
+        )
+        .unwrap();
+
+        let manifests = plugin_manifests();
+        let rich = manifests
+            .iter()
+            .find(|m| m.name == "rich")
+            .expect("rich 已记录");
+        assert_eq!(rich.schema_version, Some(1)); // == API_VERSION(更高会被 plugin_schema_version_is_enforced 拒掉)
+        assert_eq!(rich.min_editor.as_deref(), Some("25.7"));
+        assert_eq!(rich.contributes, vec!["cmd:rich", "event:save"]);
+        let perms = rich.permissions.expect("permissions 已声明");
+        assert!(perms.process && perms.fs_write && !perms.fs_read);
+        let legacy = manifests
+            .iter()
+            .find(|m| m.name == "legacy")
+            .expect("legacy 已记录");
+        assert!(
+            legacy.permissions.is_none(),
+            "没写 permissions ⇒ None(legacy)"
+        );
+    }
+
+    /// C-2:声明了能力 ⇒ 直接放行;声明但没列那项 ⇒ **走询问路径**(拒绝本次 + 记入
+    /// pending),授权后放行;拒绝后一直拒。
+    #[test]
+    fn permission_check_ask_then_decide() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        std::fs::write(
+            d.join("asker.js"),
+            r#"helix.plugin("asker", { permissions: { process: false } });
+               helix.register_command("ask-run", () => { helix.run("echo ok"); });
+               helix.register_command("ask-write", () => { helix.write_plugin_file("t.txt", "x"); });"#,
+        )
+        .unwrap();
+        // 按**源**加载(load_script 收的是源码;按名字走 helix.load 才有"提供根"语义)
+        load_script_named(
+            "asker",
+            &std::fs::read_to_string(d.join("asker.js")).unwrap(),
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        // 未声明 process ⇒ 被拒(并把请求记入待授权)
+        let err = run_command("ask-run", &ctx).unwrap_err().to_string();
+        assert!(err.contains("未声明能力"), "{err}");
+        assert!(
+            pending_permissions()
+                .iter()
+                .any(|(p, c)| p == "asker" && c == "process"),
+            "待授权列表应含 (asker, process):{:?}",
+            pending_permissions()
+        );
+        // 授权后直接放行
+        decide_permission("asker", "process", true);
+        assert!(run_command("ask-run", &ctx).unwrap());
+        assert!(pending_permissions().is_empty(), "决定后应移出待授权");
+        // 未声明的另一项仍要问;拒绝后一直拒
+        decide_permission("asker", "fs_write", false);
+        let err = run_command("ask-write", &ctx).unwrap_err().to_string();
+        assert!(err.contains("已被拒绝"), "{err}");
+    }
+
+    /// C-2:内置插件(来自**用户插件目录以外**的根)永不询问 —— 17 个内置插件
+    /// grandfathered 的根据。内置根与用户根同时存在时,从内置根加载的那个放行,
+    /// 从用户根加载的同名插件照旧要问。
+    #[test]
+    fn builtin_plugin_is_grandfathered() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let builtin = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let (b, u) = (builtin.path().to_path_buf(), user.path().to_path_buf());
+        std::mem::forget(builtin);
+        std::mem::forget(user);
+        // 自带 runtime 在前、用户目录在后(顺序即语义:末位=用户层)
+        set_plugin_roots(vec![b.clone(), u.clone()]);
+        let src = r#"helix.plugin("core", { permissions: {} });
+               helix.register_command("core-run", () => { helix.run("echo ok"); });"#;
+        std::fs::write(b.join("core.js"), src).unwrap();
+        std::fs::write(u.join("core.js"), src).unwrap();
+        // 同名文件两处都有 ⇒ 用户层覆盖(解析从后往前);先只放内置那份
+        std::fs::remove_file(u.join("core.js")).unwrap();
+        // 按**名字**加载 ⇒ 才走"哪个根提供的"这条路径(内置判据依赖它)
+        load_script(r#"helix.load("core.js");"#).unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        assert!(
+            run_command("core-run", &ctx).unwrap(),
+            "内置插件不该被能力检查拦住"
+        );
+        assert!(
+            pending_permissions().is_empty(),
+            "内置插件不该产生待授权:{:?}",
+            pending_permissions()
+        );
+    }
+
+    /// C-1:`schema_version` **要比一比** —— 高于本编辑器支持的声明面版本 ⇒ 加载即失败
+    /// (按不认识的语义跑比"加载失败"更糟)。
+    #[test]
+    fn plugin_schema_version_is_enforced() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        // 与编辑器同版 ⇒ 放行
+        load_script(r#"helix.plugin("ok", { schema_version: 1, deps: [] });"#).unwrap();
+        // 高于编辑器 ⇒ 抛错,且消息里有版本号与修法
+        let err = load_script(r#"helix.plugin("future", { schema_version: 2, deps: [] });"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("schema_version 2"), "{err}");
+        assert!(err.contains("高于本编辑器支持"), "{err}");
+    }
+
+    /// C-2:能力检查覆盖**同族 API** —— 声明了 `process` 就能 `run_async`/`spawn`;
+    /// 声明了 `fs_read` 就能 `read_dir`;没声明的仍走"问一次"。
+    #[test]
+    fn capability_covers_sibling_apis() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        let main_src = r#"
+            helix.plugin("cap", { permissions: { process: true } });
+            helix.register_command("cap-read", () => { helix.read_dir("/"); });
+            helix.register_command("cap-spawn", () => {
+                helix.spawn({ pty: false, cmd: "true", onChunk: () => {}, onExit: () => {} });
+            });
+        "#;
+        load_script_named("cap", main_src).unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        // process 已声明 ⇒ spawn 放行(不再被拒)
+        assert!(run_command("cap-spawn", &ctx).unwrap());
+        assert!(
+            pending_permissions().is_empty(),
+            "process 已声明,不该产生待授权"
+        );
+        // fs_read 未声明 ⇒ read_dir 走询问(同族:read_file/read_file_async/read_dir 同一能力)
+        let err = run_command("cap-read", &ctx).unwrap_err().to_string();
+        assert!(err.contains("fs_read"), "{err}");
+        assert!(
+            pending_permissions()
+                .iter()
+                .any(|(p, c)| p == "cap" && c == "fs_read"),
+            "read_dir 应记入 (cap, fs_read):{:?}",
+            pending_permissions()
+        );
+    }
+
     #[test]
     fn keymap_registration() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
 
         // 字符串命令 → MapKey 入队
@@ -2229,9 +2563,9 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
         match &reqs[0] {
-            UiRequest::MapKey {
+            UiRequest::MapKey(MapKeyReq {
                 mode, key, command, ..
-            } => {
+            }) => {
                 assert_eq!(mode, "normal");
                 assert_eq!(key, "gd");
                 assert_eq!(command, "goto-def");
@@ -2249,7 +2583,7 @@ pub(crate) mod tests {
         let reqs = take_ui_requests();
         assert_eq!(reqs.len(), 1);
         let command = match &reqs[0] {
-            UiRequest::MapKey { command, .. } => command.clone(),
+            UiRequest::MapKey(MapKeyReq { command, .. }) => command.clone(),
             other => panic!("expected MapKey, got {other:?}"),
         };
         assert!(command.starts_with("__mapped_"), "command: {command}");
@@ -2273,7 +2607,7 @@ pub(crate) mod tests {
 
     #[test]
     fn statusline_hook() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let ctx = StatuslineCtx {
             path: Some("/tmp/a.rs".into()),
@@ -2363,7 +2697,7 @@ pub(crate) mod tests {
 
     #[test]
     fn command_docs() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -2383,7 +2717,7 @@ pub(crate) mod tests {
 
     #[test]
     fn plugin_reload() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script_named(
             "a.js",
@@ -2415,7 +2749,7 @@ pub(crate) mod tests {
     /// 使 term 侧已应用的旧装饰在下一帧被清空。
     #[test]
     fn decorations_cleared_on_reload() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(r#"helix.register_command("dec-dummy", () => {});"#).unwrap();
         // load_script 自身会 push 一个全局 Clear(见 decorations_cleared_on_script_load),先取走
@@ -2434,7 +2768,7 @@ pub(crate) mod tests {
     #[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
     fn reload_keeps_plugins_with_deps_and_hooks() {
         // 模拟真实 init.js 场景:相对名 + deps 声明 + set_statusline + 命令 + 事件
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_path_buf();
@@ -2507,7 +2841,7 @@ pub(crate) mod tests {
         // 模拟用户场景:init.js 第一个插件(terminal)reload 失败 → init.js eval 中断,
         // 但循环继续单独 eval 后续 features/*——它们依赖 icons(缓存被 reset 清空),
         // 重新 eval icons = 嵌套 eval,可能污染后续闭包。验证命令回调完好。
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_path_buf();
@@ -2589,7 +2923,7 @@ pub(crate) mod tests {
     fn reload_users_real_plugins_dir() {
         // 复制用户真实 ~/.config/helix/plugins 到 tempdir,用用户 init.js 序列 reload。
         // 用户 filetree 是改版(offset scroll)+ 有 test.js——最接近真实环境。
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let home = std::env::var("HOME").unwrap_or_default();
         let user_plugins = std::path::PathBuf::from(&home).join(".config/helix/plugins");
@@ -2650,7 +2984,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         // 用户场景:init.js 里 load 一个不存在的相对名文件(如"禁用"后仍留 load 行的 terminal.js)
         // → init.js eval 失败 → 循环单独 eval 后续 features/* → 它们相对名 load icons(重新 eval=嵌套)
         // → 后续注册的闭包可能被 boa 嵌套 eval 污染。验证命令回调结果。
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_path_buf();
@@ -2721,7 +3055,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn reload_failed_script_does_not_block_others() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_path_buf();
@@ -2785,7 +3119,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         // 回归:跨脚本运行时 helix.load 循环(A load B,B load A)曾无限嵌套 eval 递归
         // → 栈溢出 SIGABRT。js_load 每次新建空栈导致循环检测失效;现在共享加载栈,
         // 循环应报错退出而非崩溃。用绝对路径避免占用全局 PLUGINS_DIR(与其他测试并行)。
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_path_buf();
@@ -2813,7 +3147,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     #[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
     fn reload_all_real_plugins_keeps_commands() {
         // 加载仓库全部真实插件(init.js 同款序列)+ reload,验证命令/钩子保留
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // PLUGINS_DIR 是全局 OnceLock:被其他测试(如 plugin_deps_auto_load,字母序在前)占住后
         // 本测试的相对名解析失效——跳过(核心 reload 行为由 reload_keeps/reload_failed 覆盖)
@@ -2877,7 +3211,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     #[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
     fn reload_real_statusline_render_ok() {
         // 用户场景:statusline.js 依赖 icons,reload 后 render(状态栏渲染)不应抛错/返回空
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_path_buf();
@@ -2953,7 +3287,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn reload_closes_open_panel_layer() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 面板由命令打开（不在加载时），保证 reload 重跑脚本不会自动重开面板
         load_script(
@@ -2968,13 +3302,16 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
             docs: vec![],
         };
         assert!(run_command("open-panel", &ctx).unwrap());
-        assert!(matches!(take_ui_requests()[0], UiRequest::OpenPanel { .. }));
+        assert!(matches!(
+            take_ui_requests()[0],
+            UiRequest::OpenPanel(OpenPanelReq { .. })
+        ));
 
         // reload：面板层还挂在 compositor 上 → 必须入队 ClosePanel 供 apply_ui_requests 移除
         reload_all().unwrap();
         let reqs = take_ui_requests();
         assert!(
-            matches!(&reqs[0], UiRequest::ClosePanel { .. }),
+            matches!(&reqs[0], UiRequest::ClosePanel(ClosePanelReq { .. })),
             "layer removed after reload"
         );
         // LAST_PANEL_ID 已清空 → :panel-close 不再误报有面板
@@ -2983,7 +3320,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn selection_and_cursor() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -3025,7 +3362,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn set_selection_array() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 数组形态 → SetSelections 入队
         load_script(
@@ -3049,7 +3386,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn shell_run() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 成功路径
         load_script(
@@ -3114,7 +3451,10 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 累积自调用以来的全部事件返回：进程事件是 Chunk(s)→Exit 的顺序流，
     /// 命中谓词的那次 drain 之前可能已有事件被取走，须一并保留按序 resolve。
     fn wait_for_term_event(pred: impl Fn(&TermEvent) -> bool) -> Vec<TermEvent> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // 20s 而不是 5s:CI 用**并行** `cargo test --workspace`,慢机上"spawn 进程 +
+        // 收 Chunk/Exit"超过 5s 是常态。这个上界只在谓词**永不**成立时才触发(那是真
+        // 失败)⇒ 放宽它只影响失败路径的时长,不影响正常路径。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut all = Vec::new();
         loop {
             all.extend(drain_term_events());
@@ -3131,7 +3471,8 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 轮询 drain_async_events 直到谓词命中或超时，事件累积进调用方传入的 vec
     /// （跨调用共享累积：异步 fs 四个操作并发发送，后几次 wait 必须能看到先前已 drain 的事件）。
     fn wait_for_async(all: &mut Vec<AsyncEvent>, pred: impl Fn(&AsyncEvent) -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // 同上:并行 CI 下给足时间,失败路径才用得到这个上界
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             all.extend(drain_async_events());
             if all.iter().any(&pred) {
@@ -3146,7 +3487,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn async_run_and_spawn() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
 
         // run_async:Promise 模式 → Exit 事件 → resolve → pump_jobs 执行 .then
@@ -3248,7 +3589,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn async_utf8_across_chunks() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
 
         // run_async 聚合：19999 字节 CJK 输出（"中文\n"×2857，7 字节/行）跨多个 4096 块，
@@ -3364,7 +3705,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 并发发送，四次顺序 wait 需共享累积）；简报注释 "resolve 全部" 落实为逐事件 resolve。
     #[test]
     fn async_fs() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = std::env::temp_dir().join(format!("helix-js-fs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3505,7 +3846,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 前导 `./` 归一化。chdir 受 TEST_LOCK 保护（同进程单测串行，本 crate 全部测试取锁）。
     #[test]
     fn glob_bare_pattern() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = std::env::temp_dir().join(format!("helix-js-glob-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -3534,7 +3875,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// `assert!(true, ...)` 触发 clippy::assertions_on_constants，删除。
     #[test]
     fn node_events_and_focusables() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -3548,7 +3889,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         )
         .unwrap();
         let id = match &take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => *id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => *id,
             other => panic!("expected OpenPopup, got {other:?}"),
         };
         // render 传 focus → JS render(focus, ctx) 收到（focus 样式分支由 JS 处理，这里验证渲染不崩 + focusables 收集）
@@ -3572,7 +3913,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn terminal_modes_api() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -3595,11 +3936,23 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         };
         assert!(run_command("tm", &ctx).unwrap());
         let reqs = take_ui_requests();
-        assert!(matches!(&reqs[0], UiRequest::OpenTerminal { .. }));
-        assert!(matches!(&reqs[1], UiRequest::TermMode { mode, .. } if mode == "fullscreen"));
-        assert!(matches!(&reqs[2], UiRequest::TermMode { mode, .. } if mode == "minimized"));
-        assert!(matches!(&reqs[3], UiRequest::TermClear { .. }));
-        assert!(matches!(&reqs[4], UiRequest::TermResize { size, .. } if *size == 60));
+        assert!(matches!(
+            &reqs[0],
+            UiRequest::OpenTerminal(OpenTerminalReq { .. })
+        ));
+        assert!(
+            matches!(&reqs[1], UiRequest::TermMode(TermModeReq { mode, .. }) if mode == "fullscreen")
+        );
+        assert!(
+            matches!(&reqs[2], UiRequest::TermMode(TermModeReq { mode, .. }) if mode == "minimized")
+        );
+        assert!(matches!(
+            &reqs[3],
+            UiRequest::TermClear(TermClearReq { .. })
+        ));
+        assert!(
+            matches!(&reqs[4], UiRequest::TermResize(TermResizeReq { size, .. }) if *size == 60)
+        );
         // 非法 mode → 命令报错
         load_script(r#"helix.register_command("tm-bad2", () => { helix.set_terminal_mode(1, "sideways"); });"#).unwrap();
         assert!(run_command("tm-bad2", &ctx).is_err());
@@ -3611,7 +3964,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     #[test]
     #[cfg(unix)]
     fn pty_spawn() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -3676,7 +4029,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         // 写 master → 子进程 stdin：cat 回显；raw mode 下 \u{4} 非 EOF——onChunk 里 kill。
         // 轮询 drain + resolve（让 onChunk 的 kill 生效）直到 Exit。
         assert!(run_command("pty-cat", &ctx).unwrap());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut got_exit = false;
         while !got_exit && std::time::Instant::now() < deadline {
             for e in drain_term_events() {
@@ -3716,7 +4069,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     #[test]
     #[cfg(unix)]
     fn pty_resize() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -3759,7 +4112,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     fn plugin_reload_top_level_const() {
         // 顶层 const/let 脚本 reload 必须成功：IIFE 包裹下重跑获得全新词法作用域
         // （无 IIFE 时全局词法环境重复声明会抛 SyntaxError: duplicate lexical declaration）
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script_named(
             "c.js",
@@ -3784,7 +4137,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 全用绝对路径。
     #[test]
     fn plugin_deps_auto_load() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         // ponytail: 泄漏 tempdir（同文件其他测试同款）——线程池复用线程，
@@ -3860,7 +4213,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
     #[test]
     fn server_api_pushes_server_ops() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // install/remove 缺 arg → 报错
         assert!(load_script(r#"helix.server.install();"#).is_err());
@@ -3875,7 +4228,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         let ops: Vec<(&str, Option<&str>)> = reqs
             .iter()
             .filter_map(|r| match r {
-                crate::types::UiRequest::ServerOp { op, arg } => {
+                crate::types::UiRequest::ServerOp(ServerOpReq { op, arg }) => {
                     Some((op.as_str(), arg.as_deref()))
                 }
                 _ => None,
@@ -3900,7 +4253,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     // 泄漏几个 /tmp 小文件换确定性。
     #[test]
     fn entry_load_export_lazy() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         set_plugins_dir(dir.path().to_path_buf());
@@ -3981,7 +4334,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 简报验证测试：el 构造节点、render 返回树 → Content::Tree、非法节点类型 → Err
     #[test]
     fn component_nodes() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -4014,7 +4367,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 
         let reqs = take_ui_requests();
         let id = match &reqs[0] {
-            UiRequest::OpenPopup { id, .. } => *id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => *id,
             _ => unreachable!("expected OpenPopup"),
         };
         match render_popup(id, 40, 10, None).unwrap() {
@@ -4038,7 +4391,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         // 非法节点类型 → Err
         load_script(r#"helix.open_popup({ render: () => ({ type: "bogus" }) });"#).unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10, None).is_err());
@@ -4048,7 +4401,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 布局增强任务 1 验证：el/parse_node 透传 flex/wrap/offset 新 opts（含缺省与类型错误）
     #[test]
     fn el_new_opts_parse() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -4067,7 +4420,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         .unwrap();
         let reqs = take_ui_requests();
         let id = match &reqs[0] {
-            UiRequest::OpenPopup { id, .. } => *id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => *id,
             _ => unreachable!("expected OpenPopup"),
         };
         match render_popup(id, 40, 10, None).unwrap() {
@@ -4119,7 +4472,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         )
         .unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10, None).is_err());
@@ -4128,7 +4481,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { wrap: 1 }) });"#)
             .unwrap();
         let id = match take_ui_requests()[0] {
-            UiRequest::OpenPopup { id, .. } => id,
+            UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
             _ => unreachable!("expected OpenPopup"),
         };
         assert!(render_popup(id, 40, 10, None).is_err());
@@ -4138,7 +4491,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// 终端钩子:emit_hook 返回第一个非 undefined;无 handler → None
     #[test]
     fn term_hook_emit_and_term_key() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 无 handler:None
         assert_eq!(emit_hook("term-key", &[JsValue::from(1_i32)]), None);
@@ -4186,7 +4539,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     /// term_state 持久化读写(临时 HOME 隔离)
     #[test]
     fn term_state_persist_roundtrip() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         let dir = tempfile::tempdir().unwrap();
         let old_home = std::env::var("HOME").ok();
@@ -4225,7 +4578,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     #[test]
     #[ignore]
     fn bench_picker_frame() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 模拟 picker-ui 的**真实**渲染器:30 行 × 3 列 + 每行样式读取 + 选中标记
         load_script(
@@ -4276,7 +4629,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     ///       A4' 事实只读暴露 ✓ / A6(抛错 ⇒ 未处理,不上抛不崩 ✓)/ A8(无源 ⇒ 回退 ✓)
     #[test]
     fn picker_on_key_hook_contract() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
 
         // A1 前置(S2 校验):onKey 存在但**不是函数** ⇒ define 报错
@@ -4360,7 +4713,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// 组件视图回调:set_component_render(id, fn) → render_component 读取
     #[test]
     fn component_render_registration() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 非法参数
         assert!(load_script(r#"helix.set_component_render("x", () => []);"#).is_err());
@@ -4387,7 +4740,9 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// (旧做法 `render_component(id,1,1,None).is_ok()` 会真的渲染一次)。这里用副作用计数器钉死。
     #[test]
     fn has_component_render_probes_without_calling_js() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"globalThis.__probe_calls = 0;
@@ -4450,7 +4805,9 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// 未声明 `pure` 的渲染器逐帧照常调用(与今天一致,不会因缓存而陈旧)。
     #[test]
     fn pure_component_render_skips_js_when_inputs_unchanged() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"globalThis.__pure_calls = 0;
@@ -4499,7 +4856,9 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// 第二参仍是 doc(旧实现缺种类时只传 `[doc]` ⇒ `(kind)=>…` 静默拿到事件对象)。
     #[test]
     fn layout_change_args_are_kind_or_null_then_doc() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         let _ = crate::take_messages(); // 清掉同线程此前的 echo,免得断言受污染
         load_script(
@@ -4530,7 +4889,9 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// 但**首次**就返回 null ⇒ 明确报错(而不是静默空内容)。是否脏由插件决定 ⇒ 无陈旧风险。
     #[test]
     fn component_render_supports_dirty_null_reuse() {
-        let _g = crate::tests::TEST_LOCK.lock().unwrap();
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::init();
         load_script(
             r#"globalThis.__dirty_calls = 0;
@@ -4571,7 +4932,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// keymap 前缀提示:set_keymap_hint 回调 → keymap_hint 调用;null/无注册 → None
     #[test]
     fn keymap_hint_hook() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 未注册 → None
         assert_eq!(keymap_hint("g", &[]), None);
@@ -4604,7 +4965,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// buffer 遍历:cache_buffers → buffers/current_buffer 解析;focus_buffer 入队
     #[test]
     fn buffer_traversal_api() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 无缓存 → null/undefined
         load_script(
@@ -4649,7 +5010,7 @@ helix.set_component_render(0, function (_focus, ctx) {
         let reqs = take_ui_requests();
         assert!(
             reqs.iter()
-                .any(|r| matches!(r, UiRequest::FocusBuffer { id: 7 })),
+                .any(|r| matches!(r, UiRequest::FocusBuffer(FocusBufferReq { id: 7 }))),
             "focus_buffer 入队 FocusBuffer"
         );
     }
@@ -4657,7 +5018,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// 组件状态通道:register_component_state(JSON) → get_component_state(对象);未注册 → null
     #[test]
     fn component_state_roundtrip() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 未注册 → null
         load_script(r#"globalThis.__cs = helix.get_component_state(7);"#).unwrap();
@@ -4690,7 +5051,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// term-exit 钩子:resolve_term_event(Exit) → emit_term_exit(消息)
     #[test]
     fn term_exit_hook_via_resolve() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(r#"helix.on("term-exit", (id, code) => helix.echo("exit:" + code));"#).unwrap();
         let id = crate::state::next_term_id();
@@ -4716,7 +5077,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// Rust 侧直接驱动(简报备选方案):编辑队列用 with_edits 注入,begin/end 走 JS API。
     #[test]
     fn batch_edit_transaction() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 触发 builder 注册 begin_edit/end_edit
         load_script(r#"helix.register_command("noop", () => {});"#).unwrap();
@@ -4841,7 +5202,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// set_virtual_text 只传 path(text 省略)→ Clear。路径已 canonicalize(绝对路径断言原样)。
     #[test]
     fn decorations_queue_and_take() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -4898,7 +5259,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// path 非字符串 → 命令失败(类型校验)。
     #[test]
     fn decorations_txn_holds_and_reset() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         load_script(
             r#"
@@ -4933,7 +5294,7 @@ helix.set_component_render(0, function (_focus, ctx) {
     /// 脚本(重)加载不继承旧装饰:load_script_named 求值前 push 全局 Clear(doc: None)。
     #[test]
     fn decorations_cleared_on_script_load() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         assert!(take_decorations().is_empty());
         load_script("helix.register_command('x', () => {});").unwrap();
@@ -4945,7 +5306,7 @@ helix.set_component_render(0, function (_focus, ctx) {
 
     #[test]
     fn lsp_enhance_request_shapes() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 清残留队列(其它测试不入队,防御)
         let _ = take_lsp_requests();

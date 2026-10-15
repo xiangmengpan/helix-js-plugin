@@ -245,6 +245,7 @@ fn render_rows_probe(app: &mut Application) -> Vec<String> {
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     app.compositor.reset_plugin_diffs();
     app.compositor.render(area, &mut buf, &mut cx);
@@ -288,6 +289,7 @@ async fn bufferline_clamped_to_editor_leaf() -> anyhow::Result<()> {
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     app.compositor.render(area, &mut buf, &mut cx);
     // 找编辑器的右侧边界:布局 50/50

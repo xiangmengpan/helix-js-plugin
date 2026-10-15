@@ -42,6 +42,7 @@ mod test {
     mod plugin_panel;
     mod plugin_panel_focus;
     mod plugin_paste;
+    mod plugin_permissions;
     mod plugin_picker;
     mod plugin_popup_edit;
     mod plugin_reload;

@@ -282,12 +282,54 @@ helix.set_theme_name(name)
 helix.load(name) -> exports
 helix.export(obj)
 helix.lazy(name, ...commands)
-helix.plugin(name, { deps, version? })          // 声明加载依赖
+helix.plugin(name, { deps, version?, schema_version?, min_editor?, permissions?, contributes? })
+                                                // 声明加载依赖 + **能力清单**(见下)
+helix.api_version                               // 边界协议版本(= 事件 payload 里的 api_version)
 helix.plugin.install(arg) / update(name?) / remove(name)   // 管理(结果走状态栏)
 // 实现位置:`plugins/plugin/plugin.js`(管理器本身是**内置插件**)。
 // 命令 `:plugin …` 与上面三个 API 共用同一份实现;该 API 的**错误语义**与旧核心一致
 // (例如"未安装"时 remove 抛 `failed to remove '<name>': not installed`)。
 ```
+
+### manifest 与能力清单(permissions)
+
+```
+helix.plugin("my-plugin", {
+  deps: [],                          // 加载期依赖(拓扑加载;见 plugin-layout.md §3.4)
+  version: "1.0",                    // 元数据
+  schema_version: 1,                 // 声明面版本;高于编辑器支持的版本 ⇒ 加载即失败
+  min_editor: "25.7",                // 记录/展示用(不做版本比较)
+  permissions: { process: true, fs_read: true, fs_write: false },
+  contributes: ["cmd:my-cmd"],       // 贡献点(记录用)
+});
+```
+
+`permissions` 的语义(**渐进式,不打断存量插件**):
+
+| 情况 | 行为 |
+|---|---|
+| **不写 `permissions`** | legacy 语义:不拦截(存量插件零影响) |
+| **写了 `permissions`** | 声明的能力放行;未声明的能力**第一次使用时被询问** |
+| 内置插件(随软件分发的 runtime) | 永不询问(用户目录里同名覆盖的那份按第三方对待) |
+
+能力的覆盖范围(同一能力覆盖同族 API):
+
+| 能力 | 覆盖的 API |
+|---|---|
+| `process` | `helix.run` / `helix.run_async` / `helix.spawn` |
+| `fs_read` | `helix.read_file` / `helix.read_file_async` / `helix.read_dir` |
+| `fs_write` | `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` |
+
+"询问"= 该次调用**失败**(错误消息写明插件名与能力名)并记入待授权列表;用
+
+```
+:js-permission list                     // 看声明与待授权
+:js-permission allow <plugin> <cap>     // 记住"允许"(cap ∈ process/fs_read/fs_write)
+:js-permission deny  <plugin> <cap>     // 记住"拒绝"
+```
+
+回答一次即记住(等价于 zellij 的 `request_permission`)。检查点见
+`helix-js/src/permissions.rs` 的模块文档。
 
 ### 数据形状
 
@@ -303,5 +345,7 @@ picker 行:数组 [c1, c2, ...] 或 { cells: [...], payload: [...] };preview/act
 面板方向:right | left | bottom
 split 方向:right | left | top | bottom
 事件:save | mode-change | buffer-open | buffer-close | doc-change | theme-change | lsp-diagnostics | cursor-move | selection-change | term-* | component-event
+事件 payload(每个事件**位置参数之后**追加一个具名对象):
+  { api_version, type, ...具名字段 }   // 形状见 helix.d.ts 的 EventPayload;doc 对象上也带 api_version/type
 键位模式:normal | insert | select
 ```

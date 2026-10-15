@@ -30,6 +30,7 @@ fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<S
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     app.compositor.render(area, &mut buf, &mut cx);
     (0..area.height)
@@ -71,6 +72,7 @@ async fn tree_panel_diff_reset() -> anyhow::Result<()> {
             editor: &mut app.editor,
             scroll: None,
             jobs: &mut jobs,
+            js: None,
         };
         app.compositor.render(area, &mut buf, &mut cx);
     }

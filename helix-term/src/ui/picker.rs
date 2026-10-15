@@ -854,13 +854,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // 无签名(未构造状态 ⇒ 本来也没有渲染器)⇒ 传空串,等价于逐帧真渲染 ✓
         let sig = js_state_sig.as_deref().unwrap_or("");
         let js_content = match self.js_render_id {
-            Some(js_id) => {
-                helix_js::render_component_cached(js_id, inner.width, inner.height, None, sig)
-                    .or_else(|_| {
-                        helix_js::render_component_cached(0, inner.width, inner.height, None, sig)
-                    })
-            }
-            None => helix_js::render_component_cached(0, inner.width, inner.height, None, sig),
+            Some(js_id) => cx
+                .js_render_component_cached(js_id, inner.width, inner.height, None, sig)
+                .or_else(|_| {
+                    cx.js_render_component_cached(0, inner.width, inner.height, None, sig)
+                }),
+            None => cx.js_render_component_cached(0, inner.width, inner.height, None, sig),
         };
         if let Ok(content) = js_content {
             let lines = crate::ui::comp_layout::render(content, (inner.width, inner.height));

@@ -1,231 +1,419 @@
 use boa_engine::JsValue;
+use serde::Serialize;
 
 use crate::picker::RowSpec;
 
 /// 一次文档变更的 (旧文本坐标, 新文本坐标)，均为 char 索引；doc-change 事件窗口内合并后序列化。
 pub type DocChange = ((usize, usize), (usize, usize));
-/// 插件向编辑器发起的 UI 请求（编辑器主线程取走后执行）
+// ── UiRequest 的具名 payload(B-2)────────────────────────────────────────
+//
+// 每个变体的字段结构在此**各有一个名字**(`<变体>Req`),`UiRequest` 只负责"是哪件事"。
+// 为什么:字段内联在变体上时,JS→Rust 这条边没有任何可指名的形状 —— 想写一个
+// "构造 + 校验"的函数就得把 `UiRequest::X { a, b, c }` 抄一遍,抄错了没有编译错。
+// 现在形状是类型,构造点与消费点共用同一个名字,字段改名会同时打在两边。
+//
+// 版本:同一份 `API_VERSION` 管两个方向(Rust→JS 的事件 payload 与 JS→Rust 的
+// UiRequest);队列本身是同进程枚举、不过线,所以版本挂在常量与 `api_version()`
+// 访问器上,而不是每个结构体里再塞一个字段(那只会让 150 个构造点全要改)。
+
+#[derive(Debug)]
+pub struct OpenPopupReq {
+    pub id: u64,
+    /// 弹窗宽高上限(px;v1 尺寸 hint;center 模式下为固定 px 尺寸)
+    pub width: Option<u16>,
+    pub height: Option<u16>,
+    /// anchor 模式:参照点 (row, col);center 模式忽略(恒 None)
+    pub position: Option<(u16, u16)>,
+    /// 图层名:同层 open_popup 替换、不同层并存(JS 缺省 "plugin-popup" 保兼容)
+    pub layer: String,
+    /// 居中浮层(position:"center")
+    pub center: bool,
+    /// center 模式视口百分比 (width%, height%),两轴成对给定(78/75 → 78%×75%)
+    pub size_pct: Option<(u16, u16)>,
+}
+
+#[derive(Debug)]
+pub struct OpenPanelReq {
+    pub id: u64,
+    pub side: String,
+    pub size: u16,
+    /// 节点焦点路由开关（Tab 移动焦点/Esc 取消/节点按键直达，复用弹窗机制）
+    pub focusable: bool,
+    /// 注册为侧栏 rail(贴边全高,不参与 window mode 分裂;默认 false=普通叶)
+    pub rail: bool,
+}
+
+#[derive(Debug)]
+pub struct ClosePanelReq {
+    pub id: u64,
+}
+
+#[derive(Debug)]
+pub struct OpenFileReq {
+    pub path: String,
+    pub row: Option<u16>,
+    pub col: Option<u16>,
+}
+
+/// 打开文件但**不绑定路径**(`helix.open_file(p, { scratch: true })`)。
+/// 用途:内置"内容型插件"打开随软件分发的内容(如 `runtime/tutor`)——
+/// 用户 `:w` 不该覆盖原始文件。单独一个请求,是为了**不改既有 `OpenFile` 的形状**
+/// (否则所有构造点都要跟着改)。
+#[derive(Debug)]
+pub struct OpenScratchFileReq {
+    pub path: String,
+}
+
+#[derive(Debug)]
+pub struct FocusBufferReq {
+    pub id: u64,
+}
+
+#[derive(Debug)]
+pub struct MovePanelReq {
+    pub id: u64,
+    pub side: String,
+}
+
+#[derive(Debug)]
+pub struct MapKeyReq {
+    pub mode: String,
+    pub key: String,
+    pub command: String,
+    pub unbind: bool,
+}
+
+/// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
+/// pty_id 是内部 spawn 的 pty 进程 id（term_write/term_resize/关闭时 kill 用）。
+#[derive(Debug)]
+pub struct OpenTerminalReq {
+    pub view_id: u64,
+    pub pty_id: u64,
+    pub cmd: String,
+    pub side: String,
+    pub size: u16,
+}
+
+/// 把 PTY 输出块喂给对应终端视图（按 view_id 找层，找不到丢弃）
+#[derive(Debug)]
+pub struct TermFeedReq {
+    pub view_id: u64,
+    pub chunk: String,
+}
+
+/// 终端显示模式：dock / fullscreen / floating / minimized
+#[derive(Debug)]
+pub struct TermModeReq {
+    pub view_id: u64,
+    pub mode: String,
+}
+
+/// 清空终端网格
+#[derive(Debug)]
+pub struct TermClearReq {
+    pub view_id: u64,
+}
+
+/// 导出终端全部内容（scrollback + 屏幕）到文件（持久化保存）
+#[derive(Debug)]
+pub struct TermSaveReq {
+    pub view_id: u64,
+    pub path: String,
+}
+
+/// 运行中调整终端面板尺寸（列宽或行高）
+#[derive(Debug)]
+pub struct TermResizeReq {
+    pub view_id: u64,
+    pub size: u16,
+}
+
+/// 布局树：切分活动叶子（id 预分配；面板回调已注册在 POPUPS）
+#[derive(Debug)]
+pub struct SplitLeafReq {
+    pub id: u64,
+    pub dir: String,
+    pub kind: String, // "terminal" | "panel"
+    pub cmd: Option<String>,
+    pub size: u16,
+}
+
+#[derive(Debug)]
+pub struct CloseLeafReq {
+    pub id: u64,
+}
+
+#[derive(Debug)]
+pub struct ZoomLeafReq {
+    pub id: u64,
+}
+
+/// 把叶子浮动起来(plan ③;词汇取自 zellij 插件 API 的 `float_multiple_panes`)
+#[derive(Debug)]
+pub struct PaneFloatReq {
+    pub id: u64,
+}
+
+/// 把浮动的叶子收回平铺(对应 zellij 的 `embed_multiple_panes`)
+#[derive(Debug)]
+pub struct PaneEmbedReq {
+    pub id: u64,
+}
+
+/// 把浮动 pane 提到最上层(浮窗 z 序;`LayoutTree::float_raise`)
+#[derive(Debug)]
+pub struct PaneRaiseReq {
+    pub id: u64,
+}
+
+/// pin / 取消 pin 浮动 pane(`on` 显式给出,不做隐式取反 —— 避免与快照不同步)
+#[derive(Debug)]
+pub struct PanePinReq {
+    pub id: u64,
+    pub on: bool,
+}
+
+/// 与**兄弟窗**建堆叠组(锚 = `id`)。规格 A.7:只有兄弟能堆叠,否则是无效操作
+#[derive(Debug)]
+pub struct StackCreateReq {
+    pub id: u64,
+}
+
+/// 轮转到指定成员成为"当前显示的那个"。`member` 必须在同一组内
+#[derive(Debug)]
+pub struct StackActivateReq {
+    pub id: u64,
+    pub member: u64,
+}
+
+/// 把叶子摘出堆叠组(组剩 1 个则解散)
+#[derive(Debug)]
+pub struct StackRemoveReq {
+    pub id: u64,
+}
+
+#[derive(Debug)]
+pub struct ResizeLeafReq {
+    pub id: u64,
+    pub ratio: f32,
+}
+
+/// 按方向调整叶子份额（dir: h/v；delta>0 增大该叶子）
+#[derive(Debug)]
+pub struct ResizeLeafDirReq {
+    pub id: u64,
+    pub dir: String,
+    pub delta: f32,
+}
+
+/// 聚焦方向邻居（dir: left/right/up/down）
+#[derive(Debug)]
+pub struct FocusLeafDirReq {
+    pub id: u64,
+    pub dir: String,
+}
+
+/// 与方向邻居交换内容（dir: left/right/up/down）
+#[derive(Debug)]
+pub struct SwapLeafDirReq {
+    pub id: u64,
+    pub dir: String,
+}
+
+/// 叶子所在 Split 恢复 50/50
+#[derive(Debug)]
+pub struct EqualizeLeafReq {
+    pub id: u64,
+}
+
+/// 交换两个叶子的内容（组件引用互换）
+#[derive(Debug)]
+pub struct SwapLeavesReq {
+    pub id1: u64,
+    pub id2: u64,
+}
+
+/// 最小化/恢复叶子（渲染为底部标题横条，不占布局）
+#[derive(Debug)]
+pub struct MinimizeLeafReq {
+    pub id: u64,
+    pub minimized: bool,
+}
+
+/// 设置/取消叶子 fixed 标记（fixed 叶子不被 swap/resize/close/minimize/equalize）
+#[derive(Debug)]
+pub struct LayoutFixReq {
+    pub id: u64,
+    pub fixed: bool,
+}
+
+#[derive(Debug)]
+pub struct FocusLeafReq {
+    pub id: u64,
+}
+
+/// 把布局树序列化结果缓存到 helix-js（get_layout 读取）
+#[derive(Debug)]
+pub struct CacheLayoutReq {
+    pub text: String,
+}
+
+/// 切换基准主题（set_theme_name；helix-term 加载 + set_theme + 清覆盖）
+#[derive(Debug)]
+pub struct SetThemeReq {
+    pub name: String,
+}
+
+/// 按 view_id 关闭指定终端（term_close；解决 remove_type 关全部的问题）
+#[derive(Debug)]
+pub struct TermCloseReq {
+    pub view_id: u64,
+}
+
+/// 打开文件为新的 BufferLeaf 叶子（split: "h" 水平在右 / 其余垂直在下）
+#[derive(Debug)]
+pub struct OpenBufferLeafReq {
+    pub path: String,
+    pub split: Option<String>,
+}
+
+/// 文件系统 watcher：id 由 JS 侧分配（helix.watch 返回值）；helix-term 据此建 notify watcher
+#[derive(Debug)]
+pub struct WatchReq {
+    pub id: u64,
+    pub path: String,
+}
+
+/// 停止 watcher：按 id 移除 notify watcher（JS 侧回调注册表同步移除）
+#[derive(Debug)]
+pub struct UnwatchReq {
+    pub id: u64,
+}
+
+/// 打开插件 picker：source = 源名；columns = define 声明的列名（term 侧建表头/行宽校验）；
+/// rows = define 后 run 取到的候选行（同步 items 或 Promise 续体）
+#[derive(Debug)]
+pub struct OpenPickerReq {
+    pub source: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<RowSpec>,
+}
+
+/// server 管理操作(JS API helix.server.* 镜像 :server;UI 面板用)
+#[derive(Debug)]
+pub struct ServerOpReq {
+    pub op: String,
+    pub arg: Option<String>,
+}
+
+/// server 面板行数据请求(JS helix.server.rows(cb) → term 算好回投到 cb)
+#[derive(Debug)]
+pub struct ServerListRowsReq {
+    pub id: u64,
+}
+
+/// 后台 server 任务批次:一组 items 由 term 单 worker 串行执行。
+/// task_id 由 JS 分配(helix.server.task 返回值);term 回传事件沿用该 id。
+#[derive(Debug)]
+pub struct ServerTaskReq {
+    pub task_id: u64,
+    pub items: Vec<ServerTaskItem>,
+}
+
+/// 插件向编辑器发起的 UI 请求(编辑器主线程取走后执行)
 #[derive(Debug)]
 pub enum UiRequest {
-    OpenPopup {
-        id: u64,
-        /// 弹窗宽高上限(px;v1 尺寸 hint;center 模式下为固定 px 尺寸)
-        width: Option<u16>,
-        height: Option<u16>,
-        /// anchor 模式:参照点 (row, col);center 模式忽略(恒 None)
-        position: Option<(u16, u16)>,
-        /// 图层名:同层 open_popup 替换、不同层并存(JS 缺省 "plugin-popup" 保兼容)
-        layer: String,
-        /// 居中浮层(position:"center")
-        center: bool,
-        /// center 模式视口百分比 (width%, height%),两轴成对给定(78/75 → 78%×75%)
-        size_pct: Option<(u16, u16)>,
-    },
-    OpenPanel {
-        id: u64,
-        side: String,
-        size: u16,
-        /// 节点焦点路由开关（Tab 移动焦点/Esc 取消/节点按键直达，复用弹窗机制）
-        focusable: bool,
-        /// 注册为侧栏 rail(贴边全高,不参与 window mode 分裂;默认 false=普通叶)
-        rail: bool,
-    },
+    OpenPopup(OpenPopupReq),
+    OpenPanel(OpenPanelReq),
     /// 关闭当前视图(关掉最后一个视图即退出程序 ✓)—— dashboard 的 q 用 ✓
     Quit,
-    ClosePanel {
-        id: u64,
-    },
-    OpenFile {
-        path: String,
-        row: Option<u16>,
-        col: Option<u16>,
-    },
+    ClosePanel(ClosePanelReq),
+    OpenFile(OpenFileReq),
     /// 打开文件但**不绑定路径**(`helix.open_file(p, { scratch: true })`)。
     /// 用途:内置"内容型插件"打开随软件分发的内容(如 `runtime/tutor`)——
     /// 用户 `:w` 不该覆盖原始文件。单独一个请求,是为了**不改既有 `OpenFile` 的形状**
     /// (否则所有构造点都要跟着改)。
-    OpenScratchFile {
-        path: String,
-    },
-    FocusBuffer {
-        id: u64,
-    },
-    MovePanel {
-        id: u64,
-        side: String,
-    },
-    MapKey {
-        mode: String,
-        key: String,
-        command: String,
-        unbind: bool,
-    },
+    OpenScratchFile(OpenScratchFileReq),
+    FocusBuffer(FocusBufferReq),
+    MovePanel(MovePanelReq),
+    MapKey(MapKeyReq),
     /// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
     /// pty_id 是内部 spawn 的 pty 进程 id（term_write/term_resize/关闭时 kill 用）。
-    OpenTerminal {
-        view_id: u64,
-        pty_id: u64,
-        cmd: String,
-        side: String,
-        size: u16,
-    },
+    OpenTerminal(OpenTerminalReq),
     /// 把 PTY 输出块喂给对应终端视图（按 view_id 找层，找不到丢弃）
-    TermFeed {
-        view_id: u64,
-        chunk: String,
-    },
+    TermFeed(TermFeedReq),
     /// 终端显示模式：dock / fullscreen / floating / minimized
-    TermMode {
-        view_id: u64,
-        mode: String,
-    },
+    TermMode(TermModeReq),
     /// 清空终端网格
-    TermClear {
-        view_id: u64,
-    },
+    TermClear(TermClearReq),
     /// 导出终端全部内容（scrollback + 屏幕）到文件（持久化保存）
-    TermSave {
-        view_id: u64,
-        path: String,
-    },
+    TermSave(TermSaveReq),
     /// 运行中调整终端面板尺寸（列宽或行高）
-    TermResize {
-        view_id: u64,
-        size: u16,
-    },
+    TermResize(TermResizeReq),
     /// 布局树：切分活动叶子（id 预分配；面板回调已注册在 POPUPS）
-    SplitLeaf {
-        id: u64,
-        dir: String,
-        kind: String, // "terminal" | "panel"
-        cmd: Option<String>,
-        size: u16,
-    },
-    CloseLeaf {
-        id: u64,
-    },
-    ZoomLeaf {
-        id: u64,
-    },
+    SplitLeaf(SplitLeafReq),
+    CloseLeaf(CloseLeafReq),
+    ZoomLeaf(ZoomLeafReq),
     /// 把叶子浮动起来(plan ③;词汇取自 zellij 插件 API 的 `float_multiple_panes`)
-    PaneFloat {
-        id: u64,
-    },
+    PaneFloat(PaneFloatReq),
     /// 把浮动的叶子收回平铺(对应 zellij 的 `embed_multiple_panes`)
-    PaneEmbed {
-        id: u64,
-    },
+    PaneEmbed(PaneEmbedReq),
     /// 把浮动 pane 提到最上层(浮窗 z 序;`LayoutTree::float_raise`)
-    PaneRaise {
-        id: u64,
-    },
+    PaneRaise(PaneRaiseReq),
     /// pin / 取消 pin 浮动 pane(`on` 显式给出,不做隐式取反 —— 避免与快照不同步)
-    PanePin {
-        id: u64,
-        on: bool,
-    },
+    PanePin(PanePinReq),
     /// 与**兄弟窗**建堆叠组(锚 = `id`)。规格 A.7:只有兄弟能堆叠,否则是无效操作
-    StackCreate {
-        id: u64,
-    },
+    StackCreate(StackCreateReq),
     /// 轮转到指定成员成为"当前显示的那个"。`member` 必须在同一组内
-    StackActivate {
-        id: u64,
-        member: u64,
-    },
+    StackActivate(StackActivateReq),
     /// 把叶子摘出堆叠组(组剩 1 个则解散)
-    StackRemove {
-        id: u64,
-    },
+    StackRemove(StackRemoveReq),
     Unzoom,
-    ResizeLeaf {
-        id: u64,
-        ratio: f32,
-    },
+    ResizeLeaf(ResizeLeafReq),
     /// 按方向调整叶子份额（dir: h/v；delta>0 增大该叶子）
-    ResizeLeafDir {
-        id: u64,
-        dir: String,
-        delta: f32,
-    },
+    ResizeLeafDir(ResizeLeafDirReq),
     /// 聚焦方向邻居（dir: left/right/up/down）
-    FocusLeafDir {
-        id: u64,
-        dir: String,
-    },
+    FocusLeafDir(FocusLeafDirReq),
     /// 与方向邻居交换内容（dir: left/right/up/down）
-    SwapLeafDir {
-        id: u64,
-        dir: String,
-    },
+    SwapLeafDir(SwapLeafDirReq),
     /// 叶子所在 Split 恢复 50/50
-    EqualizeLeaf {
-        id: u64,
-    },
+    EqualizeLeaf(EqualizeLeafReq),
     /// 交换两个叶子的内容（组件引用互换）
-    SwapLeaves {
-        id1: u64,
-        id2: u64,
-    },
+    SwapLeaves(SwapLeavesReq),
     /// 最小化/恢复叶子（渲染为底部标题横条，不占布局）
-    MinimizeLeaf {
-        id: u64,
-        minimized: bool,
-    },
+    MinimizeLeaf(MinimizeLeafReq),
     /// 设置/取消叶子 fixed 标记（fixed 叶子不被 swap/resize/close/minimize/equalize）
-    LayoutFix {
-        id: u64,
-        fixed: bool,
-    },
-    FocusLeaf {
-        id: u64,
-    },
+    LayoutFix(LayoutFixReq),
+    FocusLeaf(FocusLeafReq),
     /// 把布局树序列化结果缓存到 helix-js（get_layout 读取）
-    CacheLayout(String),
+    CacheLayout(CacheLayoutReq),
     /// 切换基准主题（set_theme_name；helix-term 加载 + set_theme + 清覆盖）
-    SetTheme {
-        name: String,
-    },
+    SetTheme(SetThemeReq),
     /// 按 view_id 关闭指定终端（term_close；解决 remove_type 关全部的问题）
-    TermClose {
-        view_id: u64,
-    },
+    TermClose(TermCloseReq),
     /// 打开文件为新的 BufferLeaf 叶子（split: "h" 水平在右 / 其余垂直在下）
-    OpenBufferLeaf {
-        path: String,
-        split: Option<String>,
-    },
+    OpenBufferLeaf(OpenBufferLeafReq),
     /// 文件系统 watcher：id 由 JS 侧分配（helix.watch 返回值）；helix-term 据此建 notify watcher
-    Watch {
-        id: u64,
-        path: String,
-    },
+    Watch(WatchReq),
     /// 停止 watcher：按 id 移除 notify watcher（JS 侧回调注册表同步移除）
-    Unwatch {
-        id: u64,
-    },
+    Unwatch(UnwatchReq),
     /// 打开插件 picker：source = 源名；columns = define 声明的列名（term 侧建表头/行宽校验）；
     /// rows = define 后 run 取到的候选行（同步 items 或 Promise 续体）
-    OpenPicker {
-        source: String,
-        columns: Vec<String>,
-        rows: Vec<RowSpec>,
-    },
+    OpenPicker(OpenPickerReq),
     /// server 管理操作(JS API helix.server.* 镜像 :server;UI 面板用)
-    ServerOp {
-        op: String,
-        arg: Option<String>,
-    },
+    ServerOp(ServerOpReq),
     /// server 面板行数据请求(JS helix.server.rows(cb) → term 算好回投到 cb)
-    ServerListRows {
-        id: u64,
-    },
+    ServerListRows(ServerListRowsReq),
     /// 后台 server 任务批次:一组 items 由 term 单 worker 串行执行。
     /// task_id 由 JS 分配(helix.server.task 返回值);term 回传事件沿用该 id。
-    ServerTask {
-        task_id: u64,
-        items: Vec<ServerTaskItem>,
-    },
+    ServerTask(ServerTaskReq),
+}
+
+impl UiRequest {
+    /// 本请求所属的协议版本(见 [`API_VERSION`])
+    pub fn api_version(&self) -> u16 {
+        API_VERSION
+    }
 }
 
 /// server manager 一行(term → JS 回传)
@@ -599,3 +787,374 @@ pub enum CursorRequest {
 // BUFFER_ICON_HOOK/STATUSLINE_HOOK）一律 Box::leak 到 'static——线程退出时
 // 只 drop 引用（指针），内容永不 drop，由 OS 在进程退出时回收。对 PoC 无
 // 实际代价；升级 boa 后可改回正常持有。
+
+// ══════════════════════════════════════════════════════════════════════════
+// 边界协议(B-1):事件 payload 具名化 + 版本化
+// ══════════════════════════════════════════════════════════════════════════
+//
+// 由来(2026-10-14 现状核对):事件到 JS 的"形状"此前**只存在于各 emit 点的
+// `ObjectInitializer` 调用里** —— 没有一处具名声明,所以:① 改字段没有编译错,
+// ② 没有任何"协议版本"可供 JS 侧做兼容分支,③ 单测只能断言"某个字段在不在"。
+// 这里给**20 个白名单事件**各一个具名结构体(serde 派生 = 唯一真相),并统一带
+// `api_version`。序列化后是**一层扁平对象**:`{ api_version, type, ...字段 }`。
+//
+// 为什么不引 protobuf/WIT:收益(跨语言 IDL)在当前规模下不抵依赖与迁移成本;
+// serde 具名结构已经给出"形状有名字、改动有编译错、版本可声明"这三样。
+// 见 docs/superpowers/plans/2026-10-14-js-host-phaseD-and-boundary.md §T2。
+
+/// 边界协议的**线格式版本**。
+///
+/// 递增规则:事件 payload 或 `UiRequest` 的字段**增删/语义变更** ⇒ `+1`。
+/// 加字段(向后兼容)也要递增 —— 版本号回答的是"对端能不能假定这份形状",不是
+/// "旧端会不会崩"。JS 侧:每次事件 payload 里都带 `api_version`,插件可据此分支。
+pub const API_VERSION: u16 = 1;
+
+/// 事件 payload 的**公共头**:`{ api_version, type }`。
+///
+/// 每个具名 payload 都用 `#[serde(flatten)] pub hdr: BusHeader` 引入它 ⇒
+/// 序列化结果里 `api_version`/`type` 与其余字段**同层**(不是嵌套子对象)。
+#[derive(Debug, Clone, Serialize)]
+pub struct BusHeader {
+    /// 见 [`API_VERSION`]
+    pub api_version: u16,
+    /// 事件名(与 `commands.rs` 的 `EVENT_WHITELIST` 同名;`helix.on` 收到的第一参)
+    #[serde(rename = "type")]
+    pub event_type: String,
+}
+
+impl BusHeader {
+    pub fn new(event_type: &str) -> Self {
+        Self {
+            api_version: API_VERSION,
+            event_type: event_type.to_string(),
+        }
+    }
+}
+
+/// 0-based 行列坐标(事件 payload 里的点)
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EvPos {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// 选区(anchor/head 两点)
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EvSelection {
+    pub anchor: EvPos,
+    pub head: EvPos,
+}
+
+/// 半开区间 `[start, end)`(行列)
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EvRange {
+    pub start: EvPos,
+    pub end: EvPos,
+}
+
+/// 一次合并后的文档变更(与 `doc.changes` 的 `{oldRange, newRange}` **同源同形**)
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvChange {
+    pub old_range: EvRange,
+    pub new_range: EvRange,
+}
+
+/// `startup` —— 启动完成(发在初始文件处理之后)
+#[derive(Debug, Clone, Serialize)]
+pub struct StartupPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+}
+
+/// `layout-change` —— 布局变动;`kind` 是种类名,缺种类时是 **null**(不是"没有这个字段")
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub kind: Option<String>,
+}
+
+/// 文档类事件(`save`/`buffer-open`/`buffer-close`/`theme-change`)——
+/// 只带轻量定位信息;全文仍在位置参数里的 doc 对象上(不重复序列化正文)
+#[derive(Debug, Clone, Serialize)]
+pub struct DocEventPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub path: Option<String>,
+    pub cursor: EvPos,
+    pub selection: EvSelection,
+}
+
+/// `mode-change` —— 模式切换(`mode`: normal/insert/select)
+#[derive(Debug, Clone, Serialize)]
+pub struct ModeChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub mode: String,
+    pub path: Option<String>,
+    pub cursor: EvPos,
+    pub selection: EvSelection,
+}
+
+/// `doc-change` —— 防抖窗口内合并后的变更范围(`changes` 与 `doc.changes` 同源)
+#[derive(Debug, Clone, Serialize)]
+pub struct DocChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub path: Option<String>,
+    pub cursor: EvPos,
+    pub selection: EvSelection,
+    pub changes: Vec<EvChange>,
+}
+
+/// `pane-mode-change` —— 平级 pane 模式(`mode`: tabs/stack/…)
+#[derive(Debug, Clone, Serialize)]
+pub struct PaneModeChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub mode: String,
+}
+
+/// `cursor-move` —— 光标移动(`doc_id` 是 helix-term 侧的 doc id)
+#[derive(Debug, Clone, Serialize)]
+pub struct CursorMovePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub doc_id: u64,
+    pub row: usize,
+    pub col: usize,
+    pub mode: String,
+}
+
+/// `selection-change` —— 选区数量/主选区
+#[derive(Debug, Clone, Serialize)]
+pub struct SelectionChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub doc_id: u64,
+    pub count: usize,
+    pub primary: EvPos,
+}
+
+/// `lsp-diagnostics` —— 当前文档诊断详情(`diagnostics` 为原样透传的 JSON 数组)
+#[derive(Debug, Clone, Serialize)]
+pub struct LspDiagnosticsPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub doc_id: u64,
+    pub diagnostics: serde_json::Value,
+}
+
+/// `term-open` —— 终端面板打开
+#[derive(Debug, Clone, Serialize)]
+pub struct TermOpenPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub cmd: String,
+}
+
+/// `term-mode-change` —— 终端显示模式(dock/fullscreen/floating/minimized)
+#[derive(Debug, Clone, Serialize)]
+pub struct TermModeChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub mode: String,
+}
+
+/// `term-exit` —— 终端进程退出(`code` 为退出码)
+#[derive(Debug, Clone, Serialize)]
+pub struct TermExitPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub code: i32,
+}
+
+/// `term-resize` —— 终端尺寸变更
+#[derive(Debug, Clone, Serialize)]
+pub struct TermResizePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// `term-title` —— 终端标题(OSC 标题序列)
+#[derive(Debug, Clone, Serialize)]
+pub struct TermTitlePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub title: String,
+}
+
+/// `term-close` —— 终端关闭请求(处理器返回 false 可阻止)
+#[derive(Debug, Clone, Serialize)]
+pub struct TermClosePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub reason: String,
+}
+
+/// `term-key` —— 终端按键(处理器返回值决定 pass/consume/minimize/close)
+#[derive(Debug, Clone, Serialize)]
+pub struct TermKeyPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub pty_id: u64,
+    pub code: String,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+/// `component-event` —— 组件节点上的鼠标/输入事件
+#[derive(Debug, Clone, Serialize)]
+pub struct ComponentEventPayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    pub id: u64,
+    pub kind: String,
+    pub x: u16,
+    pub y: u16,
+}
+
+/// 边界总线上**全部**事件 payload 的清单(与 `EVENT_WHITELIST` 一一对应)。
+///
+/// `untagged`:每个变体的结构体**自带** `hdr.type`,不需要 serde 再打一层 tag。
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum EventPayload {
+    Startup(StartupPayload),
+    LayoutChange(LayoutChangePayload),
+    Save(DocEventPayload),
+    BufferOpen(DocEventPayload),
+    BufferClose(DocEventPayload),
+    ThemeChange(DocEventPayload),
+    ModeChange(ModeChangePayload),
+    DocChange(DocChangePayload),
+    PaneModeChange(PaneModeChangePayload),
+    CursorMove(CursorMovePayload),
+    SelectionChange(SelectionChangePayload),
+    LspDiagnostics(LspDiagnosticsPayload),
+    TermOpen(TermOpenPayload),
+    TermModeChange(TermModeChangePayload),
+    TermExit(TermExitPayload),
+    TermResize(TermResizePayload),
+    TermTitle(TermTitlePayload),
+    TermClose(TermClosePayload),
+    TermKey(TermKeyPayload),
+    ComponentEvent(ComponentEventPayload),
+}
+
+impl EventPayload {
+    pub fn api_version(&self) -> u16 {
+        API_VERSION
+    }
+
+    /// 该 payload 在总线上的**事件名**(= `hdr.type`)
+    pub fn event_name(&self) -> &str {
+        match self {
+            EventPayload::Startup(p) => &p.hdr.event_type,
+            EventPayload::LayoutChange(p) => &p.hdr.event_type,
+            EventPayload::Save(p)
+            | EventPayload::BufferOpen(p)
+            | EventPayload::BufferClose(p)
+            | EventPayload::ThemeChange(p) => &p.hdr.event_type,
+            EventPayload::ModeChange(p) => &p.hdr.event_type,
+            EventPayload::DocChange(p) => &p.hdr.event_type,
+            EventPayload::PaneModeChange(p) => &p.hdr.event_type,
+            EventPayload::CursorMove(p) => &p.hdr.event_type,
+            EventPayload::SelectionChange(p) => &p.hdr.event_type,
+            EventPayload::LspDiagnostics(p) => &p.hdr.event_type,
+            EventPayload::TermOpen(p) => &p.hdr.event_type,
+            EventPayload::TermModeChange(p) => &p.hdr.event_type,
+            EventPayload::TermExit(p) => &p.hdr.event_type,
+            EventPayload::TermResize(p) => &p.hdr.event_type,
+            EventPayload::TermTitle(p) => &p.hdr.event_type,
+            EventPayload::TermClose(p) => &p.hdr.event_type,
+            EventPayload::TermKey(p) => &p.hdr.event_type,
+            EventPayload::ComponentEvent(p) => &p.hdr.event_type,
+        }
+    }
+
+    /// 序列化为 JSON 对象(`{ api_version, type, ... }`)—— 发往 JS 前的线格式
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("事件 payload 必须可序列化(字段全是基础类型)")
+    }
+}
+
+/// `CommandContext` → 具名 payload 的公共点/选区转换(给各 emit 点复用)
+impl From<(usize, usize)> for EvPos {
+    fn from((row, col): (usize, usize)) -> Self {
+        Self { row, col }
+    }
+}
+
+impl From<((usize, usize), (usize, usize))> for EvSelection {
+    fn from((anchor, head): ((usize, usize), (usize, usize))) -> Self {
+        Self {
+            anchor: anchor.into(),
+            head: head.into(),
+        }
+    }
+}
+
+// ── 插件 manifest(C-1)──────────────────────────────────────────────────
+//
+// `helix.plugin(name, {...})` 的**声明面**。现状它只有 `deps`/`version`,于是
+// "这个插件能不能起进程 / 读写任意文件"没有任何地方写下来。C-1 只**解析 + 记录**,
+// C-2 才在三个入口据它检查(检查点见 `crate::permissions`)。
+
+/// 插件声明的能力清单(C-2 的判据)。
+///
+/// **未声明** = `PluginManifest::permissions == None` ⇒ legacy 语义(不拦截);
+/// **声明了但没列某项** ⇒ 那项要"问一次"(见 `crate::permissions::check`)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PluginPermissions {
+    /// 起子进程 / shell(`helix.run`、`helix.spawn`、`run_async`)
+    pub process: bool,
+    /// 读任意文件(`read_file`/`read_dir` 及异步同族)
+    pub fs_read: bool,
+    /// 写文件(`write_file` 与插件自身文件的写入)
+    pub fs_write: bool,
+}
+
+impl PluginPermissions {
+    /// 三项全假 = 声明了"什么能力都不要"(于是任何能力都要问一次)
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// 能力名 → 是否已声明(与 `crate::permissions::CAP_*` 对应)
+    pub fn allows(&self, cap: &str) -> bool {
+        match cap {
+            "process" => self.process,
+            "fs_read" => self.fs_read,
+            "fs_write" => self.fs_write,
+            _ => false,
+        }
+    }
+}
+
+/// 一个插件在 `helix.plugin(name, {...})` 里声明的 manifest
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginManifest {
+    /// 插件名(`helix.plugin` 第一参)
+    pub name: String,
+    /// 声明面的版本(将来字段语义变更时用它分支)
+    pub schema_version: Option<u32>,
+    /// 要求的最低编辑器版本(字符串比较不做,只记录 + 展示)
+    pub min_editor: Option<String>,
+    /// 依赖(加载参数数组;语义见 `load_script_checked`)
+    pub deps: Vec<String>,
+    /// 能力清单;`None` = 未声明(legacy/grandfathered)
+    pub permissions: Option<PluginPermissions>,
+    /// 贡献点(命令/事件/配置/schema 的名字;只记录,供 `:js-permission list` 展示)
+    pub contributes: Vec<String>,
+}

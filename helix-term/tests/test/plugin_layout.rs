@@ -33,6 +33,7 @@ async fn panel_shrinks_editor() -> anyhow::Result<()> {
         editor: &mut app.editor,
         scroll: None,
         jobs: &mut jobs,
+        js: None,
     };
     // DiffRenderer 有持久状态：重置全部插件面板 diff，让本 buffer 完整重绘
     app.compositor.reset_plugin_diffs();

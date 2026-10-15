@@ -1,6 +1,11 @@
 // filetree.js — 类 lazyvim/neo-tree 的侧边文件树面板
 // 依赖清单：icons（共享图标表，helix.load 自动先加载）
-helix.plugin("filetree", { deps: [] }); // 图标已收进核心,不再需要 deps
+// 图标已收进核心,不再需要 deps;`pwd` 起进程、列目录读文件 ⇒ 声明两项能力
+helix.plugin("filetree", {
+  deps: [],
+  schema_version: 1,
+  permissions: { process: true, fs_read: true },
+});
 
 // 插件配置(方案 C):config.toml [plugins.filetree]
 helix.define_config("filetree", {
