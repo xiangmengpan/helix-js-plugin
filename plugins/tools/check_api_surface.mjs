@@ -450,16 +450,29 @@ function main() {
   section("── 镜像副本(仓库头号事故:改了源忘了同步)──");
   const mirror = "runtime/plugins";
   const MIRROR_SKIP = ["tools"]; // 开发脚本不随软件分发(见 contrib/install-plugins.sh)
-  // “已安装”的判据是镜像里有 **helix.d.ts**(install-plugins.sh 必然装它)。
-  // 为什么不能只看目录存不存在:仓库里 `runtime/plugins/` 有一个历史遗留的跟踪文件
-  // (one-dark.js),于是裸 clone 里目录存在、却没有任何插件文件 ⇒ 逐文件比会红一片。
-  // CI 就是这种裸 clone(副本靠 contrib/install-plugins.sh 在本机装,不入 git),本机
-  // 装了副本才真查 —— 这既保住“改了源忘了同步”的告警,又不会在 CI 里假红。
+  // “已安装”的判据:**镜像里有成规模的 `.js`**(≥5;`install-plugins.sh` 会装 20+)。
+  // 为什么**不用**“有没有 helix.d.ts”:那个文件被**误跟踪过一次**(2026-10-13 的提交把本机镜像
+  // 加进了 git)⇒ 裸 checkout 里它存在 ⇒ 走严格比对 ⇒ 报一片“镜像缺文件”而**假红**(CI 实测)。
+  // 也不用“目录是否存在”:`runtime/plugins/` 有历史遗留的跟踪文件 `one-dark.js`。
+  const looksInstalled = (dir) => {
+    if (!existsSync(rel(dir))) return false;
+    let n = 0;
+    const walk = (d) => {
+      for (const e of readdirSync(rel(d))) {
+        if (MIRROR_SKIP.includes(e)) continue;
+        const p = join(d, e);
+        if (statSync(rel(p)).isDirectory()) walk(p);
+        else if (e.endsWith(".js")) n++;
+      }
+    };
+    walk(dir);
+    return n >= 5;
+  };
   if (DTS_PATH !== "plugins/helix.d.ts") {
     console.log("  · 跳过:使用了 HELIX_DTS_OVERRIDE(自检模式)");
-  } else if (!existsSync(rel(join(mirror, "helix.d.ts")))) {
+  } else if (!looksInstalled(mirror)) {
     console.log(
-      `  · 跳过:${mirror} 里没有 helix.d.ts(未安装运行副本)⇒ 装了才查:` +
+      `  · 跳过:${mirror} 看起来没装运行副本(没有成规模的 .js)⇒ 装了才查:` +
         "contrib/install-plugins.sh <runtime>",
     );
   } else {

@@ -12,3 +12,8 @@ runtime/grammars
 # agent 工作产物(实施计划与会话交接),非项目文档
 docs/superpowers/plans/
 docs/superpowers/handoff/
+
+# 运行副本由 contrib/install-plugins.sh 在本机安装(只有历史遗留的 one-dark.js 受跟踪)。
+# 曾被误 `git add` 过一次 ⇒ 那会让 CI 裸检出误判"已装副本"而假红(见 check_api_surface.mjs)。
+runtime/plugins/
+!runtime/plugins/one-dark.js
