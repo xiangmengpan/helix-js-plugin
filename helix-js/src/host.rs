@@ -102,8 +102,6 @@ pub struct JsHost {
     pub(crate) server_task_callbacks: RefCell<HashMap<u64, JsValue>>,
     /// watch 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
     pub(crate) watch_callbacks: RefCell<HashMap<u64, JsValue>>,
-    /// 1b-3c:原 thread_local(`LAYOUT_CHANGE_KIND`);不泄漏,但状态应跟**宿主**
-    pub(crate) layout_change_kind: RefCell<Option<&'static str>>,
     /// 1b-3c:原 thread_local(`LSP_REQUESTS`)
     pub(crate) lsp_requests: RefCell<Vec<crate::lsp::LspRequest>>,
     /// 1b-3c:原 thread_local(`INPUT_STATES`)
@@ -174,7 +172,6 @@ impl JsHost {
             server_rows_callbacks: RefCell::new(HashMap::new()),
             server_task_callbacks: RefCell::new(HashMap::new()),
             watch_callbacks: RefCell::new(HashMap::new()),
-            layout_change_kind: RefCell::new(None),
             lsp_requests: RefCell::new(Vec::new()),
             input_states: RefCell::new(HashMap::new()),
             current_edits: RefCell::new(Vec::new()),
@@ -330,9 +327,12 @@ impl JsHost {
         self.pump(|| crate::commands::emit_doc_change(ctx, changes))
     }
 
-    /// 泵入口·`layout-change`(种类从宿主字段取;与 `set_layout_change_kind` 配对)
-    pub fn emit_layout_change(&mut self) -> anyhow::Result<()> {
-        self.pump(crate::commands::emit_layout_change)
+    /// 泵入口·`layout-change`;`kind` 是变更种类(`None` = 不携带)。
+    ///
+    /// 早先种类走宿主字段的"暂存"(先 `set` 再 `emit`);现在它是**每次调用的参数**
+    /// —— 种类由变更发生的那一层(`Compositor` 的意图队列)提供,宿主不参与。
+    pub fn emit_layout_change(&mut self, kind: Option<&'static str>) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_layout_change_kind(kind))
     }
 
     /// 泵入口·`startup`
@@ -595,6 +595,16 @@ pub(crate) fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
         Some(host) => f(host),
         None => panic!("helix-js: host not registered — call init() first"),
     })
+}
+
+/// 从 **helix-term 侧**入队一条要上状态栏的消息(与插件 `helix.echo` 同一个队列,
+/// 由下个命令/事件边界 drain)。
+///
+/// 为什么需要一个公开入口:宿主显式的边界代码(如 `Compositor::flush_layout_change`
+/// 发现"处理器反复改布局"要丢弃事件)**必须让失败可见** —— 只 `log::warn!` 等于静默
+/// (本仓已有一次实证:静默的失败浪费了好几轮)。
+pub fn push_message(msg: impl Into<String>) {
+    with_messages(|v| v.push(msg.into()));
 }
 
 /// echo 消息队列的访问器(**按宿主**隔离)。入队 / 取走都走它。

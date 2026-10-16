@@ -276,6 +276,17 @@ pub struct Compositor {
     pub(crate) pane_mode: PaneMode,
     /// 标签条脏格 diff 渲染器
     tabbar_diff: crate::ui::comp_layout::DiffRenderer,
+    /// **待发的 `layout-change` 意图**(D-2 收尾)。
+    ///
+    /// 为什么是队列而不是直接发:变更发生在 **27 个布局原语**里(`split_leaf`/
+    /// `close_leaf_clean`/`set_float` …),它们的签名不该为了"发个事件"而收宿主
+    /// (那要连着改它们的全部调用者);而事件发出去就要**执行 JS** ⇒ 必须宿主显式。
+    /// 于是把"要发"记成意图,由**边界**处(帧首 / job 回调跑完 / 键盘处理完 ——
+    /// 那里都有 `cx.js`)用泵入口发出。每一项 = 一次 `sync_layout_cache`;
+    /// `None` = 该次没有标注种类。
+    pending_layout_changes: Vec<Option<&'static str>>,
+    /// 下一次 `sync_layout_cache` 要带的种类(`set_layout_change_kind` 写入,读完即清)
+    layout_change_stash: Option<&'static str>,
 }
 
 impl Compositor {
@@ -292,6 +303,8 @@ impl Compositor {
             full_redraw: false,
             pane_mode: PaneMode::Normal,
             tabbar_diff: Default::default(),
+            pending_layout_changes: Vec::new(),
+            layout_change_stash: None,
         }
     }
 
@@ -548,6 +561,9 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        // 帧首:**发待发的 layout-change**(D-2 收尾 —— 每帧都有 `cx.js`,是最后一道保险:
+        // 无论布局是命令、插件、job 回调还是异步路径改的,帧首之前事件都已发出)。
+        self.flush_layout_change(cx.js.as_deref_mut());
         // commandline（prompt/picker）活跃时占状态栏上一行：树多让 1 行；
         // 状态栏永远在最底 1 行（commandline 关闭后自动恢复）
         let bottom_ui = self.bottom_ui_active();
@@ -1597,11 +1613,54 @@ impl Compositor {
         helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
         let json = serde_json::to_string(&dump).unwrap_or_default();
         helix_js::cache_layout(&json);
-        // #47:layout-change 事件 —— 发在这里即覆盖**所有**布局变更
-        // (`sync_layout_cache` 是唯一汇聚点;调用者虽多,函数体只有这一处)
-        // 暂不携带"变更种类":种类需从 LayoutTree 逐层串上来(≈10 处),留作后续增量 ✓
-        if let Err(e) = helix_js::emit_layout_change() {
-            log::warn!("layout-change event failed: {e}");
+        // `layout-change` 事件:这里**只记意图**,不发(见 `pending_layout_changes` 的注释)。
+        // 快照(上面几行)仍**同步**写 —— 插件在同一个命令里 `get_layout()` 读到的必须是新值。
+        self.pending_layout_changes
+            .push(self.layout_change_stash.take());
+    }
+
+    /// 标注"接下来的布局变更属于哪种"(在变更**前**调用;由 UI 请求臂/命令用)
+    pub(crate) fn set_layout_change_kind(&mut self, kind: &'static str) {
+        self.layout_change_stash = Some(kind);
+    }
+
+    /// 把待发的 `layout-change` 全部发出(**边界处调用**,有宿主就走泵入口:独占借用)。
+    ///
+    /// 循环而不是一次过:处理器的 JS 里可能**又**改布局(嵌套)⇒ 把新一轮意图也带出去。
+    /// 空队列 = no-op(绝大多数帧就是这样)。
+    ///
+    /// 轮数上限是**防死循环**的保险:若某个 handler 每收到 layout-change 就改布局,
+    /// 旧实现是**同步递归**(栈会炸),现在是同一处循环 —— 给它一个上限并**报告**,
+    /// 总比把编辑器卡住强。
+    ///
+    /// ⚠️ 与"变更点当场发"的**语义差异**(有意):同一批变更的多个事件在**最终布局**上观察,
+    /// 而不是每个变更点当时的中间布局。事件**条数**与顺序不变;依赖中间态的插件会看到
+    /// "后一个变更也已经生效"。这是不为 27 个布局原语收宿主的代价,写在这里以免被当成 bug。
+    pub(crate) fn flush_layout_change(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
+        const MAX_ROUNDS: usize = 8;
+        for _ in 0..MAX_ROUNDS {
+            if self.pending_layout_changes.is_empty() {
+                return;
+            }
+            let batch: Vec<Option<&'static str>> = self.pending_layout_changes.drain(..).collect();
+            for kind in batch {
+                let emitted = match js.as_mut() {
+                    Some(host) => host.emit_layout_change(kind),
+                    None => helix_js::emit_layout_change_kind(kind),
+                };
+                if let Err(e) = emitted {
+                    log::warn!("layout-change event failed: {e}");
+                }
+            }
+        }
+        if !self.pending_layout_changes.is_empty() {
+            let n = self.pending_layout_changes.len();
+            self.pending_layout_changes.clear();
+            // 让失败可见:状态栏 + 日志(不静默丢事件)
+            log::warn!("layout-change: handler 反复改布局(已丢弃 {n} 条待发事件)");
+            helix_js::host::push_message(format!(
+                "layout-change 事件被丢弃({n} 条):某个处理器在 layout-change 里反复改布局"
+            ));
         }
     }
 

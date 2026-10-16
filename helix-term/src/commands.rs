@@ -260,12 +260,14 @@ impl MappableCommand {
     pub fn execute(&self, cx: &mut Context) {
         match &self {
             Self::Typable { name, args, doc: _ } => {
-                // D-1:嵌套的命令上下文没有宿主 ⇒ None(无宿主 = 无 JS,行为不变)
+                // D-2 收尾:嵌套的命令上下文**带上宿主** ——
+                // 键位触发的 typed 命令要走的就是这条路(插件命令回退、事件发射都在里面)。
+                // 早先填 `None` 会让所有 `Context::js_*` 包装退回 legacy 隐式解析。
                 let mut cx = compositor::Context {
                     editor: cx.editor,
                     jobs: cx.jobs,
                     scroll: None,
-                    js: None,
+                    js: cx.js.as_deref_mut(),
                 };
                 if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
                     if let Err(e) =

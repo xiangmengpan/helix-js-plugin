@@ -2300,8 +2300,7 @@ pub(crate) mod tests {
         "#,
         )
         .unwrap();
-        // 不调 set_layout_change_kind ⇒ kind 为 None("缺种类")
-        emit_layout_change().unwrap();
+        emit_layout_change_kind(None).unwrap(); // 不带种类
         assert_eq!(
             take_messages(),
             vec!["kind=null pkind=null t=layout-change"]
@@ -4870,9 +4869,8 @@ helix.set_component_render(0, function (_focus, ctx) {
         )
         .unwrap();
 
-        crate::set_layout_change_kind("split");
-        crate::emit_layout_change().unwrap();
-        crate::emit_layout_change().unwrap(); // 不带种类
+        crate::emit_layout_change_kind(Some("split")).unwrap();
+        crate::emit_layout_change_kind(None).unwrap(); // 不带种类
 
         let msgs = crate::take_messages();
         assert!(

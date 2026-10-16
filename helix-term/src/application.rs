@@ -596,7 +596,10 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
-            js: None,
+            // D-2 收尾:把宿主交给**每帧/每次输入**的 compositor::Context。
+            // 这是宿主显式路径能否生效的关键一环 —— 没有它,`Context::js_*` 包装
+            // 与 `flush_layout_change` 都会退回 legacy 隐式解析(泵入口等于没接)。
+            js: self.js_host.as_deref_mut(),
         };
 
         helix_event::start_frame();
@@ -967,7 +970,10 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
-            js: None,
+            // D-2 收尾:把宿主交给**每帧/每次输入**的 compositor::Context。
+            // 这是宿主显式路径能否生效的关键一环 —— 没有它,`Context::js_*` 包装
+            // 与 `flush_layout_change` 都会退回 legacy 隐式解析(泵入口等于没接)。
+            js: self.js_host.as_deref_mut(),
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
         // idle 是 worker 完成后的主要唤醒点；泵过事件时必须重绘（仅 idle 本身不触发渲染）
@@ -1093,7 +1099,10 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
-            js: None,
+            // D-2 收尾:把宿主交给**每帧/每次输入**的 compositor::Context。
+            // 这是宿主显式路径能否生效的关键一环 —— 没有它,`Context::js_*` 包装
+            // 与 `flush_layout_change` 都会退回 legacy 隐式解析(泵入口等于没接)。
+            js: self.js_host.as_deref_mut(),
         };
         // Handle key events
         let should_redraw = match event.unwrap() {

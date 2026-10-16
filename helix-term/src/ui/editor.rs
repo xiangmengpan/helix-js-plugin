@@ -1569,12 +1569,12 @@ impl Component for EditorView {
                             let mut consumed = false;
                             if let Some(completion) = &mut self.completion {
                                 let res = {
-                                    // use a fake context here
+                                    // use a fake context here(宿主照传:补全回调里可能有 JS 钩子)
                                     let mut cx = Context {
                                         editor: cx.editor,
                                         jobs: cx.jobs,
                                         scroll: None,
-                                        js: None,
+                                        js: cx.js.as_deref_mut(),
                                     };
 
                                     if let EventResult::Consumed(callback) =

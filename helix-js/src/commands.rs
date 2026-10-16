@@ -1127,25 +1127,21 @@ pub fn emit_startup() -> Result<()> {
     }
 }
 
-// 暂存本次布局变更的**种类**(1b-3c:原为 thread_local;现为宿主字段 `layout_change_kind`)。
+// `layout-change` 的**变更种类**现在是**显式参数**(原为宿主字段 `layout_change_kind` 的"暂存"):
 //
-// 为什么不用参数：发射点在 `Compositor::sync_layout_cache` 内，那里**没有变更点**的信息 ✗；
-// 而调用者（如 `SplitLeaf`/`CloseLeaf` 两臂）在**同一线程、紧邻其前**先 `set` 一下即可 ✓
-// （若没人 set，`emit_layout_change` 取到 None，事件照发，只是不带种类 ✓）
+// 为什么改:暂存机制是为"发射点拿不到种类"设计的 —— 发射点在
+// `Compositor::sync_layout_cache` 里,而知道种类的是它**前面**那一行。两个调用方隔着一层
+// 共享善变的宿主字段,谁都能写、谁都忘了读。现在种类存**在变更发生的那一层**
+// (`Compositor` 的意图队列),由边界处(`flush_layout_change`)原样传进来,
+// 宿主不再承担这个暂存任务 ⇒ 少一个字段、少一处隐式耦合。
 
-/// 标注“接下来的布局变更属于哪种”（由 `LayoutTree`/命令臂在**变更后立刻**调用）
-pub fn set_layout_change_kind(kind: &'static str) {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.layout_change_kind;
-        *c.borrow_mut() = Some(kind)
-    });
+/// 发 `layout-change`,**不带**种类(调用方没有种类信息)
+pub fn emit_layout_change() -> Result<()> {
+    emit_layout_change_kind(None)
 }
 
-pub fn emit_layout_change() -> Result<()> {
-    let kind = crate::host::with_host_ref_or_init(|h| {
-        let c = &h.layout_change_kind;
-        c.borrow_mut().take()
-    });
+/// 发 `layout-change`;`kind` 为 `Some` 时作为事件的第一个参数(与 `mode-change` 传模式串同一机制)。
+pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
     let ctx = CommandContext {
         path: None,
         text: String::new(),
@@ -1153,7 +1149,6 @@ pub fn emit_layout_change() -> Result<()> {
         selection: ((0, 0), (0, 0)),
         docs: Vec::new(),
     };
-    // 变更种类走 `extra`（与 `mode-change` 传模式串同一机制）
     match emit_event_impl("layout-change", &ctx, kind, None) {
         Ok(()) => Ok(()),
         Err(e) => {

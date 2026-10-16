@@ -347,5 +347,7 @@ split 方向:right | left | top | bottom
 事件:save | mode-change | buffer-open | buffer-close | doc-change | theme-change | lsp-diagnostics | cursor-move | selection-change | term-* | component-event
 事件 payload(每个事件**位置参数之后**追加一个具名对象):
   { api_version, type, ...具名字段 }   // 形状见 helix.d.ts 的 EventPayload;doc 对象上也带 api_version/type
+layout-change 的投递时机:**一批**布局变更在**边界处**(帧首)一起投递,每条变更一个事件,
+  但处理器看到的都是**最终布局**(不是每个变更点当时的中间布局)。事件条数与顺序不变。
 键位模式:normal | insert | select
 ```
