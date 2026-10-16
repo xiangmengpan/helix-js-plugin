@@ -311,7 +311,7 @@ fn diag_picker(
                 .immediately_show_diagnostic(doc, view.id);
         },
     )
-    .with_preview(move |_editor, diag| location_to_file_location(&diag.location))
+    .with_preview(move |_editor, _js, diag| location_to_file_location(&diag.location))
     .truncate_start(false)
 }
 
@@ -439,7 +439,7 @@ pub fn symbol_picker(cx: &mut Context) {
                     jump_to_location(cx.editor, &item.location, action);
                 },
             )
-            .with_preview(move |_editor, item| location_to_file_location(&item.location))
+            .with_preview(move |_editor, _js, item| location_to_file_location(&item.location))
             .truncate_start(false);
 
             compositor.push(Box::new(overlaid(picker)))
@@ -565,7 +565,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
             jump_to_location(cx.editor, &item.location, action);
         },
     )
-    .with_preview(|_editor, item| location_to_file_location(&item.location))
+    .with_preview(|_editor, _js, item| location_to_file_location(&item.location))
     .with_dynamic_query(get_symbols, None)
     .truncate_start(false);
 
@@ -937,7 +937,7 @@ fn goto_impl(editor: &mut Editor, compositor: &mut Compositor, locations: Vec<Lo
             let picker = Picker::new(columns, 0, locations, cwdir, |cx, location, action| {
                 jump_to_location(cx.editor, location, action)
             })
-            .with_preview(|_editor, location| location_to_file_location(location));
+            .with_preview(|_editor, _js, location| location_to_file_location(location));
             compositor.push(Box::new(overlaid(picker)));
         }
     }

@@ -211,7 +211,7 @@ pub fn syntax_symbol_picker(cx: &mut Context) {
             }
         },
     )
-    .with_preview(|_editor, tag| {
+    .with_preview(|_editor, _js, tag| {
         Some((tag.doc.path_or_id()?, Some((tag.start_line, tag.end_line))))
     })
     .truncate_start(false);
@@ -454,7 +454,7 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
         },
     )
     .with_dynamic_query(get_tags, Some(275))
-    .with_preview(move |_editor, tag| {
+    .with_preview(move |_editor, _js, tag| {
         Some((
             tag.doc.path_or_id()?,
             Some((tag.start_line, tag.end_line)),

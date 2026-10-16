@@ -1158,7 +1158,7 @@ impl Compositor {
     fn set_pane_mode(&mut self, mode: PaneMode, cx: &mut Context) {
         self.pane_mode = mode;
         // 插件侧可见性:helix.pane_mode.* + pane-mode-change 事件(单一来源)
-        Self::publish_pane_mode(mode);
+        Self::publish_pane_mode(mode, cx.js.as_deref_mut());
         if mode == PaneMode::Normal {
             cx.editor.autoinfo = None;
         } else {
@@ -1223,7 +1223,7 @@ impl Compositor {
 
     /// 把模式快照推给插件:helix.pane_mode.current()/keymap() 读它,
     /// 同时发 pane-mode-change 事件。单一来源 = pane_mode_entries。
-    fn publish_pane_mode(mode: PaneMode) {
+    fn publish_pane_mode(mode: PaneMode, js: Option<&mut helix_js::host::JsHost>) {
         let (name, entries) = Self::pane_mode_entries(mode);
         let keys: Vec<serde_json::Value> = entries
             .iter()
@@ -1237,7 +1237,10 @@ impl Compositor {
             .collect();
         let json = serde_json::json!({ "mode": name, "keys": keys }).to_string();
         helix_js::cache_pane_mode(&json);
-        helix_js::emit_pane_mode_change(name);
+        match js {
+            Some(host) => host.emit_pane_mode_change(name),
+            None => helix_js::emit_pane_mode_change(name),
+        }
     }
 
     /// 平级模式的键位提示(经 `keymap_hint` 可由 JS `set_keymap_hint` 接管,

@@ -227,7 +227,8 @@ impl Application {
                 .unwrap_or_else(|| plugin_dir.join("init.js"));
             if init_path.is_file() {
                 match std::fs::read_to_string(&init_path).and_then(|src| {
-                    helix_js::load_script_named(&init_path.display().to_string(), &src)
+                    js_host
+                        .load_script_named(&init_path.display().to_string(), &src)
                         .map_err(|e| std::io::Error::other(e.to_string()))
                 }) {
                     Ok(()) => {
@@ -417,10 +418,17 @@ impl Application {
             && lsp_requests.is_empty()
         {
             // 仅 fs-watcher 事件:resolve 内部 drain(空则 no-op);回调可能编辑/echo
-            let _ = helix_js::watch::resolve_watch_events();
+            // D-2:resolve = 进 JS ⇒ 有宿主走泵入口
+            let _ = match self.js_host.as_deref_mut() {
+                Some(host) => host.resolve_watch_events(),
+                None => helix_js::watch::resolve_watch_events(),
+            };
             // server 任务事件(worker 回投)与 fs-watcher 同例:单独到达也无其他事件泵,
             // 早退路径 resolve,回调可能 echo/编辑(尾部统一 drain 消息/UI 请求)
-            let _ = helix_js::server_tasks::resolve_events();
+            let _ = match self.js_host.as_deref_mut() {
+                Some(host) => host.resolve_server_task_events(),
+                None => helix_js::server_tasks::resolve_events(),
+            };
             // 早退路径也要泵纯 JS 微任务(Promise.resolve().then(...) 不经过 term/async 事件)
             // D-2:泵入口走 `&mut JsHost`(独占借用);无宿主退回 legacy 隐式解析
             let pumped = match self.js_host.as_deref_mut() {
@@ -446,10 +454,18 @@ impl Application {
             return theme_changed;
         }
         let mut error = None;
-        if let Err(e) = helix_js::watch::resolve_watch_events() {
+        let watched = match self.js_host.as_deref_mut() {
+            Some(host) => host.resolve_watch_events(),
+            None => helix_js::watch::resolve_watch_events(),
+        };
+        if let Err(e) = watched {
             error = Some(e);
         }
-        if let Err(e) = helix_js::server_tasks::resolve_events() {
+        let tasks = match self.js_host.as_deref_mut() {
+            Some(host) => host.resolve_server_task_events(),
+            None => helix_js::server_tasks::resolve_events(),
+        };
+        if let Err(e) = tasks {
             error = Some(e);
         }
         for event in term_events {
@@ -586,9 +602,24 @@ impl Application {
             let count = crate::plugins_cursor::selection_count(&self.editor);
             let changed_sel = count != self.last_selection_count;
             self.last_selection_count = count;
-            helix_js::cursor::emit_cursor_move(doc.id().as_u64(), row, col, mode);
+            // D-2:光标/选区事件也是 JS 入口 ⇒ 有宿主走泵入口
+            match self.js_host.as_deref_mut() {
+                Some(host) => {
+                    host.emit_cursor_move(doc.id().as_u64(), row, col, mode);
+                }
+                None => {
+                    helix_js::cursor::emit_cursor_move(doc.id().as_u64(), row, col, mode);
+                }
+            }
             if changed_sel {
-                helix_js::cursor::emit_selection_change(doc.id().as_u64(), count, row, col);
+                match self.js_host.as_deref_mut() {
+                    Some(host) => {
+                        host.emit_selection_change(doc.id().as_u64(), count, row, col);
+                    }
+                    None => {
+                        helix_js::cursor::emit_selection_change(doc.id().as_u64(), count, row, col);
+                    }
+                }
             }
         }
 

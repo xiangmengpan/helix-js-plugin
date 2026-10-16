@@ -718,7 +718,13 @@ impl EditorView {
     }
 
     /// Render bufferline at the top
-    pub fn render_bufferline(editor: &Editor, viewport: Rect, surface: &mut Surface) {
+    /// `js` 为宿主(D-2:缓冲区行图标是 JS 钩子 ⇒ 有宿主走泵入口);无宿主退回 legacy
+    pub fn render_bufferline(
+        mut js: Option<&mut helix_js::host::JsHost>,
+        editor: &Editor,
+        viewport: Rect,
+        surface: &mut Surface,
+    ) {
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
         surface.clear_with(
             viewport,
@@ -757,8 +763,14 @@ impl EditorView {
             };
 
             // JS 插件图标钩子：返回非空图标则拼到文件名前
-            let icon =
-                helix_js::bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()));
+            let icon = match js.as_mut() {
+                Some(host) => {
+                    host.bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()))
+                }
+                None => {
+                    helix_js::bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()))
+                }
+            };
             let fname = match icon {
                 Some(icon) if !icon.is_empty() => format!("{icon} {fname}"),
                 _ => fname.to_string(),
@@ -1706,7 +1718,12 @@ impl Component for EditorView {
         cx.editor.resize(editor_area);
 
         if use_bufferline {
-            Self::render_bufferline(cx.editor, area.with_height(1), surface);
+            Self::render_bufferline(
+                cx.js.as_deref_mut(),
+                cx.editor,
+                area.with_height(1),
+                surface,
+            );
         }
 
         for (view, is_focused) in cx

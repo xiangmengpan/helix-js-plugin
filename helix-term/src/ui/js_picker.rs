@@ -97,21 +97,31 @@ pub(crate) fn open_picker(
             helix_js::picker::invoke_action(&action_src, &row.payload);
         },
     );
-    let picker = picker.with_preview(move |_editor: &helix_view::Editor, row: &PickerRow| {
-        // 选中行：preview 回调 → {path, line}；未定义/返回 null → None（核心不显示预览）
-        let (path, line) = helix_js::picker::invoke_preview(&preview_src, &row.payload)?;
-        let path: &'static Path = PREVIEW_PATH.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if slot.as_ref().is_none_or(|(last, _)| last != &path) {
-                *slot = Some((
-                    path.clone(),
-                    Box::leak(PathBuf::from(&path).into_boxed_path()),
-                ));
-            }
-            slot.as_ref().unwrap().1
-        });
-        Some((PathOrId::Path(path), Some((line, 0))))
-    });
+    // D-2:preview 钩子执行 JS ⇒ 契约里给了宿主(`js`),有宿主走泵入口(独占借用),
+    // 没有宿主(测试/无 JS)退回 legacy 隐式解析。
+    let picker = picker.with_preview(
+        move |_editor: &helix_view::Editor,
+              js: Option<&mut helix_js::host::JsHost>,
+              row: &PickerRow| {
+            // 选中行：preview 回调 → {path, line}；未定义/返回 null → None（核心不显示预览）
+            let invoked = match js {
+                Some(host) => host.picker_invoke_preview(&preview_src, &row.payload),
+                None => helix_js::picker::invoke_preview(&preview_src, &row.payload),
+            };
+            let (path, line) = invoked?;
+            let path: &'static Path = PREVIEW_PATH.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.as_ref().is_none_or(|(last, _)| last != &path) {
+                    *slot = Some((
+                        path.clone(),
+                        Box::leak(PathBuf::from(&path).into_boxed_path()),
+                    ));
+                }
+                slot.as_ref().unwrap().1
+            });
+            Some((PathOrId::Path(path), Some((line, 0))))
+        },
+    );
     // ★ 在**打开那一刻**就把 id 推给 JS ✓ ——
     //   理由(实测):核心 picker 会**接管键盘** ✗,所以"先开 picker 再敲命令去注册"走不通 ✓
     //   ⇒ 先推 id ⇒ 插件可在**同一命令内**完成 set_component_render ✓(无需任何后续敲键 ✓)

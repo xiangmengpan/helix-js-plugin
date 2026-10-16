@@ -5561,7 +5561,11 @@ pub(crate) fn apply_ui_requests(
                         }
                     })
                     .collect();
-                if let Err(e) = helix_js::server_rows::deliver(id, rows) {
+                let delivered = match js.as_mut() {
+                    Some(host) => host.deliver_server_rows(id, rows),
+                    None => helix_js::server_rows::deliver(id, rows),
+                };
+                if let Err(e) = delivered {
                     log::error!("server rows deliver: {e:#}");
                 }
             }
@@ -5628,12 +5632,20 @@ fn plugin_reload(
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    reload_plugins(cx.editor)
+    reload_plugins(cx.js.as_deref_mut(), cx.editor)
 }
 
 /// 热重载共享逻辑：reload_all → drain 消息/主题/UI 请求（:plugin-reload 与 :plugin reload 共用）
-fn reload_plugins(editor: &mut Editor) -> anyhow::Result<()> {
-    match helix_js::reload_all() {
+fn reload_plugins(
+    mut js: Option<&mut helix_js::host::JsHost>,
+    editor: &mut Editor,
+) -> anyhow::Result<()> {
+    // D-2 收尾:重跑脚本同样是执行 JS ⇒ 有宿主走泵入口
+    let reloaded = match js.as_mut() {
+        Some(host) => host.reload_all(),
+        None => helix_js::reload_all(),
+    };
+    match reloaded {
         Ok(()) => {
             let msgs = helix_js::take_messages();
             if !msgs.is_empty() {
@@ -5646,14 +5658,13 @@ fn reload_plugins(editor: &mut Editor) -> anyhow::Result<()> {
                 let overrides = helix_js::theme_overrides();
                 apply_theme_overrides(editor, Some(&overrides));
             }
-            // `reload_plugins` 只拿到 `editor`(没有 `cx`/宿主)⇒ legacy 隐式解析
-            apply_ui_requests(None, helix_js::take_ui_requests())?;
+            apply_ui_requests(js, helix_js::take_ui_requests())?;
             Ok(())
         }
         Err(err) => {
             editor.set_error(format!("plugin-reload: {err}"));
             // reload_all 入队的 ClosePanel（面板清理）即使重跑失败也要处理，否则僵尸面板残留
-            apply_ui_requests(None, helix_js::take_ui_requests())?;
+            apply_ui_requests(js, helix_js::take_ui_requests())?;
             Ok(())
         }
     }
@@ -6152,7 +6163,12 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         return Err(anyhow!("usage: plugin-load <path>"));
     };
     let src = std::fs::read_to_string(path).map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
-    helix_js::load_script_named(path, &src).map_err(|e| anyhow!("plugin-load: {e}"))?;
+    // D-2 收尾:加载脚本**就是执行 JS** ⇒ 有宿主走泵入口(独占借用),无宿主退回 legacy
+    let loaded = match cx.with_js(|host| host.load_script_named(path, &src)) {
+        Some(r) => r,
+        None => helix_js::load_script_named(path, &src),
+    };
+    loaded.map_err(|e| anyhow!("plugin-load: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));
@@ -6377,7 +6393,11 @@ fn term_native(
             helix.term_feed(tid, "hello from pty");
         });
     "#;
-    helix_js::load_script_named("term-native.js", src).map_err(|e| anyhow!("term-native: {e}"))?;
+    let loaded = match cx.with_js(|host| host.load_script_named("term-native.js", src)) {
+        Some(r) => r,
+        None => helix_js::load_script_named("term-native.js", src),
+    };
+    loaded.map_err(|e| anyhow!("term-native: {e}"))?;
     let ctx = CommandContext {
         docs: vec![],
         path: None,

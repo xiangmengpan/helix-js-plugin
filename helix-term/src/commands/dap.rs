@@ -57,7 +57,7 @@ fn thread_picker(
                 thread_states,
                 move |cx, thread, _action| callback_fn(cx.editor, thread),
             )
-            .with_preview(move |editor, thread| {
+            .with_preview(move |editor, _js, thread| {
                 let frames = editor
                     .debug_adapters
                     .get_active_client()
@@ -777,7 +777,7 @@ pub fn dap_switch_stack_frame(cx: &mut Context) {
             jump_to_stack_frame(cx.editor, frame);
         },
     )
-    .with_preview(move |_editor, (_index, frame)| {
+    .with_preview(move |_editor, _js, (_index, frame)| {
         frame.source.as_ref().and_then(|source| {
             source.path.as_ref().map(|path| {
                 (

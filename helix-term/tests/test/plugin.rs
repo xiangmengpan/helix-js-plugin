@@ -262,7 +262,13 @@ async fn plugin_bufferline_icons() -> anyhow::Result<()> {
                 Some(&|app| {
                     let area = helix_view::graphics::Rect::new(0, 0, 120, 1);
                     let mut buf = tui::buffer::Buffer::empty(area);
-                    helix_term::ui::EditorView::render_bufferline(&app.editor, area, &mut buf);
+                    // 测试里没有 compositor::Context ⇒ 传 None(legacy 回落:走 ACTIVE 宿主)
+                    helix_term::ui::EditorView::render_bufferline(
+                        None,
+                        &app.editor,
+                        area,
+                        &mut buf,
+                    );
                     let rendered: String = buf
                         .content
                         .iter()

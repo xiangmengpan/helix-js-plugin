@@ -515,7 +515,100 @@ impl JsHost {
         self.pump(|| crate::lsp::resolve_lsp(id, result))
     }
 
-    /// 泵入口·状态栃插件钩子(`helix.set_statusline`)
+    /// 泵入口·按**源码**加载脚本(启动引导 `init.js` 用)
+    ///
+    /// 边界说明:JS 侧的 `helix.load(name)`(插件依赖解析)走的是 `load_script_checked`,
+    /// 它**不能**收宿主 —— 它是在引擎已借出、正在执行 JS 的时候被调用的(那正是
+    /// "重入拿不到 `&mut JsHost`"的设计后果)。所以宿主显式只覆盖**Rust 侧**的加载入口。
+    pub fn load_script(&mut self, src: &str) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::load_script(src))
+    }
+
+    /// 泵入口·按**名字**加载脚本(名字用于报错定位与热重载记录)
+    pub fn load_script_named(&mut self, name: &str, src: &str) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::load_script_named(name, src))
+    }
+
+    /// 泵入口·`pane-mode-change`(平级模式切换;与 `helix.pane_mode.*` 快照同一来源)
+    pub fn emit_pane_mode_change(&mut self, mode: &str) {
+        self.pump(|| crate::commands::emit_pane_mode_change(mode));
+    }
+
+    /// 泵入口·缓冲区行图标(`helix.set_bufferline_icon`;返回值给渲染用)
+    pub fn bufferline_icon(&mut self, path: Option<&str>) -> Option<String> {
+        self.pump(|| crate::popup::bufferline_icon(path))
+    }
+
+    /// 泵入口·光标移动事件(`cursor-move`)
+    pub fn emit_cursor_move(&mut self, doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
+        self.pump(|| crate::cursor::emit_cursor_move(doc_id, row, col, mode))
+    }
+
+    /// 泵入口·选区变化事件(`selection-change`)
+    pub fn emit_selection_change(
+        &mut self,
+        doc_id: u64,
+        count: usize,
+        primary_row: usize,
+        primary_col: usize,
+    ) -> bool {
+        self.pump(|| crate::cursor::emit_selection_change(doc_id, count, primary_row, primary_col))
+    }
+
+    /// 泵入口·热重载:重跑已加载的全部脚本(`:plugin-reload` / `:plugin reload`)
+    pub fn reload_all(&mut self) -> anyhow::Result<()> {
+        self.pump(crate::commands::reload_all)
+    }
+
+    /// 泵入口·picker action 回调(`define` 的 action;payload 数组)
+    pub fn picker_invoke_action(&mut self, source: &str, payload: &[String]) {
+        self.pump(|| crate::picker::invoke_action(source, payload));
+    }
+
+    /// 泵入口·picker preview 回调(`define` 的 preview → `{path, line}`)
+    pub fn picker_invoke_preview(
+        &mut self,
+        source: &str,
+        payload: &[String],
+    ) -> Option<(String, usize)> {
+        self.pump(|| crate::picker::invoke_preview(source, payload))
+    }
+
+    /// 泵入口·picker `onKey` 钩子;返回 true = 插件消费了该键
+    #[allow(clippy::too_many_arguments)]
+    pub fn picker_key_hook(
+        &mut self,
+        source: &str,
+        key: &str,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        query: &str,
+        selected: i64,
+    ) -> bool {
+        self.pump(|| crate::picker::picker_key_hook(source, key, ctrl, alt, shift, query, selected))
+    }
+
+    /// 泵入口·把 `helix.server.rows` 的行数据回投给 JS 回调
+    pub fn deliver_server_rows(
+        &mut self,
+        id: u64,
+        rows: Vec<crate::types::ServerRow>,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::server_rows::deliver(id, rows))
+    }
+
+    /// 泵入口·兑现 fs-watcher 事件对应的 JS 回调(`watch::resolve_watch_events`)
+    pub fn resolve_watch_events(&mut self) -> anyhow::Result<()> {
+        self.pump(crate::watch::resolve_watch_events)
+    }
+
+    /// 泵入口·兑现 server 后台任务事件对应的 JS 回调(`server_tasks::resolve_events`)
+    pub fn resolve_server_task_events(&mut self) -> anyhow::Result<()> {
+        self.pump(crate::server_tasks::resolve_events)
+    }
+
+    /// 泵入口·状态栏插件钩子(`helix.set_statusline`)
     pub fn statusline_parts(
         &mut self,
         ctx: &crate::types::StatuslineCtx,
@@ -558,32 +651,30 @@ pub(crate) fn try_with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> Opt
     try_with_host_ref(|h| f(&mut h.messages.borrow_mut()))
 }
 
-/// **唯一的 legacy 隐式宿主解析**(Phase D-3 的分类结论)。
+/// **唯一的 legacy 隐式宿主解析**(Phase D 的**分类结论**;2026-10-16 全量核对过一遍)。
 ///
-/// 调用点分四类(2026-10-14 逐个核实,不是估算):
+/// 现状:helix-term 侧 **35 个"会执行 JS"的入口全部有宿主显式形态**
+/// (`JsHost::*` 泵方法,见上面的 `impl JsHost`)。仍然走这条隐式路径的只剩两类:
 ///
-/// 1. **worker / 通道 / `Send` 闭包类 —— 永久保留**。它们要么在别的线程上,要么在
-///    `job::dispatch_blocking` 那种必须 `Send` 的闭包里(`&mut JsHost` 是 `!Send`)⇒
-///    **结构上就拿不到**宿主,而不是"还没改":
-///    * `TERM_EVENTS`/`ASYNC_EVENTS`/`LSP_RESULTS` 的接收与 `push_*`;
-///    * `TermFeed` 臂 → `PluginTerminal::feed` → `term-title`;
-///    * `handle_lsp_*` 自由函数里的 `resolve_lsp(req.id, Ok(None))`;
-///    * `server_tasks::push_event` / `watch::push_watch_event`。
-/// 2. **沿调用链还没透传(可达,留待下一批)**:
-///    * `Compositor::sync_layout_cache` → `layout-change`:它挂在 **28 个布局原语**
-///      (`split`/`close`/`set_leaf_*` …)的 `self.` 方法里,要给那些签名都加宿主参数;
-///    * `load_script_named` 的三条加载路径(启动 init.js / `:plugin load` / term-native):
-///      加载入口(`load_script_checked`)本身不收宿主。
-/// 3. **纯查询 —— 本就不在本路径上**:`has_handlers`/`has_component_render`/
-///    `input_has_state`/`command_names`/`statusline_replaces` 走 `try_with_host_ref`
-///    (无宿主 ⇒ **不建**宿主、返回默认值)。
-/// 4. **状态读写(不执行 JS)**:`take_messages`/`take_ui_requests`/`set_viewport`/
-///    `set_picker_state`/`theme_overrides` 等 —— 拿宿主也只是为了定位队列,不跑 JS。
+/// 1. **结构上拿不到宿主**(不是待办 —— 每条都写明"为什么"):
+///    * `plugin_terminal::feed` → `term-title`:调用方是 `job::dispatch_blocking` 的
+///      **`Send` 闭包**(`&mut JsHost` 是 `!Send`);
+///    * `picker::invoke_preview`(`ui/js_picker.rs`):preview 闭包的签名只给 `&Editor`;
+///    * `completion_kind_icon` / `render_completion_row`(`ui/completion.rs`):在
+///      `PickerColumn::format` 这个**格式化闭包**里被调,闭包存在 picker 里、比 `cx` 活得久;
+///    * JS 侧 `helix.load(name)`:它在引擎**已经借出**时被调用 —— 正是"重入拿不到
+///      `&mut JsHost`"这件事本身(即 D-4 反例的现实版本)。
+/// 2. **不执行 JS,拿宿主只为定位队列/快照**:
+///    * 状态读写:`take_*` / `set_viewport` / `set_picker_state` / `cache_*` /
+///      `theme_overrides` / `set_layout_change_kind`(已删)/ `reset_theme` …;
+///    * 纯查询:`has_handlers` / `has_component_render` / `input_has_state` /
+///      `command_names` / `popup_exists` / `panel_has_onkey` …(走 `try_with_host_ref`:
+///      无宿主 ⇒ **不建**宿主、给默认值);
+///    * 通道/worker:`server_tasks::push_event` / `watch::push_watch_event` / `drain_*`(跨线程);
+///    * 宿主生命周期:`set_active` / `clear_active` / `take_existing` / `park_or_forget`。
 ///
-/// 换句话说:这条路的名字就应该是“**跨线程通道 / Send 闭包专用 / 待透传的中间层**”,
-/// 而不是“新代码的顺手通道”。需要排他性证明的新代码应调 `JsHost::*` 泵方法
-/// (已接好的入口见 `helix-term/src/compositor.rs` 的 `Context::js_*` 包装)。
-///
+/// 换句话说:这条路的名字就是"**跨线程通道 / Send 闭包 / 比 cx 活得久的闭包专用**",
+/// 而不是"新代码的顺手通道"。需要排他性证明的新代码应调 `JsHost::*` 泵方法。
 /// 按**只读**方式访问当前宿主(不改所有权)。
 pub(crate) fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
     if let Some(ptr) = ACTIVE.with(|a| a.get()) {

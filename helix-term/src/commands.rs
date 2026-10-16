@@ -2808,6 +2808,7 @@ fn global_search(cx: &mut Context) {
     )
     .with_preview(
         |_editor,
+         _js,
          FileResult {
              path,
              line_start,
@@ -3421,7 +3422,7 @@ fn buffer_picker(cx: &mut Context) {
         },
     )
     .with_initial_cursor(initial_cursor)
-    .with_preview(|editor, meta| {
+    .with_preview(|editor, _js, meta| {
         let doc = &editor.documents.get(&meta.id)?;
         let lines = doc.selections().values().next().map(|selection| {
             let cursor_line = selection.primary().cursor_line(doc.text().slice(..));
@@ -3512,7 +3513,7 @@ fn jumplist_picker(cx: &mut Context) {
             }
         },
     )
-    .with_preview(|editor, meta| {
+    .with_preview(|editor, _js, meta| {
         let doc = &editor.documents.get(&meta.id)?;
         let line = meta.selection.primary().cursor_line(doc.text().slice(..));
         Some((meta.id.into(), Some((line, line))))
@@ -3598,7 +3599,7 @@ fn changed_file_picker(cx: &mut Context) {
             }
         },
     )
-    .with_preview(|_editor, meta| Some((meta.path().into(), None)));
+    .with_preview(|_editor, _js, meta| Some((meta.path().into(), None)));
     let injector = picker.injector();
 
     let trust_full = cx

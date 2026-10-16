@@ -78,7 +78,27 @@ impl From<DocumentId> for PathOrId<'_> {
     }
 }
 
-type FileCallback<T> = Box<dyn for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>>>;
+/// 预览回调(D-2:契约里**多给一个宿主**)。
+///
+/// 契约形状是试出来的,记在这里免得下次再走一遍:
+/// * 原来只给 `&'a Editor`(预览是核心功能,与 JS 无关);
+/// * 为了 JS preview 钩子(`helix.define({ preview })`)能走**宿主显式**的泵入口,得把
+///   宿主传进来。先试过 `&mut Context` —— 不行:`get_preview` 的返回值借编辑器
+///   (`Preview::EditorDocument`),于是调用方拿着它就不能再用 `cx`(共享借用也冲突,
+///   因为那份共享借用是从 `&mut cx` 派生出来的);
+/// * 现在是**拆开的两个入参**:`&Editor` + `Option<&mut JsHost>`。调用方按字段借:
+///   `cx.editor` 共享 + `cx.js` 独占 ✓。
+///
+/// `'a` 仍然**同时**管编辑器与行数据(与原契约一致):有的回调(dap 的 stack frame)
+/// 返回的是**编辑器**里的路径,有的返回**行数据**里的路径;只有宿主那个引用是独立的
+/// 生命周期 `'h`。
+type FileCallback<T> = Box<
+    dyn for<'a, 'h> Fn(
+        &'a Editor,
+        Option<&'h mut helix_js::host::JsHost>,
+        &'a T,
+    ) -> Option<FileLocation<'a>>,
+>;
 
 /// File path and range of lines (used to align and highlight lines)
 pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
@@ -447,7 +467,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn with_preview(
         mut self,
-        preview_fn: impl for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>> + 'static,
+        preview_fn: impl for<'a, 'h> Fn(
+                &'a Editor,
+                Option<&'h mut helix_js::host::JsHost>,
+                &'a T,
+            ) -> Option<FileLocation<'a>>
+            + 'static,
     ) -> Self {
         self.file_fn = Some(Box::new(preview_fn));
         // assumption: if we have a preview we are matching paths... If this is ever
@@ -617,9 +642,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     fn get_preview<'picker, 'editor>(
         &'picker mut self,
         editor: &'editor Editor,
+        js: Option<&mut helix_js::host::JsHost>,
     ) -> Option<(Preview<'picker, 'editor>, Option<(usize, usize)>)> {
         let current = self.selection()?;
-        let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, current)?;
+        let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, js, current)?;
 
         match path_or_id {
             PathOrId::Path(path) => {
@@ -1008,7 +1034,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let inner = inner.inner(margin);
         BLOCK.render(area, surface);
 
-        if let Some((preview, range)) = self.get_preview(cx.editor) {
+        // 字段级借用:`cx.editor` 共享、`cx.js` 独占(两者互不相干)
+        if let Some((preview, range)) = self.get_preview(cx.editor, cx.js.as_deref_mut()) {
             let doc = match preview.document() {
                 Some(doc)
                     if range.is_none_or(|(start, end)| {
@@ -1290,15 +1317,22 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                                 other => format!("{other:?}"),
                             };
                             let m = ke.modifiers;
-                            let handled = helix_js::picker::picker_key_hook(
-                                src,
-                                &key,
+                            // 参数先落局部:两条路(泵入口 / legacy)共用同一份实参,避免抄两遍抄错
+                            let (ctrl, alt, shift) = (
                                 m.contains(KeyModifiers::CONTROL),
                                 m.contains(KeyModifiers::ALT),
                                 m.contains(KeyModifiers::SHIFT),
-                                self.prompt.line(),
-                                self.cursor as i64,
                             );
+                            let (query, selected) = (self.prompt.line(), self.cursor as i64);
+                            // D-2:onKey 钩子执行 JS ⇒ 有宿主走泵入口(handle_event 手里有 cx)
+                            let handled = match ctx.with_js(|host| {
+                                host.picker_key_hook(src, &key, ctrl, alt, shift, query, selected)
+                            }) {
+                                Some(h) => h,
+                                None => helix_js::picker::picker_key_hook(
+                                    src, &key, ctrl, alt, shift, query, selected,
+                                ),
+                            };
                             if handled {
                                 return EventResult::Consumed(None);
                             }

@@ -342,3 +342,76 @@ async fn plugin_picker_on_key_hook_keeps_esc() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// D-2 收尾:**JS picker 的 preview 回调**要经**宿主显式**的泵入口跑。
+//
+// 为什么值得单独一条:预览闭包此前只拿 `&Editor`(预览是核心功能,与 JS 无关)⇒ JS preview
+// 只能走那层隐式宿主解析。契约改成 `(&Editor, Option<&mut JsHost>, &T)` 之后,这条用例
+// 同时钉住:① 回调**真的被调到**;② 载荷是选中的那一行;③ 宿主路由没把预览搞崩。
+//
+// ⚠️ 探针**不能有每帧副作用**:preview 是**渲染期**求值的,回调里写文件 ⇒ 写文件 → 重绘 →
+// 又 preview → 再写…… 空转不止(实测:一条这样的用例跑了 15 分钟直到 app 自己退出 ✗)。
+// 所以这里只累加 **JS 侧计数器**,渲染结束后用一条命令读出来 ✓。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_picker_preview_callback_runs() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let plugin = dir.path().join("picker_preview.js");
+    std::fs::write(
+        &plugin,
+        format!(
+            r#"
+        let preview_calls = 0;
+        let last_payload = "";
+        helix.picker.define("p", {{
+            columns: ["name"],
+            items: () => [["one"], ["two"]],
+            preview: (row) => {{
+                preview_calls++;
+                last_payload = row[0];
+                return {{ path: {f:?}, line: 1 }};
+            }},
+        }});
+        helix.register_command("pickp", () => helix.picker.run("p"));
+        helix.register_command("pickp-report", () => helix.echo("preview:" + preview_calls + ":" + last_payload));
+        "#,
+            f = file.to_string_lossy()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            // 打开 JS picker ⇒ 渲染一帧时求值 preview(闭包走泵入口)
+            (
+                Some(":pickp<ret>"),
+                Some(&|app| {
+                    let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
+                    assert!(app.compositor.has_component(picker_type), "picker 应已打开");
+                }),
+            ),
+            // 关掉 picker,回到普通编辑态
+            (Some("<esc>"), None),
+            // 读计数器:preview 至少被调过一次,且拿到的是选中行的载荷
+            (
+                Some(":pickp-report<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let s = status.as_ref();
+                    assert!(
+                        s.starts_with("preview:") && s.ends_with(":one"),
+                        "preview 回调应被调用且载荷=选中行,实得 {s:?}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
