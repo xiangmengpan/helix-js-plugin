@@ -1,4 +1,5 @@
 use super::*;
+use helix_term::application::Application;
 use helix_view::current_ref;
 
 use std::time::Duration;
@@ -650,6 +651,93 @@ async fn plugin_lsp_mock_execute_manual_action_falls_back_first_server() -> anyh
         doc.text().to_string(),
         "ONE-A\n",
         "手动构造 action(无 _serverId)应回退第一个 server(A)的 resolve 结果"
+    );
+    Ok(())
+}
+
+// 补全菜单的 JS 图标钩子(`helix.set_completion_icon`)—— **此前零集成覆盖**
+// (全仓测试搜不到 completion_kind_icon / render_completion_row 的任何断言)。
+//
+// 为什么值得钉:这两个钩子是**最后两个走隐式宿主解析**的 JS 入口(理由见
+// `ui/completion.rs` 开头的注释:它们从 `menu::Item::format` 走,而该函数也被
+// **无 `Context`** 的尺寸路径 `Component::required_size` 调用,且 JS 内容参与弹窗宽度)。
+// 契约既然**有意**不动,就必须有用例证明"钩子确实被调到",否则这条路径坏了没人知道。
+//
+// 探针形状(试了三版,记下来):
+//   ① 一开始断言"渲染出来的菜单里出现 ★" —— 不稳定:菜单**会被建出来**(见下面的
+//      `last_completion` 探针)但在 `event_loop_until_idle` 处理完 idle 事件后就不在了,
+//      渲染那一刻抓不到;
+//   ② 第二版在钩子里对 `kind_num == 0` 返回空 —— mock 的 item **没有 `kind`** ⇒ kind_num
+//      恒为 0 ⇒ 断言必然踩空(探针 bug,不是实现 bug);
+//   ③ 现在:**只累加 JS 侧计数器**,菜单消失后用一条命令读出来。钩子在菜单**布局**时就会
+//      被调(`Menu::required_size` → `format`),所以不依赖渲染时机 ✓。
+#[tokio::test(flavor = "multi_thread")]
+async fn completion_icon_hook_is_called() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.mock");
+    std::fs::write(&file, "one\n")?;
+    let plugin = dir.path().join("comp_icon.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        let icon_calls = 0;
+        helix.set_completion_icon((k) => { icon_calls++; return ""; });
+        helix.register_command("icon-report", () => helix.echo("icon_calls:" + icon_calls));
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("completion_basic", &[]))
+        .build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    let mut pump = async |app: &mut Application, keys: &str| -> anyhow::Result<()> {
+        for key_event in parse_macro(keys)? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        app.event_loop_until_idle(&mut rx_stream).await;
+        Ok(())
+    };
+
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    // 先确认插件真的加载了(加载失败 ⇒ 钩子没注册 ⇒ 测的就不是这条路径)
+    let after_load = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_default();
+    assert!(
+        !after_load.contains("error"),
+        "插件应先加载成功,实得 {after_load}"
+    );
+
+    // insert + C-x 触发补全(mock LSP 的 completion_basic)。补全是异步的 ⇒ 有界重试:
+    // 每轮把回调跑干,直到菜单**被创建**(`last_completion`),最多 30 轮。
+    let mut menu_created = false;
+    for _ in 0..30 {
+        pump(&mut app, "i<C-x>").await?;
+        if app.editor.last_completion.is_some() {
+            menu_created = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(menu_created, "补全菜单应被创建(mock LSP 已就绪)");
+
+    // 回到普通模式,再读计数器:钩子应在菜单布局/渲染时被调过至少一次
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, ":icon-report<ret>").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    let s = status.as_ref();
+    let calls: u64 = s
+        .strip_prefix("icon_calls:")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        calls >= 1,
+        "补全图标钩子应被调用(菜单布局时就会调);状态栏实得 {s:?}"
     );
     Ok(())
 }

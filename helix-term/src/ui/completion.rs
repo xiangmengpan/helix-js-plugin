@@ -112,6 +112,19 @@ impl menu::Item for CompletionItem {
 
         // JS 行渲染钩子：注册时自定义整行外观；未注册/抛错/返回不可用内容 → 回退原生两列。
         // 每行每帧调用（~20 行 × 钩子耗时），钩子里不要放重逻辑。
+        //
+        // ⚠️ **为什么这条(与下面的 `completion_kind_icon`)是最后两个走隐式宿主解析的
+        // JS 入口**(D-2 收尾时逐条查过,不是漏做):
+        //   · 本函数是 `menu::Item::format`,被**两条**路径调用 ——
+        //     `Menu::render(.., cx)`(有宿主 ✓)与 `Menu::recalculate_size`(→
+        //     `Component::required_size`,**按 trait 设计就没有 `Context`**)。
+        //   · 而 JS 行内容**参与弹窗宽度计算**:若只让 render 那条路带宿主、尺寸那条路
+        //     退回原生两列,JS 自定义行的宽度就会被算错(内容被裁),是**可见的回归**;
+        //   · 想在尺寸路径也拿到宿主,得改 `Component::required_size` 的签名(trait 层,
+        //     影响 helix-term 全部组件);想用缓存绕开,则要处理 match_indices 随每次
+        //     查询变化的失效(本函数下面正依赖它清 match_indices)⇒ 语义容易出错。
+        //   ⇒ 代价(隐式解析)与收益(排他性证明)相比不划算,故**有意保留**。
+        //     重入安全不受影响:这两个钩子由**核心**调用,不是回调里重入的入口。
         let kind_text: String = kind_spans.0.iter().map(|s| s.content.as_ref()).collect();
         let provider_str = match self.provider() {
             core::completion::CompletionProvider::Lsp(_) => "lsp",
@@ -151,7 +164,12 @@ impl menu::Item for CompletionItem {
             },
         );
 
-        // kind_num 0(非 LSP/未知 kind)也会调钩子——插件侧约定 0 返回空回退;规范 kind 为 1-25
+        // ⚠️ 注意 `kind_num == 0` 时 **`completion_kind_icon` 会早退**(`if kind == 0 { return None }`),
+        // **根本不会调 JS 钩子** —— 旧注释写的"0 也会调钩子,插件约定 0 返回空"与实现不符,
+        // 已按实际改。后果:word/path 补全(无 kind ⇒ 0)永远拿不到 JS 图标。
+        // (为什么这里仍走隐式宿主解析:见本函数开头那段 —— 与 `menu::Item::format` 的
+        //  尺寸路径同源。内置 `plugins/icons` 就注册了这个钩子 ⇒ 集成用例
+        //  `plugin_lsp_mock::completion_icon_hook_is_called` 钉住它确实被调到)
         let kind_cell = match helix_js::completion_kind_icon(kind_num) {
             Some(icon) => menu::Cell::from(Span::raw(icon)),
             None => menu::Cell::from(kind_spans),

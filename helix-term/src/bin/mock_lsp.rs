@@ -86,7 +86,9 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
             "contents": { "kind": "markdown", "value": "mock hover" },
         }),
         "textDocument/completion" if scenario == "completion_basic" => json!([
-            { "label": "mock-item" }
+            // `kind` 必给:`completion_kind_icon` 对 kind 0 会**早退**(不调 JS 钩子),
+            // 缺 kind ⇒ 菜单里的图标钩子永远测不到(实测踩过)
+            { "label": "mock-item", "kind": 3 }
         ]),
         "textDocument/definition" if scenario == "goto_definition_basic" => {
             let uri = msg["params"]["textDocument"]["uri"].clone();
