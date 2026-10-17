@@ -600,6 +600,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G11** | `159730b4a` | ACTIVE 读点 5→1;矛盾注释 4→0;测试 176→**178**(+2 不变量);377 集成 / api-check 三段不变;clippy 0 | G11b(搬 6 OnceLock + 12 TLS 进宿主)判定**不该做**:通道必须 Send,而宿主持有 !Send 的 boa Context |
 | 2026-10-17 | **S2-a** | 本条(`refactor(term): …`) | `server_op` **269→22**(clippy 口径);最长 handler 53;`typed.rs` 6307→6028;`--workspace --lib` / 377 集成 / api-check 三段 / docgen 全绿 | 照 G7 同法:`typed/server_ops/` 7 个 handler + 分派;分支体逐行搬,判断条件未改 |
 | 2026-10-17 | **G10b spec** | 本条(`docs: G10b spec`) | 无代码改动;spec 含实测(handle_event 147 / 7 段 / 23+26+14+1 条测试)与逐条行为对照清单 | 状态 🟡;结论是不接 JsSurface(共享面为零),同文件拆 6 个方法 |
+| 2026-10-17 | **G10b** | 本条(`refactor(ui): …`) | `handle_event` 147→**12**;最长方法 49;终端测试 23 + 27 + 14 + 1 全绿;377 集成不变;`--workspace --lib` / api-check / docgen 全绿 | 不接 JsSurface;同文件按事件种类拆 7 个方法,分支体逐行搬(结构行差异已逐条核对) |
 
 ---
 
@@ -620,7 +621,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `plugin_panel` + `plugin_popup` | 770 行 | **376**(+`js_surface` 310) | G10 |
 | 两者 20 行共享窗口 | 73 | **0** | G10 |
 | 跨文件重复(20 行窗口) | 47 个块 | **2 对文件 / 12 个窗口** | 见 9.2 |
-| 长函数(>100 行,唯一) | 70 | **64** | fork 相关 16 → **13**(`server_op` 269→22,见 9.3) |
+| 长函数(>100 行,唯一) | 70 | **63** | fork 相关 16 → **12**(`server_op` 269→22、`plugin_terminal::handle_event` 147→12) |
 | `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
 | `helix-js` 测试 | 176 | **178** | +2 条不变量 |
 | 集成测试 | 377 | **377** | 未增未减 |
@@ -640,7 +641,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | ~~`typed.rs::server_op`~~ | ~~269~~ → **22** | ✅ **已拆**(2026-10-17):`typed/server_ops/` 7 个 handler + `mod.rs` 分派;最长 handler 53 行;`typed.rs` 6307 → 6028 |
 | `popup.rs::statusline_parts` | 223 | S2(可选):纯数据整形,可拆成「取 zones / 组装 parts」两段 |
 | `popup.rs::parse_node` | 161 | S3:JSON → 节点的递归下降,拆开反而更难读 |
-| `plugin_terminal.rs::handle_event` | 147 | 🟡 **spec 已出**(G10b):`2026-10-17-plugin-terminal-split-design.md`。结论:**不**接 `JsSurface`(共享面为零),同文件拆 `on_mouse`/`on_paste`/`on_key`/`term_key_decision`/`normal_mode_key`/`insert_mode_key`,目标 ≤20 行 + 逐条行为对照 |
+| ~~`plugin_terminal.rs::handle_event`~~ | ~~147~~ → **12** | ✅ **已拆**(2026-10-17,G10b):`on_mouse` 18 / `on_paste` 8 / `on_key` 35 / `term_key_decision` 28 / `normal_mode_key` 49 / `insert_mode_key` 13 / `copy_visible` 11;不接 `JsSurface`(共享面为零) |
 | `ui_op.rs::apply` | 139 | **不做**:24 个 arm 的单 match,每个 arm 5–6 行;拆成 24 个函数只是把 match 搬走 |
 | `popup.rs::{js_open_popup, js_open_terminal, js_el}` | 112–135 | S3:三个都是「解析 JS 参数 + 校验」的直线代码,6 行样板可压表(与 G6 的第二步同法),收益中等 |
 | `typed.rs::server_panel` | 109 | S3 |
@@ -664,8 +665,8 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 ### 9.5 结论
 
 - A/B/C 三批 **12 个目标 + 4 个决策项全部收口**,没有"未解释"的数字变化(每一项的差异都在 §8 有记录)。
-- 剩余事项按上面分档:**S2 只剩一条**(`plugin_terminal::handle_event` = 原 G10b),spec 已出、等你确认;
-  `server_op` 已于同日拆完(见 §9.3 表)。其余是 S3 / 明确不动。
+- 剩余事项按上面分档:**S2 两条已全部拆完**(`server_op` 269→22、`plugin_terminal::handle_event` 147→12);
+  其余是 S3 / 明确不动。**§9 的遗留清单已清空到只剩 S3。**
 - 门禁现状:`fmt` / `clippy`(两种口径)/ `cargo test --workspace --lib` / `cargo test -p helix-js`(+`--ignored`)/ `cargo integration-test`(377)/ `api-check`(三道)/ `docgen` 零 diff —— 全部绿。
 
 ---

@@ -758,84 +758,43 @@ impl PluginTerminal {
     pub(crate) fn full_text(&self) -> String {
         self.grid.full_text()
     }
-}
 
-impl Drop for PluginTerminal {
-    fn drop(&mut self) {
-        // 关闭面板（Esc/层移除）→ 杀 pty；未知 id（已退出）静默
-        let _ = helix_js::term_kill(self.pty_id);
-        helix_js::unregister_component_state(self.view_id);
-        helix_js::unregister_component_render(self.view_id);
-    }
-}
-
-impl Component for PluginTerminal {
-    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        use helix_view::input::{KeyCode, KeyModifiers, MouseEventKind};
-        // minimized：不消费按键，编辑器照常工作
-        if self.mode == TermMode::Minimized {
-            return EventResult::Ignored(None);
-        }
-        // 鼠标：应用开了上报就编码发 pty(优先于本地滚动);否则滚轮走本地滚回
-        if let Event::Mouse(mouse) = event {
-            if let Some(report) = self.mouse_report(mouse) {
-                let _ = helix_js::term_write(self.pty_id, &report);
-                return EventResult::Consumed(None);
-            }
-            return match mouse.kind {
-                MouseEventKind::ScrollUp => {
-                    self.grid.scroll_up_view(3);
-                    EventResult::Consumed(None)
-                }
-                MouseEventKind::ScrollDown => {
-                    self.grid.scroll_down_view(3);
-                    EventResult::Consumed(None)
-                }
-                _ => EventResult::Ignored(None),
-            };
-        }
-        // 粘贴：直通模式下写给 pty;应用开了括号粘贴(2004)就包上标记
-        if let Event::Paste(contents) = event {
-            if self.input_mode == TermInputMode::Normal {
-                return EventResult::Ignored(None); // 滚动查看态:交给编辑器
-            }
-            let payload = self.paste_payload(contents);
-            let _ = helix_js::term_write(self.pty_id, &payload);
+    /// 鼠标：应用开了上报就编码发 pty(优先于本地滚动);否则滚轮走本地滚回。
+    fn on_mouse(&mut self, mouse: &helix_view::input::MouseEvent) -> EventResult {
+        use helix_view::input::MouseEventKind;
+        if let Some(report) = self.mouse_report(mouse) {
+            let _ = helix_js::term_write(self.pty_id, &report);
             return EventResult::Consumed(None);
         }
-        let Event::Key(key) = event else {
-            return EventResult::Ignored(None);
-        };
-        // term-key 钩子（插件决策优先）：pass/consume/minimize/close；无钩子 → 默认流程
-        let key_desc = terminal_key_desc(key);
-        match cx.js_emit_term_key(self.pty_id, &key_desc.0, key_desc.1, key_desc.2, key_desc.3) {
-            Some(helix_js::TermKeyDecision::Pass) => {
-                if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
-                    let _ = helix_js::term_write(self.pty_id, &bytes);
-                }
-                return EventResult::Consumed(None);
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.grid.scroll_up_view(3);
+                EventResult::Consumed(None)
             }
-            Some(helix_js::TermKeyDecision::Consume) => return EventResult::Consumed(None),
-            Some(helix_js::TermKeyDecision::Minimize) => {
-                return EventResult::Consumed(Some(Box::new(
-                    |compositor: &mut Compositor, _cx: &mut Context| {
-                        if let Some(id) = compositor
-                            .layout_tree()
-                            .find_leaf_id::<PluginTerminal>(|_| true)
-                        {
-                            compositor.minimize_leaf(id, true);
-                        }
-                    },
-                )))
+            MouseEventKind::ScrollDown => {
+                self.grid.scroll_down_view(3);
+                EventResult::Consumed(None)
             }
-            Some(helix_js::TermKeyDecision::Close) => {
-                return EventResult::Consumed(Some(Box::new(
-                    |compositor: &mut Compositor, _cx: &mut Context| {
-                        compositor.remove_type::<PluginTerminal>();
-                    },
-                )))
-            }
-            None => {}
+            _ => EventResult::Ignored(None),
+        }
+    }
+
+    /// 粘贴：直通模式下写给 pty;应用开了括号粘贴(2004)就包上标记。
+    fn on_paste(&mut self, contents: &str) -> EventResult {
+        if self.input_mode == TermInputMode::Normal {
+            return EventResult::Ignored(None); // 滚动查看态:交给编辑器
+        }
+        let payload = self.paste_payload(contents);
+        let _ = helix_js::term_write(self.pty_id, &payload);
+        EventResult::Consumed(None)
+    }
+
+    /// 按键总入口：term-key 钩子（插件决策优先）→ `C-\\` 模式切换 → 按输入模式分流。
+    fn on_key(&mut self, key: &helix_view::input::KeyEvent, cx: &mut Context) -> EventResult {
+        use helix_view::input::{KeyCode, KeyModifiers};
+        // 钩子说了算时直接返回；`None` = 无钩子/未拦截，继续本地语义
+        if let Some(result) = self.term_key_decision(key, cx) {
+            return result;
         }
         // C-\：Insert → Normal（终端内滚动查看）；Normal → 回 Insert 并聚焦编辑器
         let is_ctrl_backslash = key.modifiers.contains(KeyModifiers::CONTROL)
@@ -861,77 +820,153 @@ impl Component for PluginTerminal {
                 }
             }
         } else if self.input_mode == TermInputMode::Normal {
-            // 终端 normal 模式：滚动缓冲/复制；i/a/Esc 回 insert；q 无操作（关闭归 window 模式 x）
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.grid.scroll_down_view(1);
-                    EventResult::Consumed(None)
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.grid.scroll_up_view(1);
-                    EventResult::Consumed(None)
-                }
-                KeyCode::PageDown => {
-                    self.grid.scroll_down_view(self.grid.rows() as usize);
-                    EventResult::Consumed(None)
-                }
-                KeyCode::PageUp => {
-                    self.grid.scroll_up_view(self.grid.rows() as usize);
-                    EventResult::Consumed(None)
-                }
-                KeyCode::Char('g') => {
-                    self.grid.scroll_up_view(self.grid.scrollback_len());
-                    EventResult::Consumed(None)
-                }
-                KeyCode::Char('G') => {
-                    self.grid.set_scroll_offset(0);
-                    EventResult::Consumed(None)
-                }
-                KeyCode::Char('i') | KeyCode::Char('a') => {
-                    self.input_mode = TermInputMode::Insert;
-                    EventResult::Consumed(None)
-                }
-                KeyCode::Esc => {
-                    // normal 模式 Esc 无操作(与全局一致:只在 insert→normal 单向;回 insert 用 i/a)
-                    EventResult::Consumed(None)
-                }
-                KeyCode::Char('y') => {
-                    // 复制可视区文本（含滚回行）到 " 与 + 寄存器：编辑器里 p/+p 可粘贴
-                    let text = self.grid.visible_text();
-                    EventResult::Consumed(Some(Box::new(
-                        move |_compositor: &mut Compositor, cx: &mut Context| {
-                            let values = vec![text];
-                            let _ = cx.editor.registers.write('"', values.clone());
-                            let _ = cx.editor.registers.write('+', values);
-                            cx.editor.set_status("终端可视区已复制（p 粘贴）");
-                        },
-                    )))
-                }
-                KeyCode::Char('q') => {
-                    // 终端关闭统一交给 window 模式(x);此处仅消费,不再关闭
-                    EventResult::Consumed(None)
-                }
-                // 其余键直通 pty（C-c 中断等）
-                _ => {
-                    if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
-                        let _ = helix_js::term_write(self.pty_id, &bytes);
-                    }
-                    EventResult::Consumed(None)
-                }
-            }
+            self.normal_mode_key(key)
         } else {
-            // Insert 模式：按键全部直通 pty（插入文字）
-            if key.code == KeyCode::Esc {
-                // Esc → 切 terminal normal 模式（滚动/复制），不关闭（关闭归 window 模式 x）
-                self.input_mode = TermInputMode::Normal;
-                cx.js_emit_term_mode(self.pty_id, "normal");
-                return EventResult::Consumed(None);
+            self.insert_mode_key(key, cx)
+        }
+    }
+
+    /// term-key 钩子的四路决策（pass/consume/minimize/close）。
+    ///
+    /// 返回 `None` = **没有钩子或钩子没表态**，调用方继续本地语义；
+    /// 返回 `Some` = 已定论（注意 `Pass` 的语义是「插件放行，但仍要按终端键表写 pty」）。
+    fn term_key_decision(
+        &mut self,
+        key: &helix_view::input::KeyEvent,
+        cx: &mut Context,
+    ) -> Option<EventResult> {
+        let key_desc = terminal_key_desc(key);
+        match cx.js_emit_term_key(self.pty_id, &key_desc.0, key_desc.1, key_desc.2, key_desc.3) {
+            Some(helix_js::TermKeyDecision::Pass) => {
+                if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
+                    let _ = helix_js::term_write(self.pty_id, &bytes);
+                }
+                Some(EventResult::Consumed(None))
             }
-            if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
-                // 按键直通 pty（非阻塞；worker 已退出时静默）
-                let _ = helix_js::term_write(self.pty_id, &bytes);
+            Some(helix_js::TermKeyDecision::Consume) => Some(EventResult::Consumed(None)),
+            Some(helix_js::TermKeyDecision::Minimize) => Some(EventResult::Consumed(Some(
+                Box::new(|compositor: &mut Compositor, _cx: &mut Context| {
+                    if let Some(id) = compositor
+                        .layout_tree()
+                        .find_leaf_id::<PluginTerminal>(|_| true)
+                    {
+                        compositor.minimize_leaf(id, true);
+                    }
+                }),
+            ))),
+            Some(helix_js::TermKeyDecision::Close) => Some(EventResult::Consumed(Some(Box::new(
+                |compositor: &mut Compositor, _cx: &mut Context| {
+                    compositor.remove_type::<PluginTerminal>();
+                },
+            )))),
+            None => None,
+        }
+    }
+
+    /// 复制可视区文本（含滚回行）到 " 与 + 寄存器：编辑器里 p/+p 可粘贴。
+    fn copy_visible(&mut self) -> EventResult {
+        let text = self.grid.visible_text();
+        EventResult::Consumed(Some(Box::new(
+            move |_compositor: &mut Compositor, cx: &mut Context| {
+                let values = vec![text];
+                let _ = cx.editor.registers.write('"', values.clone());
+                let _ = cx.editor.registers.write('+', values);
+                cx.editor.set_status("终端可视区已复制（p 粘贴）");
+            },
+        )))
+    }
+
+    /// 终端 Normal（滚动查看）模式：滚动缓冲/复制；i/a 回 Insert；q 仅消费（关闭归 window 模式 x）。
+    fn normal_mode_key(&mut self, key: &helix_view::input::KeyEvent) -> EventResult {
+        use helix_view::input::KeyCode;
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.grid.scroll_down_view(1);
+                EventResult::Consumed(None)
             }
-            EventResult::Consumed(None)
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.grid.scroll_up_view(1);
+                EventResult::Consumed(None)
+            }
+            KeyCode::PageDown => {
+                self.grid.scroll_down_view(self.grid.rows() as usize);
+                EventResult::Consumed(None)
+            }
+            KeyCode::PageUp => {
+                self.grid.scroll_up_view(self.grid.rows() as usize);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('g') => {
+                self.grid.scroll_up_view(self.grid.scrollback_len());
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('G') => {
+                self.grid.set_scroll_offset(0);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('i') | KeyCode::Char('a') => {
+                self.input_mode = TermInputMode::Insert;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Esc => {
+                // normal 模式 Esc 无操作(与全局一致:只在 insert→normal 单向;回 insert 用 i/a)
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('y') => self.copy_visible(),
+            KeyCode::Char('q') => {
+                // 终端关闭统一交给 window 模式(x);此处仅消费,不再关闭
+                EventResult::Consumed(None)
+            }
+            // 其余键直通 pty（C-c 中断等）
+            _ => {
+                if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
+                    let _ = helix_js::term_write(self.pty_id, &bytes);
+                }
+                EventResult::Consumed(None)
+            }
+        }
+    }
+
+    /// 终端 Insert 模式：`Esc` → Normal（不关闭，关闭归 window 模式 x）；其余直通 pty。
+    fn insert_mode_key(
+        &mut self,
+        key: &helix_view::input::KeyEvent,
+        cx: &mut Context,
+    ) -> EventResult {
+        use helix_view::input::KeyCode;
+        if key.code == KeyCode::Esc {
+            self.input_mode = TermInputMode::Normal;
+            cx.js_emit_term_mode(self.pty_id, "normal");
+            return EventResult::Consumed(None);
+        }
+        if let Some(bytes) = key_to_term_bytes(key, self.grid.engine_mode()) {
+            // 按键直通 pty（非阻塞；worker 已退出时静默）
+            let _ = helix_js::term_write(self.pty_id, &bytes);
+        }
+        EventResult::Consumed(None)
+    }
+}
+
+impl Drop for PluginTerminal {
+    fn drop(&mut self) {
+        // 关闭面板（Esc/层移除）→ 杀 pty；未知 id（已退出）静默
+        let _ = helix_js::term_kill(self.pty_id);
+        helix_js::unregister_component_state(self.view_id);
+        helix_js::unregister_component_render(self.view_id);
+    }
+}
+
+impl Component for PluginTerminal {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        // minimized：不消费按键，编辑器照常工作
+        if self.mode == TermMode::Minimized {
+            return EventResult::Ignored(None);
+        }
+        match event {
+            Event::Mouse(mouse) => self.on_mouse(mouse),
+            Event::Paste(contents) => self.on_paste(contents),
+            Event::Key(key) => self.on_key(key, cx),
+            _ => EventResult::Ignored(None),
         }
     }
 
