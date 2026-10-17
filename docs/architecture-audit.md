@@ -622,7 +622,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `server_manager` | 1 文件 2,956 行 | **7 文件**(最大 1,339,含 1,283 行测试) | G8a/G8b |
 | `plugin_panel` + `plugin_popup` | 770 行 | **376**(+`js_surface` 310) | G10 |
 | 两者 20 行共享窗口 | 73 | **0** | G10 |
-| 跨文件重复(20 行窗口) | 47 个块 | **1 对文件 / 3 个窗口**(仅上游 dap↔lsp) | 见 9.2 |
+| 跨文件重复(20 行窗口) | 47 个块 | **1 对文件 / 3 个窗口**(仅上游 `helix-dap ↔ helix-lsp` 的 transport) | 见 9.2,复跑确认 |
 | 长函数(>100 行,唯一) | 70 | **63** | fork 相关 16 → **12**(`server_op` 269→22、`plugin_terminal::handle_event` 147→12) |
 | JS 错误构造样板 | 239 处 | **0**(统一 `crate::js_err`) |
 | `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
