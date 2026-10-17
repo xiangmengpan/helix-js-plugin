@@ -91,6 +91,7 @@ cargo integration-test
 ```
 [ ] cargo fmt --all --check                         绿
 [ ] cargo clippy --workspace --all-targets -- -D warnings   零新增
+[ ] cargo test --workspace --lib                    零失败(D8 起纳入;此前 --lib 一直是红的)
 [ ] 该项 §验证 里列出的命令全绿
 [ ] 等价性数字与 §1 基线一致(或差异已在完成记录里解释)
 [ ] 单个 commit,消息形如 refactor(js): 把内联测试搬出 lib.rs
@@ -530,7 +531,7 @@ cargo integration-test
 | **D5** | ~~2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`)~~ | **已修**(2026-10-17):路径改到 `plugins/<name>/plugin.js`;`--ignored` 由 4/6 变 **6/6 通过** | — |
 | **D6** | ~~`clippy --features integration` 改动前就红~~ | **已修**(2026-10-17):`plugin_roots_for` 加 `#[cfg(any(not(feature="integration"), test))]`;CI 的 clippy 步骤加 `--features integration`;顺带清掉 25 条该 feature 下的既有 lint | — |
 | **D7** | ~~9 个零调用方的 public 函数~~ | **已处理**(2026-10-17):`layout_{save,load,list,delete}` + `dir_or_err` **确认死亡并删除**(`:layout` 实际由 `plugins/layout/plugin.js` 实现,JS 侧走 `js_layout_*`,测试 5+16 条全绿);其余 4 个(`emit_hook`/`emit_term_close`/`picker_has_on_key`/`emit_lsp_diagnostics`)**不是死代码** —— 被单元测试调用,`decide` 更是被 `typed.rs:5114` 用(以 `decide_permission` 别名,G3 的名字扫描漏了别名) | — |
-| **D8** | 新发现:`cargo test -p helix-term --lib` **改动前就是红的**(`builtin_recipes_loaded_from_toml_keep_semantics` 稳定失败 + `archive_assets_install_end_to_end` 间歇失败,3/1)。根因:测试共享进程级 `EXT: OnceLock` 缓存与 `SM_*` 环境变量。是否纳入修复? | **纳入**:一个独立小项——SM 测试全量串行化 + 每例前重置 `EXT`,让 `--lib` 能当门禁 | — |
+| **D8** | ~~`cargo test -p helix-term --lib` 改动前就红~~ | **已修**(2026-10-17):扩展配方缓存在测试期改 thread-local;`builtin_recipes` 断言内置集合;`install_spec` 消除「查表→用表」窗口;38 个 SM 用例统一 `sm_lock`;CI 新增 `cargo test --workspace --lib` | — |
 
 ---
 
@@ -540,6 +541,7 @@ cargo integration-test
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test --workspace --lib                            # 库里那批只跑在 --lib 的用例(D8)
 cargo test -p helix-js                                   # 可加 -- --ignored
 cargo integration-test                                   # = cargo test --features integration --profile integration --workspace --test integration
 cargo test -p helix-term --features integration --test integration <module>
@@ -572,6 +574,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G9** | 本条(`docs(audit): G9 结案`) | 无代码改动;交付的是**可复算的度量**(4 组/9 份/35 行)与结案理由 | 决定不抽 JS 共享层;要共享就走 Rust 原生 API |
 | 2026-10-17 | **G10** | 本条(`refactor(ui): … (G10)`) | panel+popup **770→376**、共享窗口 **73→0**、最长 handle_event 234→57;377 集成测试不变;clippy 两种口径 0 warning | 新增 `js_surface.rs`(310);Esc 语义用开关区分，测试抓到面板 Esc 分支丢失 |
 | 2026-10-17 | **G12** | 本条(`refactor(term): … (G12)`) | pane.rs dispatch **24→0**;全仓 75→54;377 集成测试不变;新增 5 条 handler 单测;clippy 两种口径 0 warning | `UiOp` 只装数据;保持一请求一次 dispatch;不补既有缺失的 kind |
+| 2026-10-17 | **D8** | `e3713f1df` | `cargo test --workspace --lib` 连跑 8 轮 0 失败(此前 1 稳定红 + 1 间歇红);377 集成测试不变;clippy 两种口径 0 warning | 根因=EXT 进程级可写缓存 × worker 线程;测试期改 thread-local |
 
 ---
 
