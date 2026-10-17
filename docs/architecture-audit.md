@@ -23,7 +23,7 @@
 | ✅ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G6** | `build_engine`(773 行)按命名空间/能力切分到 `register/` | S1 | B | 搬家 · 2026-10-17 · 本条 | G1, G3 |
-| ☐ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 | G3 |
+| ✅ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 · 2026-10-17 · 本条 | G3 |
 | ☐ | **G8** | `server_manager.rs`(2,956 行)拆成 7 个模块并移出 `commands/` | S2 | B | 搬家 | 无 |
 | ☐ | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 | 无 |
 | ☐ | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 | G6, G10 spec |
@@ -318,16 +318,41 @@ cargo integration-test
   那是它本来就脆。已在 `lib.rs` 注释里写明"顺序 = 族顺序"。
 - **风险**:注册表是 API 面的唯一真相源;本次改动同时改了**生成方与检查方**,已用"逐项计数不变"钉住。
 
-### ☐ G7 · `apply_ui_requests`(689 行)按请求族切分
+### ☑ G7 · `apply_ui_requests`(689 行)按请求族切分(2026-10-17 完成)
 
-- **症状**:`helix-term/src/commands/typed.rs:4903` 689 行单函数,45 个 arm,每个 arm 直接做 UI 接线
-  (建 Popup、`job::dispatch_blocking`、`compositor.replace_or_push`);`UiRequest` 有 92 个变体。
-- **做法**:拆到 `helix-term/src/commands/ui_requests/{pane,term,picker,doc,editor,fs}.rs`,
-  每个 arm 变成一个 `fn(...) -> Result<()>`;顶层只剩 6 路分派。
-- **不做**:不动 `UiRequest` 枚举本身(拆枚举会碰 16 个文件,收益远小于成本 —— 明确列为**不做**)。
-- **完成判据**:`apply_ui_requests` < 80 行;最长 handler < 100 行;集成测试数量与基线一致。
-- **验证**:`cargo integration-test` + 按族抽样
-  (`cargo test -p helix-term --features integration --test integration plugin_panel` 等)
+- **症状**:689 行单函数,43 个 arm 各自直接做 UI 接线(建 Popup、`job::dispatch_blocking`、
+  `compositor.replace_or_push`);`UiRequest` 有 92 个变体。
+- **做法**:handler 落在 `helix-term/src/commands/typed/ui_requests/`
+  | 文件 | handler 数 | 内容 |
+  |---|---|---|
+  | `pane.rs` | 24 | 面板/布局/堆叠/缩放/焦点 |
+  | `term.rs` | 7 | 打开/模式/关闭/清屏/保存/尺寸/喂数据 |
+  | `doc.rs` | 5 | 文档/缓冲区/退出 |
+  | `server.rs` | 3 | 服务器管理(含最大的 `ServerListRows` 85 行) |
+  | `editor.rs` | 2 | 主题、键位映射 |
+  | `popup.rs` / `picker.rs` / `watch.rs` | 1 / 1 / 1 | 弹窗、取词器、文件监视 |
+  顶层 `apply_ui_requests` **59 行**:`for req in reqs { match req { … } }`,每个 arm 一行转调。
+- **机械搬法(为什么 diff 看起来大但语义为零)**:arm 的**解构写在 handler 签名里**
+  (`fn handle_open_panel(OpenPanelReq { id, side, .. }: OpenPanelReq)`),arm 体**逐行原样**成为
+  handler 体,末尾 `Ok(())`。所以 43 个 handler 的每一行都能在旧函数里找到对应行。
+- **三处必须手写的边界(编译器直接指出,不是猜的)**
+  1. `Watch`/`Unwatch` 原先是**一个组合 arm**(`ref request @ (A(..) | B(..))`),我的 arm 扫描器
+     第一版只认出 `A`,导致 match 非穷尽 → 改成 `apply_watch(request: UiRequest)`,两条 arm 各自
+     重建变体传入(与原 `ref request @` 等价,已核对 `apply_watch` 的 `&UiRequest` 签名)。
+  2. handler 若叫 `server_op` 会**遮蔽**同名的真实函数,导致体内 `server_op(editor, …)` 递归到
+     自己(编译报参数个数不符)→ 统一 `handle_` 前缀。
+  3. 子模块用 `use super::*;` 拿 `typed.rs` 的私有导入(`bail`/`job`/`ui`/`layer_id`),
+     所以 handler 体不用重写任何路径 —— 这也是本项能做到"零语义改动"的原因。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `apply_ui_requests` | 689 行 | **59 行** |
+  | 最长 handler | 689 | **85 行**(`handle_server_list_rows`) |
+  | `cargo test -p helix-js` | 176 / 170 passed / 6 ignored | **完全相同** |
+  | `cargo integration-test` | 377 passed / 0 failed | **完全相同**(195s) |
+  | `fmt` / `clippy -D warnings` | 绿 | 绿(0 warning) |
+- **明确不做**:不动 `UiRequest` 枚举本身(92 变体 / 16 文件 match,收益远小于成本)。
+- **风险**:纯搬家;43 个 arm 全部有集成测试覆盖(context 里已确认 377 条含 plugin_* 各族)。
 
 ### ☐ G8 · `server_manager.rs`(2,956 行)拆模块并移出 `commands/`
 
@@ -441,6 +466,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G4** | 本条(`refactor(js): … (G4)`) | 176 测试 / api-check 3 段全绿 不变;clippy 0 warning | `layout.rs`→`layout_api.rs`(42 行引用同步);新增模块地图 |
 | 2026-10-17 | **G5** | 本条(`refactor(xtask): … (G5)`) | 6 个任务逐个跑 OK;docgen 零 diff;help 逐行一致;main.rs 622→23 | `TASKS` 表驱动 dispatch+help;修掉已漂的 api-check 注释 |
 | 2026-10-17 | **G6** | 本条(`refactor(js): … (G6)`) | `build_engine` 773→**94**;api-check **逐项计数不变**(134/20/15);176 测试 / 377 集成不变 | 13 个 register 文件;同步扩展**两个**检查脚本(否则门禁失明);修掉容器正则误判 |
+| 2026-10-17 | **G7** | 本条(`refactor(term): … (G7)`) | `apply_ui_requests` 689→**59**;最长 handler 85;176 测试 / 377 集成不变;clippy 0 warning | 43 个 handler 按族分 8 文件;组合 arm / 同名遮蔽两个坑 |
 
 ---
 
