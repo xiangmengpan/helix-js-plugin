@@ -69,7 +69,7 @@ Existing tests can be used as examples. Helpers can be found in
 [helpers.rs][helpers.rs]. The log level can be set with the `HELIX_LOG_LEVEL`
 environment variable, e.g. `HELIX_LOG_LEVEL=debug cargo integration-test`.
 
-The suite runs fully parallel: 367 tests in ~180s wall time on a 16-thread machine. (It used to
+The suite runs fully parallel: 377 tests in ~220s wall time on a 16-thread machine. (It used to
 be serialized by a global test lock, which cost ~1881s.) The `server_manager` family is the only
 part that still serializes, because it shares process-global `SM_*` environment variables.
 

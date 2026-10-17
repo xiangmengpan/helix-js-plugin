@@ -600,6 +600,66 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 
 ---
 
+## 9. 收尾体检(2026-10-17,全部目标收口后重跑同一套口径)
+
+> 口径与 §1 完全一致(clippy 权威长函数 / 归一化 20 行窗口 / 文件行数 / 门禁),所以数字可比。
+
+### 9.1 基线 → 现在
+
+| 指标 | 体检基线 | 现在 | 说明 |
+|---|---|---|---|
+| `helix-js/src/lib.rs` | 5,693 行 | **202** | G1(测试搬出)+ G6(注册表搬到 `register/`) |
+| `build_engine` | 773 行 | **94** | G6 |
+| `apply_ui_requests` | 689 行 | **59** | G7 |
+| `pane` 族 dispatch 闭包 | 24 处 | **0** | G12(`UiOp`) |
+| 全仓 `job::dispatch*` 调用点 | 75 | **54** | −24 闭包 +1 唯一执行点 |
+| `server_manager` | 1 文件 2,956 行 | **7 文件**(最大 1,339,含 1,283 行测试) | G8a/G8b |
+| `plugin_panel` + `plugin_popup` | 770 行 | **376**(+`js_surface` 310) | G10 |
+| 两者 20 行共享窗口 | 73 | **0** | G10 |
+| 跨文件重复(20 行窗口) | 47 个块 | **2 对文件 / 12 个窗口** | 见 9.2 |
+| 长函数(>100 行,唯一) | 70 | **67** | fork 相关 16 → 14(见 9.3) |
+| `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
+| `helix-js` 测试 | 176 | **178** | +2 条不变量 |
+| 集成测试 | 377 | **377** | 未增未减 |
+| api-check | 134 / 20 / 15 | **134 / 20 / 15** | 三道门禁全程未松 |
+
+### 9.2 重复:只剩 2 对
+
+| 文件对 | 窗口数 | 判断 |
+|---|---|---|
+| `helix-js/src/tests/plugin.rs` ↔ `tests/popup_panel.rs` | 9 | **S3**:G1 拆分时两边都带了同款测试夹具(`make_tar_gz`/`write_sh`/`load_script_named` 一类)。可以收进 `tests/mod.rs`,纯测试改动 |
+| `helix-dap/src/transport.rs` ↔ `helix-lsp/src/transport.rs` | 3 | **不做**:上游代码(D1),改它只增加未来 merge 成本 |
+
+### 9.3 fork 相关的长函数(14 个),按「值不值得再动」分三档
+
+| 函数 | 行数 | 判断 |
+|---|---|---|
+| `typed.rs::server_op`(`:server` 子命令分发) | **269** | **S2,建议单独做**:与 G7 同法(按子命令拆 handler)。这是现在**仓库里最大的 fork 函数** |
+| `popup.rs::statusline_parts` | 223 | S2(可选):纯数据整形,可拆成「取 zones / 组装 parts」两段 |
+| `popup.rs::parse_node` | 161 | S3:JSON → 节点的递归下降,拆开反而更难读 |
+| `plugin_terminal.rs::handle_event` | 147 | **S2,= 原 G10b**:终端网格/光标/PTY 语义,与 panel/popup 不同构,要单独 spec |
+| `ui_op.rs::apply` | 139 | **不做**:24 个 arm 的单 match,每个 arm 5–6 行;拆成 24 个函数只是把 match 搬走 |
+| `popup.rs::{js_open_popup, js_open_terminal, js_el}` | 112–135 | S3:三个都是「解析 JS 参数 + 校验」的直线代码,6 行样板可压表(与 G6 的第二步同法),收益中等 |
+| `typed.rs::server_panel` | 109 | S3 |
+| `server_rows.rs::deliver` | 108 | S3 |
+| `server_manager::{parse_ext_recipe, build_section, run_task}` | 101–132 | **不改**:G8b 判据是 <150,已达标 |
+
+### 9.4 其它遗留(都记录在案,均不阻塞)
+
+1. **`tsc --noEmit` 不在 CI**:`docs/` 把它列为插件侧检查,但 `build.yml` 里没有这一步(本机也没装 tsc)。类型面目前靠 `helix.d.ts` 人工维护 + api-check 的名字对账。
+2. **12 处 `#[ignore]`**:fork 侧 6 处(已全部修好并 `--ignored` 6/6 通过,默认不跑是因为慢),其余为上游。
+3. **fork 内 13 处 `TODO/FIXME/ponytail`**:`ponytail:` 是**有意的取舍记录**(每条都写了为什么+量化),不是待办;`TODO` 里多数是上游 25.7.1 的原文。
+4. **2 个 pre-existing stash**(`user-wip-application`、基于 `bbb090d7e` 的 WIP):不是本次产物,原样保留。
+5. **`docs/CONTRIBUTING.md`「367 tests」与 `docs/server-manager.md` 的 `server_manager.rs` 路径**:本次已顺手修正(377 / `server_manager/mod.rs`)。
+
+### 9.5 结论
+
+- A/B/C 三批 **12 个目标 + 4 个决策项全部收口**,没有"未解释"的数字变化(每一项的差异都在 §8 有记录)。
+- 剩余事项按上面分档:**S2 两条**(`server_op` 269 行、`plugin_terminal` 的 G10b)值得单独排期;其余是 S3/不动。
+- 门禁现状:`fmt` / `clippy`(两种口径)/ `cargo test --workspace --lib` / `cargo test -p helix-js`(+`--ignored`)/ `cargo integration-test`(377)/ `api-check`(三道)/ `docgen` 零 diff —— 全部绿。
+
+---
+
 ## 附:体检要点(为什么是这 12 项)
 
 | 类别 | 症状 | 证据强度 |
