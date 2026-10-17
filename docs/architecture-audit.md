@@ -261,13 +261,19 @@ cargo integration-test
   |---|---|---|
   | `xtask/src/main.rs` | 622 行 | **23 行**(`tasks/*.rs` 合计 696 行) |
   | `cargo xtask`(help) | 手写 6 段 | 表生成,**文本逐行一致**(26 列对齐未变) |
-  | `cargo xtask docgen` | OK | OK 且 **`git status docs/` 零变化** |
+  | `cargo xtask docgen` | OK | OK,但产物**有 1 行预存在漂移**:`:js-permission` 于 10-16 加入,而 `book/src/generated/typable-cmd.md` 停在 10-13 ⇒ 已随本项单独补提交(见 §8 末尾) |
   | `query-check` / `indent-check` / `theme-check` / `highlight-check` | OK | OK(highlight 364 assertions 不变) |
   | `cargo xtask api-check` | 3 段全绿 | 3 段全绿(134 成员 / 20 事件 / 15 检查点) |
   | `cargo xtask bogus` | `Invalid task name` | 相同 |
   | `fmt` / `clippy --all-targets -D warnings` | 绿 | 绿(0 warning) |
 - **注意**:`highlight-check --dump <lang> <file>` 分支随函数体原样搬走,未改;它的 e2e 走人工验证。
 - **风险**:纯搬家 + 一处 dispatch 形式变化(查表代替 `match`),已被上面 6 条命令逐条钉住。
+- **附带发现(与 G5 无关,但由 G5 的验证命令暴露)**:`docgen` 产物**不是幂等的现成状态** ——
+  `book/src/generated/typable-cmd.md` 比 `helix-term/src/commands/typed.rs` 少了 `:js-permission` 一行。
+  CI 里其实有这道门(`build.yml:140` `cargo xtask docgen` + `git diff --exit-code`),说明 10-16 那次
+  提交的产物没被补提交、而 CI 未拦住(可能该提交没走 CI)。**结论:生成物必须由提交者自己跑一次
+  docgen 并提交**;这条已作为纪律写进本项。
+
 
 
 ---
