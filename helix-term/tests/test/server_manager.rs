@@ -486,8 +486,8 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         "{}/plugins/arsenal/plugin.js",
         std::env::var("CARGO_MANIFEST_DIR")
             .unwrap()
-            .rsplitn(2, '/')
-            .nth(1)
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
             .unwrap_or(".")
     );
 
@@ -650,8 +650,8 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
         "{}/plugins/arsenal/plugin.js",
         std::env::var("CARGO_MANIFEST_DIR")
             .unwrap()
-            .rsplitn(2, '/')
-            .nth(1)
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
             .unwrap_or(".")
     );
     let mut app = AppBuilder::new().with_file(file, None).build()?;
@@ -717,8 +717,8 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
         "{}/plugins/arsenal/plugin.js",
         std::env::var("CARGO_MANIFEST_DIR")
             .unwrap()
-            .rsplitn(2, '/')
-            .nth(1)
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
             .unwrap_or(".")
     );
 
@@ -780,8 +780,8 @@ async fn server_recipes_file_visible_in_editor() -> anyhow::Result<()> {
     let _env = sm_env(dir.path());
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let repo = manifest
-        .rsplitn(2, '/')
-        .nth(1)
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
         .unwrap_or(&manifest)
         .to_string();
     let _rec = EnvGuard::new(

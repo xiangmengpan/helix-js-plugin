@@ -84,7 +84,9 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # 带 --features integration:集成测试目标(`#[cfg(feature = "integration")]`)也过一遍 lint。
+        # 不带它时,`plugin_roots_for` 这类"只在某 cfg 分支被调用"的项会漏检(D6 实证)。
+        run: cargo clippy --workspace --all-targets --features integration -- -D warnings
 
       - name: Run cargo doc
         run: cargo doc --no-deps --workspace --document-private-items

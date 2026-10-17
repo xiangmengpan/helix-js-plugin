@@ -1,4 +1,3 @@
-use helix_term::job::Jobs;
 use helix_view::current_ref;
 use helix_view::input::parse_macro;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -95,13 +94,6 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
     // 渲染状态栏行（最后一行）
     let area = helix_view::graphics::Rect::new(0, 0, 80, 1);
     let mut buf = tui::buffer::Buffer::empty(area);
-    let mut jobs = Jobs::new();
-    let mut cx = helix_term::compositor::Context {
-        editor: &mut app.editor,
-        scroll: None,
-        jobs: &mut jobs,
-        js: None,
-    };
     // 渲染状态栏（RenderContext 构造）
     let spinners = helix_term::ui::ProgressSpinners::default();
     {
@@ -205,7 +197,6 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
     // 右区右对齐贴行尾：最后 4 字符应为 " 126"（右区内容 "1:1 1% 126" 右对齐）
-    let tail = &row[118..]; // 最后 8 字符
     let trimmed_end = row.trim_end();
     assert!(trimmed_end.ends_with("126"), "右区内容应贴行尾: {row:?}");
     // 右区内容后不应有空白（右对齐到 126 列）
@@ -260,7 +251,7 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
     // zones 2:3:1，宽 90 → left_w=30, right_w=15, center_w=45（center_x=30, right_x=75）
-    assert_eq!(row.chars().nth(0).unwrap(), 'L', "左区 x0: {row:?}");
+    assert_eq!(row.chars().next().unwrap(), 'L', "左区 x0: {row:?}");
     // 中区居中：x = 30 + (45-1)/2 = 52
     assert_eq!(row.chars().nth(52).unwrap(), 'M', "中区居中: {row:?}");
     // 右区右对齐：x = 75 + 15 - 1 = 89

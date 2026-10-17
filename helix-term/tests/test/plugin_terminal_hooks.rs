@@ -55,10 +55,6 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
     )
     .await?;
     pump(&mut app, ":th-open<ret>").await?;
-    let has_term = app.compositor.has_component(std::any::type_name::<
-        helix_term::ui::plugin_terminal::PluginTerminal,
-    >());
-    let has_hook = helix_js::has_handlers("term-key");
     // Esc → term-key 返回 minimize → 叶子最小化(而非关闭)
     pump(&mut app, "<esc>").await?;
     assert!(

@@ -2384,6 +2384,10 @@ mod tests {
 /// 为什么抽成纯函数:调用点位于 `#[cfg(not(feature = "integration"))]` 块内
 /// (集成测试**故意**不加载开发机的用户插件目录,否则注册的命令/事件跨测试残留),
 /// 所以那处接线**集成测试够不到** —— 只能靠这里的单测保证。这曾是覆盖盲区。
+// 只在"会调用它的那两种构建"里存在:生产(not integration)与单元测试。
+// 否则 `cargo clippy --features integration`(开 feature 但不编测试)会把它判成
+// dead_code,D6 就是这么红起来的(门禁当时不带 feature,所以没人发现)。
+#[cfg(any(not(feature = "integration"), test))]
 fn plugin_roots_for(
     runtime_dirs: &[std::path::PathBuf],
     config_dir: &std::path::Path,

@@ -51,6 +51,7 @@ async fn plugin_terminal_modes() -> anyhow::Result<()> {
                 Some(":tm-min<ret>"),
                 Some(&|app| {
                     // minimized 模式：终端不消费按键 → 编辑器可编辑
+                    let _ = app;
                 }),
             ),
             (

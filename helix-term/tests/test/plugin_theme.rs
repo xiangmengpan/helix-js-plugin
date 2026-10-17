@@ -8,7 +8,6 @@
 use super::*;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use helix_loader::workspace_trust::WorkspaceTrust;
@@ -28,8 +27,11 @@ use crossterm::event::{Event, KeyEvent};
 #[cfg(not(windows))]
 use termina::event::{Event, KeyEvent};
 
-/// 主题测试串行锁：CURRENT_THEME 快照是进程级静态，并行测试会互相覆盖
-static THEME_LOCK: Mutex<()> = Mutex::new(());
+/// 主题测试串行锁：CURRENT_THEME 快照是进程级静态，并行测试会互相覆盖。
+///
+/// 用 `tokio::sync::Mutex` 而不是 std:测试是 `#[tokio::test]`,guard 必须跨 `.await`
+/// 持有(std Mutex 跨 await 会被 clippy 判 `await_holding_lock`,而且真的会阻塞执行器线程)。
+static THEME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 测试用 app：true color + 无 LSP
 fn test_app() -> Application {
@@ -76,7 +78,7 @@ async fn quit_app(mut app: Application) -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_theme_set_and_reset_over_inheriting_theme() -> anyhow::Result<()> {
-    let _guard = THEME_LOCK.lock().unwrap();
+    let _guard = THEME_LOCK.lock().await;
     // ashokai_brahn 继承 ashokai：ui.popup/ui.background 只定义在父主题里。
     // 若基准用 load_raw（不解析 inherits）捕获，set/reset 都会丢父主题样式。
     let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
@@ -142,7 +144,7 @@ async fn plugin_theme_set_and_reset_over_inheriting_theme() -> anyhow::Result<()
 /// JS 主题 API 集成：对象覆盖（fg/bg/modifiers）、get_style、theme_info、set_theme_name、theme-change 事件
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_theme_js_apis() -> anyhow::Result<()> {
-    let _guard = THEME_LOCK.lock().unwrap();
+    let _guard = THEME_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let plugin_path = dir.path().join("theme2.js");
     std::fs::write(

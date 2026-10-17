@@ -49,7 +49,7 @@ async fn popup_component_tree_renders_layout() -> anyhow::Result<()> {
         .expect("popup layer");
     let lines: Vec<helix_js::StyledLine> = popup.contents().lines().to_vec();
     let mut buf = tui::buffer::Buffer::empty(area);
-    let mut diff = helix_term::ui::comp_layout::DiffRenderer::default();
+    let mut diff = helix_term::ui::comp_layout::DiffRenderer;
     diff.render(&lines, area, &mut buf, &app.editor.theme);
     let rows: Vec<String> = (0..area.height)
         .map(|y| {
@@ -126,7 +126,7 @@ async fn popup_scroll_offset_shows_window() -> anyhow::Result<()> {
         lines.len()
     );
     let mut buf = tui::buffer::Buffer::empty(area);
-    let mut diff = helix_term::ui::comp_layout::DiffRenderer::default();
+    let mut diff = helix_term::ui::comp_layout::DiffRenderer;
     diff.render(&lines, area, &mut buf, &app.editor.theme);
     let rows: Vec<String> = (0..area.height)
         .map(|y| {

@@ -24,8 +24,10 @@ use crossterm::event::{Event, KeyEvent};
 use termina::event::{Event, KeyEvent};
 
 /// Specify how to set up the input text with line feeds
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum LineFeedHandling {
+    /// 默认:按平台换行
+    #[default]
     /// Replaces all LF chars with the system's appropriate line feed character,
     /// and if one doesn't exist already, appends the system's appropriate line
     /// ending to the end of a string.
@@ -57,12 +59,6 @@ impl LineFeedHandling {
     }
 }
 
-impl Default for LineFeedHandling {
-    fn default() -> Self {
-        Self::Native
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct TestCase {
     pub in_text: String,
@@ -71,6 +67,7 @@ pub struct TestCase {
     pub out_text: String,
     pub out_selection: Selection,
 
+    #[allow(dead_code)] // 目前没有测试读它(保留字段是为了将来按需切换换行处理)
     pub line_feed_handling: LineFeedHandling,
 }
 
@@ -550,7 +547,7 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
     let f = std::fs::OpenOptions::new()
         .write(true)
         .read(true)
-        .open(&path)?;
+        .open(path)?;
     *file.as_file_mut() = f;
     Ok(())
 }

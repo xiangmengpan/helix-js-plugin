@@ -221,6 +221,7 @@ async fn closing_scratch_leaf_drops_orphan_scratch_doc() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // 保留:调试用探针,平时不调用
 fn render_rows_probe(app: &mut Application) -> Vec<String> {
     let area = app.compositor.area();
     let mut buf = tui::buffer::Buffer::empty(area);
@@ -260,8 +261,8 @@ async fn bufferline_clamped_to_editor_leaf() -> anyhow::Result<()> {
         .with_file(a, None)
         .build()?;
     // 多个文档让 bufferline 标签足够长(能溢出的宽度)
-    for i in 0..10 {
-        pump(&mut app, &format!(":new<ret>")).await?;
+    for _ in 0..10 {
+        pump(&mut app, ":new<ret>").await?;
     }
     // H 分屏出右叶(BufferLeaf 承载后一个 scratch? :vsplit 同 doc 即可,验证 bufferline 不外溢)
     pump(&mut app, ":vsplit<ret>").await?;
