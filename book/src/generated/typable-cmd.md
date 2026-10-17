@@ -103,4 +103,5 @@
 | `:plugin-reload` | Reload all loaded JavaScript plugins. |
 | `:plugin-load` | Load a JavaScript plugin file. |
 | `:server` | Manage LSP/DAP/linter/formatter servers (list|search|install|update|remove|status); sources from [server-manager.registry] config. |
+| `:js-permission` | Plugin capabilities (C-2): list | allow <plugin> <cap> | deny <plugin> <cap>. Caps: process, fs_read, fs_write. |
 | `:panel-close` | Close the most recently opened plugin side panel. |
