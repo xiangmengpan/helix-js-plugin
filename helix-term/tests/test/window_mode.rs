@@ -1,52 +1,12 @@
 use super::*;
-use helix_term::application::Application;
 use helix_term::compositor::PaneMode;
-use helix_term::job::Jobs;
 use helix_term::ui::layout::SplitDir;
 use helix_term::ui::plugin_panel::PanelSide;
 use helix_term::ui::PluginPanel;
 use helix_view::current_ref;
-use helix_view::input::parse_macro;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
 use crossterm::event::{Event, KeyEvent};
-#[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
-
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)?.into_iter() {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
-
-/// 渲染 compositor 到 Buffer,返回所有行(仿 filetree.rs)
-fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
-    let mut buf = tui::buffer::Buffer::empty(area);
-    app.compositor.reset_plugin_diffs();
-    let mut jobs = Jobs::new();
-    let mut cx = helix_term::compositor::Context {
-        editor: &mut app.editor,
-        scroll: None,
-        jobs: &mut jobs,
-        js: None,
-    };
-    app.compositor.render(area, &mut buf, &mut cx);
-    (0..area.height)
-        .map(|y| {
-            buf.content
-                .iter()
-                .skip(y as usize * area.width as usize)
-                .take(area.width as usize)
-                .map(|c| c.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect()
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn window_mode_enter_exit_toggles() -> anyhow::Result<()> {

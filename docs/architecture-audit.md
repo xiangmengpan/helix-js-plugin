@@ -18,7 +18,7 @@
 |---|---|---|---|---|---|---|
 | ✅ | **G0** | 建立干净基线:收尾当前 WIP + 清 `.swp` | — | 前置 | 卫生 · 2026-10-17 · `fc0585abe` + `49c4fe1` + 本条 | 无 |
 | ✅ | **G1** | `helix-js` 内联测试(4,835 行 / 99 测试)搬出 `lib.rs` | S1 | A | 纯搬家 · 2026-10-17 · 本条 | G0 |
-| ☐ | **G2** | 集成测试 harness(`pump`/`render_rows`)收进 `helpers.rs` | S2 | A | 纯减法 | G0 |
+| ✅ | **G2** | 集成测试 harness(`pump`/`render_rows`)收进 `helpers.rs` | S2 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
 | ☐ | **G3** | `state.rs` 收窄公共面(106 pub → 显式导出)+ `*_for_test` 收口 | S3 | A | 纯减法 | G0 |
 | ☐ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 | 无 |
 | ☐ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 | 无 |
@@ -43,13 +43,13 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines
 #    基线:70 个 >100 行函数(fork 新增文件 16 个 / 上游文件 54 个)
 
 # ② 单个 crate 的测试与注册面(等价性证据)
-cargo test -p helix-js                                    # 基线:176 个 #[test](99 个在 lib.rs)
+cargo test -p helix-js                                    # 基线:176 个 #[test](G1 后位于 src/tests/ 七个域文件)
 cargo xtask api-check
 #    基线必须不变:134 个成员 / 20 个事件 / 15 个能力检查点 · 豁免 1
 #    ⚠ 已知小漂移:两个脚本对**命名空间**计数不一致 —— helix.d.ts 那份报 10、文档那份报 9,
 #      成员数两者一致(134)⇒ 门禁绿但计数口径没统一。属文档/脚本层面的小 bug,不阻塞任何目标。
 
-# ③ 集成测试(全量基线:367 tests / ~180s)
+# ③ 集成测试(全量基线:377 passed / 0 failed / ~220s;文档旧数 367 已过期,G2 实测更正)
 cargo integration-test
 
 # ④ 统计脚本(Python,不入库;需要时重建)
@@ -147,18 +147,39 @@ cargo integration-test
   `Os { code: 2, NotFound }`。因为 `#[ignore]`,CI 从不跑它们,所以烂了没人发现。
 **风险**:无(纯搬家;回退 = `git revert`,不跨 crate)。
 
-### ☐ G2 · 集成测试 harness 收进 `helpers.rs`
+### ☑ G2 · 集成测试 harness 收进 `helpers.rs`(2026-10-17 完成)
 
 - **症状**:12 个测试文件各自重造 `async fn pump(&mut Application, &str)` 与 `fn render_rows(...)`,
-  两两共享 13–15 个 20 行块;而 `tests/test/helpers.rs`(556 行)已经存在却没用上。
-  12 个文件:`filetree / pane_modes / plugin_components / plugin_layout / plugin_layout2 /
-  plugin_terminal_hooks / plugin_theme / server_manager / splits / window_mode / window_rail / window_split`。
-- **做法**:把 `pump` / `render_rows` / 相关 `use`(含 `#[cfg(not(windows))]` 分支)搬进 `helpers.rs`,
-  各文件改 `use super::helpers::*;`(统一走已有约定),删本地副本。
-- **预估**:−400 行左右,12 个测试文件各减 ~40 行。
-- **完成判据**:12 个文件里不再出现 `fn pump(` / `fn render_rows(` 定义;集成测试数量与基线一致(367)。
-- **验证**:`cargo integration-test`
-- **风险**:`server_manager` 一族共享进程级 `SM_*` 环境变量(串行),搬动时不要顺手"优化"它的串行化。
+  两两共享 13–15 个 20 行块;而 `tests/test/helpers.rs` 已经存在却没用上。
+- **先量规模(铁律 4)**:把 19 个定义逐个抽出来归一化哈希,结果不是 19 份相同副本:
+  | 函数 | 副本数 | 版本数 | 差异 |
+  |---|---|---|---|
+  | `pump` | 12 | 3 | 仅字面差异:`parse_macro(keys)?` vs `.into_iter()`(Vec 迭代等价)、`UnboundedReceiverStream` 全路径 vs 导入 —— **语义相同** |
+  | `render_rows` | 7 | 3 | `plugin_components` 那份**少了 `reset_plugin_diffs()`**,其余 6 份仅差一行注释 |
+  关键发现:`plugin_components::render_rows` **从未被调用**(死代码,且因 `mod test` 在
+  `#[cfg(feature = "integration")]` 下,不带 feature 的 clippy 看不到它)。
+- **做法**
+  1. `helpers.rs` 追加 `pub async fn pump` 与 `pub fn render_rows`(带 `reset_plugin_diffs()`,
+     并注释为什么必须 reset:DiffRenderer 有状态,不 reset 时第二次渲染只画变化单元)。
+  2. 删掉 19 个本地定义及其上方注释行;`plugin_theme.rs` 补 `use super::*;`(它原先没挂
+     父模块 glob,靠自己那份 `pump`)。
+  3. 用编译器的 `unused import` 警告驱动清理(48 条 / 12 文件),`#[cfg(windows)]` /
+     `#[cfg(not(windows))]` 的 `Event`/`KeyEvent` 成对删除 —— 否则 Windows CI 才会红。
+- **偏离计划的地方**:计划说「各文件改 `use super::helpers::*;`」,实际无需新增任何 import ——
+  `integration.rs` 的 `mod test` 已有 `use self::helpers::*;`,而**父模块的私有 use / glob
+  对子模块可见**(同 G1 的发现)。只有 `plugin_theme.rs` 例外(它连 `use super::*;` 都没有)。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `cargo integration-test` | **377 passed / 0 failed**(223.5s;本次实测修正了文档旧数 367) | **377 passed / 0 failed**(218.5s) |
+  | 12 个文件里的 `fn pump(` / `fn render_rows(` | 19 个定义 | **0**(只剩 `helpers.rs` 2 个 + 2 个名字相近但语义不同的 `pump_mouse` / `render_rows_probe`) |
+  | 行数 | — | **+47 / −352(净 −305)** |
+  | `cargo fmt --all --check` / `clippy -D warnings` | 绿 | 绿(0 warning) |
+- **顺手发现的真问题(不属本项,已记 D6)**:`cargo clippy --features integration -- -D warnings`
+  **在改动前就是红的** —— `application.rs:2387 plugin_roots_for` 只在
+  `#[cfg(not(feature = "integration"))]` 下被调用,开 feature 编 lib 时成 dead code。
+  现有门禁不带 feature 所以没暴露(与 G2 无关,单行可修)。
+- **风险**:`server_manager` 一族共享进程级 `SM_*` 环境变量(串行)—— 未动其串行化。
 
 ### ☐ G3 · `state.rs` 收窄公共面 + `*_for_test` 收口
 
@@ -301,6 +322,7 @@ cargo integration-test
 | **D3** | 每项都跑全量 `cargo integration-test`(367 tests / ~180s)? | **A 批只跑相关子集,B/C 批全量** | 全部 |
 | **D4** | C 批 spec 是否要我写完等你确认后才动代码? | **是**(本文 §2 铁律 5) | G9–G12 |
 | **D5** | 新发现:2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`,路径已废弃),是否纳入清理? | **纳入**为独立小项(修路径或删测试),别混进 G1 | — |
+| **D6** | 新发现:`cargo clippy --features integration -- -D warnings` 改动前就红(`plugin_roots_for` 在开 feature 时是 dead code)。是否修? | **修**:给该 fn 加 `#[cfg(any(not(feature = "integration"), test))]`,并把 feature 纳入 CI 门禁 | — |
 
 ---
 
@@ -327,6 +349,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 |---|---|---|---|---|
 | 2026-10-17 | **G0** | `fc0585abe`(WIP)· `49c4fe1`(.gitignore)· 本条(docs) | 176 测试 / 0 failed;api-check 134 成员 · 15 检查点;fmt+clippy 绿 | 基线就位。WIP 由**并行进程**代提交;`.swp` 只忽略不删;仓库 2 个 stash 未动 |
 | 2026-10-17 | **G1** | 本条(`refactor(js): … (G1)`) | lib.rs 5693→**860**;176 测试 / 170 passed / 6 ignored **不变**;99 个测试名逐个核对 1 次;clippy 0 warning;api-check 不变 | 7 个域文件 + `mod.rs`(夹具);发现 2 个 `#[ignore]` 测试已坏死 → D5 |
+| 2026-10-17 | **G2** | 本条(`refactor(tests): … (G2)`) | integration **377 passed / 0 failed 与基线逐项一致**;19 个本地 harness 定义→0;净 −305 行;fmt+clippy 绿 | 3+3 个变体逐个比对过;`plugin_components::render_rows` 是死代码;发现 feature 门禁漏洞 → D6 |
 
 ---
 

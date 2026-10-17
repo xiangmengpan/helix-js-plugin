@@ -403,49 +403,9 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
 // ────────────────────────── arsenal M3 冒烟本地辅助（渲染到 buffer 读面板文本） ──────────────────────────
 
 use helix_term::application::Application;
-use helix_term::job::Jobs;
-use helix_view::input::parse_macro;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
 use crossterm::event::{Event, KeyEvent};
-#[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
-
-/// 发送键序列并泵事件直到空闲
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)?.into_iter() {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
-
-/// 渲染 compositor 到 Buffer，返回所有行
-fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
-    let mut buf = tui::buffer::Buffer::empty(area);
-    app.compositor.reset_plugin_diffs();
-    let mut jobs = Jobs::new();
-    let mut cx = helix_term::compositor::Context {
-        editor: &mut app.editor,
-        scroll: None,
-        jobs: &mut jobs,
-        js: None,
-    };
-    app.compositor.render(area, &mut buf, &mut cx);
-    (0..area.height)
-        .map(|y| {
-            buf.content
-                .iter()
-                .skip(y as usize * area.width as usize)
-                .take(area.width as usize)
-                .map(|c| c.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect()
-}
 
 // ────────────────────────── arsenal M4 冒烟本地辅助（渲染到 buffer 读浮层文本） ──────────────────────────
 

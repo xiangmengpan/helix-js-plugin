@@ -3,52 +3,10 @@ use super::*;
 use std::time::Duration;
 
 use helix_term::application::Application;
-use helix_term::compositor::Component;
-use helix_term::job::Jobs;
 use helix_view::current_ref;
-use helix_view::input::parse_macro;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
 use crossterm::event::{Event, KeyEvent};
-#[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
-
-/// 发送键序列并泵事件直到空闲
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)?.into_iter() {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
-
-/// 渲染 compositor 到 Buffer，返回所有行
-fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
-    let mut buf = tui::buffer::Buffer::empty(area);
-    // DiffRenderer 持久状态：reset 让本 buffer 完整重绘
-    app.compositor.reset_plugin_diffs();
-    let mut jobs = Jobs::new();
-    let mut cx = helix_term::compositor::Context {
-        editor: &mut app.editor,
-        scroll: None,
-        jobs: &mut jobs,
-        js: None,
-    };
-    app.compositor.render(area, &mut buf, &mut cx);
-    (0..area.height)
-        .map(|y| {
-            buf.content
-                .iter()
-                .skip(y as usize * area.width as usize)
-                .take(area.width as usize)
-                .map(|c| c.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect()
-}
 
 /// 左 32 列（面板区）内容拼接
 fn panel_text(app: &mut Application) -> String {

@@ -1,6 +1,3 @@
-use std::time::Duration;
-
-use helix_term::application::Application;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
 use helix_view::input::parse_macro;

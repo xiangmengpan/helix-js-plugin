@@ -1,26 +1,11 @@
 use super::*;
 
 use helix_term::application::Application;
-use helix_term::config::Config;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
-use helix_view::input::parse_macro;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
 use crossterm::event::{Event, KeyEvent};
-#[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
-
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)?.into_iter() {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
 
 // P2: :vsplit/:hsplit 改道——无参分裂产生 LayoutTree 叶子(同 doc 双视图),
 // 而非 core view-tree 内部节点;产物可被 window mode 完全控制、编辑互通。
@@ -237,7 +222,6 @@ async fn closing_scratch_leaf_drops_orphan_scratch_doc() -> anyhow::Result<()> {
 }
 
 fn render_rows_probe(app: &mut Application) -> Vec<String> {
-    use helix_view::graphics::Rect;
     let area = app.compositor.area();
     let mut buf = tui::buffer::Buffer::empty(area);
     let mut jobs = Jobs::new();

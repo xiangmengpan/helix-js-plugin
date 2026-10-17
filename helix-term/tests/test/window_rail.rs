@@ -2,24 +2,9 @@ use super::*;
 
 use helix_term::application::Application;
 use helix_term::job::Jobs;
-use helix_view::current_ref;
-use helix_view::input::parse_macro;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
 use crossterm::event::{Event, KeyEvent};
-#[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
-
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)?.into_iter() {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
 
 // open_panel(left) 插件脚本(模拟 filetree):注册 rail
 fn rail_plugin(dir: &std::path::Path, side: &str) -> std::path::PathBuf {

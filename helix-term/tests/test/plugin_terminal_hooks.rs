@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use helix_term::application::Application;
 use helix_term::compositor::PaneMode;
-use helix_term::job::Jobs;
 use helix_view::current_ref;
 use helix_view::input::parse_macro;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -13,16 +12,6 @@ use crossterm::event::{Event, KeyEvent};
 use termina::event::{Event, KeyEvent};
 
 use super::*;
-
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)? {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
 
 async fn pump_mouse(app: &mut Application, col: u16, row: u16) -> anyhow::Result<()> {
     // termina 事件流;application 经 .into() 转 helix_view 事件
@@ -45,29 +34,6 @@ async fn pump_mouse(app: &mut Application, col: u16, row: u16) -> anyhow::Result
     app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx))
         .await;
     Ok(())
-}
-
-fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
-    let mut buf = tui::buffer::Buffer::empty(area);
-    app.compositor.reset_plugin_diffs();
-    let mut jobs = Jobs::new();
-    let mut cx = helix_term::compositor::Context {
-        editor: &mut app.editor,
-        scroll: None,
-        jobs: &mut jobs,
-        js: None,
-    };
-    app.compositor.render(area, &mut buf, &mut cx);
-    (0..area.height)
-        .map(|y| {
-            buf.content
-                .iter()
-                .skip(y as usize * area.width as usize)
-                .take(area.width as usize)
-                .map(|c| c.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect()
 }
 
 /// term-key 钩子:Esc → minimize(终端保活,叶子收起)

@@ -5,6 +5,8 @@
 
 #![cfg(feature = "integration")]
 
+use super::*;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -25,17 +27,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crossterm::event::{Event, KeyEvent};
 #[cfg(not(windows))]
 use termina::event::{Event, KeyEvent};
-
-/// 发送键序列并泵事件直到空闲（等价于 helpers::test_key_sequences 的单步）。
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)?.into_iter() {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
 
 /// 主题测试串行锁：CURRENT_THEME 快照是进程级静态，并行测试会互相覆盖
 static THEME_LOCK: Mutex<()> = Mutex::new(());

@@ -1,24 +1,9 @@
-use helix_term::application::Application;
 use helix_term::job::Jobs;
-use helix_view::input::parse_macro;
 
 #[cfg(windows)]
 use crossterm::event::{Event, KeyEvent};
-#[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
 
 use super::*;
-
-/// 驱动若干按键直到空闲(与本目录其它插件用例同款;helpers 里没有这个包装)
-async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rx_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    for key_event in parse_macro(keys)? {
-        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
-    }
-    app.event_loop_until_idle(&mut rx_stream).await;
-    Ok(())
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn panel_shrinks_editor() -> anyhow::Result<()> {

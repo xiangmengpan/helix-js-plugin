@@ -554,3 +554,48 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
     *file.as_file_mut() = f;
     Ok(())
 }
+
+/// 发送键序列并泵事件直到空闲。
+///
+/// G2:原先 12 个集成测试文件各复制一份(filetree / pane_modes / plugin_components /
+/// plugin_layout / plugin_layout2 / plugin_terminal_hooks / plugin_theme /
+/// server_manager / splits / window_mode / window_rail / window_split),语义完全相同
+/// (`parse_macro` 返回 `Vec`,直接迭代与 `.into_iter()` 等价)。
+pub async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(keys)? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+    Ok(())
+}
+
+/// 把 `area` 整块渲染成"每行一个字符串",供断言按行比对。
+///
+/// 必须先 `reset_plugin_diffs()`:DiffRenderer 是有状态的,不 reset 时第二次渲染
+/// 只画出变化单元,取出来的行会少内容,断言随之误判。原先 7 个文件各复制一份,
+/// 其中 plugin_components 那份漏了 reset(且**从未被调用**),合并时按可调用方
+/// 的语义保留 reset。
+pub fn render_rows(app: &mut Application, area: helix_view::graphics::Rect) -> Vec<String> {
+    let mut buf = tui::buffer::Buffer::empty(area);
+    app.compositor.reset_plugin_diffs();
+    let mut jobs = helix_term::job::Jobs::new();
+    let mut cx = helix_term::compositor::Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+        js: None,
+    };
+    app.compositor.render(area, &mut buf, &mut cx);
+    (0..area.height)
+        .map(|y| {
+            buf.content
+                .iter()
+                .skip(y as usize * area.width as usize)
+                .take(area.width as usize)
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect()
+}
