@@ -106,7 +106,7 @@
 
 ### 终端与布局树
 
-`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`close_leaf`/`zoom`/`unzoom`/`resize_leaf`/`layout_*`/`focus`/`get_layout`/`restore_layout`;窗口管理走 compositor 层的**zellij 式平级模式**(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll;旧 `C-w` 已删),模式与键位表对插件可见:`helix.pane_mode.current()/keymap()` + `pane-mode-change` 事件;`helix.pane.list()` 给出统一 pane 清单(含浮窗)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;filetree 即此模式;`get_layout` 叶子带 `rail` 标记)。
+`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`pane.close`/`pane.zoom`/`pane.unzoom`/`pane.resize`/`layout.*`/`pane.focus`/`layout.get`/`layout.restore`;窗口管理走 compositor 层的**zellij 式平级模式**(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll;旧 `C-w` 已删),模式与键位表对插件可见:`helix.pane_mode.current()/keymap()` + `pane-mode-change` 事件;`helix.pane.list()` 给出统一 pane 清单(含浮窗)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;filetree 即此模式;`layout.get` 叶子带 `rail` 标记)。
 
 - 优点:原生 pty(引擎为 `alacritty_terminal`:真实 reflow、鼠标上报、括号粘贴、CJK/组合字符);四种显示模式;滚动缓冲;zellij 式平级模式 + 多浮窗;layout_fix;布局可还原。
 - 局限:堆叠组未进 dump(重启不保留);OSC 4/10/11 查颜色与 OSC52 **读**剪贴板未接;PTY 仅 Unix。
@@ -199,7 +199,7 @@ helix.register_command("filetree", () => {
 | **面板节点焦点需显式开启** | 缺省 `focusable: false` ⇒ 面板 render 收到 `focus = null`;`open_panel({focusable: true})` 后启用节点焦点路由:Tab 移动焦点、Esc 取消、焦点在节点时按键直达(实测 2026-10-10) |
 | **`move_panel` 只支持 rail** | 面板住在布局树里(`open_panel` → rail 叶子或普通叶子);`move_panel` 走树后已可用,但**只有 rail 面板**能换边(普通叶分裂换边会牵动布局树结构),非 rail 会明确拒绝 |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |
-| **堆叠未持久化** | `C-p s` 建的堆叠组未进 `get_layout`/`restore_layout`(浮窗已进),重启后不保留;也无 header 行 |
+| **堆叠未持久化** | `C-p s` 建的堆叠组未进 `layout.get`/`layout.restore`(浮窗已进),重启后不保留;也无 header 行 |
 | **picker 键位只可「加」不可「改」** | 源可选的 `onKey` 只能认领**核心不认识的键**(`Esc`/`Enter`/`Tab`/翻页等核心先处理,插件拿不到)=> 无法重绑核心键;纯字符输入也永不交给插件(防吞打字)。详见 [`api/picker-theme.md`](api/picker-theme.md) |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
 | **事件 ctx 范围** | 事件只带当前文档(其他分屏文档不触发) |
@@ -228,7 +228,7 @@ helix.term_kill(id)
 helix.term_list()                        // [{view_id, cmd}] 当前终端
 helix.term_close(view_id)                // 按 id 关闭终端
 helix.term_resize(id, rows, cols)               // pty TIOCSWINSZ,Unix
-helix.on(event, fn)                             // save | mode-change | buffer-open | buffer-close | doc-change | ...
+helix.on(event, fn)                             // 20 个事件见下方"命名空间与事件索引"
 helix.map(mode, key, commandOrFn)
 helix.set_cursor(row, col)
 helix.set_selection(ar, ac, hr, hc)
@@ -254,12 +254,33 @@ helix.set_terminal_mode(view_id, "dock"|"fullscreen"|"floating"|"minimized")
 helix.term_clear(view_id)
 helix.resize_term(view_id, size)
 helix.split(dir, { terminal:{cmd,size?} } | { panel:{render,onKey?,size?} }) -> leaf_id
-helix.close_leaf(id)
-helix.zoom(id) / helix.unzoom()
-helix.resize_leaf(id, ratio)
-helix.focus(id)
-helix.get_layout()                              // {tree, active, zoomed} | null
-helix.restore_layout(layoutObj)                 // 仅写缓存
+helix.pane.close(id)
+helix.pane.zoom(id) / helix.pane.unzoom()
+helix.pane.resize(id, ratio)
+helix.pane.focus(id)
+helix.layout.get()                              // {tree, active, zoomed} | null
+helix.layout.restore(layoutObj)                 // 仅写缓存
+// ── 文档/构建期常见但此前漏记的(本次对账补上)──
+helix.viewport()                                // [宽, 高] 列数/行数(居中/铺满用)
+helix.picker_state()                            // picker 状态摘要(query/命中/总数)
+helix.command_args()                            // 当前键入命令的参数数组(`:layout save dev` → ["save","dev"])
+helix.loaded_plugins()                          // **已加载**插件名数组(与 `:plugin list` 同源)
+helix.plugins_dir()                             // 插件目录绝对路径(未推入 → null)
+helix.runtime_path(name)                        // 自带 runtime 内的绝对路径(找不到 → null;内置内容型插件用)
+helix.remove_plugin_file(rel)                   // 删**插件根内**的文件/目录(限域;true=删了,false=本来没有)
+helix.define_config(name, schema)               // 声明配置 schema({key: {type, default, doc}})
+helix.get_config(name)                          // 合并后的配置值(含默认值;未声明 → null)
+helix.get_config_docs(name)                     // [{key, type, default, doc}]
+helix.watch(path, cb) -> id                     // 文件监听(回调收 [{kind, path}])
+helix.unwatch(id)                               // 停止监听
+helix.diagnostics()                             // [{line, message, severity, code, source}] | null(只读快照)
+helix.quit()                                    // 关当前视图(最后一个则退出);`run_command("quit")` 走不通,用这个
+helix.term_feed(view_id, chunk)                 // 把 PTY 输出喂进该终端视图的网格
+helix.term_save(view_id, path?)                 // 导出 scrollback+屏幕(省略 path → ~/.cache/helix/term-<id>.log)
+helix.term_state(ptyId, key[, value])           // 终端任意状态持久化(读/写,跨会话)
+helix.buffer_open(path)                         // 在新的布局叶里打开 buffer(与 open_file 的叶级版本)
+helix.layout_resize(id, ratio)                   // [`pane.resize` 的扁平别名,历史兼容]
+helix.layout_swap(id1, id2)                      // [`pane.swap`… 的扁平别名;新代码用命名空间形式]
 helix.read_dir(path)                            // 同步 -> [{name, is_dir, path}]
 helix.read_file_async(path)                     // Promise → 内容(UTF-8 lossy)
 helix.write_file_async(path, content)           // Promise
@@ -291,6 +312,40 @@ helix.plugin.install(arg) / update(name?) / remove(name)   // 管理(结果走�
 // 命令 `:plugin …` 与上面三个 API 共用同一份实现;该 API 的**错误语义**与旧核心一致
 // (例如"未安装"时 remove 抛 `failed to remove '<name>': not installed`)。
 ```
+
+### 命名空间与事件索引(机械对账,勿手改)
+
+> 下面这块与 `helix.d.ts` / Rust 注册表**逐名一致**(生成方式见本节末尾)。
+
+```
+helix.pane.*   close, embed, equalize, fix, float, focus, focus_dir, info, list, minimize, move, pin, raise, resize, unzoom, zoom
+helix.layout.*   delete, get, list, load, restore, save
+helix.stack.*   activate, create, list, remove
+helix.buffer.*   current, focus, list
+helix.pane_mode.*   current, keymap
+helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
+helix.picker.*   define, run
+helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
+helix.server.*   install, list, remove, rows, search, status, task, update
+
+事件(20 个):
+  buffer-close, buffer-open, component-event, cursor-move
+  doc-change, layout-change, lsp-diagnostics, mode-change
+  pane-mode-change, save, selection-change, startup
+  term-close, term-exit, term-key, term-mode-change
+  term-open, term-resize, term-title, theme-change
+```
+
+**这份文档有门禁**:`cargo xtask api-check`(CI 的 "Check plugin API surface" 步骤)现在
+跑**两半** —— `plugins/helix.d.ts ↔ 注册表` 与**本文件 ↔ 注册表**
+(`plugins/tools/check_doc_surface.mjs`)。三个判据:
+① 本文件里出现的 `helix.X` / `helix.ns.X` 都必须在注册表(或**插件补的名字**白名单)里;
+② 注册表 134 个成员每个都要有条目(全名或出现在上面的命名空间索引块里);
+③ 20 个事件都要出现。漂移 ⇒ 退出码 1 ⇒ CI 红。
+
+所以**改 API 时请顺手跑一次 `cargo xtask api-check`**;新增"插件补的名字"时,把它加进
+`check_doc_surface.mjs` 的 `PLUGIN_PROVIDED` 白名单(那是文档有权提到、注册表里没有的
+唯一来源)。
 
 ### manifest 与能力清单(permissions)—— 插件作者手册
 
@@ -409,7 +464,7 @@ split 方向:right | left | top | bottom
   { api_version, type, ...具名字段 }   // 形状见 helix.d.ts 的 EventPayload;doc 对象上也带 api_version/type
 layout-change 的投递时机有两种模式(`[editor] js-layout-change-batch`,默认 `false`):
   · **逐点**(默认):每个变更点当场发一条,处理器看到的是**该变更点当时**的布局
-    (快照同步更新,`get_layout()`/`pane.list()` 读到的就是那一刻);
+    (快照同步更新,`layout.get()`/`pane.list()` 读到的就是那一刻);
   · **批量**:同一投递窗口(一次回调/一帧)内的多次变更**合并成一条**,`kind` 取窗口内
     最后一次标注,处理器看到的是**窗口结束时**的布局 —— 少一半 JS 往返(实测一次 split
     逐点 4 条 → 批量 2 条),代价是拿不到中间态。

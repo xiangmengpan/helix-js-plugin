@@ -542,19 +542,30 @@ pub mod tasks {
     /// 注意:该脚本只覆盖 `plugins/` 下的源定义;`runtime/plugins/` 镜像副本仅在本机装了
     /// 运行副本时才参与对账(CI 的裸 checkout 没有它,脚本会跳过)。
     /// 需要 PATH 上有 `node`。
+    /// api-check = **两半**:① `plugins/helix.d.ts ↔ 注册表`;② `docs/plugin-api.md ↔ 注册表`。
+    ///
+    /// 为什么第二半也挂在这儿:文档此前**没有任何门禁**(api-check 只看 d.ts)⇒ 会静默腐烂
+    /// (实测:文档里还留着 4 个已删除的 API,另有 17 个已注册 API 完全没记)。
+    /// 一个命令覆盖两半 ⇒ CI 的 "Check plugin API surface" 步骤天然把文档也管住了。
     pub fn apicheck() -> Result<(), DynError> {
-        let script = crate::path::plugin_api_surface_script();
-        let status = std::process::Command::new("node")
-            .arg(&script)
-            .status()
-            .map_err(|err| {
-                format!(
-                    "api-check 需要 node 且脚本存在(脚本 {}):{err}",
-                    script.display()
-                )
-            })?;
-        if !status.success() {
-            return Err(format!("api-check failed ({status}); 脚本:{}", script.display()).into());
+        for script in [
+            crate::path::plugin_api_surface_script(),
+            crate::path::plugin_doc_surface_script(),
+        ] {
+            let status = std::process::Command::new("node")
+                .arg(&script)
+                .status()
+                .map_err(|err| {
+                    format!(
+                        "api-check 需要 node 且脚本存在(脚本 {}):{err}",
+                        script.display()
+                    )
+                })?;
+            if !status.success() {
+                return Err(
+                    format!("api-check failed ({status}); 脚本:{}", script.display()).into(),
+                );
+            }
         }
         Ok(())
     }
@@ -581,9 +592,9 @@ Usage: Run with `cargo xtask <task>`, eg. `cargo xtask docgen`.
                                    winning capture per span for an arbitrary input file.
         theme-check [themes]       Check that the theme files in runtime/themes/ are valid for the
                                    given themes, or all themes if none are specified.
-        api-check                  Reconcile plugins/helix.d.ts with the JS API registered from
-                                   Rust (helix-js/src/lib.rs · icons.rs · commands.rs); fails on
-                                   drift. Requires `node` on PATH.
+        api-check                  Reconcile plugins/helix.d.ts **and docs/plugin-api.md** with the
+                                   JS API registered from Rust (helix-js/src/lib.rs · icons.rs ·
+                                   commands.rs); fails on drift. Requires `node` on PATH.
 "
         );
     }

@@ -15,6 +15,14 @@ pub fn plugin_api_surface_script() -> PathBuf {
         .join("check_api_surface.mjs")
 }
 
+/// `docs/plugin-api.md ↔ 注册表` 的对账脚本(api-check 的第二半)
+pub fn plugin_doc_surface_script() -> PathBuf {
+    project_root()
+        .join("plugins")
+        .join("tools")
+        .join("check_doc_surface.mjs")
+}
+
 pub fn book_gen() -> PathBuf {
     project_root().join("book/src/generated/")
 }
