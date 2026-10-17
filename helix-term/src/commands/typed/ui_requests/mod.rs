@@ -17,3 +17,6 @@ pub(super) mod popup;
 pub(super) mod server;
 pub(super) mod term;
 pub(super) mod watch;
+
+pub(crate) mod ui_op;
+pub(crate) use ui_op::{dispatch, UiOp};

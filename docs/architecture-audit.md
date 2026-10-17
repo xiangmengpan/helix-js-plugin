@@ -31,7 +31,7 @@
 | ✅ | **G9** | JS 插件共享层 → **已评估:收益不足,不抽**(实测只有 4 组/35 行逐字重复) | S3 | C | 评估结案 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G10** | `PluginPanel`/`PluginPopup` 抽 `JsSurface`(terminal 另议) | S2 | C | 真重构 · 2026-10-17 · 本条 | G6 ✅ |
 | ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
-| 🟡 | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(pane 族 24 处) | S3 | C | 真重构 · spec 见 `specs/2026-10-17-uiop-dispatch-design.md` | G7 ✅ |
+| ✅ | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(pane 族 24 处) | S3 | C | 真重构 · 2026-10-17 · 本条 | G7 ✅ |
 
 范围默认:**只治 fork 新增债务**(16 个 >100 行函数 / 1,486 行超额)。上游遗留的 54 个长函数
 (`dap.rs` 439 行 `handle_debugger_message`、`keymap/default.rs` 383 行等)**不动** —— 见 §6 决策 D1。
@@ -485,21 +485,37 @@ cargo integration-test
   `cargo test -p helix-js` 可**并行**跑(不设 `--test-threads`)连续 3 次不 flaky。
 - **验证**:`cargo test -p helix-js` ×3 + `cargo integration-test`
 
-### ☐ G12 · `job::dispatch_blocking` 闭包派发 → `UiOp`
+### ✅ G12 · `job::dispatch_blocking` 闭包 → `UiOp`(pane 族,2026-10-17 完成)
 
-> **spec**:[`superpowers/specs/2026-10-17-uiop-dispatch-design.md`](superpowers/specs/2026-10-17-uiop-dispatch-design.md)
-> **spec 已出**(2026-10-17)。范围:pane 族 **24 个 handler**(全仓 75 处 dispatch → 51);
-> 保持「一请求一次 dispatch」;`UiOp` 只装数据(`derive(Debug, PartialEq)`),组件构造与
-> `set_layout_change_kind + sync_layout_cache` 的配对收进 `UiOp::apply`;附 5 条 handler 单测。
+> spec:[`superpowers/specs/2026-10-17-uiop-dispatch-design.md`](superpowers/specs/2026-10-17-uiop-dispatch-design.md)
 
-- **症状**:UI 变更表达为"闭包丢进全局 job 队列,在里面拿 compositor",85 个调用点 ⇒
-  请求处理不可单测、执行顺序不可静态推断。
-- **做法**:**只做一个子集**(建议 pane/terminal 族):handler 返回 `UiOp`(描述式枚举),
-  由一处执行;其余保持原样,不追求全量。
-- **完成判据**:选定子集的 handler 有直接单测(不经 Application);调用点数量下降且已解释;
-  集成测试数量不变。
-- **验证**:`cargo integration-test` + 新增单测
-- **注意**:这是收益最大也最危险的一项 —— 没有 spec 与回归网**不要开工**。
+- **结果**:新增 `ui_requests/ui_op.rs`(365 行,其中 5 条单测),`UiOp` 24 个变体 +
+  `apply`(唯一执行点)+ `dispatch`(保持「一请求一次 dispatch」)。
+
+  | 指标 | 改前 | 改后 |
+  |---|---|---|
+  | `pane.rs` 里的 `job::dispatch_blocking` | **24** | **0** |
+  | `pane.rs` 行数 | 330(含 190 行闭包体) | 207(纯映射) |
+  | 全仓 `dispatch*` 调用点 | 75 | **54**(−24 个闭包 +1 个唯一执行点 + 注释里的字样) |
+  | pane 族 handler 直接单测 | 0 | **5 条**(映射/白名单/JSON 透传) |
+  | `apply_ui_requests` | 59 行 | 59 行(pane arm 仍是 1 行:`dispatch(pane::handle_x(req)?)`) |
+- **怎么搬的**:闭包体**整段**搬进 `UiOp::apply` 的对应分支,`bail!` 与参数白名单留在 handler;
+  组件构造(`PluginTerminal`/`PluginPanel`)从闭包搬进 `apply`,所以 op 只装数据
+  (`kind: String`),能 `derive(Debug, Clone, PartialEq)` 被单测直接断言。
+- **两条刻意的不变(写在 `ui_op.rs` 文件头)**
+  1. **一个请求一次 dispatch** —— 不合并成批,否则与其他 UI 工作的相对时序会变;
+  2. **`apply` 不补齐缺失的 `set_layout_change_kind`** —— 哪些操作发 `layout-change` 是既有行为
+     (例如 `open_panel`/`zoom` 本来就不发),顺手补上属行为变化(铁律 2)。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `cargo integration-test` | 377 passed | **377 passed / 0 failed** |
+  | `window_mode` / `plugin_layout` / `plugin_panel` | 16 / 5 / 11 | **16 / 5 / 11 全绿** |
+  | `ui_op` 单测 | — | **5 passed** |
+  | `fmt` / clippy(两种口径) | 绿 | 绿(0 warning) |
+- **没做的**:`term.rs`(8)/`doc.rs`(5)/`editor.rs`(2)等 22 处 dispatch —— 它们的闭包里有
+  异步/进程/编辑器语义,需要各自设计;`UiRequest` 枚举仍不动(沿用 G7 的决定)。
+
 
 ---
 
@@ -555,6 +571,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G9/G10/G12** | 本条(`docs: C 批三份 spec`) | 无代码改动;三份 spec 各含**实测数字**(G9: 4 组/35 行重复;G10: 73 个共享窗口;G12: pane 24/全仓 75)与完成判据 | 状态 🟡,等你逐条拍板后再开工 |
 | 2026-10-17 | **G9** | 本条(`docs(audit): G9 结案`) | 无代码改动;交付的是**可复算的度量**(4 组/9 份/35 行)与结案理由 | 决定不抽 JS 共享层;要共享就走 Rust 原生 API |
 | 2026-10-17 | **G10** | 本条(`refactor(ui): … (G10)`) | panel+popup **770→376**、共享窗口 **73→0**、最长 handle_event 234→57;377 集成测试不变;clippy 两种口径 0 warning | 新增 `js_surface.rs`(310);Esc 语义用开关区分，测试抓到面板 Esc 分支丢失 |
+| 2026-10-17 | **G12** | 本条(`refactor(term): … (G12)`) | pane.rs dispatch **24→0**;全仓 75→54;377 集成测试不变;新增 5 条 handler 单测;clippy 两种口径 0 warning | `UiOp` 只装数据;保持一请求一次 dispatch;不补既有缺失的 kind |
 
 ---
 
