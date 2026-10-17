@@ -1119,15 +1119,14 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
 ///
 /// 发在 `application.rs` 处理完初始文件**之后** ⇒ “要不要显示启动屏”由**插件**判断
 /// （它自己看当前 buffer 是否空白无名）✓ —— 核心只负责“启动完成了”这一事实 ✓
-pub fn emit_startup() -> Result<()> {
-    let ctx = CommandContext {
-        path: None,
-        text: String::new(),
-        cursor: (0, 0),
-        selection: ((0, 0), (0, 0)),
-        docs: Vec::new(),
-    };
-    match emit_event_impl("startup", &ctx, None, None) {
+/// `startup` 事件入口。
+///
+/// ⚠️ 这里**必须**由调用方给出真实的 `ctx`(启动后的当前 buffer):早先它写死成
+/// "path=None / text=""" ⇒ 处理器**无法**判断"启动时到底有没有打开文件",
+/// 而内建 dashboard 正是靠这个判断"要不要显示启动屏"的(实测 bug:带路径打开文件时
+/// dashboard 照样弹出,和文件选择器叠在一起)。
+pub fn emit_startup(ctx: &CommandContext) -> Result<()> {
+    match emit_event_impl("startup", ctx, None, None) {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）

@@ -512,7 +512,11 @@ interface Helix {
   // **位置参数**是历史形状(向后兼容、不再扩展),**最后一个参数**恒为具名 payload
   // (`{ api_version, type, … }`,见 `EventPayload`)。位置参数省略尾参在 TS 里合法
   // ⇒ 写 `() => {}` / `(doc) => {}` 的老插件依旧通过类型检查。
-  /** `startup`:初始文件处理之后(启动完成) */
+  /**
+   * `startup`:初始文件处理之后(启动完成)。
+   * `doc` 是**启动后的当前 buffer**:`doc.path` 为空 = 启动时没打开文件
+   * (内建 dashboard 就靠这一条决定"要不要自动显示启动屏")。
+   */
   on(event: "startup", fn: (doc: Doc, payload: EventStartup) => void): void;
   /** `layout-change` 的形状恒定:`kind` 缺省时是 **null**(不是"没有第一参"),`doc` 恒在第二参;第三参是具名 payload。 */
   on(event: "layout-change", fn: (kind: string | null, doc: Doc, payload: EventLayoutChange) => void): void;

@@ -351,11 +351,17 @@ impl Application {
 
         // ── `startup` 事件 ──
         // 发在初始文件处理**之后**（开屏/无文件的分支有好几处 ✗，所以只在这里发一次 ✓）。
-        // “要不要显示启动屏”由**插件**判断（它自己看当前 buffer 是否空白无名）✓
+        // “要不要显示启动屏”由**插件**判断 —— 但它得先**看得见事实**:这里把**当前 buffer**
+        // 一并交出去(`doc.path` 为空 = 启动时没打开文件)。早先 payload 是写死的空 ctx ⇒
+        // 处理器无从判断,内建 dashboard 因此**带文件也弹**(与文件选择器叠在一起的实测 bug)。
         // D-2:startup 是事件发射 ⇒ 走 `&mut JsHost` 泵入口(独占借用);
         // 弹窗/面板/命令的快照都在宿主里,与 legacy 路径同一份状态。
-        if let Err(e) = js_host.emit_startup() {
-            log::warn!("startup event failed: {e}");
+        // 没有订阅者就不构造(ctx 会克隆所有 buffer 全文,别给没人听的事件付这个钱)。
+        if helix_js::has_handlers("startup") {
+            let ctx = crate::commands::typed::command_context(&mut editor);
+            if let Err(e) = js_host.emit_startup(&ctx) {
+                log::warn!("startup event failed: {e}");
+            }
         }
 
         // 叶=窗口:收编启动期遗留的 view-tree 分裂(启动多文件/空文件路径仍走 core split)

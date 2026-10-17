@@ -2557,6 +2557,59 @@ pub(crate) mod tests {
         assert!(err.contains("高于本编辑器支持"), "{err}");
     }
 
+    /// **回归**(用户报的 bug):启动时**打开了有路径的文件** ⇒ 内建 dashboard **不该**自动弹
+    /// (它会和文件选择器/编辑区叠在一起)。
+    ///
+    /// 这条用例跑的是**真实的** `plugins/dashboard/plugin.js`(不是复刻的逻辑),判据来自
+    /// `startup` payload 里的 `doc.path` —— 早先那个 payload 是写死的空 ctx,处理器**看不到**
+    /// 到底有没有打开文件,所以只能无条件弹。
+    #[test]
+    fn dashboard_skips_startup_when_a_file_was_opened() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        // 把插件根指到仓库里的 plugins/(加载**真实**插件)
+        let plugins = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins"));
+        set_plugins_dir(plugins);
+        load_script(r#"helix.load("dashboard");"#).unwrap();
+        take_ui_requests(); // 清掉加载期可能入队的请求
+
+        let has_popup = |reqs: &[UiRequest]| {
+            reqs.iter()
+                .any(|r| matches!(r, UiRequest::OpenPopup(OpenPopupReq { .. })))
+        };
+
+        // ① 启动时打开了**有路径**的文件 ⇒ 不弹
+        let opened = CommandContext {
+            docs: vec![],
+            path: Some("/tmp/opened.rs".into()),
+            text: "fn main() {}\n".into(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        emit_startup(&opened).unwrap();
+        let reqs = take_ui_requests();
+        assert!(
+            !has_popup(&reqs),
+            "带路径启动时 dashboard 不该弹(实测 bug:会和文件选择器叠在一起);reqs={reqs:?}"
+        );
+
+        // ② 无名空 buffer(启动时没打开文件)⇒ 弹
+        let blank = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        emit_startup(&blank).unwrap();
+        let reqs = take_ui_requests();
+        assert!(
+            has_popup(&reqs),
+            "无文件启动时 dashboard 应该弹(否则这个插件等于失效);reqs={reqs:?}"
+        );
+    }
+
     /// `helix.permissions()`(JS API):插件据此降级 —— 语义是"**不问就放行吗**"。
     #[test]
     fn js_permissions_query() {

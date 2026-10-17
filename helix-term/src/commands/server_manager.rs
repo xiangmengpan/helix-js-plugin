@@ -1673,6 +1673,12 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    // ⚠️ 取锁一律 `unwrap_or_else(|e| e.into_inner())`(**不用** `unwrap()`):
+    // 一个用例 panicking 会 poison `ENV_LOCK`,其后每个 `.lock().unwrap()` 都以
+    // `PoisonError` 失败 ⇒ **一次抖动被放大成 23 个失败**(2026-10-16 `cargo test --workspace`
+    // 实测:本模块一个 env 相关用例失败 ⇒ 22 个连锁 PoisonError)。根因用例是既有的
+    // 顺序/并发抖动(单独跑 `cargo test -p helix-term --lib` 3/3 绿),与本次改动无关;
+    // 但"一次抖动放大成一片"必须消除。
     use super::*;
     use std::io::Write as _;
 
@@ -1859,7 +1865,7 @@ url = "file://{}"
 
     #[test]
     fn mirror_url_rewrite_and_file_passthrough() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         apply_server_config(None).unwrap(); // 清掉可能残留的 mirror/ext
         assert_eq!(mirror_url("https://x/y"), "https://x/y", "无 mirror 原样");
         assert_eq!(
@@ -1883,7 +1889,7 @@ url = "file://{}"
 
     #[test]
     fn archive_install_update_remove_lifecycle() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("src/rel.tar.gz");
@@ -1950,7 +1956,7 @@ url = "file://{}"
 
     #[test]
     fn tool_install_expands_placeholders_and_links_bin() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let fake = make_fake_tool(&root, "demo-tool");
@@ -1989,7 +1995,7 @@ url = "file://{}"
 
     #[test]
     fn tool_failure_cleans_up_and_keeps_old_on_upgrade() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let ok_tool = make_fake_tool(&root, "demo-tool");
@@ -2030,7 +2036,7 @@ url = "file://{}"
 
     #[test]
     fn tool_success_without_bin_fails_cleanly() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let fake = write_sh(&root, "noop-tool.sh", "#!/bin/sh\nmkdir -p \"$1\"\n");
@@ -2077,7 +2083,7 @@ url = "file://{}"
 
     #[test]
     fn langs_rewrite_from_empty_builds_section_idempotent() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
@@ -2102,7 +2108,7 @@ url = "file://{}"
 
     #[test]
     fn langs_user_content_preserved_and_section_replaced() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "# 用户注释\n[[language]]\nname = \"haskell\"\nscope = \"source.haskell\"\n\n\
@@ -2126,7 +2132,7 @@ url = "file://{}"
 
     #[test]
     fn langs_conflict_user_defined_language_skipped_with_hint() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "[[language]]\nname = \"rust\"\nroots = [\"my-own-root\"]\n";
@@ -2150,7 +2156,7 @@ url = "file://{}"
 
     #[test]
     fn langs_dap_debugpy_emits_debugger_block() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("debugpy");
@@ -2167,7 +2173,7 @@ url = "file://{}"
 
     #[test]
     fn langs_bad_user_toml_and_unbalanced_marker_abort() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let p = &langs;
@@ -2192,7 +2198,7 @@ url = "file://{}"
 
     #[test]
     fn langs_remove_clears_entry() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
@@ -2206,7 +2212,7 @@ url = "file://{}"
 
     #[test]
     fn langs_user_own_server_table_not_duplicated() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "[language-server.rust-analyzer]\ncommand = \"/mine/custom/ra\"\n";
@@ -2231,7 +2237,7 @@ url = "file://{}"
     /// command 指向受管绝对路径;python 获得 debugpy debugger。
     #[test]
     fn langs_loader_merge_resolves_managed_servers() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
@@ -2279,7 +2285,7 @@ url = "file://{}"
 
     #[test]
     fn config_mirror_and_ext_recipe_install_loop() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         // file:// 假 release(tar.gz 顶层 my-ls-1.0.0/,strip=1)
@@ -2331,7 +2337,7 @@ url = "file://{}"
 
     #[test]
     fn config_ext_recipe_validation_errors() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // url 含 {version} 但缺 version 字段
         let bad: toml::Table =
             toml::from_str("url = \"https://x/{version}/y.tar.gz\"\nbin = \"x\"\n").unwrap();
@@ -2388,7 +2394,7 @@ url = "file://{}"
 
     #[test]
     fn plain_gz_single_binary_installs_and_runs() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("ra.gz");
@@ -2434,7 +2440,7 @@ url = "file://{}"
 
     #[test]
     fn availability_prefers_managed_over_local() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _a, _b, _p) = sm_env(&root);
         let bin_dir = fake_local_bin(&root, "rust-analyzer");
@@ -2452,7 +2458,7 @@ url = "file://{}"
 
     #[test]
     fn local_server_writes_path_command_and_ignore_removes_it() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (langs, _a, _b, _p) = sm_env(&root);
         let bin_dir = fake_local_bin(&root, "rust-analyzer");
@@ -2560,7 +2566,7 @@ url = "file://{}"
     /// 同名覆盖:扩展配方替掉内置(不重复);内置顺序保留,扩展追加
     #[test]
     fn ext_overrides_builtin_same_name_without_duplicate() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tbl: toml::Table = toml::from_str(
             "cmd = \"npm\"\nargs = [\"install\", \"--prefix\", \"{prefix}\", \"pyright\"]\nbin-name = \"pyright-langserver\"\ndescription = \"overridden\"\n",
         )
@@ -2583,7 +2589,7 @@ url = "file://{}"
 
     #[test]
     fn is_upgradable_contains_semantics() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         // 配方 version=1.0.0;受管装 bin 输出 "my-ls 1.0.0"(detected 含 recipe 版本 → 同版)
@@ -2700,7 +2706,7 @@ url = "file://{}"
 
     #[test]
     fn download_to_file_reports_progress_once_with_size() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let src = root.join("payload.bin");
         let body = vec![0xabu8; 1024 * 5]; // 5KiB
@@ -2726,7 +2732,7 @@ url = "file://{}"
     /// 此处覆盖可离线判定的 ok/err 分支(均不触网)。
     #[test]
     fn run_task_branches_ok_and_err_hermetic() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _a, _b, _p) = sm_env(&root);
         // 未知 op / 未知 server / unmanage 缺失 → ok:false 文案
@@ -2800,7 +2806,7 @@ url = "file://{}"
 
     #[test]
     fn recipes_file_merges_and_overrides_config_registry() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, ga, gb, gp) = sm_env(&root);
         // 独立配方文件(经 SM_SERVER_RECIPES 覆写):tool + archive 各一
@@ -2870,7 +2876,7 @@ url = "file://{}"
 
     #[test]
     fn run_task_tool_install_without_version_passes_gate() {
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let (_langs, _ga, _gb, _gp) = sm_env(&root);
         // Tool 配方 /bin/false:版本门应放行(不再报"未给 version"),执行失败属另一原因
@@ -2924,7 +2930,7 @@ url = "file://{}"
     #[test]
     fn download_progress_hook_consumed_by_install_adhoc() {
         // DL_PROGRESS 线程局部钩子:install_adhoc 下载前挂载,take 一次消费并收到字节回调
-        let _m = ENV_LOCK.lock().unwrap();
+        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("src/rel.tar.gz");
@@ -2935,11 +2941,13 @@ url = "file://{}"
         type Hits = std::sync::Arc<std::sync::Mutex<Vec<(u64, Option<u64>)>>>;
         let hits: Hits = std::sync::Arc::default();
         let hits2 = hits.clone();
-        with_download_progress(Box::new(move |n, t| hits2.lock().unwrap().push((n, t))));
+        with_download_progress(Box::new(move |n, t| {
+            hits2.lock().unwrap_or_else(|e| e.into_inner()).push((n, t))
+        }));
         install_adhoc("demo-bin", "demo-bin", "demo-bin", 1, &src, &sha).unwrap();
         assert!(managed_bin("demo-bin").exists());
         assert_eq!(
-            hits.lock().unwrap().as_slice(),
+            hits.lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
             &[(size, Some(size))],
             "file:// 复制完成回调一次(总大小),钩子已消费"
         );

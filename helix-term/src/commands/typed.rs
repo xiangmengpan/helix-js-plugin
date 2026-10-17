@@ -4577,16 +4577,11 @@ pub(crate) fn emit_plugin_event_with(
     emit_plugin_event_impl(js, editor, name, extra, None)
 }
 
-fn emit_plugin_event_impl(
-    js: Option<&mut helix_js::host::JsHost>,
-    editor: &mut Editor,
-    name: &str,
-    extra: Option<&str>,
-    changes: Option<&[helix_js::DocChange]>,
-) {
-    if !helix_js::has_handlers(name) {
-        return;
-    }
+/// 由当前 editor 状态构造 `CommandContext`(事件/命令入口共用一份换算逻辑)。
+///
+/// ⚠️ 代价:`docs` 会**克隆所有已打开 buffer 的全文**(O(总字节))⇒ 调用方应先
+/// `helix_js::has_handlers(name)` 早退,别给没人订阅的事件付这个钱。
+pub(crate) fn command_context(editor: &mut Editor) -> CommandContext {
     // ponytail: 每事件全量克隆所有 buffer 全文 O(总字节);命令场景可接受,事件(每帧)场景
     // lint-on-type 类插件 + 大 workspace 会拖慢。升级:懒加载——只存 path 列表,首次 by_path 命中再取文本
     let docs = editor
@@ -4607,7 +4602,7 @@ fn emit_plugin_event_impl(
     let col = pos - text.line_to_char(line);
     let anchor_line = text.char_to_line(primary.anchor);
     let head_line = text.char_to_line(primary.head);
-    let ctx = CommandContext {
+    CommandContext {
         path: doc.path().map(|p| p.to_string_lossy().into_owned()),
         text: text.to_string(),
         cursor: (line, col),
@@ -4616,7 +4611,20 @@ fn emit_plugin_event_impl(
             (head_line, primary.head - text.line_to_char(head_line)),
         ),
         docs,
-    };
+    }
+}
+
+fn emit_plugin_event_impl(
+    js: Option<&mut helix_js::host::JsHost>,
+    editor: &mut Editor,
+    name: &str,
+    extra: Option<&str>,
+    changes: Option<&[helix_js::DocChange]>,
+) {
+    if !helix_js::has_handlers(name) {
+        return;
+    }
+    let ctx = command_context(editor);
 
     let emitted = match (js, changes) {
         (Some(host), Some(changes)) => host.emit_doc_change(&ctx, changes),

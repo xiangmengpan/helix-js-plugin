@@ -17,11 +17,11 @@
 // ## 安全设计
 // 所有 API 探测/动作都包 guard();失败一律 echo(**绝不静默**,更不 throw ✗
 // —— 真机上抛出的异常不可见,这一路被它坑过三次 ✓)
-helix.plugin("dashboard", { deps: [], version: "2.0" });
+helix.plugin("dashboard", { deps: [], version: "2.1" }); // 2.1:仅"启动时已打开文件"不再自动弹(2.0 无条件弹,与文件选择器叠加)
 
 // ── 可配置 ────────────────────────────────────────────────────────────────
 helix.define_config("dashboard", {
-  enabled: { type: "boolean", default: true, doc: "无文件启动时是否显示启动屏" },
+  enabled: { type: "boolean", default: true, doc: "无文件启动时是否自动显示启动屏(`:dashboard` 始终可手动打开)" },
   logo: { type: "string", default: "blocks", doc: "logo 风格:blocks | slim | none" },
   width: { type: "string", default: "80%", doc: "弹窗宽度(数字或百分比)" },
   height: { type: "string", default: "70%", doc: "弹窗高度" },
@@ -234,9 +234,16 @@ helix.register_command("dashboard-diag", () => {
 });
 
 // ── 启动自动显示 ──────────────────────────────────────────────────────────
-// open_popup **不需要 ctx.doc** ✓ ⇒ 直接在 startup 里开,无需任何 ctx 转交 ✓
-helix.on("startup", () => {
+// 只在"**启动时没打开任何文件**"的情况下显示 —— 这是本插件唯一该自动弹出的场景。
+//
+// ⚠️ 曾经的 bug(实测):这里无条件 `open_dashboard()`,于是 `hx some/file` 也会弹,
+//    和文件选择器/编辑区叠在一起。根因是**看不到事实**:那时 `startup` 的 payload 是
+//    写死的空 ctx(`path=null, text=""`)⇒ 处理器无从判断。现在 payload 带真实当前 buffer,
+//    判据是 `doc.path`(为空 = 无名 buffer = 启动时确实没打开文件)。
+helix.on("startup", (doc) => {
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   if (cfg.enabled === false) return;
+  // 有路径 ⇒ 启动时打开了文件(即使文件是空的)⇒ **不弹**
+  if (doc && doc.path) return;
   open_dashboard();
 });
