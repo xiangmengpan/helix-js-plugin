@@ -598,6 +598,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G12** | 本条(`refactor(term): … (G12)`) | pane.rs dispatch **24→0**;全仓 75→54;377 集成测试不变;新增 5 条 handler 单测;clippy 两种口径 0 warning | `UiOp` 只装数据;保持一请求一次 dispatch;不补既有缺失的 kind |
 | 2026-10-17 | **D8** | `e3713f1df` | `cargo test --workspace --lib` 连跑 8 轮 0 失败(此前 1 稳定红 + 1 间歇红);377 集成测试不变;clippy 两种口径 0 warning | 根因=EXT 进程级可写缓存 × worker 线程;测试期改 thread-local |
 | 2026-10-17 | **G11** | `159730b4a` | ACTIVE 读点 5→1;矛盾注释 4→0;测试 176→**178**(+2 不变量);377 集成 / api-check 三段不变;clippy 0 | G11b(搬 6 OnceLock + 12 TLS 进宿主)判定**不该做**:通道必须 Send,而宿主持有 !Send 的 boa Context |
+| 2026-10-17 | **S2-a** | 本条(`refactor(term): …`) | `server_op` **269→22**(clippy 口径);最长 handler 53;`typed.rs` 6307→6028;`--workspace --lib` / 377 集成 / api-check 三段 / docgen 全绿 | 照 G7 同法:`typed/server_ops/` 7 个 handler + 分派;分支体逐行搬,判断条件未改 |
 
 ---
 
@@ -618,7 +619,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `plugin_panel` + `plugin_popup` | 770 行 | **376**(+`js_surface` 310) | G10 |
 | 两者 20 行共享窗口 | 73 | **0** | G10 |
 | 跨文件重复(20 行窗口) | 47 个块 | **2 对文件 / 12 个窗口** | 见 9.2 |
-| 长函数(>100 行,唯一) | 70 | **67** | fork 相关 16 → 14(见 9.3) |
+| 长函数(>100 行,唯一) | 70 | **64** | fork 相关 16 → **13**(`server_op` 269→22,见 9.3) |
 | `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
 | `helix-js` 测试 | 176 | **178** | +2 条不变量 |
 | 集成测试 | 377 | **377** | 未增未减 |
@@ -635,7 +636,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 
 | 函数 | 行数 | 判断 |
 |---|---|---|
-| `typed.rs::server_op`(`:server` 子命令分发) | **269** | **S2,建议单独做**:与 G7 同法(按子命令拆 handler)。这是现在**仓库里最大的 fork 函数** |
+| ~~`typed.rs::server_op`~~ | ~~269~~ → **22** | ✅ **已拆**(2026-10-17):`typed/server_ops/` 7 个 handler + `mod.rs` 分派;最长 handler 53 行;`typed.rs` 6307 → 6028 |
 | `popup.rs::statusline_parts` | 223 | S2(可选):纯数据整形,可拆成「取 zones / 组装 parts」两段 |
 | `popup.rs::parse_node` | 161 | S3:JSON → 节点的递归下降,拆开反而更难读 |
 | `plugin_terminal.rs::handle_event` | 147 | **S2,= 原 G10b**:终端网格/光标/PTY 语义,与 panel/popup 不同构,要单独 spec |
@@ -662,7 +663,8 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 ### 9.5 结论
 
 - A/B/C 三批 **12 个目标 + 4 个决策项全部收口**,没有"未解释"的数字变化(每一项的差异都在 §8 有记录)。
-- 剩余事项按上面分档:**S2 两条**(`server_op` 269 行、`plugin_terminal` 的 G10b)值得单独排期;其余是 S3/不动。
+- 剩余事项按上面分档:**S2 只剩一条**(`plugin_terminal::handle_event` = 原 G10b);
+  `server_op` 已于同日拆完(见 §9.3 表)。其余是 S3 / 明确不动。
 - 门禁现状:`fmt` / `clippy`(两种口径)/ `cargo test --workspace --lib` / `cargo test -p helix-js`(+`--ignored`)/ `cargo integration-test`(377)/ `api-check`(三道)/ `docgen` 零 diff —— 全部绿。
 
 ---
