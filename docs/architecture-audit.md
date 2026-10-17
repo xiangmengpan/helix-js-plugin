@@ -30,7 +30,7 @@
 | ✅ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 · 2026-10-17 · 本条 | G8a |
 | ✅ | **G9** | JS 插件共享层 → **已评估:收益不足,不抽**(实测只有 4 组/35 行逐字重复) | S3 | C | 评估结案 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G10** | `PluginPanel`/`PluginPopup` 抽 `JsSurface`(terminal 另议) | S2 | C | 真重构 · 2026-10-17 · 本条 | G6 ✅ |
-| ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
+| ✅ | **G11** | 双状态所有权收尾 → **所有权地图 + ACTIVE 单一读点**(迁移判为不该做) | S1 | C | 评估+收口 · 2026-10-17 · 本条 | G3 ✅ |
 | ✅ | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(pane 族 24 处) | S3 | C | 真重构 · 2026-10-17 · 本条 | G7 ✅ |
 
 范围默认:**只治 fork 新增债务**(16 个 >100 行函数 / 1,486 行超额)。上游遗留的 54 个长函数
@@ -471,20 +471,41 @@ cargo integration-test
 - **没做的**:`PluginTerminal`(1,558 行,内部还有 `TerminalCell`/`TerminalGrid`)—— 它的共享面是
   网格/光标/PTY 回调,与这两个不同构;等有第二个终端类组件时再评估。
 
-### ☐ G11 · 双状态所有权收尾(`state.rs` ↔ `host.rs`)
+### ✅ G11 · 双状态所有权收尾(2026-10-17 完成:G11a 收口,G11b 判定不做)
 
-- **症状**:进程级 `OnceLock`/`thread_local!`(6+12)与按宿主 `JsHost` 字段**同时存在**,注释里
-  "仍是进程级(Phase B)"与"现在按宿主隔离"并存;同一操作有"自由函数 + 方法"两个入口
-  (`emit_event` / `render_popup` / `dispatch_input_key`),自由函数按**环境宿主**解析;
-  环境宿主是 `ACTIVE: Cell<Option<NonNull<JsHost>>>` 裸指针 + "析构前必须 `clear_active()`"的人工契约
-  (违规 = UB,仅 1 个测试守护)。症状证据:8 个测试文件各自持有 `TEST_LOCK`。
-- **做法**(按 `docs/superpowers/plans/2026-10-11-js-host-phaseB.md` 已有顺序,一次一个队列)
-  1. 先立边界(依赖 G3)。
-  2. 每个队列搬完**顺手删掉自由函数别名** —— 否则就是他们自己红线 R1"留两套实现"。
-  3. 中期把 `ACTIVE` 裸指针换成 `Rc`/`Weak` 或让自由函数收 `&mut JsHost`(先量有多少调用点需要参数化)。
-- **完成判据**:`state.rs` 里 `OnceLock` 数量减少且每次减少都有对应删除的自由函数;
-  `cargo test -p helix-js` 可**并行**跑(不设 `--test-threads`)连续 3 次不 flaky。
-- **验证**:`cargo test -p helix-js` ×3 + `cargo integration-test`
+> spec:[`superpowers/specs/2026-10-17-host-ownership-design.md`](superpowers/specs/2026-10-17-host-ownership-design.md)
+
+- **做了什么(G11a)**
+  1. **`ACTIVE` 读点 5 → 1**:新增 `fn active_ptr()`,5 处 `ACTIVE.with(|a| a.get())` 全部改走它
+     (剩余 4 处 `ACTIVE.with` 都是**写点**:set/clear/pump 的两处)。
+  2. **所有权地图写进代码**:`host.rs` 模块头新增一张表(按宿主 / 进程级+分桶 / thread_local 三类,
+     每行写「为什么」),并给出一条判断规则:**新增状态先问「它是跨线程的吗?」**
+  3. **删掉 4 处自相矛盾的 Phase B 说法**(模块头、结构体注释、两条测试注释),
+     改成指向本 spec 的结论。
+  4. **补 2 条不变量测试**:`host_key_is_stable_per_host_and_falls_back`、
+     `queries_do_not_create_host_after_clear`(后者钉住「查询类入口不得顺手建引擎」)。
+- **G11b 为什么判为「不该做」**(本项最有价值的结论)
+  | 状态 | 类型 | 为什么不能进宿主 |
+  |---|---|---|
+  | `TERM_EVENTS` / `ASYNC_EVENTS` / `LSP_RESULTS`(含 `_RX`) | thread_local | worker → 主线程通道,**必须 `Send`**;宿主持有 boa `Context`,是 `!Send` |
+  | `TERM_WORKERS` / `TERM_MASTERS` | thread_local | pty 的进程/fd 表,与「哪个 JS 宿主」无关 |
+  | `PICKER_STATE` / `VIEWPORT` / `LAST_LAYOUT` / `CONFIGS` / `DIAGNOSTICS` | `OnceLock` | 消费端是 helix-term 帧路径(每帧读),签名冻结 |
+  | `UI_REQUESTS` | `OnceLock`(按宿主分桶) | 本体必须 `Send`(worker 也 push);消费端 16 个冻结调用点 |
+  硬搬只能靠 `unsafe impl Send` 或再套一层全局表 —— 前者是 UB 温床,后者等于没搬。
+  真需要「两个完全隔离的宿主」时,正确形态是**两个进程**,而不是一进程两引擎。
+- **`ACTIVE` 保留裸指针的理由**:换成 `Rc<RefCell<JsHost>>` 会让 Phase D 的成果**退化** ——
+  现在 `pump()` 拿 `&mut JsHost`,「JS 回调里再调一次 render」是**编译不过**;
+  `RefCell` 会把它变成**运行期 panic**。裸指针的真实风险(析构前没 `clear_active`)
+  由 `host_cleared_before_drop` + `ActiveGuard` 守着,本项再把读点收成一个。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `ACTIVE` 读点 | 5 | **1** |
+  | 「Phase B / 仍是进程级」矛盾说法 | 4 | **0** |
+  | 不变量测试 | 2 | **4** |
+  | `cargo test -p helix-js` | 176 | **178**(172 passed / 6 ignored) |
+  | `-- --ignored` / api-check / 377 集成 | 绿 | **绿(6/6 · 三段 · 377)** |
+  | `fmt` / clippy(两种口径) | 绿 | 绿(0 warning) |
 
 ### ✅ G12 · `job::dispatch_blocking` 闭包 → `UiOp`(pane 族,2026-10-17 完成)
 
@@ -575,6 +596,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G10** | 本条(`refactor(ui): … (G10)`) | panel+popup **770→376**、共享窗口 **73→0**、最长 handle_event 234→57;377 集成测试不变;clippy 两种口径 0 warning | 新增 `js_surface.rs`(310);Esc 语义用开关区分，测试抓到面板 Esc 分支丢失 |
 | 2026-10-17 | **G12** | 本条(`refactor(term): … (G12)`) | pane.rs dispatch **24→0**;全仓 75→54;377 集成测试不变;新增 5 条 handler 单测;clippy 两种口径 0 warning | `UiOp` 只装数据;保持一请求一次 dispatch;不补既有缺失的 kind |
 | 2026-10-17 | **D8** | `e3713f1df` | `cargo test --workspace --lib` 连跑 8 轮 0 失败(此前 1 稳定红 + 1 间歇红);377 集成测试不变;clippy 两种口径 0 warning | 根因=EXT 进程级可写缓存 × worker 线程;测试期改 thread-local |
+| 2026-10-17 | **G11** | `159730b4a` | ACTIVE 读点 5→1;矛盾注释 4→0;测试 176→**178**(+2 不变量);377 集成 / api-check 三段不变;clippy 0 | G11b(搬 6 OnceLock + 12 TLS 进宿主)判定**不该做**:通道必须 Send,而宿主持有 !Send 的 boa Context |
 
 ---
 
