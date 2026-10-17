@@ -5491,6 +5491,11 @@ pub fn serialize_diagnostics(editor: &helix_view::Editor) -> String {
 /// :term-native 打开原生终端面板（PoC 演示命令）：注册两个隐藏命令——
 /// __term_native 走真实 JS API 路径（helix.open_terminal 入队 OpenTerminal）并执行；
 /// __term_feed 把模拟输出注入对应视图（集成测试用，绕开 pty 时序）。
+///
+/// cfg 与它唯一的引用点 `TERM_NATIVE_COMMAND` 保持一致：那张表也是
+/// `#[cfg(debug_assertions)]`。少了这行,`cargo build --profile opt`(debug_assertions=off)
+/// 会报 dead_code —— 而 `clippy --all-targets` 看不见(测试目标里函数仍被用到)。
+#[cfg(debug_assertions)]
 fn term_native(
     cx: &mut compositor::Context,
     _args: Args,
