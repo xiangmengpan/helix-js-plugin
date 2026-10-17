@@ -452,7 +452,7 @@ cargo integration-test
 | **D4** | C 批 spec 是否要我写完等你确认后才动代码? | **是**(本文 §2 铁律 5) | G9–G12 |
 | **D5** | ~~2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`)~~ | **已修**(2026-10-17):路径改到 `plugins/<name>/plugin.js`;`--ignored` 由 4/6 变 **6/6 通过** | — |
 | **D6** | ~~`clippy --features integration` 改动前就红~~ | **已修**(2026-10-17):`plugin_roots_for` 加 `#[cfg(any(not(feature="integration"), test))]`;CI 的 clippy 步骤加 `--features integration`;顺带清掉 25 条该 feature 下的既有 lint | — |
-| **D7** | G3 量出 **9 个零调用方的 public 函数**(`emit_hook`/`emit_term_close`/`layout_{save,load,list,delete}`/`picker_has_on_key`/`decide`/`emit_lsp_diagnostics`),其中 `layout_*` 疑似与 JS 侧 `:layout` 构成 R3「两套实现」。删除还是接线? | **先查 `:layout` 走哪套**,死的那套删掉;这项单独做,不混进收窄 | — |
+| **D7** | ~~9 个零调用方的 public 函数~~ | **已处理**(2026-10-17):`layout_{save,load,list,delete}` + `dir_or_err` **确认死亡并删除**(`:layout` 实际由 `plugins/layout/plugin.js` 实现,JS 侧走 `js_layout_*`,测试 5+16 条全绿);其余 4 个(`emit_hook`/`emit_term_close`/`picker_has_on_key`/`emit_lsp_diagnostics`)**不是死代码** —— 被单元测试调用,`decide` 更是被 `typed.rs:5114` 用(以 `decide_permission` 别名,G3 的名字扫描漏了别名) | — |
 
 ---
 
@@ -488,6 +488,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G8a** | 本条(`refactor(term): … (G8a)`) | `commands/` 下已无 server_manager;server_manager 集成测试 8 passed;clippy 0 warning;66 处 `commands::server_manager::…` 引用零改动 | 拆分失败原因(glob 环 + cfg(test) 再导出 + clippy 误删)已记入 G8b |
 | 2026-10-17 | **D5** | 本条(`test(js): …`) | `cargo test -p helix-js -- --ignored` **6 passed / 0 failed**(改前 4/6);默认套件 176/170/6 不变;fmt+clippy 绿 | 两个测试拷的是 2026-10 前的扁平布局;`ignore` 理由同步改成真实原因 |
 | 2026-10-17 | **D6** | 本条(`fix(lint): …`) | `clippy --features integration -D warnings` 由 **红(26 条)**变 0;普通 clippy 仍 0;377 集成测试不受影响 | 顺带修掉 2 处 `MutexGuard` 跨 await(改成 tokio Mutex) |
+| 2026-10-17 | **D7** | 本条(`refactor(js): …`) | 删 37 行死实现;176 测试 / `--ignored` 6/6 / api-check 三段 / plugin_layout 5 / window_mode 16 全绿;clippy 0 | 修正 D7 原始清单:4 个是测试专用,`decide` 被 alias 调用 |
 
 ---
 

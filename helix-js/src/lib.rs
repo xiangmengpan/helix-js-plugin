@@ -56,13 +56,6 @@ pub use host::set_editor_version;
 // ⚠ 不要在本行以上写 `#[cfg(test)] pub(crate) use ...`:`cargo xtask api-check` 的解析器
 // 把 lib.rs 从**第一个** `#[cfg(test)]` 处截断来跳过测试代码,这里放一个就等于把注册表清零
 // (本轮亲手踩过:members=0,报成"d.ts 多出一堆")。
-// `:layout` 类型化命令用的 Rust 层入口。
-//
-// ⚠ (G3 量出来的事实)`layout_delete/list/load/save` 在**整个仓库没有任何调用方**
-// (含测试),`dir_or_err` 也只被它们使用 —— 这一层疑似整体死亡,见
-// docs/architecture-audit.md D7(删除 or 重新接线,待确认)。暂保持 `pub` 不动,避免
-// 在「收窄公共面」这项里顺手改行为。
-pub use layout_api::{layout_delete, layout_list, layout_load, layout_save};
 pub use permissions::{
     decide as decide_permission, decisions as permission_decisions, manifests as plugin_manifests,
     pending as pending_permissions,
