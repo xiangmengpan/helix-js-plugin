@@ -21,7 +21,7 @@
 | ✅ | **G2** | 集成测试 harness(`pump`/`render_rows`)收进 `helpers.rs` | S2 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
 | ✅ | **G3** | `state.rs` 收窄公共面 + `*_for_test` 收口(实测重定义见 §3) | S3 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
 | ✅ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 · 2026-10-17 · 本条 | 无 |
-| ☐ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 | 无 |
+| ✅ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 · 2026-10-17 · 本条 | 无 |
 | ☐ | **G6** | `build_engine`(773 行)按 9 个命名空间切分 | S1 | B | 搬家 | G1, G3 |
 | ☐ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 | G3 |
 | ☐ | **G8** | `server_manager.rs`(2,956 行)拆成 7 个模块并移出 `commands/` | S2 | B | 搬家 | 无 |
@@ -242,17 +242,33 @@ cargo integration-test
   | 模块地图 | 无 | `docs/architecture.md`(6 行 + 1 条规则) |
 - **风险**:纯重命名 + 文档;回退 = `git revert`。
 
-### ☐ G5 · `xtask` 一任务一文件 + 单张 `TASKS` 表
+### ☑ G5 · `xtask` 一任务一文件 + 单张 `TASKS` 表(2026-10-17 完成)
 
 - **症状**:6 个任务写在 `main.rs` 的 `tasks` 模块里(`highlightcheck` 254 行、`indentcheck` 196 行),
-  dispatch 是 `match t.as_str()`,help 是手写 `println!` —— **已经漂了**:`apicheck` 注释说"两者",
+  dispatch 是 `match t.as_str()`,help 是手写 `println!` —— **已经漂了**:`apicheck` 的注释说"两者",
   实际是 3 个脚本(实测)。
-- **做法**:`xtask/src/tasks/{docgen,query,indent,highlight,theme,api}.rs`,每个导出一个
-  `fn run(args: &[String]) -> Result<(), DynError>`;`main.rs` 只留
-  `const TASKS: &[(&str, fn(&[String]) -> Result<(), DynError>, &str)]`,dispatch 与 help 都从它生成。
-- **完成判据**:`cargo xtask` 打印的 help 与真实任务一致;6 个任务各跑一次结果与改前相同。
-- **验证**:`cargo xtask` + `cargo xtask docgen && git diff --stat`(docgen 产物应当零变化)
-  + `cargo xtask api-check`
+- **做法**
+  1. `xtask/src/tasks/{docgen,query,indent,highlight,theme,api}.rs`:函数体**整块搬**,
+     只把签名改成统一的 `pub fn run(args: Vec<String>) -> Result<(), DynError>`;
+     原参数名是 `languages`/`themes`/`args` 的,在函数首行加一句
+     `let <原名> = args.into_iter();` —— 函数体**一个字符没动**。
+  2. `tasks/mod.rs`:`pub struct Task { name, run, help }` + `pub const TASKS: &[Task]`,
+     `print_help()` 与 `find()` 都从它生成 ⇒ **help 不可能再与 dispatch 漂移**。
+  3. `main.rs` 622 → **23 行**:只剩 `mod` 声明 + `main`(查表 + 调 `run`)。
+  4. 顺手修正那条已经漂了的注释:api 任务现在明确写"三个门禁"及各自脚本名。
+- **完成判据(实测)**
+  | 指标 | 改前 | 改后 |
+  |---|---|---|
+  | `xtask/src/main.rs` | 622 行 | **23 行**(`tasks/*.rs` 合计 696 行) |
+  | `cargo xtask`(help) | 手写 6 段 | 表生成,**文本逐行一致**(26 列对齐未变) |
+  | `cargo xtask docgen` | OK | OK 且 **`git status docs/` 零变化** |
+  | `query-check` / `indent-check` / `theme-check` / `highlight-check` | OK | OK(highlight 364 assertions 不变) |
+  | `cargo xtask api-check` | 3 段全绿 | 3 段全绿(134 成员 / 20 事件 / 15 检查点) |
+  | `cargo xtask bogus` | `Invalid task name` | 相同 |
+  | `fmt` / `clippy --all-targets -D warnings` | 绿 | 绿(0 warning) |
+- **注意**:`highlight-check --dump <lang> <file>` 分支随函数体原样搬走,未改;它的 e2e 走人工验证。
+- **风险**:纯搬家 + 一处 dispatch 形式变化(查表代替 `match`),已被上面 6 条命令逐条钉住。
+
 
 ---
 
@@ -390,6 +406,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G2** | 本条(`refactor(tests): … (G2)`) | integration **377 passed / 0 failed 与基线逐项一致**;19 个本地 harness 定义→0;净 −305 行;fmt+clippy 绿 | 3+3 个变体逐个比对过;`plugin_components::render_rows` 是死代码;发现 feature 门禁漏洞 → D6 |
 | 2026-10-17 | **G3** | 本条(`refactor(js): … (G3)`) | 顶层 pub fn **141→126**;176 测试 / 377 集成 / api-check 134 成员 **全部不变**;fmt+clippy 绿 | `state` 显式导出 22 项;踩到 api-check 两个文本解析陷阱(已写进注释);零调用方 API → D7 |
 | 2026-10-17 | **G4** | 本条(`refactor(js): … (G4)`) | 176 测试 / api-check 3 段全绿 不变;clippy 0 warning | `layout.rs`→`layout_api.rs`(42 行引用同步);新增模块地图 |
+| 2026-10-17 | **G5** | 本条(`refactor(xtask): … (G5)`) | 6 个任务逐个跑 OK;docgen 零 diff;help 逐行一致;main.rs 622→23 | `TASKS` 表驱动 dispatch+help;修掉已漂的 api-check 注释 |
 
 ---
 
