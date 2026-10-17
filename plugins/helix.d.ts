@@ -459,7 +459,9 @@ interface HelixPlugin {
       schema_version?: number;
       /**
        * 要求的最低编辑器版本(如 `"25.7"`)。
-       * 声明后会与**真实编辑器版本**比较:高于当前版本 ⇒ `helix.plugin` 抛错。
+       * 声明后会与**真实编辑器版本**比较:高于当前版本 ⇒ **状态栏警告并继续加载**
+       * (不拒载 —— 与 `schema_version` 的区别:版本不匹配只说明插件可能用到本编辑器
+       * 没有的 API,代码本身仍可能正常;而 `schema_version` 更高 = 字段语义都可能变)。
        * 编辑器版本未知(库/单测场景)时跳过检查。
        */
       min_editor?: string;

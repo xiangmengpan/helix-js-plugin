@@ -364,6 +364,13 @@ pub struct Config {
     pub continue_comments: bool,
     /// Whether to display infoboxes. Defaults to true.
     pub auto_info: bool,
+    /// `layout-change` 事件的投递时机(D-2 收尾的可选开关)。
+    ///
+    /// * `false`(默认)= **逐点发**:每个变更点当场发一条,处理器看到的是**该变更点当时**
+    ///   的布局(插件侧更可信的契约;代价是这条事件走隐式宿主解析);
+    /// * `true` = **批量发**:同一批变更攒到**边界**(帧首)再发,条数与顺序不变,但每条
+    ///   事件都在**最终布局**上观察(省掉同一批里重复的 JS 往返)。
+    pub js_layout_change_batch: bool,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
     /// Configuration of the statusline elements
@@ -1201,6 +1208,7 @@ impl Default for Config {
             preview_completion_insert: true,
             completion_trigger_len: 2,
             auto_info: true,
+            js_layout_change_batch: false,
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             statusline: StatusLineConfig::default(),

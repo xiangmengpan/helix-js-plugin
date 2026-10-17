@@ -344,17 +344,18 @@ impl JsHost {
         self.pump(|| crate::commands::emit_doc_change(ctx, changes))
     }
 
-    /// 泵入口·`layout-change`;`kind` 是变更种类(`None` = 不携带)。
-    ///
-    /// 早先种类走宿主字段的"暂存"(先 `set` 再 `emit`);现在它是**每次调用的参数**
-    /// —— 种类由变更发生的那一层(`Compositor` 的意图队列)提供,宿主不参与。
-    pub fn emit_layout_change(&mut self, kind: Option<&'static str>) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_layout_change_kind(kind))
-    }
-
     /// 泵入口·`startup`
     pub fn emit_startup(&mut self) -> anyhow::Result<()> {
         self.pump(crate::commands::emit_startup)
+    }
+
+    /// 泵入口·`layout-change`;`kind` 是变更种类(`None` = 不携带)。
+    ///
+    /// 谁在用:**批量投递模式**的边界(`Compositor::flush_layout_change`,那里有 `cx.js`)。
+    /// 默认的**逐点**模式不用它 —— 变更点在 27 个布局原语里,拿不到宿主 ⇒ 走隐式解析
+    /// (见 `with_host_ref` 的分类文档)。
+    pub fn emit_layout_change(&mut self, kind: Option<&'static str>) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_layout_change_kind(kind))
     }
 
     /// 泵入口·渲染组件(返回 `Content`)
@@ -673,7 +674,10 @@ pub(crate) fn try_with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> Opt
 /// 现状:helix-term 侧 **35 个"会执行 JS"的入口全部有宿主显式形态**
 /// (`JsHost::*` 泵方法,见上面的 `impl JsHost`)。仍然走这条隐式路径的只剩两类:
 ///
-/// 1. **结构上拿不到宿主**(不是待办 —— 每条都写明"为什么"):
+/// 1. **结构上拿不到宿主 / 为保真度而有意保留**(不是待办 —— 每条都写明"为什么"):
+///    * `Compositor::sync_layout_cache` → `layout-change`:**为了逐点语义而故意**保留 ——
+///      它挂在 27 个布局原语里,攒到帧首再发会让"同一批变更的多条事件都在最终布局上观察",
+///      依赖变更点当时状态的插件会看到不一致的中间态(2026-10-16 因此改回逐点发);
 ///    * `plugin_terminal::feed` → `term-title`:调用方是 `job::dispatch_blocking` 的
 ///      **`Send` 闭包**(`&mut JsHost` 是 `!Send`);
 ///    * `picker::invoke_preview`(`ui/js_picker.rs`):preview 闭包的签名只给 `&Editor`;

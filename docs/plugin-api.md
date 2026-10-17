@@ -358,7 +358,11 @@ split 方向:right | left | top | bottom
 事件:save | mode-change | buffer-open | buffer-close | doc-change | theme-change | lsp-diagnostics | cursor-move | selection-change | term-* | component-event
 事件 payload(每个事件**位置参数之后**追加一个具名对象):
   { api_version, type, ...具名字段 }   // 形状见 helix.d.ts 的 EventPayload;doc 对象上也带 api_version/type
-layout-change 的投递时机:**一批**布局变更在**边界处**(帧首)一起投递,每条变更一个事件,
-  但处理器看到的都是**最终布局**(不是每个变更点当时的中间布局)。事件条数与顺序不变。
+layout-change 的投递时机有两种模式(`[editor] js-layout-change-batch`,默认 `false`):
+  · **逐点**(默认):每个变更点当场发一条,处理器看到的是**该变更点当时**的布局
+    (快照同步更新,`get_layout()`/`pane.list()` 读到的就是那一刻);
+  · **批量**:同一投递窗口(一次回调/一帧)内的多次变更**合并成一条**,`kind` 取窗口内
+    最后一次标注,处理器看到的是**窗口结束时**的布局 —— 少一半 JS 往返(实测一次 split
+    逐点 4 条 → 批量 2 条),代价是拿不到中间态。
 键位模式:normal | insert | select
 ```

@@ -2574,21 +2574,34 @@ pub(crate) mod tests {
         );
     }
 
-    /// `min_editor` 落地为**判据**(C-1):声明高于编辑器版本 ⇒ 加载即失败;
-    /// 编辑器版本未知 ⇒ 跳过(不误伤库用法/单测)。
+    /// `min_editor` 的语义是**警告并继续加载**(不是拒载 —— 与 `schema_version` 的区别:
+    /// 版本不匹配只说明插件可能用到新 API,代码本身仍可能正常;字段语义不同才必须拒)。
+    /// 编辑器版本未知 ⇒ 跳过检查(不误伤库用法/单测)。
     #[test]
-    fn min_editor_is_enforced() {
+    fn min_editor_warns_and_loads() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init();
         // 与本 crate 其它用例共存:版本串用**真实形态**(>= 其它用例声明的 25.7)
         set_editor_version("25.7.1 (c4831272)");
+        // 满足要求:加载成功,且**不**产生消息
         load_script(r#"helix.plugin("fine", { min_editor: "25.7", deps: [] });"#).unwrap();
         load_script(r#"helix.plugin("exact", { min_editor: "25.7.1", deps: [] });"#).unwrap();
-        let err = load_script(r#"helix.plugin("future", { min_editor: "25.8", deps: [] });"#)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("需要编辑器 >= 25.8"), "{err}");
-        assert!(err.contains("25.7.1"), "{err}");
+        assert!(take_messages().is_empty(), "满足要求不该报警");
+        // 高于当前版本:**加载仍然成功**,但状态栏拿到一条带原因与修法的提示
+        load_script(r#"helix.plugin("future", { min_editor: "25.8", deps: [] });"#).unwrap();
+        let msgs = take_messages();
+        let m = msgs.join(" ");
+        assert!(m.contains("需要编辑器 >= 25.8"), "{m}");
+        assert!(m.contains("25.7.1"), "{m}");
+        assert!(m.contains("已继续加载"), "{m}");
+        // manifest 仍然被记下来(`:js-permission list` 能看到)
+        let manifests = plugin_manifests();
+        assert!(
+            manifests
+                .iter()
+                .any(|x| x.name == "future" && x.min_editor.as_deref() == Some("25.8")),
+            "min_editor 应被记录"
+        );
     }
 
     /// C-2:能力检查覆盖**同族 API** —— 声明了 `process` 就能 `run_async`/`spawn`;

@@ -426,13 +426,14 @@ pub(crate) fn js_plugin(
             .get(JsString::from("min_editor"), ctx)
             .and_then(|v| v.try_js_into::<String>(ctx))
         {
-            // 与 `schema_version` 同族:**声明了就要比一比**。
+            // 声明了就比一比 —— 但**只警告,不拒载**(与 `schema_version` 的区别在此:
+            // 版本不匹配只说明"插件可能用到本编辑器没有的 API",代码本身仍可能正常工作;
+            // 而 `schema_version` 高于当前 = 声明的**字段语义**都可能不同 ⇒ 必须拒)。
             // 编辑器版本未知(库用法/单测未 set_editor_version)⇒ 跳过,不误伤。
             if let Some(actual) = crate::host::editor_version() {
                 if let Err(msg) = crate::permissions::min_editor_ok(&v, &actual) {
-                    return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                        format!("helix.plugin('{name}'): {msg}"),
-                    ))));
+                    // 让失败可见:状态栏(与能力询问同一队列;helix-js 不依赖 `log`)
+                    crate::host::push_message(format!("helix.plugin('{name}'): {msg}(已继续加载)"));
                 }
             }
             manifest.min_editor = Some(v);
@@ -1143,11 +1144,6 @@ pub fn emit_startup() -> Result<()> {
 // 共享善变的宿主字段,谁都能写、谁都忘了读。现在种类存**在变更发生的那一层**
 // (`Compositor` 的意图队列),由边界处(`flush_layout_change`)原样传进来,
 // 宿主不再承担这个暂存任务 ⇒ 少一个字段、少一处隐式耦合。
-
-/// 发 `layout-change`,**不带**种类(调用方没有种类信息)
-pub fn emit_layout_change() -> Result<()> {
-    emit_layout_change_kind(None)
-}
 
 /// 发 `layout-change`;`kind` 为 `Some` 时作为事件的第一个参数(与 `mode-change` 传模式串同一机制)。
 pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {

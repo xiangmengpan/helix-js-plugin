@@ -276,17 +276,15 @@ pub struct Compositor {
     pub(crate) pane_mode: PaneMode,
     /// 标签条脏格 diff 渲染器
     tabbar_diff: crate::ui::comp_layout::DiffRenderer,
-    /// **待发的 `layout-change` 意图**(D-2 收尾)。
-    ///
-    /// 为什么是队列而不是直接发:变更发生在 **27 个布局原语**里(`split_leaf`/
-    /// `close_leaf_clean`/`set_float` …),它们的签名不该为了"发个事件"而收宿主
-    /// (那要连着改它们的全部调用者);而事件发出去就要**执行 JS** ⇒ 必须宿主显式。
-    /// 于是把"要发"记成意图,由**边界**处(帧首 / job 回调跑完 / 键盘处理完 ——
-    /// 那里都有 `cx.js`)用泵入口发出。每一项 = 一次 `sync_layout_cache`;
-    /// `None` = 该次没有标注种类。
-    pending_layout_changes: Vec<Option<&'static str>>,
-    /// 下一次 `sync_layout_cache` 要带的种类(`set_layout_change_kind` 写入,读完即清)
+    /// 下一次 `sync_layout_cache` 要带的种类(`set_layout_change_kind` 写入,读完即清)。
+    /// 种类存在**变更发生的那一层**(而不是宿主字段):谁标谁用,不用隔着共享状态"先 set 再 emit"。
     layout_change_stash: Option<&'static str>,
+    /// `layout-change` 的投递模式,来自 `editor.config().js_layout_change_batch`
+    /// (帧首/事件首刷新 ⇒ 配置热重载后即时生效)。`false` = 逐点发(默认),`true` = 攒到帧首批量发。
+    layout_change_batch: bool,
+    /// 批量模式下的待发意图(每项 = 一次 `sync_layout_cache`;`None` = 该次没标种类)。
+    /// 逐点模式下**恒为空**。
+    pending_layout_changes: Vec<Option<&'static str>>,
 }
 
 impl Compositor {
@@ -303,8 +301,9 @@ impl Compositor {
             full_redraw: false,
             pane_mode: PaneMode::Normal,
             tabbar_diff: Default::default(),
-            pending_layout_changes: Vec::new(),
             layout_change_stash: None,
+            layout_change_batch: false,
+            pending_layout_changes: Vec::new(),
         }
     }
 
@@ -425,6 +424,8 @@ impl Compositor {
         true
     }
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> bool {
+        // 投递模式从配置刷新:键盘路径可能在下一帧之前就改布局(批量模式下要按最新开关排队)
+        self.refresh_layout_change_batch(cx);
         // If it is a key event, a macro is being recorded, and a macro isn't being replayed,
         // push the key event to the recording.
         if let (Event::Key(key), Some((_, keys))) = (event, &mut cx.editor.macro_recording) {
@@ -561,8 +562,9 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // 帧首:**发待发的 layout-change**(D-2 收尾 —— 每帧都有 `cx.js`,是最后一道保险:
-        // 无论布局是命令、插件、job 回调还是异步路径改的,帧首之前事件都已发出)。
+        // 投递模式从配置刷新(热重载即时生效);批量模式下这里就是**边界**:
+        // 本帧之前攒下的 layout-change 全部发出(处理器看到的是最终布局)。
+        self.refresh_layout_change_batch(cx);
         self.flush_layout_change(cx.js.as_deref_mut());
         // commandline（prompt/picker）活跃时占状态栏上一行：树多让 1 行；
         // 状态栏永远在最底 1 行（commandline 关闭后自动恢复）
@@ -1616,29 +1618,42 @@ impl Compositor {
         helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
         let json = serde_json::to_string(&dump).unwrap_or_default();
         helix_js::cache_layout(&json);
-        // `layout-change` 事件:这里**只记意图**,不发(见 `pending_layout_changes` 的注释)。
-        // 快照(上面几行)仍**同步**写 —— 插件在同一个命令里 `get_layout()` 读到的必须是新值。
-        self.pending_layout_changes
-            .push(self.layout_change_stash.take());
+        // `layout-change` 事件:两种投递模式(默认逐点,**可配置**切批量)。
+        //
+        // 逐点(默认):当场发 ⇒ 处理器看到**该变更点当时**的布局(插件侧更可信的契约);
+        //   代价是这条事件只能走隐式宿主解析(`sync_layout_cache` 的 27 个调用点藏在布局
+        //   原语里,签名不该为发个事件而收宿主)⇒ 有意保留的 legacy 例外之一。
+        // 批量(`js_layout_change_batch = true`):攒成意图,帧首统一发 ⇒ 条数与顺序不变,
+        //   但每条都在**最终布局**上观察(同一批里省掉重复的 JS 往返)。
+        // 快照(上面几行)两种模式下都**同步**写 ⇒ `get_layout()`/`pane.list()` 实时性不受影响。
+        let kind = self.layout_change_stash.take();
+        if self.layout_change_batch {
+            self.pending_layout_changes.push(kind);
+            return;
+        }
+        if let Err(e) = helix_js::emit_layout_change_kind(kind) {
+            // 让失败可见(只 log 会静默)
+            helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
+        }
     }
 
-    /// 标注"接下来的布局变更属于哪种"(在变更**前**调用;由 UI 请求臂/命令用)
-    pub(crate) fn set_layout_change_kind(&mut self, kind: &'static str) {
-        self.layout_change_stash = Some(kind);
+    /// 从配置刷新投递模式(帧首/事件首调用 ⇒ 配置热重载即时生效)。
+    fn refresh_layout_change_batch(&mut self, cx: &Context) {
+        self.layout_change_batch = cx.editor.config().js_layout_change_batch;
     }
 
-    /// 把待发的 `layout-change` 全部发出(**边界处调用**,有宿主就走泵入口:独占借用)。
+    /// 批量模式:把**本轮窗口**攒下的 `layout-change` 合并成**一条**发出
+    /// (**帧首**调用,那里有 `cx.js`)。
     ///
-    /// 循环而不是一次过:处理器的 JS 里可能**又**改布局(嵌套)⇒ 把新一轮意图也带出去。
-    /// 空队列 = no-op(绝大多数帧就是这样)。
+    /// 为什么是"合并成一条"而不是"原样逐条转发到帧首":后者与逐点发的**条数相同**,
+    /// 只换了时机 —— 实测两者在"每个 job 回调后都会渲染"的前提下几乎观察不到差别
+    /// (Application 在回调后即 `render()`),那样的开关等于没有语义。合并之后批量模式
+    /// 才有真实收益:同一窗口内常见的"原语内部 sync + 请求臂标种类再 sync"这类**重复**
+    /// 发送被收成一条,`kind` 取窗口内**最后一次**标注。
     ///
-    /// 轮数上限是**防死循环**的保险:若某个 handler 每收到 layout-change 就改布局,
-    /// 旧实现是**同步递归**(栈会炸),现在是同一处循环 —— 给它一个上限并**报告**,
-    /// 总比把编辑器卡住强。
-    ///
-    /// ⚠️ 与"变更点当场发"的**语义差异**(有意):同一批变更的多个事件在**最终布局**上观察,
-    /// 而不是每个变更点当时的中间布局。事件**条数**与顺序不变;依赖中间态的插件会看到
-    /// "后一个变更也已经生效"。这是不为 27 个布局原语收宿主的代价,写在这里以免被当成 bug。
+    /// 窗口结束时的状态 = 处理器看到的状态(`get_layout()`/`pane.list()` 的快照已同步写好)。
+    /// 循环 + 轮数上限:处理器的 JS 里可能**又**改布局(嵌套);上限是防"每次收到
+    /// layout-change 就改布局"的死循环(旧实现是同步递归会炸栈,这里至少不卡死并**报告**)。
     pub(crate) fn flush_layout_change(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         const MAX_ROUNDS: usize = 8;
         for _ in 0..MAX_ROUNDS {
@@ -1646,25 +1661,26 @@ impl Compositor {
                 return;
             }
             let batch: Vec<Option<&'static str>> = self.pending_layout_changes.drain(..).collect();
-            for kind in batch {
-                let emitted = match js.as_mut() {
-                    Some(host) => host.emit_layout_change(kind),
-                    None => helix_js::emit_layout_change_kind(kind),
-                };
-                if let Err(e) = emitted {
-                    log::warn!("layout-change event failed: {e}");
-                }
+            // 合并规则:取窗口内**最后一次**标注(全 None ⇒ None)。
+            let kind = batch.iter().rev().find_map(|k| *k);
+            let emitted = match js.as_mut() {
+                Some(host) => host.emit_layout_change(kind),
+                None => helix_js::emit_layout_change_kind(kind),
+            };
+            if let Err(e) = emitted {
+                helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
             }
         }
-        if !self.pending_layout_changes.is_empty() {
-            let n = self.pending_layout_changes.len();
-            self.pending_layout_changes.clear();
-            // 让失败可见:状态栏 + 日志(不静默丢事件)
-            log::warn!("layout-change: handler 反复改布局(已丢弃 {n} 条待发事件)");
-            helix_js::host::push_message(format!(
-                "layout-change 事件被丢弃({n} 条):某个处理器在 layout-change 里反复改布局"
-            ));
-        }
+        let n = self.pending_layout_changes.len();
+        self.pending_layout_changes.clear();
+        helix_js::host::push_message(format!(
+            "layout-change 事件被丢弃({n} 条):某个处理器在 layout-change 里反复改布局"
+        ));
+    }
+
+    /// 标注"接下来的布局变更属于哪种"(在变更**前**调用;由 UI 请求臂/命令用)
+    pub(crate) fn set_layout_change_kind(&mut self, kind: &'static str) {
+        self.layout_change_stash = Some(kind);
     }
 
     pub fn focus_leaf(&mut self, id: u64) {

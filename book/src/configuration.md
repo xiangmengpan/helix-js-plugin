@@ -15,6 +15,8 @@ theme = "onedark"
 [editor]
 line-number = "relative"
 mouse = false
+# `layout-change` 事件的投递方式:false(默认,逐点发)/ true(同窗口合并成一条)
+js-layout-change-batch = false
 
 [editor.cursor-shape]
 insert = "bar"

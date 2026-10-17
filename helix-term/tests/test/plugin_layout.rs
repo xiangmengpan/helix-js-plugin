@@ -95,17 +95,74 @@ async fn panel_shrinks_editor() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// D-2 收尾(意图队列 + 帧首 flush)的**回归钉**:一批布局变更 ⇒ **每条意图一个事件**,
-/// 不被合并成一条,且顺序保持 —— 这是"把事件从变更点挪到边界处"的最大回归风险
-/// (天真实现会把同一批合成一条)。
-///
-/// 为什么期望是 4 条而不是 2 条(实测记录,不是猜的):一次 `helix.split` 有**两个**
-/// sync 点 —— ① `split_leaf_prealloc` 内部那次(此刻还没有种类 ⇒ `None`),
-/// ② 请求臂随后 `set_layout_change_kind("split")` 再 sync 一次(带种类)。
-/// 两个 split ⇒ 序列 `none, split, none, split`。这条断言把**当前**投递语义写死;
-/// 若以后去掉冗余的那个 sync 点(会少一半事件),这里是必须一起改的地方。
+/// `layout-change` 的**批量模式**(`editor.js-layout-change-batch = true`):
+/// 与逐点模式**条数/顺序相同**,但每条事件都在**最终布局**上观察 —— 这正是开关的语义,
+/// 也是与上面那条逐点用例互为镜像的断言(同样的探针,只换配置)。
 #[tokio::test(flavor = "multi_thread")]
-async fn layout_change_batch_keeps_one_event_per_intent() -> anyhow::Result<()> {
+async fn layout_change_batch_mode_sees_final_layout() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let log = dir.path().join("kinds_batch.txt");
+    let plugin = dir.path().join("lc_batch_mode.js");
+    std::fs::write(
+        &plugin,
+        format!(
+            r#"helix.on("layout-change", (kind) => {{
+                 let prev = "";
+                 try {{ prev = helix.read_file({log:?}); }} catch (e) {{ prev = ""; }}
+                 const panes = (helix.pane.list() || []).length;
+                 helix.write_file({log:?}, prev + (kind || "none") + ":" + panes + "\n");
+               }});
+helix.register_command("lc-batch2", () => {{
+  helix.split("right", {{ terminal: {{ cmd: "true" }} }});
+  helix.split("bottom", {{ terminal: {{ cmd: "true" }} }});
+}});"#,
+            log = log.to_string_lossy()
+        ),
+    )?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x\n")?;
+
+    let mut cfg = test_config();
+    cfg.editor.js_layout_change_batch = true;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(cfg)
+        .build()?;
+    // 前置:配置真的进到编辑器了(否则测的是"默认逐点"而不是批量)
+    assert!(
+        app.editor.config().js_layout_change_batch,
+        "前置不成立:js-layout-change-batch 未生效"
+    );
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":lc-batch2<ret>").await?;
+
+    let got = std::fs::read_to_string(&log)?;
+    let lines: Vec<&str> = got.lines().collect();
+    // 批量模式 = **每个投递窗口合并成一条**:两次 split 各自是一个 job 回调(窗口)
+    // ⇒ 2 条(逐点模式是 4 条);`kind` 取窗口内最后一次标注(原语内部那次是 None)。
+    assert_eq!(lines.len(), 2, "批量模式应合并同窗事件;实得 {got:?}");
+    let kinds: Vec<&str> = lines.iter().map(|l| l.split(':').next().unwrap()).collect();
+    assert_eq!(kinds, vec!["split", "split"], "实得 {got:?}");
+    // 每条看到的是**该窗口结束时**的布局(2 个窗格 → 3 个窗格)
+    let panes: Vec<usize> = lines
+        .iter()
+        .map(|l| l.rsplit(':').next().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(panes, vec![2, 3], "实得 {panes:?}({got:?})");
+    Ok(())
+}
+
+/// `layout-change` 的**逐点语义**回归钉:一批布局变更 ⇒ **每条意图一个事件**,
+/// 且每条事件看到的是**该变更点当时**的布局(不是整批做完后的最终布局)。
+///
+/// 这条用例的形状是踩过两次坑之后定下来的:
+///   · 事件**条数**必须保持(不能被合并)—— 一次 `helix.split` 有**两个** sync 点
+///     (① `split_leaf_prealloc` 内部那次、此刻还没有种类 ⇒ `none`;② 请求臂随后
+///     `set_layout_change_kind("split")` 再 sync 一次 ⇒ `split`),两次 split ⇒ 4 条;
+///   · 每条事件里的**窗格数**必须是**递增**的(逐点语义);若实现改回"攒到帧首再发",
+///     四条会都看到最终窗格数(`3,3,3,3`)⇒ 这条断言会红。
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_change_is_per_change_point() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let log = dir.path().join("kinds.txt");
     let plugin = dir.path().join("lc_batch.js");
@@ -115,7 +172,8 @@ async fn layout_change_batch_keeps_one_event_per_intent() -> anyhow::Result<()> 
             r#"helix.on("layout-change", (kind) => {{
                  let prev = "";
                  try {{ prev = helix.read_file({log:?}); }} catch (e) {{ prev = ""; }}
-                 helix.write_file({log:?}, prev + (kind || "none") + "\n");
+                 const panes = (helix.pane.list() || []).length;
+                 helix.write_file({log:?}, prev + (kind || "none") + ":" + panes + "\n");
                }});
 helix.register_command("lc-batch", () => {{
   helix.split("right", {{ terminal: {{ cmd: "true" }} }});
@@ -134,9 +192,24 @@ helix.register_command("lc-batch", () => {{
     let got = std::fs::read_to_string(&log)?;
     let lines: Vec<&str> = got.lines().collect();
     assert_eq!(
-        lines,
+        lines.len(),
+        4,
+        "两个 split × 两个 sync 点 ⇒ 4 条事件;实得 {got:?}"
+    );
+    let kinds: Vec<&str> = lines.iter().map(|l| l.split(':').next().unwrap()).collect();
+    assert_eq!(
+        kinds,
         vec!["none", "split", "none", "split"],
-        "一次变更两个 sync 点(内部 none + 臂 split)、两次 split ⇒ 4 条;实得 {got:?}"
+        "实得 {got:?}"
+    );
+    // 逐点语义的关键断言:窗格数**递增**(不是四条都等于最终值)
+    let panes: Vec<usize> = lines
+        .iter()
+        .map(|l| l.rsplit(':').next().unwrap().parse().unwrap())
+        .collect();
+    assert!(
+        panes.windows(2).all(|w| w[0] <= w[1]) && panes[0] < panes[3],
+        "每条事件应看到**该变更点当时**的窗格数(递增),而不是最终布局;实得 {panes:?}({got:?})"
     );
     Ok(())
 }
