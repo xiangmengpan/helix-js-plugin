@@ -17,7 +17,7 @@
 | 状态 | ID | 目标 | 严重度 | 批次 | 性质 | 依赖 |
 |---|---|---|---|---|---|---|
 | ✅ | **G0** | 建立干净基线:收尾当前 WIP + 清 `.swp` | — | 前置 | 卫生 · 2026-10-17 · `fc0585abe` + `49c4fe1` + 本条 | 无 |
-| ☐ | **G1** | `helix-js` 内联测试(4,835 行 / 99 测试)搬出 `lib.rs` | S1 | A | 纯搬家 | G0 |
+| ✅ | **G1** | `helix-js` 内联测试(4,835 行 / 99 测试)搬出 `lib.rs` | S1 | A | 纯搬家 · 2026-10-17 · 本条 | G0 |
 | ☐ | **G2** | 集成测试 harness(`pump`/`render_rows`)收进 `helpers.rs` | S2 | A | 纯减法 | G0 |
 | ☐ | **G3** | `state.rs` 收窄公共面(106 pub → 显式导出)+ `*_for_test` 收口 | S3 | A | 纯减法 | G0 |
 | ☐ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 | 无 |
@@ -120,18 +120,32 @@ cargo integration-test
   - ⚠ 本工作区存在**并行进程共同提交**(`fc0585abe` 即由其代提交)。后续每项提交都用
     `git commit <paths>` 限定路径,避免把别人的改动卷进我的提交。
 
-### ☐ G1 · 把 `helix-js` 的内联测试搬出 `lib.rs`
+### ☑ G1 · 把 `helix-js` 的内联测试搬出 `lib.rs`(2026-10-17 完成)
 
 - **症状**:`lib.rs` 5,693 行里 4,835 行是 `#[cfg(test)] mod tests`(99 个测试)。生产代码只占 858 行,却和测试混在一起 —— 阅读 9 个命名空间的注册表要翻过 4.8k 行测试。
-- **做法**
-  1. 建 `helix-js/src/tests/mod.rs` + 按域切 `api.rs / popup.rs / layout.rs / fs.rs / term.rs / lsp.rs`,
-     `mod.rs` 里 `pub(crate) use super::*;` 保留访问私有符号的能力(测试用了大量 `pub(crate)` 内部项)。
-  2. `lib.rs` 末尾只留 `#[cfg(test)] mod tests;`。
-  3. 切分按**测试名归属**机械归类,不改任何断言语义。
-- **预估**:1 个文件变 7 个,`lib.rs` 5693 → ~860;新增文件全部是搬过去的原文。
-- **完成判据**:`cargo test -p helix-js` 数量与基线**完全相同**(176);`lib.rs` < 900 行。
-- **验证**:`cargo test -p helix-js` + `cargo test -p helix-js -- --ignored` + `cargo xtask api-check`
-- **回退**:`git revert <sha>`(单提交,无跨 crate 影响)
+- **做法(实际执行)**
+  1. `lib.rs` 末尾只留 `#[cfg(test)] pub(crate) mod tests;` —— 变成**文件化模块**,`crate::tests` 路径与可见性都不变。
+  2. 按**测试名归属**把 99 个测试逐字搬进 7 个域文件(每条按原行区间整块搬迁,不改断言语义):
+     `plugin`(29)· `popup_panel`(26)· `term_pty`(11)· `doc_edit`(10)· `pane_stack`(9)· `fs_async`(8)· `events_lsp`(6)。
+  3. 共享夹具(`TEST_LOCK` + `describe_term_event` / `wait_for_term_event` / `wait_for_async` + 3 条 `use`)
+     全部留在 `mod.rs`。子模块只写 `use super::*;` —— **父模块的私有 `use` 对子模块可见**,
+     所以 `use crate::*;` 是多余的(先试过加它,编译器报了 7 条 `unused import` 后删掉)。
+- **偏离计划的地方**:原计划的文件名(`api/popup/layout/fs/term/lsp`)与真实测试名对不上(测试里
+  `plugin`/`reload`/`popup`/`pane` 四族占 74/99),所以改用按真实族名命名。文件数 7 不变。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `lib.rs` 行数 | 5,693 | **860**(生产 858 + 2 行模块声明) |
+  | `cargo test -p helix-js` | 176 / 170 passed / 6 ignored | **完全相同** |
+  | 99 个测试名 | — | 逐个核对:每个恰好出现 1 次(0 丢失 / 0 新增 / 0 重复) |
+  | `cargo fmt --all --check` | 绿 | 绿 |
+  | `cargo clippy --all-targets -- -D warnings` | 0 warning | **0 warning** |
+  | `cargo xtask api-check` | 134 成员 / 15 检查点 | **完全相同** |
+- **顺手发现的真问题(不属本项,已记 D5)**:6 个 `#[ignore]` 测试里有 **2 个本来就是坏的** ——
+  `reload_real_statusline_render_ok` / `reload_all_real_plugins_keeps_commands` 去拷
+  `plugins/features/statusline.js`,而该路径早已迁成 `plugins/statusline/plugin.js` ⇒
+  `Os { code: 2, NotFound }`。因为 `#[ignore]`,CI 从不跑它们,所以烂了没人发现。
+**风险**:无(纯搬家;回退 = `git revert`,不跨 crate)。
 
 ### ☐ G2 · 集成测试 harness 收进 `helpers.rs`
 
@@ -286,6 +300,7 @@ cargo integration-test
 | **D2** | 是否允许收窄 `helix-js` 公共面(G3,会连带改 helix-term 约 15 个文件)? | **允许**,但先量规模;超 2 倍预估就拆 G3a/G3b | G3, G6, G7, G11 |
 | **D3** | 每项都跑全量 `cargo integration-test`(367 tests / ~180s)? | **A 批只跑相关子集,B/C 批全量** | 全部 |
 | **D4** | C 批 spec 是否要我写完等你确认后才动代码? | **是**(本文 §2 铁律 5) | G9–G12 |
+| **D5** | 新发现:2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`,路径已废弃),是否纳入清理? | **纳入**为独立小项(修路径或删测试),别混进 G1 | — |
 
 ---
 
@@ -311,6 +326,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 日期 | ID | commit | 等价性证据(数字) | 备注 |
 |---|---|---|---|---|
 | 2026-10-17 | **G0** | `fc0585abe`(WIP)· `49c4fe1`(.gitignore)· 本条(docs) | 176 测试 / 0 failed;api-check 134 成员 · 15 检查点;fmt+clippy 绿 | 基线就位。WIP 由**并行进程**代提交;`.swp` 只忽略不删;仓库 2 个 stash 未动 |
+| 2026-10-17 | **G1** | 本条(`refactor(js): … (G1)`) | lib.rs 5693→**860**;176 测试 / 170 passed / 6 ignored **不变**;99 个测试名逐个核对 1 次;clippy 0 warning;api-check 不变 | 7 个域文件 + `mod.rs`(夹具);发现 2 个 `#[ignore]` 测试已坏死 → D5 |
 
 ---
 
