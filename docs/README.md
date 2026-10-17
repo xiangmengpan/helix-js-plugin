@@ -19,6 +19,7 @@
 | 文档 | 内容 |
 |---|---|
 | [`architecture.md`](architecture.md) | 分层与数据流(JS 运行时 / compositor / 布局树) |
+| [`architecture-audit.md`](architecture-audit.md) | **架构体检 → 重构执行目标(G0–G12,逐项打勾)** —— 唯一进度真相源;改动前看 §2 铁律 |
 | [`vision.md`](vision.md) | 这个 fork 想做成什么 |
 | [`arsenal.md`](arsenal.md) | 浮层市场窗(`:arsenal`)—— 取代已废弃的 server-manager |
 | [`server-manager.md`](server-manager.md) | **已废弃的插件**与其**仍在使用的后端**(注册表/安装/版本求解) |
