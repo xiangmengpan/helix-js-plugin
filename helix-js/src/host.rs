@@ -603,7 +603,6 @@ impl JsHost {
         self.pump(crate::commands::reload_all)
     }
 
-    /// 泵入口·picker action 回调(`define` 的 action;payload 数组)
     // 注意:这里**没有** `picker_invoke_action` 的泵版本。
     // Picker 的 action 回调契约(`ui::picker::Picker::new` 的闭包)只给 `&mut Context`,**不带宿主**;
     // preview/onKey 的契约才带 `js: Option<&mut JsHost>`。所以 action 只能走自由函数
