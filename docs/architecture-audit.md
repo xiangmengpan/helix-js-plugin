@@ -22,7 +22,7 @@
 | ✅ | **G3** | `state.rs` 收窄公共面 + `*_for_test` 收口(实测重定义见 §3) | S3 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
 | ✅ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 · 2026-10-17 · 本条 | 无 |
-| ☐ | **G6** | `build_engine`(773 行)按 9 个命名空间切分 | S1 | B | 搬家 | G1, G3 |
+| ✅ | **G6** | `build_engine`(773 行)按命名空间/能力切分到 `register/` | S1 | B | 搬家 · 2026-10-17 · 本条 | G1, G3 |
 | ☐ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 | G3 |
 | ☐ | **G8** | `server_manager.rs`(2,956 行)拆成 7 个模块并移出 `commands/` | S2 | B | 搬家 | 无 |
 | ☐ | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 | 无 |
@@ -280,16 +280,43 @@ cargo integration-test
 
 ## 4. 批次 B —— 搬家(不改语义,但动的是覆盖率较薄的地方)
 
-### ☐ G6 · `build_engine`(773 行)按 9 个命名空间切分
+### ☑ G6 · `build_engine`(773 行)按命名空间/能力切分(2026-10-17 完成)
 
-- **症状**:`helix-js/src/lib.rs:85 build_engine` 773 行,手工注册 **134 个成员 / 9 个命名空间**,
-  每个成员 6 行样板 `NativeFunction::from_fn_ptr(...)`。宽度而非复杂度。
-- **做法**:`helix-js/src/register/{lsp,picker,pane,pane_layout,buffer,doc,fs,term,ui}.rs`,
-  统一 `pub(crate) fn register(ctx: &mut Context) -> JsObject`,`build_engine` 只剩 9 次调用 + 拼装。
-  第二步(单独提交,可选)把样板压成声明表 `(name, fn_ptr, arity)` 循环展开。
-- **完成判据**:最长注册函数 < 120 行;`cargo xtask api-check` 输出**逐字不变**(134 / 9 / 20 / 15)。
-- **验证**:`cargo test -p helix-js` + `cargo xtask api-check` + `cargo integration-test`
-- **风险**:`helix.d.ts` / `docs/plugin-api.md` / 能力检查点三闸门是这里的安全网,**跑它们**,别只跑测试。
+- **症状**:`build_engine` 773 行,手工注册 **134 个成员 / 9 个命名空间**,每个成员 5–6 行样板;宽度而非复杂度。
+- **做法**:`helix-js/src/register/`(13 个文件)
+  | 文件 | 内容 | 行数 |
+  |---|---|---|
+  | `lsp.rs` / `picker.rs` / `server.rs` | 命名空间对象(8 / 2 / 8 成员) | 56 / 26 / 57 |
+  | `pane.rs` / `pane_layout.rs` | `helix.pane.*`(16)+ `helix.layout.*`(6)/`pane_mode`(2) | 97 / 64 |
+  | `buffer.rs` / `icons.rs` / `plugin.rs` | `buffer`(3)+`stack`(4)/ 图标(动态 7)/ 可调用 `plugin()` | 59 / 15 / 22 |
+  | `root_{doc,fs,buffer,term,ui,theme}.rs` | 根对象成员 78 个,按能力分族 | 64/99/74/85/83/68 |
+  | `mod.rs` | 模块声明 + 兄弟模块导入(让裸路径 `commands::js_echo` 可用) | 36 |
+  `build_engine` 现在 **94 行**:建 10 个命名空间 → 5+1 次根族注册 → 10 次 `builder.property` → 注册全局。
+- **关键决策:根对象用"分族函数 + `&mut ObjectInitializer`",而不是各建各的对象再合并**
+  —— `ObjectInitializer` 独占 `&mut Context`,同时只能存在一个;分族函数接收同一个 builder、
+  各自追加成员,才能既拆开又保持"一个根对象"。
+- **为了不让门禁失明,同步改了 3 处工具**(这是本项最容易被忽略的部分)
+  1. `check_api_surface.mjs`:注册表解析从"只读 lib.rs"改成"lib.rs + `register/*.rs` 按序拼接",
+     并给每个容器记上**所属文件**;归属只在同一文件内生效(否则 `root_*.rs` 的成员会被
+     错挂到前面某个命名空间)。
+  2. 顺带修它的容器正则:原先 `let (\w+)_obj =` 不分右值,把 `let lsp_obj = register::lsp::register(engine)`
+     这种"拼装语句"也当容器(实测把所有成员都记成 root);现在要求右值真的是 `ObjectInitializer::new`。
+  3. `check_capability_surface.mjs`:`registrations()` 也扫 `register/*.rs`,否则能力检查会报
+     "实现里没有 check_js"(它靠 JS 名 → Rust fn 路径定位实现)。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `build_engine` 行数 | 773 | **94** |
+  | 最长注册函数 | 773 | **99**(`root_fs.rs`) |
+  | `cargo xtask api-check` | 134 成员 / 9·10 命名空间 / 20 事件 / 15 检查点 · 豁免 1 | **逐项相同**(buffer 3 · icons 7 · layout 6 · lsp 8 · pane 16 · pane_mode 2 · picker 2 · server 8 · stack 4 · root 78 · 可调用 1 · 全局量 2) |
+  | `cargo test -p helix-js` | 176 / 170 passed / 6 ignored | **完全相同** |
+  | `cargo integration-test` | 377 passed / 0 failed | **完全相同**(204.5s) |
+  | `fmt` / `clippy -D warnings` | 绿 | 绿(0 warning) |
+  | 注册调用总数 | 134 | 127 条静态 `.function(` + 图标动态 7 = **134** |
+- **已知取舍**:根对象成员的**属性插入顺序**变了(原先按编写顺序,现在按族分组)。
+  `Object.keys(helix)` 的顺序会变,但成员集合不变,且这三道门禁都不依赖顺序;若有插件依赖顺序,
+  那是它本来就脆。已在 `lib.rs` 注释里写明"顺序 = 族顺序"。
+- **风险**:注册表是 API 面的唯一真相源;本次改动同时改了**生成方与检查方**,已用"逐项计数不变"钉住。
 
 ### ☐ G7 · `apply_ui_requests`(689 行)按请求族切分
 
@@ -413,6 +440,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G3** | 本条(`refactor(js): … (G3)`) | 顶层 pub fn **141→126**;176 测试 / 377 集成 / api-check 134 成员 **全部不变**;fmt+clippy 绿 | `state` 显式导出 22 项;踩到 api-check 两个文本解析陷阱(已写进注释);零调用方 API → D7 |
 | 2026-10-17 | **G4** | 本条(`refactor(js): … (G4)`) | 176 测试 / api-check 3 段全绿 不变;clippy 0 warning | `layout.rs`→`layout_api.rs`(42 行引用同步);新增模块地图 |
 | 2026-10-17 | **G5** | 本条(`refactor(xtask): … (G5)`) | 6 个任务逐个跑 OK;docgen 零 diff;help 逐行一致;main.rs 622→23 | `TASKS` 表驱动 dispatch+help;修掉已漂的 api-check 注释 |
+| 2026-10-17 | **G6** | 本条(`refactor(js): … (G6)`) | `build_engine` 773→**94**;api-check **逐项计数不变**(134/20/15);176 测试 / 377 集成不变 | 13 个 register 文件;同步扩展**两个**检查脚本(否则门禁失明);修掉容器正则误判 |
 
 ---
 

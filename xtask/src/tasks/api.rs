@@ -7,7 +7,7 @@ use crate::DynError;
 
 /// 一次性跑**三个**表面门禁(顺序即失败优先级):
 ///
-/// 1. `check_api_surface.mjs` —— `plugins/helix.d.ts` ↔ Rust 注册表;
+/// 1. `check_api_surface.mjs` —— `plugins/helix.d.ts` ↔ Rust 注册表(`lib.rs` + `register/*.rs`);
 /// 2. `check_doc_surface.mjs` —— `docs/plugin-api.md` ↔ 注册表;
 /// 3. `check_capability_surface.mjs` —— 能力检查点 ↔ 注册的 JS API。
 ///

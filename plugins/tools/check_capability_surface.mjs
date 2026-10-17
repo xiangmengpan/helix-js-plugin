@@ -25,7 +25,7 @@
 ///   2. 在下面 `EXPECTED` 里登记(这是**意图**的唯一出处);
 ///   3. 若某函数确实**不该**受检查(如插件加载器),登记进 `EXEMPT` 并写清理由。
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,7 +142,15 @@ function registryNames() {
 
 /// 注册表:JS 名 → 实现函数路径(可能多名同名,如 picker.run / run ⇒ 全部保留)
 function registrations() {
-  const lib = stripComments(read("helix-js/src/lib.rs"));
+  // G6 起注册表拆到 `helix-js/src/register/*.rs`(lib.rs 只留拼装),两处都要扫。
+  const files = [
+    "helix-js/src/lib.rs",
+    ...readdirSync(join(ROOT, "helix-js/src/register"))
+      .filter((n) => n.endsWith(".rs"))
+      .sort()
+      .map((n) => `helix-js/src/register/${n}`),
+  ];
+  const lib = files.map((f) => stripComments(read(f))).join("\n");
   const out = [];
   for (const m of lib.matchAll(
     /from_fn_ptr\(\s*([\w:]+)\s*\),\s*JsString::from\("([a-z_0-9]+)"\)/g,

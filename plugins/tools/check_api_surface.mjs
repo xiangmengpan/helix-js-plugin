@@ -9,7 +9,9 @@
 ///   ⇒ 把对账固化成脚本(与 check_signatures.mjs 同一思路:凡是"靠人记得"的步骤最后一定被忘掉)。
 ///
 /// ## 权威来源(全部**从源码解析**,不需要 cargo 编译)
-///   1. `helix-js/src/lib.rs`      —— `helix.*` 成员:根名 + 各命名空间成员 + 全局量(helix/TABBAR_ID)
+///   1. `helix-js/src/lib.rs` + `helix-js/src/register/*.rs`
+///                                 —— `helix.*` 成员:根名 + 各命名空间成员 + 全局量(helix/TABBAR_ID)
+///                                    (G6 起成员按命名空间拆到 register/ 下,lib.rs 只留拼装)
 ///   2. `helix-js/src/icons.rs`    —— `helix.icons.*`(经 `native_fns()` **动态**注册,lib.rs 里看不到名字)
 ///   3. `helix-js/src/commands.rs` —— `EVENT_WHITELIST`(`helix.on` 允许的事件名)
 ///
@@ -91,14 +93,44 @@ function matchBrace(text, openIdx) {
 /// 返回 { members: Map<ns, Map<name, {src, line}>>, callables: Map<name,...>,
 ///        globals: Map<name,...>, events: Map<name,...> }
 function parseRustRegistry() {
-  const libRaw = read("helix-js/src/lib.rs");
-  const lib = maskComments(libRaw).slice(0, maskComments(libRaw).indexOf("#[cfg(test)]"));
-  const at = (idx) => ({ src: "helix-js/src/lib.rs", line: lineOf(lib, idx) });
+  // G6 起注册表按命名空间/能力拆到 `helix-js/src/register/*.rs`:`build_engine` 只剩拼装。
+  // 解析方式:把 lib.rs(截到第一个 `#[cfg(test)]`,跳过测试代码)与 register 目录下的文件
+  // 按固定顺序拼成一个字符串,并保留 偏移 → (文件, 行号) 的映射,报错才能指对文件。
+  //
+  // ⚠ 顺序有语义:`lib.rs` 必须在最前(它末尾的 `let mut builder = ObjectInitializer::new`
+  // 定义了"根对象"容器),各 register 文件自带自己的 `<ns>_obj/_builder` 容器。
+  const libMaskedAll = maskComments(read("helix-js/src/lib.rs"));
+  const cut = libMaskedAll.indexOf("#[cfg(test)]");
+  const segments = [
+    { src: "helix-js/src/lib.rs", masked: cut >= 0 ? libMaskedAll.slice(0, cut) : libMaskedAll },
+  ];
+  for (const f of readdirSync(rel("helix-js/src/register")).filter((n) => n.endsWith(".rs")).sort()) {
+    segments.push({ src: `helix-js/src/register/${f}`, masked: maskComments(read(`helix-js/src/register/${f}`)) });
+  }
+  let lib = "";
+  const layout = [];
+  for (const seg of segments) {
+    layout.push({ start: lib.length, ...seg });
+    lib += seg.masked + "\n";
+  }
+  const segAt = (idx) => {
+    let hit = layout[0];
+    for (const o of layout) if (o.start <= idx) hit = o;
+    return hit;
+  };
+  const at = (idx) => {
+    const hit = segAt(idx);
+    return { src: hit.src, line: lineOf(hit.masked, idx - hit.start) };
+  };
 
   // ── 容器:命名空间(成员归属)与 FunctionObjectBuilder(可调用根名)──
   const containers = [];
-  for (const m of lib.matchAll(/let\s+(?:mut\s+)?([a-z_0-9]+)_(?:obj|builder)\s*=/g)) {
-    containers.push({ name: m[1], start: m.index });
+  // 必须是**真的**建了 ObjectInitializer 才算容器:否则 `let lsp_obj = register::lsp::register(engine)`
+  // 这类"把命名空间交给拼装"的语句也会被当容器,把 root 成员错挂到命名空间上(G6 踩过)。
+  for (const m of lib.matchAll(
+    /let\s+(?:mut\s+)?([a-z_0-9]+)_(?:obj|builder)\s*=\s*ObjectInitializer::new/g,
+  )) {
+    containers.push({ name: m[1], start: m.index, seg: segAt(m.index) });
   }
   for (const m of lib.matchAll(
     /let\s+\w+\s*=\s*FunctionObjectBuilder::new[\s\S]*?\.name\("([^"]+)"\)/g,
@@ -107,7 +139,7 @@ function parseRustRegistry() {
   }
   // 根对象:它之后的所有成员都挂在 helix 上(命名空间都在它之前构建)
   const rootBuilder = /let\s+mut\s+builder\s*=\s*ObjectInitializer::new/.exec(lib);
-  if (rootBuilder) containers.push({ name: "root", start: rootBuilder.index });
+  if (rootBuilder) containers.push({ name: "root", start: rootBuilder.index, seg: segAt(rootBuilder.index) });
   else console.log("  ⚠ 自检:没找到根对象 `let mut builder = ObjectInitializer::new`");
   // 同名只留最早那处(lsp_obj + lsp_builder 是同一命名空间)
   const seen = new Set();
@@ -116,9 +148,17 @@ function parseRustRegistry() {
     .filter((c) => (seen.has(c.name) ? false : (seen.add(c.name), true)));
 
   // 归属:某下标处第一个落在其 span 内的容器(最靠后的 start ≤ idx)
+  // 归属只在**同一个文件**内生效:G6 之后每个 register/*.rs 自带自己的容器,
+  // 跨文件沿用"上一个容器"会把 root_*.rs 的成员错挂到前面某个命名空间上。
+  // 排查"成员被挂到错的命名空间"时:DEBUG_API_CHECK=1 打印分段与容器归属。
+  if (process.env.DEBUG_API_CHECK) {
+    console.log("[debug] segments:", layout.map((s) => `${s.src}@${s.start}`).join(", "));
+    console.log("[debug] containers:", spans.map((c) => `${c.name}@${c.start}:${c.seg.src.split("/").pop()}`).join(", "));
+  }
   const nsspan = (idx) => {
+    const seg = segAt(idx);
     let hit = null;
-    for (const c of spans) if (c.start <= idx) hit = c;
+    for (const c of spans) if (c.start <= idx && c.seg === seg) hit = c;
     return hit ? hit.name : "root";
   };
 
@@ -421,7 +461,9 @@ function main() {
   }
 
   console.log("helix.d.ts ↔ JS API 注册表 对账");
-  console.log("权威来源:helix-js/src/lib.rs · icons.rs · commands.rs(从源码解析,不编译)");
+  console.log(
+    "权威来源:helix-js/src/lib.rs + register/*.rs · icons.rs · commands.rs(从源码解析,不编译)",
+  );
 
   const dts = parseDts();
   if (!dts) process.exit(1);
