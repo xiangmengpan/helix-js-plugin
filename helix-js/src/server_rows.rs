@@ -30,7 +30,7 @@ fn with_callbacks<T>(f: impl FnOnce(&mut HashMap<u64, JsValue>) -> T) -> T {
 }
 
 /// `helix.server.rows(cb)`：注册一次性回调并请求当前行数据；返回 request id。
-pub fn js_server_rows(
+pub(crate) fn js_server_rows(
     _this: &JsValue,
     args: &[JsValue],
     _context: &mut Context,

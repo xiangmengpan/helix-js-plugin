@@ -919,7 +919,7 @@ fn has_component_render_probes_without_calling_js() {
     assert!(crate::has_component_render(77), "已注册应报存在");
     assert!(!crate::has_component_render(78), "未注册应报不存在");
 
-    let calls = crate::with_engine(|e| {
+    let calls = crate::host::with_engine(|e| {
         e.eval(boa_engine::Source::from_bytes("globalThis.__probe_calls"))
             .unwrap()
             .to_number(e)
@@ -983,7 +983,7 @@ fn pure_component_render_skips_js_when_inputs_unchanged() {
     )
     .unwrap();
     let count = |expr: &str| {
-        crate::with_engine(|e| {
+        crate::host::with_engine(|e| {
             e.eval(boa_engine::Source::from_bytes(expr))
                 .unwrap()
                 .to_number(e)
@@ -1039,7 +1039,7 @@ fn component_render_supports_dirty_null_reuse() {
     let second = crate::render_component(88, 10, 3, None).expect("null 应复用上次内容");
     assert_eq!(first, second, "null 之后应拿到**同一份**内容");
 
-    let calls = crate::with_engine(|e| {
+    let calls = crate::host::with_engine(|e| {
         e.eval(boa_engine::Source::from_bytes("globalThis.__dirty_calls"))
             .unwrap()
             .to_number(e)

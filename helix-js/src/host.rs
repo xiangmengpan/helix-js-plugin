@@ -250,7 +250,7 @@ pub fn clear_active() {
 }
 
 /// 安装默认宿主(由 `init()` 调用;幂等由调用方守 —— 已有宿主时不要覆盖)。
-pub fn install_default(host: JsHost) {
+pub(crate) fn install_default(host: JsHost) {
     DEFAULT_HOST.with(|h| *h.borrow_mut() = Some(Box::new(host)));
 }
 

@@ -58,7 +58,7 @@ pub fn push_watch_event(id: u64, kind: &str, path: String) {
 }
 
 /// 取走全部待处理 watcher 事件（主线程轮询用；幂等）
-pub fn drain_watch_events() -> Vec<WatchEvent> {
+pub(crate) fn drain_watch_events() -> Vec<WatchEvent> {
     crate::init();
     let mut events = Vec::new();
     if let Some(ch) = WATCH_CHANNEL.get() {

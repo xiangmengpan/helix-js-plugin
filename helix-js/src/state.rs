@@ -148,7 +148,7 @@ pub fn unregister_component_state(id: u64) {
 }
 
 /// 读取组件状态（JSON 字符串；未注册 → None）。
-pub fn get_component_state_json(id: u64) -> Option<String> {
+pub(crate) fn get_component_state_json(id: u64) -> Option<String> {
     crate::host::with_host_ref_or_init(|h| {
         let s = &h.component_states;
         s.borrow().get(&id).map(|f| f(id))
@@ -524,7 +524,7 @@ pub(crate) fn is_builtin_root(root: &std::path::Path) -> bool {
 /// 插件目录(**用户层 = 最后一个根**;`resolve_in` 用 `rev()` 迭代 ⇒ 末位优先级最高)。
 /// `manifest.json` 与插件文件都在这里 —— `:plugin` 管理器必需
 /// (此前 JS 侧**没有任何** config/插件目录访问器,实测 `config_dir`/`plugin_dir` 注册数为 0)。
-pub fn plugins_dir() -> Option<PathBuf> {
+pub(crate) fn plugins_dir() -> Option<PathBuf> {
     plugin_roots().last().cloned()
 }
 
@@ -549,7 +549,7 @@ pub fn clear_command_args() {
 }
 
 /// 当前待处理参数(JS 侧 `helix.command_args()` 读它)
-pub fn command_args() -> Vec<String> {
+pub(crate) fn command_args() -> Vec<String> {
     crate::host::with_host_ref_or_init(|h| {
         let a = &h.pending_command_args;
         a.borrow().clone()
@@ -578,7 +578,7 @@ pub(crate) fn runtime_file_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 }
 
 /// 给 JS 侧用的包装:`helix.runtime_path(name)`
-pub fn runtime_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn runtime_path(name: &str) -> Option<PathBuf> {
     runtime_file_in(runtime_dirs(), name)
 }
 
@@ -665,7 +665,7 @@ pub(crate) fn remove_plugin_file_in(roots: &[PathBuf], rel: &str) -> Result<bool
 }
 
 /// 用当前插件根
-pub fn remove_plugin_file(rel: &str) -> Result<bool, String> {
+pub(crate) fn remove_plugin_file(rel: &str) -> Result<bool, String> {
     remove_plugin_file_in(plugin_roots(), rel)
 }
 
@@ -706,7 +706,7 @@ pub(crate) fn write_plugin_file_in(
 }
 
 /// 用当前插件根
-pub fn write_plugin_file(rel: &str, text: &str) -> Result<PathBuf, String> {
+pub(crate) fn write_plugin_file(rel: &str, text: &str) -> Result<PathBuf, String> {
     write_plugin_file_in(plugin_roots(), rel, text)
 }
 
@@ -749,7 +749,7 @@ pub(crate) fn resolve_in_pref(
 }
 
 /// 相对名 → 绝对路径(用当前插件根)
-pub fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
     // 目录级覆盖(§4-2):优先在"提供当前插件的那个根"内解析
     let pref = current_load_root();
     resolve_in_pref(plugin_roots(), key, pref.as_deref())
@@ -910,7 +910,7 @@ pub(crate) fn layouts_dir() -> Option<&'static PathBuf> {
 }
 
 /// 读当前布局 dump(还没缓存过 → 空串)
-pub fn layout_json() -> String {
+pub(crate) fn layout_json() -> String {
     LAST_LAYOUT
         .get()
         .map(|m| m.lock().unwrap().clone())

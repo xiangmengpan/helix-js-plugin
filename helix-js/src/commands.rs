@@ -1611,7 +1611,7 @@ pub fn emit_term_mode(pty_id: u64, mode: &str) {
         })),
     );
 }
-pub fn emit_term_exit(pty_id: u64, code: i32) {
+pub(crate) fn emit_term_exit(pty_id: u64, code: i32) {
     emit_hook_args(
         "term-exit",
         &[JsValue::from(pty_id), JsValue::from(code)],

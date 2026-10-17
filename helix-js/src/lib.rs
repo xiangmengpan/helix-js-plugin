@@ -28,15 +28,39 @@ pub mod watch;
 pub use commands::*;
 pub use icons::*;
 pub use input::{
-    clear_popup_inputs, dispatch_input_key, dispatch_input_paste, input_edit, input_has_state,
-    input_is_multiline, js_set_input_value, with_input_states, InputState,
+    dispatch_input_key, dispatch_input_paste, input_edit, input_has_state, input_is_multiline,
+    with_input_states, InputState,
 };
 pub use lsp::*;
 pub use popup::*;
 pub use shell::*;
-pub use state::*;
+// G3:`state` 的导出面**显式列出**(原来是 `pub use state::*`)。
+//
+// 为什么不 glob:glob 让「进程级状态访问器」和「业务 API」在 `helix_js::` 顶层平铺,
+// 外部无法分辨边界,而且新增一个内部访问器就会自动变成公共 API。
+// 现在新增导出必须在这里加一行 —— 边界是可见的。
+pub use state::{
+    cache_buffers, cache_configs, cache_diagnostics, cache_layout, cache_pane_mode, cache_panes,
+    clear_command_args, config_schemas, register_component_state, seed_config_schema,
+    set_command_args, set_layouts_dir, set_picker_state, set_plugin_roots, set_runtime_dirs,
+    set_term_wake, set_viewport, statusline_replaces, statusline_zones, take_messages,
+    take_ui_requests, unregister_component_state,
+};
 // `:layout` 类型化命令用的 Rust 层入口(与 helix.layout.* 共用内核与目录)
 pub use host::set_editor_version;
+// `pub use state::*` 换成本文件里的显式清单后,原先被 glob 顺带带出的 `pub(crate)`
+// 项(如 `state::with_terms` / `host::with_engine`)不再出现在 crate 根,单元测试改成
+// 从各自模块导入(`src/tests/mod.rs`)。
+//
+// ⚠ 不要在本行以上写 `#[cfg(test)] pub(crate) use ...`:`cargo xtask api-check` 的解析器
+// 把 lib.rs 从**第一个** `#[cfg(test)]` 处截断来跳过测试代码,这里放一个就等于把注册表清零
+// (本轮亲手踩过:members=0,报成"d.ts 多出一堆")。
+// `:layout` 类型化命令用的 Rust 层入口。
+//
+// ⚠ (G3 量出来的事实)`layout_delete/list/load/save` 在**整个仓库没有任何调用方**
+// (含测试),`dir_or_err` 也只被它们使用 —— 这一层疑似整体死亡,见
+// docs/architecture-audit.md D7(删除 or 重新接线,待确认)。暂保持 `pub` 不动,避免
+// 在「收窄公共面」这项里顺手改行为。
 pub use layout::{layout_delete, layout_list, layout_load, layout_save};
 pub use permissions::{
     decide as decide_permission, decisions as permission_decisions, manifests as plugin_manifests,

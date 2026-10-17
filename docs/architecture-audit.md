@@ -19,7 +19,7 @@
 | ✅ | **G0** | 建立干净基线:收尾当前 WIP + 清 `.swp` | — | 前置 | 卫生 · 2026-10-17 · `fc0585abe` + `49c4fe1` + 本条 | 无 |
 | ✅ | **G1** | `helix-js` 内联测试(4,835 行 / 99 测试)搬出 `lib.rs` | S1 | A | 纯搬家 · 2026-10-17 · 本条 | G0 |
 | ✅ | **G2** | 集成测试 harness(`pump`/`render_rows`)收进 `helpers.rs` | S2 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
-| ☐ | **G3** | `state.rs` 收窄公共面(106 pub → 显式导出)+ `*_for_test` 收口 | S3 | A | 纯减法 | G0 |
+| ✅ | **G3** | `state.rs` 收窄公共面 + `*_for_test` 收口(实测重定义见 §3) | S3 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
 | ☐ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 | 无 |
 | ☐ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 | 无 |
 | ☐ | **G6** | `build_engine`(773 行)按 9 个命名空间切分 | S1 | B | 搬家 | G1, G3 |
@@ -181,19 +181,42 @@ cargo integration-test
   现有门禁不带 feature 所以没暴露(与 G2 无关,单行可修)。
 - **风险**:`server_manager` 一族共享进程级 `SM_*` 环境变量(串行)—— 未动其串行化。
 
-### ☐ G3 · `state.rs` 收窄公共面 + `*_for_test` 收口
+### ☑ G3 · `state.rs` 收窄公共面 + `*_for_test` 收口(2026-10-17 完成)
 
-- **症状**:`state.rs` 1,230 行 / **106 个 pub 访问器**,平均每个 11.6 行(几乎全是 `with_*` 包装);
-  `lib.rs` 用 `pub use state::*` 全量转出 ⇒ crate 公共面 190 个函数平铺,外部无法分辨边界。
-  同时 `install_from_local_dir_for_test` / `*_reset_for_test` 之类测试入口以 `pub` 形式 leaked。
-- **做法**(全部由编译器驱动,不靠人工审计)
-  1. `lib.rs`:`pub use state::*;` → 显式列表,只保留 helix-term 真实用到的(用 `cargo check` 逐个补)。
-  2. `state.rs` 内其余项改 `pub(crate)`。
-  3. `*_for_test` 移进 `#[cfg(test)]` 或 `pub(crate) mod test_support`。
-- **预估**:helix-term 侧约 15 个文件、390 处 `helix_js` 引用中会有一批需要改导入路径 —— **先量再承诺**,数字写进本次完成记录。
-- **完成判据**:`helix-js` 公共 `pub fn` 数 190 → ≤60;`grep -rn "_for_test" helix-js/src | grep -v cfg(test)` 只命中 `test_support`。
-- **验证**:`cargo test --workspace` + `cargo integration-test` + `cargo xtask api-check`
-- **风险**:这是 G6/G7 的前置(边界清楚了好切分),但 diff 面比想象大;若超过 2 倍预估,拆成 G3a(导出面)/ G3b(`_for_test`)。
+- **先量规模(铁律 4)——三条体检结论被实测推翻**
+  | 体检原话 | 实测 | 结论 |
+  |---|---|---|
+  | `state.rs` 有 **106 个 pub 访问器** | **31 个 `pub fn` + 75 个 `pub(crate) fn`** = 106 个访问器 | 数字对、性质错:不是 106 个公共 API |
+  | `*_for_test` 以 `pub` 泄漏 | `permissions::reset_for_test` / `host::clear_host_for_test` **本来就是 `pub(crate)`** | 无需收口,只补文档 |
+  | 公共 `pub fn` 190 → ≤60 | 顶层 `pub fn` **141**;其中 **111 个被 helix-term 按名字使用**,单元测试还额外用掉一批 | **≤60 算术上不可能**,除非删掉在用 API |
+- **做法(全部编译器/门禁驱动)**
+  1. `lib.rs`:`pub use state::*` → **显式 22 项清单**(state 里被 helix-term 用到的全部)。新增导出必须显式加一行。
+  2. `state.rs`:8 个仅内部使用的访问器改 `pub(crate)`:`command_args` `get_component_state_json`
+     `layout_json` `plugins_dir` `remove_plugin_file` `resolve_plugin_path` `runtime_path` `write_plugin_file`。
+  3. 顺带按「有没有调用方」扫其余模块的 22 个零命中 `pub fn`,**净收窄 7 个**(watch / commands / input / host / server_rows / picker / permissions)。
+  4. 测试侧不再依赖 crate 根的 glob:`src/tests/mod.rs` 加 `use crate::state::with_terms;`,3 处 `crate::with_engine(..)` 改 `crate::host::with_engine(..)`。
+- **两个真陷阱(都写进了 `lib.rs` 的行内注释,别踩第二次)**
+  1. **`pub use X::*` 会把 `pub(crate)` 项也带出来**(以 crate 可见性),换显式清单后这些项就从 crate 根消失了 —— 单元测试立刻红(`with_engine` / `with_terms`)。
+  2. **`cargo xtask api-check` 按源码文本解析**:①它把 `lib.rs` 从**第一个 `#[cfg(test)]` 处截断**,
+     所以绝不能在 `build_engine` 之前写 `#[cfg(test)]` 项(本轮踩过:注册表直接变 0 项,报成「d.ts 多出一堆」);
+     ②`helix.icons.*` 的成员来自 `icons.rs` 里的 `pub fn icon_*` 字面量,把 `icon_file` 收窄成 `pub(crate)`
+     会让 7 个图标成员从注册表消失(门禁红)。**这两处 `pub` 是文档/门禁契约,不是普通可见性**。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | 顶层 `pub fn` | 141 | **126**(净收窄 15) |
+  | 顶层 `pub(crate) fn` | 254 | 269 |
+  | `cargo test -p helix-js` | 176 / 170 passed / 6 ignored | **完全相同** |
+  | `cargo integration-test` | 377 passed / 0 failed | **完全相同**(206s) |
+  | `cargo xtask api-check` | 134 成员 / 20 事件 / 15 检查点 · 豁免 1 | **完全相同** |
+  | `fmt` / `clippy --all-targets -D warnings` | 绿 | 绿(0 warning) |
+- **未达成原判据的部分(已在 §6 D7 立项)**:收窄暴露出 **9 个零调用方的 public 函数**
+  (`commands::emit_hook` `commands::emit_term_close` `layout::{layout_save,layout_load,layout_list,layout_delete}`
+  `picker::picker_has_on_key` `permissions::decide` `diagnostics::emit_lsp_diagnostics`,
+  外加只被这四个 `layout_*` 使用的私有 `layout::dir_or_err`)。
+  本轮**保持 `pub` 不动** —— 删公共 API 属于另一种改动,且 `layout_*` 疑似与 `:layout` 的 JS 实现构成
+  「两套实现」(红线 R3),必须先确认哪套是活的。
+- **风险**:公共面变化已由 377 个集成测试 + 三道门禁兜住;回退 = `git revert` 单提交。
 
 ### ☐ G4 · 消歧命名 + 模块地图
 
@@ -323,6 +346,7 @@ cargo integration-test
 | **D4** | C 批 spec 是否要我写完等你确认后才动代码? | **是**(本文 §2 铁律 5) | G9–G12 |
 | **D5** | 新发现:2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`,路径已废弃),是否纳入清理? | **纳入**为独立小项(修路径或删测试),别混进 G1 | — |
 | **D6** | 新发现:`cargo clippy --features integration -- -D warnings` 改动前就红(`plugin_roots_for` 在开 feature 时是 dead code)。是否修? | **修**:给该 fn 加 `#[cfg(any(not(feature = "integration"), test))]`,并把 feature 纳入 CI 门禁 | — |
+| **D7** | G3 量出 **9 个零调用方的 public 函数**(`emit_hook`/`emit_term_close`/`layout_{save,load,list,delete}`/`picker_has_on_key`/`decide`/`emit_lsp_diagnostics`),其中 `layout_*` 疑似与 JS 侧 `:layout` 构成 R3「两套实现」。删除还是接线? | **先查 `:layout` 走哪套**,死的那套删掉;这项单独做,不混进收窄 | — |
 
 ---
 
@@ -350,6 +374,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G0** | `fc0585abe`(WIP)· `49c4fe1`(.gitignore)· 本条(docs) | 176 测试 / 0 failed;api-check 134 成员 · 15 检查点;fmt+clippy 绿 | 基线就位。WIP 由**并行进程**代提交;`.swp` 只忽略不删;仓库 2 个 stash 未动 |
 | 2026-10-17 | **G1** | 本条(`refactor(js): … (G1)`) | lib.rs 5693→**860**;176 测试 / 170 passed / 6 ignored **不变**;99 个测试名逐个核对 1 次;clippy 0 warning;api-check 不变 | 7 个域文件 + `mod.rs`(夹具);发现 2 个 `#[ignore]` 测试已坏死 → D5 |
 | 2026-10-17 | **G2** | 本条(`refactor(tests): … (G2)`) | integration **377 passed / 0 failed 与基线逐项一致**;19 个本地 harness 定义→0;净 −305 行;fmt+clippy 绿 | 3+3 个变体逐个比对过;`plugin_components::render_rows` 是死代码;发现 feature 门禁漏洞 → D6 |
+| 2026-10-17 | **G3** | 本条(`refactor(js): … (G3)`) | 顶层 pub fn **141→126**;176 测试 / 377 集成 / api-check 134 成员 **全部不变**;fmt+clippy 绿 | `state` 显式导出 22 项;踩到 api-check 两个文本解析陷阱(已写进注释);零调用方 API → D7 |
 
 ---
 
