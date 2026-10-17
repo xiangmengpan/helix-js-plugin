@@ -28,7 +28,7 @@
 | ✅ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 · 2026-10-17 · 本条 | G3 |
 | ✅ | **G8a** | `server_manager` 移出 `commands/`(内容零改动) | S2 | B | 搬家 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 · 2026-10-17 · 本条 | G8a |
-| 🟡 | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 · spec 见 `specs/2026-10-17-plugin-shared-lib-design.md` | 无 |
+| ✅ | **G9** | JS 插件共享层 → **已评估:收益不足,不抽**(实测只有 4 组/35 行逐字重复) | S3 | C | 评估结案 · 2026-10-17 · 本条 | 无 |
 | 🟡 | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 · spec 见 `specs/2026-10-17-js-surface-design.md` | G6 ✅ |
 | ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
 | 🟡 | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(pane 族 24 处) | S3 | C | 真重构 · spec 见 `specs/2026-10-17-uiop-dispatch-design.md` | G7 ✅ |
@@ -407,7 +407,7 @@ cargo integration-test
 
 ## 5. 批次 C —— 真重构(C 批每项:先写 spec → 等确认 → 再动代码)
 
-### ☐ G9 · JS 插件共享层(先做这个,最便宜)
+### ✅ G9 · JS 插件共享层 —— 评估后结案,不抽(2026-10-17)
 
 > **spec**:[`superpowers/specs/2026-10-17-plugin-shared-lib-design.md`](superpowers/specs/2026-10-17-plugin-shared-lib-design.md)
 > **spec 已出**(2026-10-17),需要你拍板:**建议不做原形态**。实测跨插件「逐字相同」的函数只有 **4 个 / 9 份 / 35 行**;
@@ -423,6 +423,13 @@ cargo integration-test
   `plugins/arsenal/tests/*.test.js` 与相关插件行为不变。
 - **验证**:`node plugins/arsenal/tests/arsenal.test.js`(若有)+ `cargo integration-test` 中插件相关模块
 - **注意**:改完 `plugins/` **必须**重跑 `contrib/install-plugins.sh`,否则跑的是 `runtime/plugins/` 旧副本。
+
+- **结案结论(按 spec 方案 A)**:不建 `plugins/lib/`。判据不再是行数,而是**证据**:
+  逐字重复 35 行 / 13 个插件 = 0.8%,而代价是给 5 个插件各加一个**用户可目录级覆盖**的加载依赖
+  (`plugins/lib/` 一旦被用户覆盖,所有依赖方一起坏)。合成层真正值得做的形态是 **Rust 原生 API + `helix.d.ts`**
+  (那样才进三道门禁),而不是 JS 共享文件。
+- **复算方式**(任何人可复核):抽每个 `plugins/*/plugin.js` 的顶层 `function` 体 → 去注释/压空白 → 哈希;
+  同哈希即逐字重复。脚本见 spec 附录。
 
 ### ☐ G10 · 三个 JS 组件抽 `JsSurface`
 
@@ -523,6 +530,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **D7** | 本条(`refactor(js): …`) | 删 37 行死实现;176 测试 / `--ignored` 6/6 / api-check 三段 / plugin_layout 5 / window_mode 16 全绿;clippy 0 | 修正 D7 原始清单:4 个是测试专用,`decide` 被 alias 调用 |
 | 2026-10-17 | **G8b** | 本条(`refactor(term): … (G8b)`) | 7 个模块(最大 1,339,含 1,283 行测试);377 集成测试不变;两种 clippy 0 warning | 三个坑的解法:显式再导出 / cfg(test) 单挂 / 只导出外部在用的 21 项 |
 | 2026-10-17 | **G9/G10/G12** | 本条(`docs: C 批三份 spec`) | 无代码改动;三份 spec 各含**实测数字**(G9: 4 组/35 行重复;G10: 73 个共享窗口;G12: pane 24/全仓 75)与完成判据 | 状态 🟡,等你逐条拍板后再开工 |
+| 2026-10-17 | **G9** | 本条(`docs(audit): G9 结案`) | 无代码改动;交付的是**可复算的度量**(4 组/9 份/35 行)与结案理由 | 决定不抽 JS 共享层;要共享就走 Rust 原生 API |
 
 ---
 
