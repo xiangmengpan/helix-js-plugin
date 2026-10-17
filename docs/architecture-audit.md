@@ -740,6 +740,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `tsc --noEmit` 不在 CI | 本机未装 typescript;类型面目前靠 `helix.d.ts` 人工 + api-check 名字对账 |
 | 2 个 pre-existing stash | 非本次产物,原样保留 |
 | 6 处 `#[ignore]`(均在 fork) | **`-- --ignored` 6/6 通过**,默认不跑只因慢(会复制整个 `plugins/` 做 reload) |
+| **release-profile 才可见的 dead code** | 出 opt 二进制时发现:`term_native` 只被 `#[cfg(debug_assertions)]` 的表引用,函数本身没挂 cfg ⇒ `cargo build --profile opt` 报 dead_code,而 `clippy --all-targets`(dev,测试目标里函数仍被用到)**看不见**。已修(`b3e9be462`)。**门禁缺口**:CI 没有 `--release`/`opt` 的 check,这类问题只有出二进制时才会暴露 |
 | 13 处 `TODO/FIXME/ponytail`(fork) | `ponytail:` 是**有意取舍的记录**(每条带量化理由);其余多为上游 25.7.1 原文 |
 
 ### 10.6 复跑命令(10 分钟)
