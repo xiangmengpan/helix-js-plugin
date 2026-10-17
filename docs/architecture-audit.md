@@ -675,6 +675,89 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 
 ---
 
+## 10. 最终收尾体检报告(2026-10-17)
+
+> 在 §9 之后又清掉了 S2 两条(`server_op`、`plugin_terminal::handle_event`)与 S3 两条
+> (`js_err` 样板、`StatuslineCtx` 夹具),并顺手删了一个**未接线的 pump 方法**。
+> 本节是最终数字,复跑命令见 10.6。
+
+### 10.1 一句话结论
+
+**fork 的增量债务已清完**:A/B/C 三批 13 个目标(G0–G12,含 G8a/G8b)+ 8 个决策项(D1–D8)全部收口;
+收尾体检暴露的 S2/S3 也全部清掉;门禁从 4 道扩到 **8 道**且全绿。剩下的只有 3 条**明确不做**(§10.4)。
+
+### 10.2 数字总表(体检基线 → 现在)
+
+| 指标 | 基线 | 现在 | 手段 |
+|---|---|---|---|
+| `helix-js/src/lib.rs` | 5,693 | **202** | G1 测试搬出 + G6 注册表拆 `register/` |
+| `build_engine` | 773 | **94** | G6 |
+| `apply_ui_requests` | 689 | **59** | G7 |
+| `server_op` | 269(超 100 行) | **22** | S2-a,`typed/server_ops/` 7 个 handler |
+| `plugin_terminal::handle_event` | 147 | **12** | G10b,7 个方法(最长 49) |
+| pane 族 `dispatch_blocking` 闭包 | 24 | **0** | G12 `UiOp`(全仓 75 → 54) |
+| `server_manager` | 1 文件 2,956 | **7 文件**(最大 1,339,含 1,283 测试) | G8a/G8b |
+| `plugin_panel` + `plugin_popup` | 770 | **376**(+`js_surface` 310) | G10;共享窗口 73 → **0** |
+| JS 错误构造样板 | 239 处 | **1 处**(`js_err` 自身) | S3-a,净 **−517 行** |
+| 测试夹具重复(20 行窗口) | 9 | **0** | S3-b,`statusline_ctx()` |
+| 跨文件重复(20 行窗口) | 47 块 | **1 对 / 3 窗口** | 仅上游 `dap ↔ lsp` transport(不做) |
+| 长函数(>100 行,唯一) | 70 | **63** | fork 相关 16 → **12** |
+| `helix-js` 公共面 | 190 | **136** | G3 收窄;零引用 pub fn **0** |
+| `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
+| `helix-js` 测试 | 176 | **178**(172/6) | +2 不变量 |
+| `cargo test --workspace --lib` | **红**(1 稳定 + 1 间歇) | **717 passed / 0 failed** | D8 |
+| 集成测试 | 377 | **377** | 全程未减 |
+| api-check | 134 / 20 / 15 | **134 / 20 / 15** | 三道门禁全程未松 |
+
+### 10.3 门禁:本地 = CI(8 道)
+
+| 门禁 | 本地命令 | CI 步骤 |
+|---|---|---|
+| 格式 | `cargo fmt --all --check` | `Run cargo fmt` |
+| 单选 lint | `cargo clippy --workspace --all-targets --features integration -- -D warnings` | `Run cargo clippy` |
+| 库单测 | `cargo test --workspace --lib` | `Run library unit tests`(D8 新增) |
+| crate 单测 | `cargo test -p helix-js`(+`-- --ignored`) | `Run cargo test` |
+| 集成测试 | `cargo integration-test` | `Run cargo integration-test` |
+| API 三道门禁 | `cargo xtask api-check` | `Check plugin API surface` |
+| 生成物 | `cargo xtask docgen` + `git diff` | `Generate docs` + `Check uncommitted documentation changes` |
+| 文档 | `cargo doc --no-deps --workspace --document-private-items`(`-D warnings`) | `Run cargo doc` |
+
+### 10.4 明确不做(3 条,带理由,别再提)
+
+1. **`ui_op::apply` 139 行**:24 个 arm 的单 `match`,每个 arm 5–6 行;拆成 24 个函数只是把 `match` 搬走,
+   反而丢掉「一眼看全所有 UI 变更种类」的价值。
+2. **`helix-dap ↔ helix-lsp` 的 transport 重复(3 个 20 行窗口)**:上游代码;改它只增加未来 merge 成本(D1)。
+3. **`popup.rs::parse_node` 161 行**:JSON → 节点的递归下降,分支与 AST 形状一一对应,拆开更难读。
+
+另:`plugin_terminal.rs` 的 `render`(51)/`TerminalGrid::render`(52)在 100 行以下,不再动。
+
+### 10.5 保留在案的风险与观察
+
+| 项 | 状态 |
+|---|---|
+| `ACTIVE: Cell<Option<NonNull<JsHost>>>` 裸指针 | **保留**(换 `Rc<RefCell>` 会把「回调里重入 = 编译不过」退化成运行期 panic);契约由 `host_cleared_before_drop` + `ActiveGuard` + 单一读点守着 |
+| `helix-js` 并行等待型测试偶发超时 | 收尾期间出现 **1/9 次**;随后 `helix-js` 单跑 8 轮 + `--workspace --lib` 4 轮均未复现;已把两处「不持锁却碰宿主」的测试收进 `TEST_LOCK` |
+| `tsc --noEmit` 不在 CI | 本机未装 typescript;类型面目前靠 `helix.d.ts` 人工 + api-check 名字对账 |
+| 2 个 pre-existing stash | 非本次产物,原样保留 |
+| 6 处 `#[ignore]`(均在 fork) | **`-- --ignored` 6/6 通过**,默认不跑只因慢(会复制整个 `plugins/` 做 reload) |
+| 13 处 `TODO/FIXME/ponytail`(fork) | `ponytail:` 是**有意取舍的记录**(每条带量化理由);其余多为上游 25.7.1 原文 |
+
+### 10.6 复跑命令(10 分钟)
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --features integration -- -D warnings
+cargo test --workspace --lib
+cargo test -p helix-js && cargo test -p helix-js -- --ignored
+cargo integration-test                       # 377,~220s
+cargo xtask api-check                        # 134 成员 / 20 事件 / 15 检查点
+cargo xtask docgen && git diff --exit-code   # 生成物零变化
+# 重复/长函数(体检口径)
+cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "too many lines"
+```
+
+---
+
 ## 附:体检要点(为什么是这 12 项)
 
 | 类别 | 症状 | 证据强度 |

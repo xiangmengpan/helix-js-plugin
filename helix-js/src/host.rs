@@ -604,9 +604,11 @@ impl JsHost {
     }
 
     /// 泵入口·picker action 回调(`define` 的 action;payload 数组)
-    pub fn picker_invoke_action(&mut self, source: &str, payload: &[String]) {
-        self.pump(|| crate::picker::invoke_action(source, payload));
-    }
+    // 注意:这里**没有** `picker_invoke_action` 的泵版本。
+    // Picker 的 action 回调契约(`ui::picker::Picker::new` 的闭包)只给 `&mut Context`,**不带宿主**;
+    // preview/onKey 的契约才带 `js: Option<&mut JsHost>`。所以 action 只能走自由函数
+    // `crate::picker::invoke_action`(隐式解析宿主),这不是遗漏而是契约形状决定的。
+    // 原有一个同名的泵方法从未被接线(2026-10-17 收尾体检发现并删除)。
 
     /// 泵入口·picker preview 回调(`define` 的 preview → `{path, line}`)
     pub fn picker_invoke_preview(
