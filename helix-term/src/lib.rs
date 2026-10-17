@@ -13,6 +13,7 @@ pub mod keymap;
 pub mod logging;
 pub mod plugins_cursor;
 pub mod plugins_watch;
+mod server_manager;
 pub mod ui;
 
 // 供集成测试访问（set_plugins_dir / load_script_named 等）

@@ -24,7 +24,8 @@
 | ✅ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G6** | `build_engine`(773 行)按命名空间/能力切分到 `register/` | S1 | B | 搬家 · 2026-10-17 · 本条 | G1, G3 |
 | ✅ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 · 2026-10-17 · 本条 | G3 |
-| ☐ | **G8** | `server_manager.rs`(2,956 行)拆成 7 个模块并移出 `commands/` | S2 | B | 搬家 | 无 |
+| ✅ | **G8a** | `server_manager` 移出 `commands/`(内容零改动) | S2 | B | 搬家 · 2026-10-17 · 本条 | 无 |
+| ☐ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 | G8a |
 | ☐ | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 | 无 |
 | ☐ | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 | G6, G10 spec |
 | ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
@@ -354,19 +355,36 @@ cargo integration-test
 - **明确不做**:不动 `UiRequest` 枚举本身(92 变体 / 16 文件 match,收益远小于成本)。
 - **风险**:纯搬家;43 个 arm 全部有集成测试覆盖(context 里已确认 377 条含 plugin_* 各族)。
 
-### ☐ G8 · `server_manager.rs`(2,956 行)拆模块并移出 `commands/`
+### ☑ G8a · `server_manager` 移出 `commands/`(2026-10-17 完成)
 
-- **症状**:一个文件里塞了 HTTP 下载(`ureq`)、4 套归档解包(`extract_archive`/`extract_bytes`/
-  `extract_zip_bytes`/`extract_tar_bytes`)、`sha256_hex`、自写 `strip_path`、TOML 重写
-  (`build_section` 118 行、`rewrite_languages_toml` 一带 433 行)、内联 `pub mod registry`(~380 行)、
-  PATH 探测、install/update/remove;还包含 `install_from_local_dir_for_test`。
-- **做法**:纯 `git mv` + 加 `mod`,**零逻辑改动**:
-  `helix-term/src/server_manager/{mod,download,archive,registry,version,install,langs_toml}.rs`;
-  `*_for_test` 挂 `#[cfg(test)]`。
-- **完成判据**:`commands/` 下不再有 `server_manager.rs`;最长函数 < 150 行;集成测试数量不变。
-- **验证**:`cargo test -p helix-term --features integration --test integration server_manager`
-  (该族串行,属已知);`cargo clippy --workspace --all-targets -- -D warnings`
-- **风险**:`rewrite_languages_toml` 会改用户 `languages.toml` —— 这段**只许移动,不许重排**。
+- **症状**:一个 2,956 行的文件塞了 HTTP 下载、4 套归档解包、`sha256_hex`、自写 `strip_path`、
+  TOML 重写、内联 `pub mod registry`(380 行)、PATH 探测、install/update/remove —— 而且它挂在
+  `commands/` 下,语义上根本不是"命令"。
+- **做法(零内容改动)**
+  1. `git mv helix-term/src/commands/server_manager.rs helix-term/src/server_manager/mod.rs`;
+     `helix-term/src/lib.rs` 加 `mod server_manager;`。
+  2. `commands.rs` 的 `pub(crate) mod server_manager;` → `pub(crate) use crate::server_manager;`
+     —— 让 `commands::server_manager::…` 的老路径继续可用(66 处引用,一行没改)。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `commands/` 下是否有 `server_manager.rs` | 有 | **无** |
+  | 最长函数 | 118(`build_section`) | **118**(未变;本身已 < 150) |
+  | `cargo test -p helix-term --features integration --test integration server_manager` | 8 passed | **8 passed / 0 failed** |
+  | `fmt` / `clippy -D warnings` | 绿 | 绿(0 warning) |
+- **拆分(原 G8 的后半)已单独拆成 G8b,这次没做 —— 附上实测原因**,免得下一个人重踩:
+  1. 把 2,956 行按职责切成 7 个文件本身是机械的(我已生成过一版:download 13 / archive 7 /
+     version 4 / install 16 / langs_toml 18 / registry 1 个内联模块)。
+  2. 真正的坑在**跨文件可见性**:子模块之间互相引用,`mod.rs` 必须再导出;用
+     `pub(crate) use download::*;`(glob)+ 子模块 `use super::*`(glob)会形成 **glob 环**,
+     解析器把环路当成空集 ⇒ `install.rs` 里 `download_to` 找不到。改成显式清单
+     `pub(crate) use download::{a, b, …};` 能解,但还有第二层:被再导出的项如果是
+     `#[cfg(test)]` 的(`extract_archive` 等 4 个),非测试构建会报 unresolved import,
+     必须单独挂 `#[cfg(test)]` 再导出。
+  3. 加上 `clippy -D warnings` 的 `unused_imports` 会把"看起来没用"的再导出删掉(实测一轮删掉 36 项,
+     其中含外部仍在用的),需要逐条甄别。**这份甄别工作值得单独一次专注的会话**,不适合和
+     别的项混在一起 —— 按铁律 4「超过预估就停下来报告」,本项只交付已验证的一半。
+- **风险**:纯 `git mv` + 一行 re-export;回退 = `git revert`。
 
 ---
 
@@ -467,6 +485,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G5** | 本条(`refactor(xtask): … (G5)`) | 6 个任务逐个跑 OK;docgen 零 diff;help 逐行一致;main.rs 622→23 | `TASKS` 表驱动 dispatch+help;修掉已漂的 api-check 注释 |
 | 2026-10-17 | **G6** | 本条(`refactor(js): … (G6)`) | `build_engine` 773→**94**;api-check **逐项计数不变**(134/20/15);176 测试 / 377 集成不变 | 13 个 register 文件;同步扩展**两个**检查脚本(否则门禁失明);修掉容器正则误判 |
 | 2026-10-17 | **G7** | 本条(`refactor(term): … (G7)`) | `apply_ui_requests` 689→**59**;最长 handler 85;176 测试 / 377 集成不变;clippy 0 warning | 43 个 handler 按族分 8 文件;组合 arm / 同名遮蔽两个坑 |
+| 2026-10-17 | **G8a** | 本条(`refactor(term): … (G8a)`) | `commands/` 下已无 server_manager;server_manager 集成测试 8 passed;clippy 0 warning;66 处 `commands::server_manager::…` 引用零改动 | 拆分失败原因(glob 环 + cfg(test) 再导出 + clippy 误删)已记入 G8b |
 
 ---
 

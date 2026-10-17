@@ -1,6 +1,8 @@
 pub(crate) mod dap;
 pub(crate) mod lsp;
-pub(crate) mod server_manager;
+// server_manager 已移出 commands/(G8):它是独立子系统(下载/解包/注册表/安装),不是"命令"。
+// 这里保留 re-export,让 `commands::server_manager::…` 的老路径继续可用。
+pub(crate) use crate::server_manager;
 pub(crate) mod server_tasks;
 pub use server_tasks::pending_jobs;
 pub(crate) mod syntax;
