@@ -285,6 +285,7 @@ helix.lazy(name, ...commands)
 helix.plugin(name, { deps, version?, schema_version?, min_editor?, permissions?, contributes? })
                                                 // 声明加载依赖 + **能力清单**(见下)
 helix.api_version                               // 边界协议版本(= 事件 payload 里的 api_version)
+helix.permissions()                             // 本插件**现在**能做什么(能力清单查询面)
 helix.plugin.install(arg) / update(name?) / remove(name)   // 管理(结果走状态栏)
 // 实现位置:`plugins/plugin/plugin.js`(管理器本身是**内置插件**)。
 // 命令 `:plugin …` 与上面三个 API 共用同一份实现;该 API 的**错误语义**与旧核心一致
@@ -298,7 +299,7 @@ helix.plugin("my-plugin", {
   deps: [],                          // 加载期依赖(拓扑加载;见 plugin-layout.md §3.4)
   version: "1.0",                    // 元数据
   schema_version: 1,                 // 声明面版本;高于编辑器支持的版本 ⇒ 加载即失败
-  min_editor: "25.7",                // 记录/展示用(不做版本比较)
+  min_editor: "25.7",                // 最低编辑器版本;高于当前版本 ⇒ 加载即失败
   permissions: { process: true, fs_read: true, fs_write: false },
   contributes: ["cmd:my-cmd"],       // 贡献点(记录用)
 });
@@ -330,6 +331,16 @@ helix.plugin("my-plugin", {
 
 回答一次即记住(等价于 zellij 的 `request_permission`)。检查点见
 `helix-js/src/permissions.rs` 的模块文档。
+
+插件可**查询**自己的有效能力,据此降级(而不是先失败一次):
+
+```js
+const caps = helix.permissions();          // { process, fs_read, fs_write }
+if (caps.process) { const branch = await helix.run_async("git branch --show-current"); }
+```
+
+语义 = "**不问就放行吗**":没声明 `permissions` 的插件(legacy)与内置插件三项都是
+`true`;声明了的插件看声明或已记住的决定(未决定 ⇒ `false`,因为那次调用会被问一次)。
 
 ### 数据形状
 

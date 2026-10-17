@@ -36,6 +36,7 @@ pub use popup::*;
 pub use shell::*;
 pub use state::*;
 // `:layout` 类型化命令用的 Rust 层入口(与 helix.layout.* 共用内核与目录)
+pub use host::set_editor_version;
 pub use layout::{layout_delete, layout_list, layout_load, layout_save};
 pub use permissions::{
     decide as decide_permission, manifests as plugin_manifests, pending as pending_permissions,
@@ -711,6 +712,11 @@ pub(crate) fn build_engine(engine: &mut Context) {
         .function(
             NativeFunction::from_fn_ptr(diagnostics::js_diagnostics),
             JsString::from("diagnostics"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(permissions::js_permissions),
+            JsString::from("permissions"),
             0,
         )
         .function(
@@ -2506,6 +2512,83 @@ pub(crate) mod tests {
             .to_string();
         assert!(err.contains("schema_version 2"), "{err}");
         assert!(err.contains("高于本编辑器支持"), "{err}");
+    }
+
+    /// `helix.permissions()`(JS API):插件据此降级 —— 语义是"**不问就放行吗**"。
+    #[test]
+    fn js_permissions_query() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        // 声明了 process ⇒ process=true;没声明的 fs_read/fs_write ⇒ false(会被问一次)
+        load_script(
+            r#"
+            helix.plugin("caps", { permissions: { process: true } });
+            helix.register_command("caps-report", () => helix.echo(JSON.stringify(helix.permissions())));
+            "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        run_command("caps-report", &ctx).unwrap();
+        let msg = take_messages();
+        let v: serde_json::Value = serde_json::from_str(&msg[0]).expect("permissions() 应返回对象");
+        assert_eq!(v["process"], serde_json::json!(true), "已声明 ⇒ 放行");
+        assert_eq!(v["fs_read"], serde_json::json!(false), "未声明 ⇒ 会被问");
+        assert_eq!(v["fs_write"], serde_json::json!(false));
+        // 记住一个"允许"之后 ⇒ 查询跟着变(true)
+        crate::permissions::decide("caps", "fs_read", true);
+        run_command("caps-report", &ctx).unwrap();
+        let msg = take_messages();
+        let v: serde_json::Value = serde_json::from_str(&msg[0]).unwrap();
+        assert_eq!(v["fs_read"], serde_json::json!(true), "决定后查询应为 true");
+
+        // **没声明 permissions** 的插件(legacy):三项都 true(不拦截)
+        load_script(
+            r#"
+            helix.plugin("legacy-caps", { deps: [] });
+            helix.register_command("legacy-report", () => helix.echo(JSON.stringify(helix.permissions())));
+            "#,
+        )
+        .unwrap();
+        run_command("legacy-report", &ctx).unwrap();
+        let msg = take_messages();
+        let v: serde_json::Value = serde_json::from_str(&msg[0]).unwrap();
+        assert_eq!(
+            (
+                v["process"].clone(),
+                v["fs_read"].clone(),
+                v["fs_write"].clone()
+            ),
+            (
+                serde_json::json!(true),
+                serde_json::json!(true),
+                serde_json::json!(true)
+            ),
+            "legacy 全放行"
+        );
+    }
+
+    /// `min_editor` 落地为**判据**(C-1):声明高于编辑器版本 ⇒ 加载即失败;
+    /// 编辑器版本未知 ⇒ 跳过(不误伤库用法/单测)。
+    #[test]
+    fn min_editor_is_enforced() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        // 与本 crate 其它用例共存:版本串用**真实形态**(>= 其它用例声明的 25.7)
+        set_editor_version("25.7.1 (c4831272)");
+        load_script(r#"helix.plugin("fine", { min_editor: "25.7", deps: [] });"#).unwrap();
+        load_script(r#"helix.plugin("exact", { min_editor: "25.7.1", deps: [] });"#).unwrap();
+        let err = load_script(r#"helix.plugin("future", { min_editor: "25.8", deps: [] });"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("需要编辑器 >= 25.8"), "{err}");
+        assert!(err.contains("25.7.1"), "{err}");
     }
 
     /// C-2:能力检查覆盖**同族 API** —— 声明了 `process` 就能 `run_async`/`spawn`;

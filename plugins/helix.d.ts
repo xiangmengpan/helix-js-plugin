@@ -435,6 +435,13 @@ interface HelixPlugin {
    * 与 `:plugin remove <name>` 同一实现。
    */
   remove(name: string): void;
+  /**
+   * 当前插件**现在**能做什么(能力清单的查询面)。
+   *
+   * 语义 = "不问就放行吗":没声明 `permissions` / 内置插件 ⇒ 全 `true`(legacy 放行);
+   * 声明了则看声明或已记住的决定(未决定 ⇒ `false`,因为那次调用会被问一次)。
+   * 用途:插件据此**降级**(例如没有 `process` 就不去调 git,而不是先失败一次)。
+   */
   /** 声明加载依赖(拓扑加载)。`deps` 用**插件名**(如 `"icons"`)或文件 key;
    *  ⚠️ 依赖在**本脚本 eval 之后**才加载 ⇒ 顶层代码不能假定依赖已执行(要放到回调/命令里用)
    *
@@ -450,7 +457,11 @@ interface HelixPlugin {
       version?: string;
       /** 声明面版本;高于编辑器支持的版本(`helix.api_version`)⇒ `helix.plugin` 抛错 */
       schema_version?: number;
-      /** 要求的最低编辑器版本(只记录/展示) */
+      /**
+       * 要求的最低编辑器版本(如 `"25.7"`)。
+       * 声明后会与**真实编辑器版本**比较:高于当前版本 ⇒ `helix.plugin` 抛错。
+       * 编辑器版本未知(库/单测场景)时跳过检查。
+       */
       min_editor?: string;
       /**
        * 能力清单;不写 = legacy 放行(存量插件零影响)。
@@ -477,6 +488,14 @@ interface Helix {
    * 改字段/改语义 ⇒ 递增;插件可据此分支(`if (helix.api_version >= 2) …`)。
    */
   api_version: number;
+  /**
+   * 当前插件**现在**能做什么(能力清单的查询面)。
+   *
+   * 语义 = "不问就放行吗":没声明 `permissions` / 内置插件 ⇒ 全 `true`(legacy 放行);
+   * 声明了则看声明或已记住的决定(未决定 ⇒ `false`,因为那次调用会被问一次)。
+   * 用途:插件据此**降级**(例如没有 `process` 就不去调 git,而不是先失败一次)。
+   */
+  permissions(): { process: boolean; fs_read: boolean; fs_write: boolean };
   // ── 命令 / 消息 / 键位 / 加载 ──
   echo(text: string): void;
   register_command(name: string, fn: (ctx: CommandContext) => void, doc?: string): void;

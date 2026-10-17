@@ -133,6 +133,9 @@ pub struct JsHost {
     pub(crate) next_watch_id: Cell<u64>,
     /// C-1/C-2:能力清单与授权状态(按宿主隔离)
     pub(crate) permissions: RefCell<crate::permissions::PermissionState>,
+    /// 编辑器版本(如 `25.07.1 (c4831272)`;由 helix-term 启动时推入)。
+    /// 用于 manifest 的 `min_editor` 比较 —— helix-js 自己不知道宿主软件的版本。
+    pub(crate) editor_version: RefCell<Option<String>>,
 }
 
 impl JsHost {
@@ -197,6 +200,7 @@ impl JsHost {
             next_server_row_id: Cell::new(1),
             next_watch_id: Cell::new(1),
             permissions: RefCell::new(crate::permissions::PermissionState::default()),
+            editor_version: RefCell::new(None),
         }
     }
 }
@@ -220,6 +224,19 @@ thread_local! {
     /// 宿主析构前要 `clear_active()`(`Application::drop` 已做,由
     /// `host_cleared_before_drop` 守着)。句柄悬空 = 未定义行为。
     static ACTIVE: Cell<Option<NonNull<JsHost>>> = const { Cell::new(None) };
+}
+
+/// 推入编辑器版本(启动期由 helix-term 调用一次)。
+///
+/// 为什么由外部推:`helix-js` 是库,不知道宿主软件的版本;而 manifest 的 `min_editor`
+/// 只有跟真实版本比才有意义(此前只记录不比较 ⇒ 字段是装饰)。
+pub fn set_editor_version(version: &str) {
+    with_host_ref_or_init(|h| *h.editor_version.borrow_mut() = Some(version.to_string()));
+}
+
+/// 编辑器版本(未推入 ⇒ `None`;此时 `min_editor` 检查**跳过**,不误伤单测/库用法)
+pub(crate) fn editor_version() -> Option<String> {
+    crate::host::try_with_host_ref(|h| h.editor_version.borrow().clone()).flatten()
 }
 
 /// 把 `host` 注册为当前活动宿主(`Application` 用)。见 `ACTIVE` 的安全性约束。

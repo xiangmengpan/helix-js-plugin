@@ -201,6 +201,8 @@ impl Application {
 
             // 布局文件目录(`:layout save/load` 与 helix.layout.save/load 用)
             helix_js::set_layouts_dir(helix_loader::config_dir().join("layouts"));
+            // manifest 的 `min_editor` 要跟**真实版本**比才有意义(helix-js 是库,不知道宿主版本)
+            helix_js::set_editor_version(helix_loader::VERSION_AND_GIT_HASH);
             // 自带 runtime 目录(`helix.runtime_path(name)` 用;让内置"内容型插件"能打开
             // 随软件分发的内容,如 tutor)
             helix_js::set_runtime_dirs(helix_loader::runtime_dirs().to_vec());

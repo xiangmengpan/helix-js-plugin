@@ -426,6 +426,15 @@ pub(crate) fn js_plugin(
             .get(JsString::from("min_editor"), ctx)
             .and_then(|v| v.try_js_into::<String>(ctx))
         {
+            // 与 `schema_version` 同族:**声明了就要比一比**。
+            // 编辑器版本未知(库用法/单测未 set_editor_version)⇒ 跳过,不误伤。
+            if let Some(actual) = crate::host::editor_version() {
+                if let Err(msg) = crate::permissions::min_editor_ok(&v, &actual) {
+                    return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                        format!("helix.plugin('{name}'): {msg}"),
+                    ))));
+                }
+            }
             manifest.min_editor = Some(v);
         }
         if let Ok(v) = meta

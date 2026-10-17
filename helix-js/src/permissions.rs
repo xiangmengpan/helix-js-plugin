@@ -36,6 +36,49 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+/// 把版本串拆成数字段(`"25.07.1 (c4831272)"` → `[25, 7, 1]`)。
+///
+/// 宽松但有边界:每段取**前导数字**(`"1-beta"` → 1),没有数字的段记 0;
+/// 整串一个数字都没有 ⇒ `None`(调用方据此决定"拒绝"还是"跳过")。
+fn version_parts(v: &str) -> Option<Vec<u64>> {
+    let mut out = Vec::new();
+    let mut any = false;
+    for seg in v.split('.') {
+        let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let n: u64 = digits.parse().unwrap_or(0);
+        if !digits.is_empty() {
+            any = true;
+        }
+        out.push(n);
+    }
+    any.then_some(out)
+}
+
+/// `min_editor` 检查:`declared`(插件要求)是否**高于** `actual`(编辑器版本)。
+///
+/// 返回 `Ok(())` = 可以加载;`Err(消息)` = 不该加载(缺段按 0 补,`25.7` == `25.7.0`)。
+pub(crate) fn min_editor_ok(declared: &str, actual: &str) -> Result<(), String> {
+    let (Some(d), Some(a)) = (version_parts(declared), version_parts(actual)) else {
+        return Err(format!(
+            "min_editor {declared:?} 不是版本号(应是如 \"25.7\" 的形态)"
+        ));
+    };
+    let n = d.len().max(a.len());
+    for i in 0..n {
+        let dv = d.get(i).copied().unwrap_or(0);
+        let av = a.get(i).copied().unwrap_or(0);
+        if dv > av {
+            return Err(format!(
+                "需要编辑器 >= {declared},当前 {actual}(升级编辑器或换用旧版插件)"
+            ));
+        }
+        if dv < av {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 use crate::types::{PluginManifest, PluginPermissions};
 
 /// 能力名:起子进程 / shell(`helix.run`、`helix.spawn`、`run_async`)
@@ -309,6 +352,72 @@ pub fn manifests() -> Vec<PluginManifest> {
     })
 }
 
+/// 某个能力**现在**会不会被放行(不产生副作用:不问、不记 pending)。
+///
+/// 语义 = "不问就放行吗":没声明 permissions / 内置插件 / 无归属 ⇒ true(legacy 放行);
+/// 声明了则看声明或已记住的决定(未决定 ⇒ false,因为那次调用会被问一次)。
+pub(crate) fn allowed_now(cap: &str) -> bool {
+    if !crate::host::engine_exists() {
+        return true;
+    }
+    let Some(plugin) = current_plugin() else {
+        return true;
+    };
+    let (builtin, permissions, decision) = with_state(|s| {
+        (
+            *s.builtin.get(&plugin).unwrap_or(&false),
+            s.manifests.get(&plugin).and_then(|m| m.permissions),
+            s.decisions.get(&(plugin.clone(), cap.to_string())).copied(),
+        )
+    });
+    match verdict(
+        &RequestCtx {
+            plugin,
+            builtin,
+            permissions,
+            decision,
+        },
+        cap,
+    ) {
+        Verdict::Allow => true,
+        Verdict::Denied | Verdict::Ask => false,
+    }
+}
+
+/// `helix.permissions()`(JS API):当前插件**现在**能做什么。
+///
+/// 用途:插件据此降级(例如没有 `process` 就不去调 git,而不是先失败一次)。
+/// 返回值:`{ process, fs_read, fs_write }`,语义见 [`allowed_now`]。
+pub(crate) fn js_permissions(
+    _this: &boa_engine::JsValue,
+    _args: &[boa_engine::JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<boa_engine::JsValue> {
+    use boa_engine::object::ObjectInitializer;
+    use boa_engine::property::Attribute;
+    use boa_engine::{JsString, JsValue};
+    let flag = |cap: &str| JsValue::from(allowed_now(cap));
+    Ok(JsValue::from(
+        ObjectInitializer::new(ctx)
+            .property(
+                JsString::from(CAP_PROCESS),
+                flag(CAP_PROCESS),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from(CAP_FS_READ),
+                flag(CAP_FS_READ),
+                Attribute::all(),
+            )
+            .property(
+                JsString::from(CAP_FS_WRITE),
+                flag(CAP_FS_WRITE),
+                Attribute::all(),
+            )
+            .build(),
+    ))
+}
+
 /// 清空(测试用;宿主随线程丢弃时等价)
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
@@ -376,6 +485,25 @@ mod tests {
             ),
             Verdict::Denied
         );
+    }
+
+    /// `min_editor` 比较(纯函数):缺段按 0 补、宽松取前导数字、非法版本号**拒绝**
+    #[test]
+    fn min_editor_comparison() {
+        // 编辑器 25.07.1(= [25,7,1];真实版本串带 git hash)
+        assert!(min_editor_ok("25.7", "25.07.1 (c4831272)").is_ok());
+        assert!(min_editor_ok("25", "25.0.0").is_ok());
+        assert!(min_editor_ok("25.7.1", "25.7.1").is_ok());
+        assert!(min_editor_ok("25.7.0", "25.7").is_ok(), "缺段按 0 补");
+        assert!(min_editor_ok("25.8", "25.7.1").is_err(), "高于当前 ⇒ 拒");
+        assert!(min_editor_ok("26", "25.99.99").is_err());
+        assert!(
+            min_editor_ok("25.7.1", "25.7").is_err(),
+            "位数多且更高 ⇒ 拒"
+        );
+        // 非法版本号:报错(而不是静默跳过 —— 静默会让字段变装饰)
+        let e = min_editor_ok("second", "25.7.1").unwrap_err();
+        assert!(e.contains("不是版本号"), "{e}");
     }
 
     /// `PluginPermissions::allows` 与能力名一一对应
