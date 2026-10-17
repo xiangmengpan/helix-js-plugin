@@ -5,7 +5,24 @@
 //! `Application` 可以持有它(下一个任务)、测试可以构造多份。
 //!
 //! **当前仍有个默认宿主**(`DEFAULT_HOST`):`init()` 在没有外部宿主时自建,供测试与
-//! 无 GUI 场景使用。队列/缓存仍是进程级(`OnceLock`),不在本步(Phase B)。
+//! 无 GUI 场景使用。
+//!
+//! # 状态所有权地图(G11)
+//!
+//! 改这里的任何状态前先问一句:**它是跨线程的吗?**
+//!
+//! | 状态 | 归属 | 为什么 |
+//! |---|---|---|
+//! | 引擎 / echo 消息 / 脚本导出 / 已加载清单 / 权限 | **宿主字段** | 每引擎一份;跨宿主共享会串状态(实测:`helix.load` 换根不失效,见 `with_script_exports`) |
+//! | UI 请求队列 | **进程级 + 按宿主分桶** | 消费端在 helix-term(16 个冻结签名的 `take_ui_requests`),worker 也会 push;本体必须 `Send` |
+//! | `PICKER_STATE` / `VIEWPORT` / `LAST_LAYOUT` / `CONFIGS` / `DIAGNOSTICS` | **进程级** | 消费端是 helix-term 的帧路径(每帧读 viewport/布局) |
+//! | `TERM_EVENTS` / `ASYNC_EVENTS` / `LSP_RESULTS`(含 `_RX`) | **thread_local** | worker → 主线程通道,必须 `Send` |
+//! | `TERM_WORKERS` / `TERM_MASTERS` / `NEXT_ASYNC_ID` | **thread_local** | pty 进程/fd 表,与"哪个 JS 宿主"无关 |
+//! | `TERM_WAKE` | **进程级** | 跨线程唤醒回调(`request_redraw`) |
+//!
+//! 结论:**"进程级"对第二、三类是本质属性,不是遗漏**(宿主持有 boa `Context`,是 `!Send`)。
+//! 完整论证与"若真需要两个隔离宿主 ⇒ 用两个进程"的结论见
+//! `docs/superpowers/specs/2026-10-17-host-ownership-design.md`。
 //!
 //! ⚠️ **宿主永不 drop**(`ManuallyDrop`):引擎析构会释放 realm 堆,而 20 处**刻意不朽**的
 //! JsValue 表(见 `state.rs`)经 Gc 句柄仍指向它 —— 实测(2026-10-11)drop 已用过的共享引擎
@@ -29,7 +46,10 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard};
 
-/// 一份 JS 运行时状态。当前只拥有引擎;队列/缓存留在进程级(Phase B)。
+/// 一份 JS 运行时状态。
+///
+/// 只拥有**引擎与按宿主隔离的状态**(消息/导出/清单/权限);跨线程通道与帧路径缓存
+/// 仍是进程级 —— 那是它们的本质属性,见模块头的「状态所有权地图」。
 pub struct JsHost {
     /// 引擎(**普通 `RefCell<Context>`**)。`try_borrow_mut()` 就是**排他/重入检测** ——
     /// 引擎始终留在宿主里,不再有"借出期间槽为空"的中间态,也就不需要 `Owner`/`put_engine`
@@ -237,6 +257,11 @@ pub fn set_editor_version(version: &str) {
 /// 编辑器版本(未推入 ⇒ `None`;此时 `min_editor` 检查**跳过**,不误伤单测/库用法)
 pub(crate) fn editor_version() -> Option<String> {
     crate::host::try_with_host_ref(|h| h.editor_version.borrow().clone()).flatten()
+}
+
+/// `ACTIVE` 的**唯一读点**。所有访问器经它 —— 裸指针的读点越少,审计面越小。
+fn active_ptr() -> Option<NonNull<JsHost>> {
+    ACTIVE.with(|a| a.get())
 }
 
 /// 把 `host` 注册为当前活动宿主(`Application` 用)。见 `ACTIVE` 的安全性约束。
@@ -649,7 +674,7 @@ pub(crate) fn with_host_ref_or_init<T>(f: impl FnOnce(&JsHost) -> T) -> T {
 /// 给**查询类**入口用:它们被放在每帧路径上,**不得**为了回答一个布尔而顺手建宿主
 /// (`crate::init()` 在没有宿主时会 `install_default(JsHost::new())` —— 整个 boa 引擎)。
 pub(crate) fn try_with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> Option<T> {
-    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+    if let Some(ptr) = active_ptr() {
         // SAFETY: 同 with_host_ref
         let host: &JsHost = unsafe { &*ptr.as_ptr() };
         return Some(f(host));
@@ -698,7 +723,7 @@ pub(crate) fn try_with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> Opt
 /// 而不是"新代码的顺手通道"。需要排他性证明的新代码应调 `JsHost::*` 泵方法。
 /// 按**只读**方式访问当前宿主(不改所有权)。
 pub(crate) fn with_host_ref<T>(f: impl FnOnce(&JsHost) -> T) -> T {
-    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+    if let Some(ptr) = active_ptr() {
         // SAFETY: 注册期覆盖宿主生存期(见 ACTIVE 的约束)
         let host: &JsHost = unsafe { &*ptr.as_ptr() };
         return f(host);
@@ -743,7 +768,7 @@ pub(crate) fn with_loaded_scripts<T>(f: impl FnOnce(&mut Vec<(String, String)>) 
 /// `set_active`),worker / 纯单测线程可能没有 —— 那种情况不能拿 `current_host_key()`
 /// (会 panic),也不该为了"取个 key"在 worker 上 `init()` 建一份引擎。
 pub(crate) fn try_current_host_key() -> Option<u64> {
-    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+    if let Some(ptr) = active_ptr() {
         return Some(ptr.as_ptr() as u64);
     }
     DEFAULT_HOST.with(|cell| {
@@ -755,7 +780,7 @@ pub(crate) fn try_current_host_key() -> Option<u64> {
 
 /// 当前宿主的**稳定标识**(宿主永不 drop ⇒ 地址稳定且不会被复用)。
 pub(crate) fn current_host_key() -> u64 {
-    if let Some(ptr) = ACTIVE.with(|a| a.get()) {
+    if let Some(ptr) = active_ptr() {
         return ptr.as_ptr() as u64;
     }
     DEFAULT_HOST.with(|cell| match cell.borrow().as_deref() {
@@ -819,7 +844,7 @@ pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
 }
 
 pub fn engine_exists() -> bool {
-    ACTIVE.with(|a| a.get()).is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
+    active_ptr().is_some() || DEFAULT_HOST.with(|h| h.borrow().is_some())
 }
 
 /// 借出宿主里的引擎执行 `f`;**同一线程重入会得到指名道姓的报错**。
@@ -982,9 +1007,10 @@ mod engine_ownership_tests {
     /// 切回来又看得见。
     ///
     /// ⚠️ **边界(实测)**:命令/事件/钩子的注册表(`REGISTRY`/`EVENT_HANDLERS`…)
-    /// **仍在进程级**、不随宿主走 ⇒ 今天能断言的隔离只是**引擎级**的;
-    /// 注册表隔离属 Phase B(队列/缓存搬进宿主)。第一版测试写成断言「命令隔离」⇒ 当场红 ——
-    /// 这个红正好把真实边界钉了下来。
+    /// **仍在进程级**、不随宿主走 ⇒ 今天能断言的隔离只是**引擎级**的。
+    /// 第一版测试写成断言「命令隔离」⇒ 当场红 —— 这个红正好把真实边界钉了下来。
+    /// 为什么**不再**计划把它们搬进宿主:见模块头「状态所有权地图」与
+    /// `docs/superpowers/specs/2026-10-17-host-ownership-design.md` §0.1。
     #[test]
     fn two_hosts_are_isolated() {
         let _g = crate::tests::TEST_LOCK
@@ -1063,7 +1089,8 @@ mod engine_ownership_tests {
     /// **接管/停放往返后必须是同一个引擎**(这是"一个线程一份引擎"的机制保证)。
     ///
     /// 由来:集成测试每个用例都构造一个 `Application`;若每个都新建引擎,同线程会先后出现多份
-    /// 引擎 —— 而注册表/队列**仍是进程级**,多份引擎换不来任何隔离,只白花内存与注册开销。
+    /// 引擎 —— 而注册表**仍是进程级**,多份引擎换不来隔离,只白花内存与注册开销
+    /// (哪些状态按宿主、哪些必须进程级:见模块头「状态所有权地图」)。
     #[test]
     fn park_and_take_reuses_the_same_engine() {
         let _g = crate::tests::TEST_LOCK
@@ -1089,6 +1116,65 @@ mod engine_ownership_tests {
                 "接管 + 停放之后必须还是**同一个**引擎"
             );
         });
+    }
+
+    /// **宿主 key 随活动宿主切换,并在 `clear_active` 后回落到默认宿主**(G11a 不变量)。
+    ///
+    /// 为什么值得单独钉:`current_host_key` 是「按宿主分桶」的唯一标识(UI 请求、
+    /// 跨线程投递路由都用它)。它若在切换后漂移,分桶就会串 —— 而这条**没有**任何
+    /// 直接的断言保护过。
+    #[test]
+    fn host_key_is_stable_per_host_and_falls_back() {
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        let default_key = current_host_key();
+        assert_eq!(
+            default_key,
+            current_host_key(),
+            "同一宿主两次取 key 必须相同(按宿主分桶的前提)"
+        );
+
+        let mut other = JsHost::new();
+        set_active(&mut other);
+        let other_key = current_host_key();
+        assert_ne!(other_key, default_key, "切到别的宿主后 key 必须变");
+
+        clear_active();
+        assert_eq!(
+            current_host_key(),
+            default_key,
+            "clear_active 后应回落到默认宿主(同一份引擎 ⇒ 同一个 key)"
+        );
+        std::mem::forget(other);
+    }
+
+    /// **`clear_active` 之后,查询类入口不得顺手建宿主**(G11a 不变量)。
+    ///
+    /// 由来:`init()` 在没有宿主时会 `install_default(JsHost::new())` —— 那是整个 boa 引擎。
+    /// 查询类入口(`engine_exists` / `try_current_host_key` / `try_with_*`)被放在每帧路径上,
+    /// 为一个布尔建引擎是静默的性能事故;这条测试把它钉住。
+    #[test]
+    fn queries_do_not_create_host_after_clear() {
+        let _g = crate::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        // 先把默认宿主接管出来(槽清空),再 clear_active ⇒ 两类查询都必须给 None
+        let host = take_existing().expect("init() 之后应有默认宿主可接管");
+        clear_active();
+        assert!(!engine_exists(), "无宿主时 engine_exists() 必须为 false");
+        assert!(
+            try_current_host_key().is_none(),
+            "无宿主时 try_current_host_key() 必须给 None(而不是 init())"
+        );
+        assert!(
+            try_with_host_ref(|_| ()).is_none(),
+            "无宿主时 try_with_host_ref() 必须给 None"
+        );
+        // 停放回去,别给同线程后续测试留一个空槽
+        park_or_forget(host);
     }
 
     /// **队列要按宿主隔离,而不是进程级共享**(T1 步骤 2 的目标行为)。
