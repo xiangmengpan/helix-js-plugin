@@ -448,6 +448,10 @@ pub(crate) fn js_open_terminal(
     args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // C-2 检查点:`helix.open_terminal` 会**起 pty 跑命令**(与 `spawn`/`run` 同属 process)。
+    // 此前漏在检查点之外 —— 声明了 `permissions` 却没要 process 的插件仍能借此起 shell
+    // (能力清单因此有洞)。放在最前面:参数校验失败也不该先付出一次 pty 的代价。
+    crate::permissions::check_js("helix.open_terminal", crate::permissions::CAP_PROCESS)?;
     let opts = args
         .first()
         .unwrap_or(&JsValue::undefined())

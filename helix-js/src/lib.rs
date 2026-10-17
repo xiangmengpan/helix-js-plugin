@@ -2458,6 +2458,48 @@ pub(crate) mod tests {
         assert!(err.contains("已被拒绝"), "{err}");
     }
 
+    /// `helix.open_terminal` 会**起 pty 跑命令** ⇒ 同属 `process` 能力。
+    /// 此前它漏在检查点之外(声明了 `permissions` 却没要 process 的插件仍能借此起 shell)。
+    #[test]
+    fn open_terminal_needs_process_capability() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        // 声明了 fs_read 但**没有** process ⇒ open_terminal 必须被拒(且在建 pty 之前拒)
+        load_script(
+            r#"
+            helix.plugin("term-cap", { permissions: { fs_read: true } });
+            helix.register_command("term-cap-go", () => {
+                helix.open_terminal({ cmd: "true", side: "bottom", size: 10 });
+            });
+            "#,
+        )
+        .unwrap();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        let err = run_command("term-cap-go", &ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("未声明能力") && err.contains("process"),
+            "{err}"
+        );
+        assert!(
+            pending_permissions()
+                .iter()
+                .any(|(p, c)| p == "term-cap" && c == "process"),
+            "应记入待授权:{:?}",
+            pending_permissions()
+        );
+    }
+
     /// C-2:内置插件(来自**用户插件目录以外**的根)永不询问 —— 17 个内置插件
     /// grandfathered 的根据。内置根与用户根同时存在时,从内置根加载的那个放行,
     /// 从用户根加载的同名插件照旧要问。

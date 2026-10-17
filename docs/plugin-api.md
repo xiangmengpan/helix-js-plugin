@@ -292,55 +292,104 @@ helix.plugin.install(arg) / update(name?) / remove(name)   // 管理(结果走�
 // (例如"未安装"时 remove 抛 `failed to remove '<name>': not installed`)。
 ```
 
-### manifest 与能力清单(permissions)
+### manifest 与能力清单(permissions)—— 插件作者手册
 
-```
+> 一句话:**把你的插件要做的事写进 manifest**,用户就能看见、能拒绝;不写也能跑(存量兼容),
+> 但你放弃了"被审计"这个能力。
+
+#### 1. 我该写什么(照抄改这一块)
+
+```js
 helix.plugin("my-plugin", {
-  deps: [],                          // 加载期依赖(拓扑加载;见 plugin-layout.md §3.4)
-  version: "1.0",                    // 元数据
-  schema_version: 1,                 // 声明面版本;高于编辑器支持的版本 ⇒ 加载即失败
-  min_editor: "25.7",                // 最低编辑器版本;高于当前版本 ⇒ 加载即失败
+  deps: [],                            // 加载期依赖(拓扑加载;见 plugin-layout.md §3.4)
+  version: "1.0",                      // 元数据
+  schema_version: 1,                   // 声明面版本;高于编辑器支持的版本 ⇒ **加载即失败**
+  min_editor: "25.7",                  // 最低编辑器版本;高于当前版本 ⇒ **状态栏警告并继续加载**
   permissions: { process: true, fs_read: true, fs_write: false },
-  contributes: ["cmd:my-cmd"],       // 贡献点(记录用)
+  contributes: ["cmd:my-cmd"],         // 贡献点(记录用,`:js-permission list` 可见)
 });
 ```
 
-`permissions` 的语义(**渐进式,不打断存量插件**):
+只写**你真正用到的**能力。三项全 `false` 也合法 —— 含义是"我什么都不要"(于是任何能力
+第一次使用时都会被询问)。
 
-| 情况 | 行为 |
-|---|---|
-| **不写 `permissions`** | legacy 语义:不拦截(存量插件零影响) |
-| **写了 `permissions`** | 声明的能力放行;未声明的能力**第一次使用时被询问** |
-| 内置插件(随软件分发的 runtime) | 永不询问(用户目录里同名覆盖的那份按第三方对待) |
+#### 2. 能力 ↔ API 对照表(同一能力覆盖同族 API)
 
-能力的覆盖范围(同一能力覆盖同族 API):
+| 能力 | 覆盖的 API | 典型用途 |
+|---|---|---|
+| `process` | `helix.run` / `helix.run_async` / `helix.spawn` / **`helix.open_terminal`** | 调 git / rg / 起 shell 终端 |
+| `fs_read` | `helix.read_file` / `helix.read_file_async` / `helix.read_dir` | 读配置、列目录、读项目文件 |
+| `fs_write` | `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` | 写缓存/状态文件、插件自更新 |
 
-| 能力 | 覆盖的 API |
-|---|---|
-| `process` | `helix.run` / `helix.run_async` / `helix.spawn` |
-| `fs_read` | `helix.read_file` / `helix.read_file_async` / `helix.read_dir` |
-| `fs_write` | `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` |
+`helix.write_plugin_file` 是**限域**写作(只能写自己插件目录下的相对路径),但仍属 `fs_write`。
+打开 buffer、读 `doc.text`、`helix.by_path` 读**已打开**的文档都**不需要**声明(不是文件系统访问)。
 
-"询问"= 该次调用**失败**(错误消息写明插件名与能力名)并记入待授权列表;用
+#### 3. 三种情形,行为不同
+
+| 情形 | 第一次用未声明的能力时 | 说明 |
+|---|---|---|
+| **没写 `permissions`**(legacy) | 直接放行,不询问 | 存量插件零影响;但用户**看不到**你用这些能力 |
+| **写了 `permissions`** | 该次调用**报错** + 记入待授权 | 用户答一次即记住(见 §4) |
+| **内置插件**(随软件分发的 runtime) | 永不询问 | 用户目录里同名覆盖的那份按第三方对待;`:plugin-load /abs/x.js` 同样按第三方(没有"提供根") |
+
+#### 4. 被询问之后,用户怎么处理
 
 ```
-:js-permission list                     // 看声明 / 待授权 / **已记住的决定**(已允许·已拒绝)
-:js-permission allow <plugin> <cap>     // 记住"允许"(cap ∈ process/fs_read/fs_write)
+:js-permission list                     // 声明 / 待授权 / 已记住的决定(已允许·已拒绝)
+:js-permission allow <plugin> <cap>     // 记住"允许"(cap ∈ process / fs_read / fs_write)
 :js-permission deny  <plugin> <cap>     // 记住"拒绝"
 ```
 
-回答一次即记住(等价于 zellij 的 `request_permission`)。检查点见
-`helix-js/src/permissions.rs` 的模块文档。
+- 回答一次即记住(等价于 zellij 的 `request_permission`);**重新回答会覆盖**旧决定,
+  且会把该条从"待授权"里移出。
+- `deny` 之后**不会**再问 —— 调用一直失败,错误消息写明"已被拒绝"与改法。
+- 决定是按 **(插件名, 能力)** 记的,"哪个插件在调"由**注册期绑定**决定:`helix.register_command`
+  / `helix.on` 注册时记下属主;裸脚本顶层代码归属"最后声明的插件名"。
 
-插件可**查询**自己的有效能力,据此降级(而不是先失败一次):
+#### 5. 写"能降级"的插件(推荐姿势)
+
+不要假设能力一定可用 —— 先查再决定,失败会**只发生一次**但你至少能给用户一个体面的回退:
 
 ```js
-const caps = helix.permissions();          // { process, fs_read, fs_write }
-if (caps.process) { const branch = await helix.run_async("git branch --show-current"); }
+// 老编辑器没有这个 API ⇒ 按"可用"处理(try/catch 是兼容层,不是兜底逻辑)
+function hasProcess() {
+  try { return !!(helix.permissions && helix.permissions().process); } catch (e) { return true; }
+}
+
+async function refreshGit(path) {
+  if (!hasProcess()) { gitBranch = ""; return; }        // 降级:不显示分支,而不是弹一次失败
+  gitBranch = (await helix.run_async("git -C " + shq(dirname(path)) + " branch --show-current")).trim();
+}
 ```
 
-语义 = "**不问就放行吗**":没声明 `permissions` 的插件(legacy)与内置插件三项都是
-`true`;声明了的插件看声明或已记住的决定(未决定 ⇒ `false`,因为那次调用会被问一次)。
+`helix.permissions()` 返回 `{ process, fs_read, fs_write }`,语义 = "**不问就放行吗**":
+没声明 `permissions` 的插件(legacy)与内置插件三项都是 `true`;声明了的插件看声明或
+**已记住的决定**(未决定 ⇒ `false`,因为那次调用会被问一次)。
+
+内置插件里已有两处按这个形状写:`statusline`(git 分支前查 `process`)、`plugin-manager`
+(`install`/`update` 前查 `process`,没有就明确报错并跳过)。
+
+#### 6. 两个版本字段:别混用
+
+| 字段 | 不满足时的行为 | 什么时候用 |
+|---|---|---|
+| `schema_version` | **拒载**(`helix.plugin` 抛错) | 声明面/字段语义变了,旧编辑器**可能误读你的 manifest** |
+| `min_editor` | **警告并继续加载**(状态栏一条提示) | 你只是用到某些新 API,代码本身仍可能正常工作 |
+
+`min_editor` 与真实版本的比较是**宽松**的:`"25.7" == "25.7.0"`,`"25.07.1 (c4831272)"` 取
+`[25,7,1]`;写成非版本号(`"latest"`)会被当成错误配置**警告**出来。
+编辑器版本未知(库/单测场景)时**跳过**检查。
+
+#### 7. 排错清单
+
+| 现象 | 看什么 |
+|---|---|
+| 某次调用突然报"未声明能力 'x'" | `:js-permission list`:你的 manifest 声明了什么、`x` 是否在待授权里 |
+| 答过 allow 却还报错 | 是不是**另一个**插件名在调(属主按注册期绑定);`list` 里核对"已允许"的插件名 |
+| 内置插件不起作用了 | 你是不是把它复制到 `~/.config/helix/plugins/` 后**没带** `permissions` 声明 —— 用户目录那份按第三方对待 |
+| 想确认权限模型没说谎 | `helix.permissions()`:JS 侧看到的"能做什么"与 `list` 的"已允许/已拒绝"应对得上 |
+
+检查点实现见 `helix-js/src/permissions.rs` 的模块文档(能力判定表、问一次的逻辑、归属规则)。
 
 ### 数据形状
 
