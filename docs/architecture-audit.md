@@ -25,7 +25,7 @@
 | ✅ | **G6** | `build_engine`(773 行)按命名空间/能力切分到 `register/` | S1 | B | 搬家 · 2026-10-17 · 本条 | G1, G3 |
 | ✅ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 · 2026-10-17 · 本条 | G3 |
 | ✅ | **G8a** | `server_manager` 移出 `commands/`(内容零改动) | S2 | B | 搬家 · 2026-10-17 · 本条 | 无 |
-| ☐ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 | G8a |
+| ✅ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 · 2026-10-17 · 本条 | G8a |
 | ☐ | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 | 无 |
 | ☐ | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 | G6, G10 spec |
 | ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
@@ -355,36 +355,51 @@ cargo integration-test
 - **明确不做**:不动 `UiRequest` 枚举本身(92 变体 / 16 文件 match,收益远小于成本)。
 - **风险**:纯搬家;43 个 arm 全部有集成测试覆盖(context 里已确认 377 条含 plugin_* 各族)。
 
-### ☑ G8a · `server_manager` 移出 `commands/`(2026-10-17 完成)
 
-- **症状**:一个 2,956 行的文件塞了 HTTP 下载、4 套归档解包、`sha256_hex`、自写 `strip_path`、
-  TOML 重写、内联 `pub mod registry`(380 行)、PATH 探测、install/update/remove —— 而且它挂在
-  `commands/` 下,语义上根本不是"命令"。
-- **做法(零内容改动)**
-  1. `git mv helix-term/src/commands/server_manager.rs helix-term/src/server_manager/mod.rs`;
-     `helix-term/src/lib.rs` 加 `mod server_manager;`。
-  2. `commands.rs` 的 `pub(crate) mod server_manager;` → `pub(crate) use crate::server_manager;`
-     —— 让 `commands::server_manager::…` 的老路径继续可用(66 处引用,一行没改)。
+### ☑ G8b · `server_manager` 按职责拆成 7 个模块(2026-10-17 完成)
+
+- **结果**:`helix-term/src/server_manager/`
+  | 文件 | 行数 | 内容 |
+  |---|---|---|
+  | `mod.rs` | 1,339 | 模块头 + `mod` 声明 + **21 项显式再导出** + `Availability` / `MANAGED_*` + `#[cfg(test)] mod tests`(1,283 行原样) |
+  | `install.rs` | 466 | 安装/升级/卸载/任务执行(16 项) |
+  | `langs_toml.rs` | 447 | `languages.toml` 读写/托管区块/可用性(18 项) |
+  | `registry.rs` | 384 | 原内联 `pub mod registry { … }` 的内容(路径 `server_manager::registry::Spec` 不变) |
+  | `download.rs` | 197 | 镜像/sha256/下载/进度钩子(15 项) |
+  | `archive.rs` | 126 | 归档解包 + `strip_path`(7 项) |
+  | `version.rs` | 100 | 版本探测 + 模板展开(4 项) |
+  合计 3,059 行(比原 2,956 多 103 行,全是模块头注释与 `use`)。
+- **三个坑的解法(上一轮 G8a 已踩过,这轮按解法做)**
+  1. **glob 环**:子模块之间**不用** `use super::*`,一律 `use super::<mod>::{具体名字}`;
+     `mod.rs` 也只做**显式清单**再导出(`pub(crate) use install::{availability, install, …};`),
+     不再是 `pub(crate) use install::*`。glob↔glob 会被解析器当成空集合,这是上一轮失败的根因。
+  2. **`#[cfg(test)]` 项**:`download_progress_hook_set` / `extract_archive` /
+     `install_from_local_dir_for_test` / `copy_dir_recursive` 只在测试目标存在,再导出时单独挂
+     `#[cfg(test)]`,否则非测试构建报 unresolved import。
+  3. **clippy `unused_imports` 会误删再导出**:上一轮被它删掉 36 项(含外部仍在用的)。
+     这轮改成"**只再导出模块外真的在用的名字**"——用 `grep server_manager::<name>` 量出 21 项,
+     其余内部辅助函数由子模块直接 `use super::<mod>::…`,根本不经过 mod.rs,所以没有可误删的东西。
+- **测试夹具的可见性**:`mod tests` 仍是 `tests` 子模块,自身加 `use super::{archive,download,…}::*;`
+  (叶子模块 glob 不会成环),原有 1,283 行测试**一行没改**。
 - **完成判据(实测)**
   | 指标 | 基线 | 现在 |
   |---|---|---|
-  | `commands/` 下是否有 `server_manager.rs` | 有 | **无** |
-  | 最长函数 | 118(`build_section`) | **118**(未变;本身已 < 150) |
-  | `cargo test -p helix-term --features integration --test integration server_manager` | 8 passed | **8 passed / 0 failed** |
-  | `fmt` / `clippy -D warnings` | 绿 | 绿(0 warning) |
-- **拆分(原 G8 的后半)已单独拆成 G8b,这次没做 —— 附上实测原因**,免得下一个人重踩:
-  1. 把 2,956 行按职责切成 7 个文件本身是机械的(我已生成过一版:download 13 / archive 7 /
-     version 4 / install 16 / langs_toml 18 / registry 1 个内联模块)。
-  2. 真正的坑在**跨文件可见性**:子模块之间互相引用,`mod.rs` 必须再导出;用
-     `pub(crate) use download::*;`(glob)+ 子模块 `use super::*`(glob)会形成 **glob 环**,
-     解析器把环路当成空集 ⇒ `install.rs` 里 `download_to` 找不到。改成显式清单
-     `pub(crate) use download::{a, b, …};` 能解,但还有第二层:被再导出的项如果是
-     `#[cfg(test)]` 的(`extract_archive` 等 4 个),非测试构建会报 unresolved import,
-     必须单独挂 `#[cfg(test)]` 再导出。
-  3. 加上 `clippy -D warnings` 的 `unused_imports` 会把"看起来没用"的再导出删掉(实测一轮删掉 36 项,
-     其中含外部仍在用的),需要逐条甄别。**这份甄别工作值得单独一次专注的会话**,不适合和
-     别的项混在一起 —— 按铁律 4「超过预估就停下来报告」,本项只交付已验证的一半。
-- **风险**:纯 `git mv` + 一行 re-export;回退 = `git revert`。
+  | `commands/` 下有 `server_manager.rs` | 无(G8a 已移出) | 无 |
+  | 模块数 | 1 个文件 2,956 行 | **7 个文件**(最大 1,339,且其中 1,283 是测试) |
+  | 最长函数 | `build_section` 118 | **118**(`build_section`,未变);`too_many_lines` 命中 3 个:141/118/112,全部 < 150 |
+  | `cargo integration-test` | 377 passed | **377 passed / 0 failed** |
+  | `cargo test ... integration server_manager` | 8 passed | **8 passed** |
+  | `cargo test -p helix-js` / `api-check` | 176 · 三段绿 | **相同** |
+  | `fmt` / `clippy`(两种口径) | 绿 | 绿(0 warning) |
+- **过程中的真发现(记为 D8)**:`cargo test -p helix-term --lib` **在改动前就是红的**(用 `git stash` 对比确认):
+  `server_manager::tests::builtin_recipes_loaded_from_toml_keep_semantics` 稳定失败
+  ("pyright 应为占位(no source)"),`archive_assets_install_end_to_end` 间歇失败(3 次里 1 次)。
+  根因是测试共享**进程级** `EXT: OnceLock<Mutex<Vec<Spec>>>` 缓存 + `SM_*` 环境变量,
+  并行执行时互相踩(该模块注释里本来就记着一次"22 个连锁 PoisonError"的事故)。
+  **与本次拆分无关**(HEAD 同样频率),但意味着 `--lib` 目前不能当门禁用。
+- **风险**:纯搬家 + 再导出;`registry` 的 `include_str!("../../../runtime/server-manager-builtin.toml")`
+  相对路径在新位置深度相同(编译期已验证)。
+
 
 ---
 
@@ -453,6 +468,7 @@ cargo integration-test
 | **D5** | ~~2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`)~~ | **已修**(2026-10-17):路径改到 `plugins/<name>/plugin.js`;`--ignored` 由 4/6 变 **6/6 通过** | — |
 | **D6** | ~~`clippy --features integration` 改动前就红~~ | **已修**(2026-10-17):`plugin_roots_for` 加 `#[cfg(any(not(feature="integration"), test))]`;CI 的 clippy 步骤加 `--features integration`;顺带清掉 25 条该 feature 下的既有 lint | — |
 | **D7** | ~~9 个零调用方的 public 函数~~ | **已处理**(2026-10-17):`layout_{save,load,list,delete}` + `dir_or_err` **确认死亡并删除**(`:layout` 实际由 `plugins/layout/plugin.js` 实现,JS 侧走 `js_layout_*`,测试 5+16 条全绿);其余 4 个(`emit_hook`/`emit_term_close`/`picker_has_on_key`/`emit_lsp_diagnostics`)**不是死代码** —— 被单元测试调用,`decide` 更是被 `typed.rs:5114` 用(以 `decide_permission` 别名,G3 的名字扫描漏了别名) | — |
+| **D8** | 新发现:`cargo test -p helix-term --lib` **改动前就是红的**(`builtin_recipes_loaded_from_toml_keep_semantics` 稳定失败 + `archive_assets_install_end_to_end` 间歇失败,3/1)。根因:测试共享进程级 `EXT: OnceLock` 缓存与 `SM_*` 环境变量。是否纳入修复? | **纳入**:一个独立小项——SM 测试全量串行化 + 每例前重置 `EXT`,让 `--lib` 能当门禁 | — |
 
 ---
 
@@ -489,6 +505,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **D5** | 本条(`test(js): …`) | `cargo test -p helix-js -- --ignored` **6 passed / 0 failed**(改前 4/6);默认套件 176/170/6 不变;fmt+clippy 绿 | 两个测试拷的是 2026-10 前的扁平布局;`ignore` 理由同步改成真实原因 |
 | 2026-10-17 | **D6** | 本条(`fix(lint): …`) | `clippy --features integration -D warnings` 由 **红(26 条)**变 0;普通 clippy 仍 0;377 集成测试不受影响 | 顺带修掉 2 处 `MutexGuard` 跨 await(改成 tokio Mutex) |
 | 2026-10-17 | **D7** | 本条(`refactor(js): …`) | 删 37 行死实现;176 测试 / `--ignored` 6/6 / api-check 三段 / plugin_layout 5 / window_mode 16 全绿;clippy 0 | 修正 D7 原始清单:4 个是测试专用,`decide` 被 alias 调用 |
+| 2026-10-17 | **G8b** | 本条(`refactor(term): … (G8b)`) | 7 个模块(最大 1,339,含 1,283 行测试);377 集成测试不变;两种 clippy 0 warning | 三个坑的解法:显式再导出 / cfg(test) 单挂 / 只导出外部在用的 21 项 |
 
 ---
 
