@@ -473,9 +473,11 @@ interface HelixPlugin {
       permissions?: {
         /** `helix.run` / `helix.run_async` / `helix.spawn` */
         process?: boolean;
-        /** `helix.read_file` / `helix.read_file_async` / `helix.read_dir` */
+        /** `helix.read_file` / `helix.read_file_async` / `helix.read_dir` /
+         *  `helix.stat_async` / `helix.glob_async` / `helix.read_tree` / `helix.watch` */
         fs_read?: boolean;
-        /** `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` */
+        /** `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` /
+         *  `helix.remove_plugin_file` */
         fs_write?: boolean;
       };
       /** 贡献点(命令/事件/配置名;只记录,供 `:js-permission list` 展示) */

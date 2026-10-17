@@ -2610,6 +2610,115 @@ pub(crate) mod tests {
         );
     }
 
+    /// `helix.remove_plugin_file` 是**写**操作(与 `write_plugin_file` 对称)⇒ 受 `fs_write` 检查。
+    /// 此前它被当成"限域所以安全"而漏掉检查点 —— 文档的能力表已经写了、代码却没做
+    /// (由 `check_capability_surface.mjs` 机械对账抓出来)。
+    #[test]
+    fn remove_plugin_file_needs_fs_write() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        set_plugins_dir(d.clone());
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        // ① 声明了 process/fs_read 但**没有 fs_write** ⇒ 被拒
+        load_script(
+            r#"
+            helix.plugin("rm-probe", { permissions: { process: true, fs_read: true } });
+            helix.register_command("rm-go", () => { helix.remove_plugin_file("x.js"); });
+            "#,
+        )
+        .unwrap();
+        let err = run_command("rm-go", &ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("未声明能力") && err.contains("fs_write"),
+            "{err}"
+        );
+        let _ = take_messages(); // 清掉①那条"怎么授权"的提示
+                                 // ② 声明 fs_write ⇒ 放行(文件本来不存在 ⇒ false,幂等)
+        load_script(
+            r#"
+            helix.plugin("rm-probe", { permissions: { fs_write: true } });
+            helix.register_command("rm-go", () => {
+                helix.echo("rm:" + helix.remove_plugin_file("x.js"));
+            });
+            "#,
+        )
+        .unwrap();
+        assert!(run_command("rm-go", &ctx).unwrap_or(false));
+        assert_eq!(take_messages(), vec!["rm:false"], "幂等删除应返回 false");
+    }
+
+    /// **C-2 检查点覆盖"读文件系统的同族入口"**:`stat_async` / `glob_async` / `read_tree` /
+    /// `watch` 都会把文件系统的信息(存在性、大小、mtime、目录内容、变更时机)泄漏给插件
+    /// ⇒ 同属 `fs_read`。**此前这四个漏在检查点之外**(实测:只声明 `process` 的插件能枚举目录),
+    /// 与 `open_terminal` 是同一类洞。
+    ///
+    /// 两个方向都钉:未声明 ⇒ 被拒 + 记入待授权;声明了 ⇒ 放行。
+    #[test]
+    fn fs_read_covers_stat_glob_tree_and_watch() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        crate::permissions::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        std::fs::write(d.join("secret.txt"), "s").unwrap();
+        std::mem::forget(dir);
+        let root = d.to_string_lossy().to_string();
+        let ctx = CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        let plugin_src = |perms: &str| {
+            format!(
+                r#"
+                helix.plugin("fs-sib", {{ permissions: {{ {perms} }} }});
+                helix.register_command("sib-glob", () => {{ helix.glob_async({root:?} + "/*"); }});
+                helix.register_command("sib-stat", () => {{ helix.stat_async({root:?} + "/secret.txt"); }});
+                helix.register_command("sib-tree", () => {{ helix.read_tree({root:?}); }});
+                helix.register_command("sib-watch", () => {{ helix.watch({root:?}, () => {{}}); }});
+                "#
+            )
+        };
+        // ① 只声明 process(没有 fs_read)⇒ 四个入口**全部**被拒,并各自记入 (fs-sib, fs_read)
+        load_script(&plugin_src("process: true")).unwrap();
+        for cmd in ["sib-glob", "sib-stat", "sib-tree", "sib-watch"] {
+            let err = run_command(cmd, &ctx)
+                .expect_err(&format!("{cmd} 未声明 fs_read 时应被拒"))
+                .to_string();
+            assert!(
+                err.contains("未声明能力") && err.contains("fs_read"),
+                "{cmd}: {err}"
+            );
+        }
+        assert!(
+            pending_permissions()
+                .iter()
+                .any(|(p, c)| p == "fs-sib" && c == "fs_read"),
+            "应记入待授权:{:?}",
+            pending_permissions()
+        );
+        // ② 声明了 fs_read ⇒ 四个入口都能走到"返回值"这一步(promise / id)
+        load_script(&plugin_src("fs_read: true")).unwrap();
+        for cmd in ["sib-glob", "sib-stat", "sib-tree", "sib-watch"] {
+            assert!(
+                run_command(cmd, &ctx).unwrap_or(false),
+                "{cmd} 声明 fs_read 后应放行"
+            );
+        }
+    }
+
     /// `helix.permissions()`(JS API):插件据此降级 —— 语义是"**不问就放行吗**"。
     #[test]
     fn js_permissions_query() {

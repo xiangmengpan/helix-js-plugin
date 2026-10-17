@@ -88,6 +88,10 @@ pub(crate) fn js_remove_plugin_file(
     args: &[JsValue],
     ctx: &mut boa_engine::Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // C-2 检查点:删文件是写操作(与 `write_plugin_file` 对称)⇒ `fs_write`。
+    // 此前它与 remove 的"限域"性质一起被当成安全操作 ⇒ 文档的能力表写了、代码却没检查
+    // (由 `check_capability_surface.mjs` 第一次跑就抓到)。
+    crate::permissions::check_js("helix.remove_plugin_file", crate::permissions::CAP_FS_WRITE)?;
     let rel: String = args
         .first()
         .unwrap_or(&JsValue::undefined())

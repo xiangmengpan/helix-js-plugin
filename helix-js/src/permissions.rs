@@ -253,8 +253,10 @@ enum Verdict {
 ///
 /// 现在接上的入口(**同一能力覆盖同族 API**,否则"声明了 process"只拦 `run` 就是误导):
 /// * `process` —— `helix.run` / `helix.run_async` / `helix.spawn`;
-/// * `fs_read` —— `helix.read_file` / `helix.read_file_async` / `helix.read_dir`;
-/// * `fs_write` —— `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file`。
+/// * `fs_read` —— `helix.read_file` / `helix.read_file_async` / `helix.read_dir` /
+///   `helix.stat_async` / `helix.glob_async` / `helix.read_tree` / `helix.watch`;
+/// * `fs_write` —— `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` /
+///   `helix.remove_plugin_file`。
 ///
 /// * `Ok(())` = 放行;
 /// * `Err(_)` = 拒绝,且消息足够让人知道下一步怎么做(谁、哪个能力、怎么授权)。

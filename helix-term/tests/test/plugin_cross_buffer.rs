@@ -286,6 +286,13 @@ async fn plugin_edit_same_doc_two_routes_one_undo() -> anyhow::Result<()> {
 }
 
 // async 命令:begin_edit → by_path 改其它 buffer → await → 再改 → end_edit → 一次撤销
+//
+// ⚠️ **已知对调度敏感**(2026-10-16 实测:整包并行跑、机器忙时偶发红;单独重跑 3/3 绿)。
+// 机制:`.then()` 里的 `end_edit()` 必须在下一条命令**开始前**跑完 —— 否则命令入口会复位
+// 事务深度并**清空**积压编辑(`begin_edit` 未配对 ⇒ 整批丢弃),两处编辑一起消失
+// (实得 `two/three`,期望 `Xtwo/Zthree`)。
+// 注:试过"多插几个 idle 步"当缓冲,**反而让 app 提前退出**(该用例对步数敏感)⇒ 已回退。
+// 要根治得改成"等到条件成立"而不是"数步数"(与 `wait_for_term_event` 同款),留作后续。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;

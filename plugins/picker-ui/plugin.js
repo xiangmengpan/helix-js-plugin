@@ -24,8 +24,8 @@ helix.plugin("picker-ui", {
   deps: [],
   version: "0.1",
   schema_version: 1,
-  // 兜底取候选:必要时起进程(rg/git)
-  permissions: { process: true },
+  // 兜底取候选:必要时起进程(rg/git);`read_tree(".")` 枚举目录 ⇒ 还需要 fs_read
+  permissions: { process: true, fs_read: true },
 });
 
 // ── 可配置 ────────────────────────────────────────────────────────────────

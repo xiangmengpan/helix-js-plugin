@@ -691,6 +691,8 @@ pub(crate) fn js_stat_async(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // C-2 检查点:读文件系统元信息/枚举同属 `fs_read`(此前漏在检查点之外)
+    crate::permissions::check_js("helix.stat_async", crate::permissions::CAP_FS_READ)?;
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -733,6 +735,8 @@ pub(crate) fn js_glob_async(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // C-2 检查点:读文件系统元信息/枚举同属 `fs_read`(此前漏在检查点之外)
+    crate::permissions::check_js("helix.glob_async", crate::permissions::CAP_FS_READ)?;
     let pattern: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -757,6 +761,8 @@ pub(crate) fn js_read_tree(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // C-2 检查点:读文件系统元信息/枚举同属 `fs_read`(此前漏在检查点之外)
+    crate::permissions::check_js("helix.read_tree", crate::permissions::CAP_FS_READ)?;
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
