@@ -14,6 +14,8 @@
 
 标记规则:**一次只做一项**;门禁全绿才允许把 ☐ 改成 ☑。完成时同步更新本表与 §8 记录。
 
+图例:✅ 完成 · ☐ 未开始 · 🟡 **spec 已出、等人确认**(C 批按铁律 5 必须先过这一步)
+
 | 状态 | ID | 目标 | 严重度 | 批次 | 性质 | 依赖 |
 |---|---|---|---|---|---|---|
 | ✅ | **G0** | 建立干净基线:收尾当前 WIP + 清 `.swp` | — | 前置 | 卫生 · 2026-10-17 · `fc0585abe` + `49c4fe1` + 本条 | 无 |
@@ -26,10 +28,10 @@
 | ✅ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 · 2026-10-17 · 本条 | G3 |
 | ✅ | **G8a** | `server_manager` 移出 `commands/`(内容零改动) | S2 | B | 搬家 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 · 2026-10-17 · 本条 | G8a |
-| ☐ | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 | 无 |
-| ☐ | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 | G6, G10 spec |
+| 🟡 | **G9** | JS 插件共享层:`wc_*` 等重复助手 → `plugins/lib/` | S3 | C | 真重构 · spec 见 `specs/2026-10-17-plugin-shared-lib-design.md` | 无 |
+| 🟡 | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 · spec 见 `specs/2026-10-17-js-surface-design.md` | G6 ✅ |
 | ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
-| ☐ | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(85 处) | S3 | C | 真重构 | G7, G12 spec |
+| 🟡 | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(pane 族 24 处) | S3 | C | 真重构 · spec 见 `specs/2026-10-17-uiop-dispatch-design.md` | G7 ✅ |
 
 范围默认:**只治 fork 新增债务**(16 个 >100 行函数 / 1,486 行超额)。上游遗留的 54 个长函数
 (`dap.rs` 439 行 `handle_debugger_message`、`keymap/default.rs` 383 行等)**不动** —— 见 §6 决策 D1。
@@ -407,6 +409,11 @@ cargo integration-test
 
 ### ☐ G9 · JS 插件共享层(先做这个,最便宜)
 
+> **spec**:[`superpowers/specs/2026-10-17-plugin-shared-lib-design.md`](superpowers/specs/2026-10-17-plugin-shared-lib-design.md)
+> **spec 已出**(2026-10-17),需要你拍板:**建议不做原形态**。实测跨插件「逐字相同」的函数只有 **4 个 / 9 份 / 35 行**;
+> 其余同名函数(`render` ×3、`handle_key` ×2 110/44 行)是各自面板的交互骨架,合并属行为重构。
+> spec 里的方案 A = 结案不做,方案 B = 只抽 4 个 + 确立 `plugins/lib/` 约定。
+
 - **症状**:`wc_len / wc_pad / wc_trunc / wc_ell`(CJK 宽度)在插件侧重写(核心已有宽度逻辑 ⇒
   正是 `docs/plugin-vs-core.md` 红线 R3);`render` 出现在 4 个插件、`shq` 3 个、
   `say` / `row_el` / `handle_key` / `guard` 各 2 个。
@@ -418,6 +425,10 @@ cargo integration-test
 - **注意**:改完 `plugins/` **必须**重跑 `contrib/install-plugins.sh`,否则跑的是 `runtime/plugins/` 旧副本。
 
 ### ☐ G10 · 三个 JS 组件抽 `JsSurface`
+
+> **spec**:[`superpowers/specs/2026-10-17-js-surface-design.md`](superpowers/specs/2026-10-17-js-surface-design.md)
+> **spec 已出**(2026-10-17)。关键取舍:只做 panel+popup(terminal 另议);共享「状态 + 刷新 + 节点键路由」,
+> **Esc/Tab 语义留在各自 handle_event**;判据 = panel+popup 770 → **≤500 行**、两者共享 20 行窗口 **73 → 0**。
 
 - **症状**:`ui/plugin_panel.rs`(368)↔ `ui/plugin_popup.rs`(400)有 **30 个相同 20 行块**,
   差异仅 276 行;两边各有 234 / 218 行的 `handle_event`、同样的 focusables 提取、同样的 render 骨架;
@@ -445,6 +456,11 @@ cargo integration-test
 - **验证**:`cargo test -p helix-js` ×3 + `cargo integration-test`
 
 ### ☐ G12 · `job::dispatch_blocking` 闭包派发 → `UiOp`
+
+> **spec**:[`superpowers/specs/2026-10-17-uiop-dispatch-design.md`](superpowers/specs/2026-10-17-uiop-dispatch-design.md)
+> **spec 已出**(2026-10-17)。范围:pane 族 **24 个 handler**(全仓 75 处 dispatch → 51);
+> 保持「一请求一次 dispatch」;`UiOp` 只装数据(`derive(Debug, PartialEq)`),组件构造与
+> `set_layout_change_kind + sync_layout_cache` 的配对收进 `UiOp::apply`;附 5 条 handler 单测。
 
 - **症状**:UI 变更表达为"闭包丢进全局 job 队列,在里面拿 compositor",85 个调用点 ⇒
   请求处理不可单测、执行顺序不可静态推断。
@@ -506,6 +522,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **D6** | 本条(`fix(lint): …`) | `clippy --features integration -D warnings` 由 **红(26 条)**变 0;普通 clippy 仍 0;377 集成测试不受影响 | 顺带修掉 2 处 `MutexGuard` 跨 await(改成 tokio Mutex) |
 | 2026-10-17 | **D7** | 本条(`refactor(js): …`) | 删 37 行死实现;176 测试 / `--ignored` 6/6 / api-check 三段 / plugin_layout 5 / window_mode 16 全绿;clippy 0 | 修正 D7 原始清单:4 个是测试专用,`decide` 被 alias 调用 |
 | 2026-10-17 | **G8b** | 本条(`refactor(term): … (G8b)`) | 7 个模块(最大 1,339,含 1,283 行测试);377 集成测试不变;两种 clippy 0 warning | 三个坑的解法:显式再导出 / cfg(test) 单挂 / 只导出外部在用的 21 项 |
+| 2026-10-17 | **G9/G10/G12** | 本条(`docs: C 批三份 spec`) | 无代码改动;三份 spec 各含**实测数字**(G9: 4 组/35 行重复;G10: 73 个共享窗口;G12: pane 24/全仓 75)与完成判据 | 状态 🟡,等你逐条拍板后再开工 |
 
 ---
 
