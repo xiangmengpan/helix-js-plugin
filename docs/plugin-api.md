@@ -324,7 +324,7 @@ helix.plugin("my-plugin", {
 "询问"= 该次调用**失败**(错误消息写明插件名与能力名)并记入待授权列表;用
 
 ```
-:js-permission list                     // 看声明与待授权
+:js-permission list                     // 看声明 / 待授权 / **已记住的决定**(已允许·已拒绝)
 :js-permission allow <plugin> <cap>     // 记住"允许"(cap ∈ process/fs_read/fs_write)
 :js-permission deny  <plugin> <cap>     // 记住"拒绝"
 ```

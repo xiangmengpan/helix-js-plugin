@@ -70,6 +70,22 @@ async fn plugin_permission_ask_then_allow() -> anyhow::Result<()> {
                     );
                 }),
             ),
+            // `list` 要能看到"我上次答了什么"(决定唯一的对外出口)
+            (
+                Some(":js-permission list<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let s = status.as_ref();
+                    assert!(
+                        s.contains("已允许") && s.contains("perm-demo process"),
+                        "list 应列出已记住的允许: {s:?}"
+                    );
+                    assert!(
+                        !s.contains("待授权: perm-demo"),
+                        "已经回答过的不该还在待授权里: {s:?}"
+                    );
+                }),
+            ),
             // 再跑 ⇒ 放行(真实起了一个 `echo` 子进程)
             (
                 Some(":perm-run<ret>"),
@@ -130,6 +146,18 @@ async fn plugin_permission_deny_is_sticky() -> anyhow::Result<()> {
                         "deny 之后应一直拒, got {severity:?}"
                     );
                     assert!(status.as_ref().contains("已被拒绝"), "status: {status}");
+                }),
+            ),
+            // `list` 里能看到"已拒绝"
+            (
+                Some(":js-permission list<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let s = status.as_ref();
+                    assert!(
+                        s.contains("已拒绝") && s.contains("perm-deny-demo process"),
+                        "list 应列出已记住的拒绝: {s:?}"
+                    );
                 }),
             ),
             // 再跑一次仍被拒(决定是记住的,不是一次性的)

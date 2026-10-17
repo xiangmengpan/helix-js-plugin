@@ -338,6 +338,20 @@ pub fn decide(plugin: &str, cap: &str, allow: bool) -> bool {
     })
 }
 
+/// **已记住的决定**(插件, 能力, 是否允许),按插件名+能力名排序 ⇒ `:js-permission list`
+/// 的输出稳定可断言。
+pub fn decisions() -> Vec<(String, String, bool)> {
+    with_state(|s| {
+        let mut v: Vec<(String, String, bool)> = s
+            .decisions
+            .iter()
+            .map(|((p, c), allow)| (p.clone(), c.clone(), *allow))
+            .collect();
+        v.sort();
+        v
+    })
+}
+
 /// 待询问列表(供状态栏/`:js-permission list` 展示)
 pub fn pending() -> Vec<(String, String)> {
     with_state(|s| s.pending.clone())

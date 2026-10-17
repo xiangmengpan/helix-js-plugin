@@ -39,7 +39,8 @@ pub use state::*;
 pub use host::set_editor_version;
 pub use layout::{layout_delete, layout_list, layout_load, layout_save};
 pub use permissions::{
-    decide as decide_permission, manifests as plugin_manifests, pending as pending_permissions,
+    decide as decide_permission, decisions as permission_decisions, manifests as plugin_manifests,
+    pending as pending_permissions,
 };
 pub use theme::*;
 pub use types::DocChange;

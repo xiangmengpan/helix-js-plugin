@@ -5708,8 +5708,17 @@ fn js_permission(
             for (plugin, cap) in pending {
                 lines.push(format!("待授权: {plugin} 请求 {cap}"));
             }
+            // 已记住的决定(allow/deny):`list` 要能看到"我上次答了什么" ——
+            // 否则用户无法确认自己的授权/拒绝是否生效(这是 `decisions` 唯一的对外出口)。
+            for (plugin, cap, allow) in helix_js::permission_decisions() {
+                lines.push(format!(
+                    "已{}: {plugin} {cap}",
+                    if allow { "允许" } else { "拒绝" }
+                ));
+            }
             if lines.is_empty() {
-                cx.editor.set_status("js-permission: 无声明、无待授权");
+                cx.editor
+                    .set_status("js-permission: 无声明、无待授权、无决定");
             } else {
                 cx.editor.set_status(lines.join(" | "));
             }
