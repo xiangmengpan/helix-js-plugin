@@ -21,7 +21,7 @@ pub(crate) fn js_diagnostics(
     if json.is_empty() {
         return Ok(JsValue::null());
     }
-    crate::layout::js_json_parse(json, ctx, "diagnostics")
+    crate::layout_api::js_json_parse(json, ctx, "diagnostics")
 }
 
 /// 触发 lsp-diagnostics 事件（诊断更新时由 helix-term 侧调用）：
@@ -36,7 +36,7 @@ pub fn emit_lsp_diagnostics(doc_id: u64, diags_json: &str) {
     }
     with_engine(|engine| {
         let Ok(diags) =
-            crate::layout::js_json_parse(diags_json.to_string(), engine, "lsp-diagnostics")
+            crate::layout_api::js_json_parse(diags_json.to_string(), engine, "lsp-diagnostics")
         else {
             return;
         };

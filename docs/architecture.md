@@ -18,6 +18,21 @@ This document contains a high-level overview of Helix internals.
 > NOTE: Use `cargo doc --open` for API documentation as well as dependency
 > documentation.
 
+## 模块地图:名字重了的那几处(`layout` / `popup`)
+
+仓库里有多个 `layout.rs` / `popup*.rs`,**只靠文件名无法消歧**。按层对照(2026-10 架构体检 G4 建立):
+
+| 文件 | 层 | 负责什么 |
+|---|---|---|
+| `helix-tui/src/layout.rs` | TUI 原语 | 把 `Rect` 树切成单元格区域(纯几何,不认识编辑器概念) |
+| `helix-term/src/ui/layout.rs` | 编辑器布局树 | 叶子/分割/比例/焦点,产出 `Rect` 交给 TUI 层绘制 |
+| `helix-js/src/layout_api.rs` | JS API(桥接) | `helix.pane.*` 等 JS 命名空间背后的实现;原先也叫 `layout.rs`,G4 改名以消歧 |
+| `helix-js/src/popup.rs` | JS API(桥接) | `helix.popup.*` 状态与请求入队(不含渲染) |
+| `helix-term/src/ui/popup.rs` | UI 组件 | 渲染 JS 侧排好的行(`StyledLine`),不解释语义 |
+| `helix-term/src/ui/plugin_popup.rs` | UI 组件 | 插件弹窗的容器与键路由(`PluginPanel` 的同族,见 G10) |
+
+规则:改 JS 可见行为 → `helix-js/*`;改绘制/几何 → `helix-term/src/ui/*`;改矩形切分算法 → `helix-tui`。
+
 ## Core
 
 The core contains basic building blocks used to construct the editor. It is

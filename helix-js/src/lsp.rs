@@ -236,7 +236,7 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
         };
         let undefined = JsValue::undefined();
         let outcome = match result {
-            Ok(Some(json)) => match crate::layout::js_json_parse(json, engine, "lsp result") {
+            Ok(Some(json)) => match crate::layout_api::js_json_parse(json, engine, "lsp result") {
                 Ok(parsed) => resolving
                     .resolve
                     .call(&undefined, &[parsed], engine)

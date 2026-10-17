@@ -4,7 +4,7 @@ mod commands;
 pub mod host;
 mod icons;
 mod input;
-mod layout;
+mod layout_api;
 mod lsp;
 pub mod picker;
 mod popup;
@@ -61,7 +61,7 @@ pub use host::set_editor_version;
 // (含测试),`dir_or_err` 也只被它们使用 —— 这一层疑似整体死亡,见
 // docs/architecture-audit.md D7(删除 or 重新接线,待确认)。暂保持 `pub` 不动,避免
 // 在「收窄公共面」这项里顺手改行为。
-pub use layout::{layout_delete, layout_list, layout_load, layout_save};
+pub use layout_api::{layout_delete, layout_list, layout_load, layout_save};
 pub use permissions::{
     decide as decide_permission, decisions as permission_decisions, manifests as plugin_manifests,
     pending as pending_permissions,
@@ -227,82 +227,82 @@ pub(crate) fn build_engine(engine: &mut Context) {
     // 所以直接复用同一批原生函数 —— 零重复实现,旧名删掉后新名照常工作。
     let pane_obj = ObjectInitializer::new(engine)
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_list),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_list),
             JsString::from("list"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_info),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_info),
             JsString::from("info"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_raise),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_raise),
             JsString::from("raise"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_pin),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_pin),
             JsString::from("pin"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_float),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_float),
             JsString::from("float"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_embed),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_embed),
             JsString::from("embed"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_close_leaf),
+            NativeFunction::from_fn_ptr(layout_api::js_close_leaf),
             JsString::from("close"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_focus_leaf),
+            NativeFunction::from_fn_ptr(layout_api::js_focus_leaf),
             JsString::from("focus"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_focus_leaf_dir),
+            NativeFunction::from_fn_ptr(layout_api::js_focus_leaf_dir),
             JsString::from("focus_dir"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_swap_leaf_dir),
+            NativeFunction::from_fn_ptr(layout_api::js_swap_leaf_dir),
             JsString::from("move"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_resize_leaf),
+            NativeFunction::from_fn_ptr(layout_api::js_resize_leaf),
             JsString::from("resize"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_zoom_leaf),
+            NativeFunction::from_fn_ptr(layout_api::js_zoom_leaf),
             JsString::from("zoom"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_unzoom),
+            NativeFunction::from_fn_ptr(layout_api::js_unzoom),
             JsString::from("unzoom"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_minimize_leaf),
+            NativeFunction::from_fn_ptr(layout_api::js_minimize_leaf),
             JsString::from("minimize"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_equalize_leaf),
+            NativeFunction::from_fn_ptr(layout_api::js_equalize_leaf),
             JsString::from("equalize"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_layout_fix),
+            NativeFunction::from_fn_ptr(layout_api::js_layout_fix),
             JsString::from("fix"),
             2,
         )
@@ -310,32 +310,32 @@ pub(crate) fn build_engine(engine: &mut Context) {
     // helix.layout.*(序列化;get/restore 已接线,save/load 待 ②-5 的 :layout 命令)
     let layout_obj = ObjectInitializer::new(engine)
         .function(
-            NativeFunction::from_fn_ptr(layout::js_get_layout),
+            NativeFunction::from_fn_ptr(layout_api::js_get_layout),
             JsString::from("get"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_restore_layout),
+            NativeFunction::from_fn_ptr(layout_api::js_restore_layout),
             JsString::from("restore"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_layout_save),
+            NativeFunction::from_fn_ptr(layout_api::js_layout_save),
             JsString::from("save"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_layout_load),
+            NativeFunction::from_fn_ptr(layout_api::js_layout_load),
             JsString::from("load"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_layout_list),
+            NativeFunction::from_fn_ptr(layout_api::js_layout_list),
             JsString::from("list"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_layout_delete),
+            NativeFunction::from_fn_ptr(layout_api::js_layout_delete),
             JsString::from("delete"),
             1,
         )
@@ -344,12 +344,12 @@ pub(crate) fn build_engine(engine: &mut Context) {
     // (键位表由 Rust 侧单一来源提供,插件不必硬编码)
     let pane_mode_obj = ObjectInitializer::new(engine)
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_mode_current),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_mode_current),
             JsString::from("current"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_pane_mode_keymap),
+            NativeFunction::from_fn_ptr(layout_api::js_pane_mode_keymap),
             JsString::from("keymap"),
             0,
         )
@@ -372,17 +372,17 @@ pub(crate) fn build_engine(engine: &mut Context) {
     // 是同一批原生函数 —— 零重复实现,旧名删掉后新名照常工作)
     let buffer_obj = ObjectInitializer::new(engine)
         .function(
-            NativeFunction::from_fn_ptr(layout::js_buffers),
+            NativeFunction::from_fn_ptr(layout_api::js_buffers),
             JsString::from("list"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_current_buffer),
+            NativeFunction::from_fn_ptr(layout_api::js_current_buffer),
             JsString::from("current"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_focus_buffer),
+            NativeFunction::from_fn_ptr(layout_api::js_focus_buffer),
             JsString::from("focus"),
             1,
         )
@@ -392,22 +392,22 @@ pub(crate) fn build_engine(engine: &mut Context) {
     // 所以本步只把**读**暴露出来(无需新状态、无需设计决策)。
     let stack_obj = ObjectInitializer::new(engine)
         .function(
-            NativeFunction::from_fn_ptr(layout::js_stack_list),
+            NativeFunction::from_fn_ptr(layout_api::js_stack_list),
             JsString::from("list"),
             0,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_stack_create),
+            NativeFunction::from_fn_ptr(layout_api::js_stack_create),
             JsString::from("create"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_stack_activate),
+            NativeFunction::from_fn_ptr(layout_api::js_stack_activate),
             JsString::from("activate"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_stack_remove),
+            NativeFunction::from_fn_ptr(layout_api::js_stack_remove),
             JsString::from("remove"),
             1,
         )
@@ -700,27 +700,27 @@ pub(crate) fn build_engine(engine: &mut Context) {
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_split),
+            NativeFunction::from_fn_ptr(layout_api::js_split),
             JsString::from("split"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_buffer_open),
+            NativeFunction::from_fn_ptr(layout_api::js_buffer_open),
             JsString::from("buffer_open"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_resize_leaf_dir),
+            NativeFunction::from_fn_ptr(layout_api::js_resize_leaf_dir),
             JsString::from("layout_resize"),
             3,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_swap_leaves),
+            NativeFunction::from_fn_ptr(layout_api::js_swap_leaves),
             JsString::from("layout_swap"),
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(layout::js_get_component_state),
+            NativeFunction::from_fn_ptr(layout_api::js_get_component_state),
             JsString::from("get_component_state"),
             1,
         )

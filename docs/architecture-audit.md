@@ -20,7 +20,7 @@
 | ✅ | **G1** | `helix-js` 内联测试(4,835 行 / 99 测试)搬出 `lib.rs` | S1 | A | 纯搬家 · 2026-10-17 · 本条 | G0 |
 | ✅ | **G2** | 集成测试 harness(`pump`/`render_rows`)收进 `helpers.rs` | S2 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
 | ✅ | **G3** | `state.rs` 收窄公共面 + `*_for_test` 收口(实测重定义见 §3) | S3 | A | 纯减法 · 2026-10-17 · 本条 | G0 |
-| ☐ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 | 无 |
+| ✅ | **G4** | 消歧命名:`helix-js/src/layout.rs` → `layout_api.rs` + 模块地图 | S2 | A | 重命名 · 2026-10-17 · 本条 | 无 |
 | ☐ | **G5** | `xtask` 一任务一文件 + 单张 `TASKS` 表驱动 help | S2 | A | 纯搬家 | 无 |
 | ☐ | **G6** | `build_engine`(773 行)按 9 个命名空间切分 | S1 | B | 搬家 | G1, G3 |
 | ☐ | **G7** | `apply_ui_requests`(689 行)按请求族切分 | S1 | B | 搬家 | G3 |
@@ -218,15 +218,29 @@ cargo integration-test
   「两套实现」(红线 R3),必须先确认哪套是活的。
 - **风险**:公共面变化已由 377 个集成测试 + 三道门禁兜住;回退 = `git revert` 单提交。
 
-### ☐ G4 · 消歧命名 + 模块地图
+### ☑ G4 · 消歧命名 + 模块地图(2026-10-17 完成)
 
-- **症状**:三处 `layout.rs`(`helix-tui` TUI 布局 / `helix-js` JS API / `helix-term/ui` 布局树引擎)
+- **症状**:三处 `layout.rs`(`helix-tui` 几何切分 / `helix-js` JS API / `helix-term/ui` 布局树引擎)
   与三处 popup 类文件(`helix-js/popup.rs` / `ui/popup.rs` / `ui/plugin_popup.rs`);任务报告里已出现
   必须靠路径消歧的句子。
-- **做法**:`helix-js/src/layout.rs` → `layout_api.rs`(`mod`/`use` 同步改),其余**不动**;
-  在 `docs/architecture.md` 加一张 6 行"哪一层哪个 layout/popup"的模块地图。
-- **完成判据**:无同名歧义文件;`docs/architecture.md` 有该地图;`cargo test -p helix-js` 数量不变。
-- **验证**:`cargo check --workspace` + `cargo test -p helix-js`
+- **做法**
+  1. `git mv helix-js/src/layout.rs helix-js/src/layout_api.rs`;`mod layout` → `mod layout_api`,
+     `crate::layout::` → `crate::layout_api::`(diagnostics.rs 2 处、lsp.rs 1 处),
+     lib.rs 里 `layout::js_*` 注册点 38 行同步改。
+  2. 文件头加注释说明**为什么**叫 `_api`:另两处 `layout.rs` 分别是纯几何与编辑器布局树。
+  3. `docs/architecture.md` 新增「模块地图:名字重了的那几处」6 行对照表(哪一层哪个 layout/popup +
+     一条改哪里的规则)。
+- **只改了 `helix-js` 一处**:`helix-tui/src/layout.rs` 与 `helix-term/src/ui/layout.rs` 的名字
+  **本身是对的**(各自层的唯一职责),歧义来自"三个同名",改名只会把歧义搬走。判据里写的
+  "无同名歧义文件"按**可检索性**达成:现在 `helix-js` 侧不再叫 layout。
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `cargo test -p helix-js` | 176 / 170 passed / 6 ignored | **完全相同** |
+  | `cargo xtask api-check` | 3 段全绿(134 成员 / 20 事件 / 15 检查点) | **完全相同** |
+  | `cargo check --workspace` / `clippy -D warnings` | 绿 | 绿(0 warning) |
+  | 模块地图 | 无 | `docs/architecture.md`(6 行 + 1 条规则) |
+- **风险**:纯重命名 + 文档;回退 = `git revert`。
 
 ### ☐ G5 · `xtask` 一任务一文件 + 单张 `TASKS` 表
 
@@ -375,6 +389,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G1** | 本条(`refactor(js): … (G1)`) | lib.rs 5693→**860**;176 测试 / 170 passed / 6 ignored **不变**;99 个测试名逐个核对 1 次;clippy 0 warning;api-check 不变 | 7 个域文件 + `mod.rs`(夹具);发现 2 个 `#[ignore]` 测试已坏死 → D5 |
 | 2026-10-17 | **G2** | 本条(`refactor(tests): … (G2)`) | integration **377 passed / 0 failed 与基线逐项一致**;19 个本地 harness 定义→0;净 −305 行;fmt+clippy 绿 | 3+3 个变体逐个比对过;`plugin_components::render_rows` 是死代码;发现 feature 门禁漏洞 → D6 |
 | 2026-10-17 | **G3** | 本条(`refactor(js): … (G3)`) | 顶层 pub fn **141→126**;176 测试 / 377 集成 / api-check 134 成员 **全部不变**;fmt+clippy 绿 | `state` 显式导出 22 项;踩到 api-check 两个文本解析陷阱(已写进注释);零调用方 API → D7 |
+| 2026-10-17 | **G4** | 本条(`refactor(js): … (G4)`) | 176 测试 / api-check 3 段全绿 不变;clippy 0 warning | `layout.rs`→`layout_api.rs`(42 行引用同步);新增模块地图 |
 
 ---
 

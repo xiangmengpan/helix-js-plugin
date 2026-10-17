@@ -1,3 +1,12 @@
+//! `helix.pane.*` / `helix.layout.*` 等 JS 命名空间的 Rust 实现(JS 桥接层)。
+//!
+//! 文件名叫 `layout_api.rs` 而不是 `layout.rs`:仓库里另有两处 `layout.rs`
+//! (`helix-tui/src/layout.rs` 纯几何切分、`helix-term/src/ui/layout.rs` 编辑器布局树),
+//! 同名会让 review 与检索必须靠路径消歧。对照表见 `docs/architecture.md`「模块地图」。
+//!
+//! 注意:本文件里的 `layout_*` Rust 入口(`layout_save/load/list/delete`)当前**没有调用方**,
+//! 疑似与 `:layout` 的 JS 实现构成两套实现 —— 见 `docs/architecture-audit.md` D7。
+
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
 use crate::popup::{obj_opt_str, obj_opt_u16};
