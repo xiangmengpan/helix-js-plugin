@@ -29,7 +29,7 @@
 | ✅ | **G8a** | `server_manager` 移出 `commands/`(内容零改动) | S2 | B | 搬家 · 2026-10-17 · 本条 | 无 |
 | ✅ | **G8b** | `server_manager/mod.rs`(2,956 行)按职责拆 7 个模块 | S3 | B | 搬家 · 2026-10-17 · 本条 | G8a |
 | ✅ | **G9** | JS 插件共享层 → **已评估:收益不足,不抽**(实测只有 4 组/35 行逐字重复) | S3 | C | 评估结案 · 2026-10-17 · 本条 | 无 |
-| 🟡 | **G10** | `PluginPanel`/`PluginPopup`/`PluginTerminal` 抽 `JsSurface` | S2 | C | 真重构 · spec 见 `specs/2026-10-17-js-surface-design.md` | G6 ✅ |
+| ✅ | **G10** | `PluginPanel`/`PluginPopup` 抽 `JsSurface`(terminal 另议) | S2 | C | 真重构 · 2026-10-17 · 本条 | G6 ✅ |
 | ☐ | **G11** | 双状态所有权收尾(`state.rs` ↔ `host.rs`,含 `ACTIVE` 裸指针) | S1 | C | 真重构 | G3, G11 spec |
 | 🟡 | **G12** | `job::dispatch_blocking` 闭包派发 → `UiOp`(pane 族 24 处) | S3 | C | 真重构 · spec 见 `specs/2026-10-17-uiop-dispatch-design.md` | G7 ✅ |
 
@@ -431,21 +431,44 @@ cargo integration-test
 - **复算方式**(任何人可复核):抽每个 `plugins/*/plugin.js` 的顶层 `function` 体 → 去注释/压空白 → 哈希;
   同哈希即逐字重复。脚本见 spec 附录。
 
-### ☐ G10 · 三个 JS 组件抽 `JsSurface`
+### ✅ G10 · 抽 `JsSurface`:panel + popup(2026-10-17 完成)
 
-> **spec**:[`superpowers/specs/2026-10-17-js-surface-design.md`](superpowers/specs/2026-10-17-js-surface-design.md)
-> **spec 已出**(2026-10-17)。关键取舍:只做 panel+popup(terminal 另议);共享「状态 + 刷新 + 节点键路由」,
-> **Esc/Tab 语义留在各自 handle_event**;判据 = panel+popup 770 → **≤500 行**、两者共享 20 行窗口 **73 → 0**。
+> spec:[`superpowers/specs/2026-10-17-js-surface-design.md`](superpowers/specs/2026-10-17-js-surface-design.md)
 
-- **症状**:`ui/plugin_panel.rs`(368)↔ `ui/plugin_popup.rs`(400)有 **30 个相同 20 行块**,
-  差异仅 276 行;两边各有 234 / 218 行的 `handle_event`、同样的 focusables 提取、同样的 render 骨架;
-  `ui/plugin_terminal.rs`(1,558)是第三个变体。历史报告写过"仿 `plugin_popup.rs:21-23`"。
-- **做法**:抽 `helix-term/src/ui/js_surface.rs`:`JsSurface { id, content, focus, focusables, dirty }`
-  + 四个钩子(`refresh_content` / `extract_focusables` / `dispatch_key` / `render_rows`);
-  panel/popup 各留 ~120 行只写几何与放置差异;terminal 第三批再跟。
-- **完成判据**:panel+popup 合计 ≤ 500 行(原 768);组件间重复块 0;
-  回归网全绿:`plugin_panel`(2)/ `plugin_popup`(3)/ `window_mode`(14)/ `plugin_layout`(3)/ `plugin_input_multiline`。
-- **验证**:`cargo integration-test`(全量,别只跑子集 —— 焦点/键路由的回归会跨族出现)
+- **结果**:新增 `helix-term/src/ui/js_surface.rs`(**310 行**),把「状态 + 刷新 + Tab 焦点 +
+  节点键路由 + paste + onKey 收尾 drain + 文档快照」收成一层;两个容器只留语义。
+
+  | 文件 | 改前 | 改后 |
+  |---|---|---|
+  | `ui/plugin_panel.rs` | 369 | **168** |
+  | `ui/plugin_popup.rs` | 401 | **208** |
+  | 两者合计 | **770** | **376**(+ `js_surface.rs` 310) |
+  | 两者间 20 行共享窗口 | **73** | **0** |
+
+- **共享 vs 语义的切法(spec 的核心决定)**
+  - 收进 `JsSurface`:`id/focus/focusables/lines/diff`、`refresh`(有 `Context`)/`refresh_global`
+    (布局期 `required_size` 无 `Context`)、`tab_focus`、`node_key`(Enter/方向键/编辑键/粘贴)、
+    `drain_after_onkey`(游标/编辑/装饰/消息/UI 请求)、`command_context`、`render_lines`。
+  - 留在容器:**Esc 语义**(面板 = 取消焦点,弹窗 = 走 onKey 关闭)、关闭/自愈动作、
+    `required_size`、面板的 `focusable` 开关、弹窗的 layer 语义。
+  - 差异一律走 `SurfaceOpts { collect_focusables, reset_missing_focus, esc_releases_focus, label }`,
+    **共享层里没有 `if 是面板/是弹窗`**。
+- **过程中被测试抓住的两个真回归(值得记)**:
+  1. **面板的 Esc 分支丢了**。我从 popup 复制节点键路由时漏了 panel 独有的
+     `"Esc" => { self.focus = None }` ⇒ `plugin_panel_focus` 5 条全红。改成 `esc_releases_focus` 开关后复原。
+  2. 弹窗单测直接写 `p.lines = …`(字段),字段搬进 `JsSurface` 后编译失败(E0615),改
+     `p.surface.lines = …`。**这两处都不是"看起来对就行"的地方,是测试救回来的。**
+- **完成判据(实测)**
+  | 指标 | 基线 | 现在 |
+  |---|---|---|
+  | `cargo integration-test` | 377 passed | **377 passed / 0 failed** |
+  | `plugin_panel`(含 focus 族) | 11 passed | **11 passed** |
+  | `plugin_popup` / `plugin_paste` / `plugin_input_multiline` / `window_mode` | 4 / 2 / 1 / 16 | **全部通过** |
+  | popup 单测(`required_size` 3 条) | 3 passed | **3 passed** |
+  | 最长 `handle_event` | 234 | **48**(面板)/ **57**(弹窗) |
+  | `fmt` / clippy(两种口径) | 绿 | 绿(0 warning) |
+- **没做的**:`PluginTerminal`(1,558 行,内部还有 `TerminalCell`/`TerminalGrid`)—— 它的共享面是
+  网格/光标/PTY 回调,与这两个不同构;等有第二个终端类组件时再评估。
 
 ### ☐ G11 · 双状态所有权收尾(`state.rs` ↔ `host.rs`)
 
@@ -531,6 +554,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G8b** | 本条(`refactor(term): … (G8b)`) | 7 个模块(最大 1,339,含 1,283 行测试);377 集成测试不变;两种 clippy 0 warning | 三个坑的解法:显式再导出 / cfg(test) 单挂 / 只导出外部在用的 21 项 |
 | 2026-10-17 | **G9/G10/G12** | 本条(`docs: C 批三份 spec`) | 无代码改动;三份 spec 各含**实测数字**(G9: 4 组/35 行重复;G10: 73 个共享窗口;G12: pane 24/全仓 75)与完成判据 | 状态 🟡,等你逐条拍板后再开工 |
 | 2026-10-17 | **G9** | 本条(`docs(audit): G9 结案`) | 无代码改动;交付的是**可复算的度量**(4 组/9 份/35 行)与结案理由 | 决定不抽 JS 共享层;要共享就走 Rust 原生 API |
+| 2026-10-17 | **G10** | 本条(`refactor(ui): … (G10)`) | panel+popup **770→376**、共享窗口 **73→0**、最长 handle_event 234→57;377 集成测试不变;clippy 两种口径 0 warning | 新增 `js_surface.rs`(310);Esc 语义用开关区分，测试抓到面板 Esc 分支丢失 |
 
 ---
 

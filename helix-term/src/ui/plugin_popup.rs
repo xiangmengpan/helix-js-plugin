@@ -1,8 +1,5 @@
-use crate::commands::typed::{apply_cursor_requests, apply_plugin_decorations, apply_plugin_edits};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
-use crate::ui::comp_layout;
-use helix_js::{CommandContext, PluginKey, PopupKeyResult, StyledLine};
-use helix_view::current_ref;
+use helix_js::{PluginKey, PopupKeyResult, StyledLine};
 use helix_view::graphics::Rect;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
@@ -11,112 +8,62 @@ use tui::buffer::Buffer as Surface;
 /// JS 插件弹窗的内容组件：内容由 JS `render` 回调绘制，按键由 JS `onKey` 回调处理。
 /// 作为 `ui::Popup` 的内容使用；图层弹出/边框/滚动由外层 Popup 负责。
 pub struct PluginPopup {
-    id: u64,
-    lines: Vec<StyledLine>,
-    /// open_popup 的 width/height 尺寸上限（两者都提供时才生效）
+    /// 共享骨架:焦点/可聚焦节点/行缓存/脏格 diff(见 `ui::js_surface`)
+    surface: crate::ui::js_surface::JsSurface,
+    /// open_popup 的 width/height 尺寸上限(两者都提供时才生效)
     size_hint: Option<(u16, u16)>,
-    /// 本弹窗所在图层名（open_popup layer；None = 直构/单测，Close 时回退 pop）
+    /// 本弹窗所在图层名(open_popup layer;None = 直构/单测,Close 时回退 pop)
     layer: Option<&'static str>,
-    /// 当前焦点节点 id（Tab/Shift-Tab 在可聚焦节点间移动；None = 无节点焦点）
-    focus: Option<String>,
-    /// 可聚焦节点 id 列表（树序，渲染时刷新）
-    focusables: Vec<String>,
-    /// 脏格 diff 渲染器（只重绘变化格）
-    diff: crate::ui::comp_layout::DiffRenderer,
 }
+
+/// 弹窗的共享层差异:恒收集可聚焦节点;**不做**焦点失效重置(与面板不同,保持原行为)。
+const OPTS: crate::ui::js_surface::SurfaceOpts = crate::ui::js_surface::SurfaceOpts {
+    collect_focusables: true,
+    reset_missing_focus: false,
+    esc_releases_focus: false,
+    label: "popup",
+};
 
 impl PluginPopup {
     pub fn new(id: u64, size_hint: Option<(u16, u16)>) -> Self {
         Self {
-            id,
-            lines: Vec::new(),
+            surface: crate::ui::js_surface::JsSurface::new(id),
             size_hint,
             layer: None,
-            focus: None,
-            focusables: Vec::new(),
-            diff: Default::default(),
         }
     }
 
-    /// 记录本弹窗图层名：JS onKey 返回 "close" 时按层名移除自身
-    /// （异层并存场景顶层不一定是本弹窗，pop 会误伤）。
+    /// 记录本弹窗图层名:JS onKey 返回 "close" 时按层名移除自身
+    /// (异层并存场景顶层不一定是本弹窗,pop 会误伤)。
     pub fn with_layer(mut self, layer: &'static str) -> Self {
         self.layer = Some(layer);
         self
     }
 
-    /// 清空脏格 diff 状态（测试向不同 surface 渲染时需要重置）
+    /// 清空脏格 diff 状态(测试向不同 surface 渲染时需要重置)
     pub fn reset_render_state(&mut self) {
-        self.diff = Default::default();
+        self.surface.reset_render_state();
     }
 
-    /// 测试/调试访问器：当前布局行
+    /// 测试/调试访问器:当前布局行
     pub fn lines(&self) -> &[StyledLine] {
-        &self.lines
+        self.surface.lines()
     }
 
-    /// 调 JS render 并布局成行：Lines 原样；Tree 走 comp_layout（viewport 约束）。
-    ///
-    /// D-3(第二类:沿调用链透传):`js` 为 `Some` 时走泵入口(独占借用),`None` 时走
-    /// legacy 隐式解析 —— 两个调用者分别对应这两种情况:
-    /// * `render(.., cx)` 有宿主 ⇒ 透传;
-    /// * `required_size(..)` 是 `Component` 的**无 ctx 钩子**(布局期被调用)⇒ 只能 `None`。
+    /// 无 `Context` 的预布局路径(`Component::required_size` 在布局期被调用)。
     fn refresh(&mut self, viewport: (u16, u16)) {
-        self.refresh_with(None, viewport)
-    }
-
-    fn refresh_with(&mut self, js: Option<&mut helix_js::host::JsHost>, viewport: (u16, u16)) {
-        let rendered = match js {
-            Some(host) => host.render_popup(self.id, viewport.0, viewport.1, self.focus.as_deref()),
-            None => helix_js::render_popup(self.id, viewport.0, viewport.1, self.focus.as_deref()),
-        };
-        match rendered {
-            Ok(content) => {
-                // 收集可聚焦节点（Button/Input 的 id，树序）
-                self.focusables.clear();
-                if let helix_js::Content::Tree(node) = &content {
-                    helix_js::focusable_node_ids(node, &mut self.focusables);
-                }
-                self.lines = comp_layout::render(content, viewport);
-            }
-            Err(err) => {
-                self.lines = vec![StyledLine::plain(format!("<plugin popup error: {err}>"))]
-            }
-        }
+        self.surface.refresh_global(viewport, OPTS);
     }
 }
 
 impl Component for PluginPopup {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        // 粘贴：焦点在 input → 批量插入整段 + 一次 onChange；否则忽略（冒泡给编辑器正文粘贴）
+        // 粘贴:焦点在 input → 批量插入整段 + 一次 onChange;否则忽略(冒泡给编辑器正文粘贴)
         if let Event::Paste(contents) = event {
-            if let Some(fid) = self.focus.as_ref() {
-                if helix_js::input_has_state(self.id, fid) {
-                    // 注意：input 状态已变更后才调 onChange——失败绝不能冒泡(否则编辑器正文再插一份)
-                    match cx.js_dispatch_input_paste(self.id, fid, contents) {
-                        Ok(()) => {
-                            // drain：消息 + UI 请求（仿节点事件）
-                            let msgs = helix_js::take_messages();
-                            if !msgs.is_empty() {
-                                cx.editor.set_status(msgs.join(" "));
-                            }
-                            if let Err(err) = crate::commands::typed::apply_ui_requests(
-                                cx.js.as_deref_mut(),
-                                helix_js::take_ui_requests(),
-                            ) {
-                                cx.editor.set_error(err.to_string());
-                            }
-                            return EventResult::Consumed(None);
-                        }
-                        Err(e) => {
-                            cx.editor
-                                .set_error(format!("plugin input paste failed: {e}"));
-                            return EventResult::Consumed(None);
-                        }
-                    }
-                }
-            }
-            return EventResult::Ignored(None);
+            return self
+                .surface
+                .paste(contents, cx, OPTS)
+                .unwrap_or(EventResult::Ignored(None));
         }
         let Event::Key(key_event) = event else {
             return EventResult::Ignored(None);
@@ -124,170 +71,31 @@ impl Component for PluginPopup {
         let Some(key) = key_to_plugin_key(key_event) else {
             return EventResult::Ignored(None);
         };
-        // 节点焦点路由（方案乙）：Tab 移动焦点；焦点在 button/input 时按键直接路由，
-        // 不经过弹窗级 onKey。
-        if !self.focusables.is_empty() {
-            if key.name == "Tab" {
-                let idx = self
-                    .focusables
-                    .iter()
-                    .position(|f| Some(f) == self.focus.as_ref());
-                let next = idx.map(|i| (i + 1) % self.focusables.len()).unwrap_or(0);
-                self.focus = Some(self.focusables[next].clone());
-                return EventResult::Consumed(None);
-            }
-            if let Some(fid) = self.focus.as_ref() {
-                let drain_msgs = |cx: &mut Context| {
-                    let msgs = helix_js::take_messages();
-                    if !msgs.is_empty() {
-                        cx.editor.set_status(msgs.join(" "));
-                    }
-                    // 节点事件（button onPress 等）里发起的 UI 请求同样即时应用
-                    if let Err(err) = crate::commands::typed::apply_ui_requests(
-                        cx.js.as_deref_mut(),
-                        helix_js::take_ui_requests(),
-                    ) {
-                        cx.editor.set_error(err.to_string());
-                    }
-                };
-                match key.name.as_str() {
-                    // Enter：multiline input → 插入换行（dispatch_input_key 消费,不触发 onKey/提交）；
-                    // 否则 input → onKey("Enter")；button → onPress
-                    "Enter" => {
-                        if helix_js::input_has_state(self.id, fid)
-                            && helix_js::input_is_multiline(self.id, fid)
-                            && cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok()
-                        {
-                            drain_msgs(cx);
-                            return EventResult::Consumed(None);
-                        }
-                        let event = if helix_js::input_has_state(self.id, fid) {
-                            Some(key.name.as_str())
-                        } else {
-                            None
-                        };
-                        if cx.js_dispatch_node_event(self.id, fid, event).is_ok() {
-                            drain_msgs(cx);
-                            return EventResult::Consumed(None);
-                        }
-                    }
-                    // 水平方向键/Home/End：input 光标移动（input_edit 对这些键返回 None，不触发 onChange）
-                    "Left" | "Right" | "Home" | "End" => {
-                        if helix_js::input_has_state(self.id, fid)
-                            && cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok()
-                        {
-                            drain_msgs(cx);
-                            return EventResult::Consumed(None);
-                        }
-                    }
-                    // Up/Down：multiline input → 光标行间移动（dispatch_input_key）；否则候选导航（走 onKey）
-                    "Up" | "Down" => {
-                        if helix_js::input_has_state(self.id, fid)
-                            && helix_js::input_is_multiline(self.id, fid)
-                        {
-                            if cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok() {
-                                drain_msgs(cx);
-                                return EventResult::Consumed(None);
-                            }
-                        } else if helix_js::input_has_state(self.id, fid)
-                            && cx
-                                .js_dispatch_node_event(self.id, fid, Some(&key.name))
-                                .is_ok()
-                        {
-                            drain_msgs(cx);
-                            return EventResult::Consumed(None);
-                        }
-                    }
-                    // 编辑键：input → dispatch_input_key（改值 + onChange）；否则（button）→ onKey
-                    key_name
-                        if key_name.chars().count() == 1
-                            || key_name == "Backspace"
-                            || key_name == "Delete" =>
-                    {
-                        if helix_js::input_has_state(self.id, fid) {
-                            if cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok() {
-                                drain_msgs(cx);
-                                return EventResult::Consumed(None);
-                            }
-                        } else if cx
-                            .js_dispatch_node_event(self.id, fid, Some(&key.name))
-                            .is_ok()
-                        {
-                            drain_msgs(cx);
-                            return EventResult::Consumed(None);
-                        }
-                    }
-                    _ => {}
-                }
+        // 节点焦点路由:Tab 移动焦点;焦点在 button/input 时按键直接路由,不经过弹窗级 onKey。
+        if key.name == "Tab" && self.surface.tab_focus() {
+            return EventResult::Consumed(None);
+        }
+        if !self.surface.focusables.is_empty() {
+            if let Some(result) = self.surface.node_key(&key, cx, OPTS) {
+                return result;
             }
         }
-        // 构建当前文档快照（弹窗是模态层，打开期间文档不变；每次按键重新序列化）
-        let ctx = {
-            let (view, doc) = current_ref!(cx.editor);
-            let text = doc.text();
-            let primary = doc.selection(view.id).primary();
-            let pos = primary.cursor(text.slice(..));
-            let line = text.char_to_line(pos);
-            let col = pos - text.line_to_char(line);
-            let anchor_line = text.char_to_line(primary.anchor);
-            let head_line = text.char_to_line(primary.head);
-            CommandContext {
-                path: doc.path().map(|p| p.to_string_lossy().into_owned()),
-                text: text.to_string(),
-                cursor: (line, col),
-                selection: (
-                    (anchor_line, primary.anchor - text.line_to_char(anchor_line)),
-                    (head_line, primary.head - text.line_to_char(head_line)),
-                ),
-                docs: vec![],
-            }
-        };
-        let result = cx.js_popup_key(self.id, &key, &ctx);
-        // 应用编辑/光标/消息（在 popup_key 之后：onKey 入队的编辑在本次按键内同步应用）
-        let cursor_reqs = helix_js::take_cursor_requests();
-        if !cursor_reqs.is_empty() {
-            if let Err(err) = apply_cursor_requests(cx.editor, &cursor_reqs) {
-                cx.editor
-                    .set_error(format!("plugin popup cursor failed: {err}"));
-            }
-        }
-        let edits = helix_js::take_edits();
-        if !edits.is_empty() {
-            if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
-                cx.editor
-                    .set_error(format!("plugin popup edit failed: {err}"));
-            }
-        }
-        let decorations = helix_js::take_decorations();
-        if !decorations.is_empty() {
-            if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
-                cx.editor
-                    .set_error(format!("plugin popup decorations failed: {err}"));
-            }
-        }
-        let msgs = helix_js::take_messages();
-        if !msgs.is_empty() {
-            cx.editor.set_status(msgs.join(" "));
-        }
-        // 面板/弹窗 onKey 里发起的 UI 请求（open_file / move_panel / set_terminal_mode 等）
-        // 即时应用——否则请求搁置到下一个 :命令才被 drain
-        if let Err(err) = crate::commands::typed::apply_ui_requests(
-            cx.js.as_deref_mut(),
-            helix_js::take_ui_requests(),
-        ) {
-            cx.editor.set_error(err.to_string());
-        }
+        // 构建当前文档快照(弹窗是模态层,打开期间文档不变;每次按键重新序列化)
+        let ctx = crate::ui::js_surface::JsSurface::command_context(cx);
+        let result = cx.js_popup_key(self.surface.id, &key, &ctx);
+        // 应用编辑/光标/消息(在 popup_key 之后:onKey 入队的编辑在本次按键内同步应用)
+        crate::ui::js_surface::JsSurface::drain_after_onkey(cx, OPTS);
         match result {
             Ok(PopupKeyResult::Close) => {
-                let id = self.id;
+                let id = self.surface.id;
                 let layer = self.layer;
-                // 先通知 JS（触发 onClose，echo 消息入队），再弹掉图层，最后把
-                // echo 消息刷成状态栏（与命令路径取消息的约定一致）。
+                // 先通知 JS(触发 onClose,echo 消息入队),再弹掉图层,最后把
+                // echo 消息刷成状态栏(与命令路径取消息的约定一致)。
                 EventResult::Consumed(Some(Box::new(
                     move |compositor: &mut Compositor, cx: &mut Context| {
                         let _ = helix_js::close_popup(id);
-                        // 按 layer 名移除自身：同层替换/异层并存下顶层不一定是本弹窗；
-                        // 直构（单测）无层名时回退 pop。
+                        // 按 layer 名移除自身:同层替换/异层并存下顶层不一定是本弹窗;
+                        // 直构(单测)无层名时回退 pop。
                         if let Some(layer) = layer {
                             compositor.remove(layer);
                         } else {
@@ -301,25 +109,25 @@ impl Component for PluginPopup {
                 )))
             }
             Ok(PopupKeyResult::Handled) => EventResult::Consumed(None),
-            // 穿透给编辑器；Err 仅发生在 JS 侧异常时，同样放行
+            // 穿透给编辑器;Err 仅发生在 JS 侧异常时,同样放行
             Ok(PopupKeyResult::Ignored) | Err(_) => EventResult::Ignored(None),
         }
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        self.refresh_with(cx.js.as_deref_mut(), (area.width, area.height));
-        // 脏格 diff 渲染：只重绘变化格（方案乙③）
-        self.diff
-            .render(&self.lines, area, surface, &cx.editor.theme);
+        self.surface.refresh(cx, (area.width, area.height), OPTS);
+        // 脏格 diff 渲染:只重绘变化格
+        self.surface.render_lines(area, surface, &cx.editor.theme);
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
-        // 首帧 lines 为空时预布局（树内容需真实 viewport 才能算出尺寸；
-        // 否则 Popup 先按 required_size 得到 0×0，树布局永远被裁成空）
-        if self.lines.is_empty() {
+        // 首帧 lines 为空时预布局(树内容需真实 viewport 才能算出尺寸;
+        // 否则 Popup 先按 required_size 得到 0×0,树布局永远被裁成空)
+        if self.surface.lines.is_empty() {
             self.refresh(viewport);
         }
         let width = self
+            .surface
             .lines
             .iter()
             .map(|l| {
@@ -331,7 +139,7 @@ impl Component for PluginPopup {
             .max()
             .unwrap_or(0)
             .min(viewport.0);
-        let height = self.lines.len() as u16;
+        let height = self.surface.lines.len() as u16;
         let (width, height) = match self.size_hint {
             Some((w, h)) => (width.min(w), height.min(h)),
             None => (width, height),
@@ -380,21 +188,21 @@ mod tests {
     #[test]
     fn required_size_clamps_to_size_hint() {
         let mut p = PluginPopup::new(1, Some((10, 4)));
-        p.lines = vec![StyledLine::plain("W".repeat(20)); 10];
+        p.surface.lines = vec![StyledLine::plain("W".repeat(20)); 10];
         assert_eq!(p.required_size((120, 30)), Some((10, 4)));
     }
 
     #[test]
     fn required_size_without_hint_uses_content() {
         let mut p = PluginPopup::new(1, None);
-        p.lines = vec![StyledLine::plain("abc"), StyledLine::plain("a")];
+        p.surface.lines = vec![StyledLine::plain("abc"), StyledLine::plain("a")];
         assert_eq!(p.required_size((120, 30)), Some((3, 2)));
     }
 
     #[test]
     fn required_size_never_exceeds_viewport_width() {
         let mut p = PluginPopup::new(1, None);
-        p.lines = vec![StyledLine::plain("x".repeat(200))];
+        p.surface.lines = vec![StyledLine::plain("x".repeat(200))];
         assert_eq!(p.required_size((50, 30)), Some((50, 1)));
     }
 }

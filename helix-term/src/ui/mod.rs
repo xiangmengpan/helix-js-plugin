@@ -5,6 +5,7 @@ mod document;
 pub(crate) mod editor;
 mod info;
 pub mod js_picker;
+pub mod js_surface;
 pub mod layout;
 pub mod lsp;
 mod markdown;
