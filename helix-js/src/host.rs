@@ -370,8 +370,12 @@ impl JsHost {
     }
 
     /// 泵入口·`startup`;`ctx` 是**启动后的当前 buffer**(处理器据此判断"有没有打开文件")
-    pub fn emit_startup(&mut self, ctx: &crate::types::CommandContext) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_startup(ctx))
+    pub fn emit_startup(
+        &mut self,
+        ctx: &crate::types::CommandContext,
+        open_paths: usize,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_startup(ctx, open_paths))
     }
 
     /// 泵入口·`layout-change`;`kind` 是变更种类(`None` = 不携带)。

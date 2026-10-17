@@ -865,6 +865,14 @@ pub struct EvChange {
 pub struct StartupPayload {
     #[serde(flatten)]
     pub hdr: BusHeader,
+    /// **启动时命令行传入的"要打开的东西"数量**(文件 / 目录 / `--tutor` / 管道 stdin)。
+    ///
+    /// 为什么需要:此时"当前 buffer"可能**没有路径**却是"用户已经指定了路径"——
+    /// `hx <目录>` 会先弹文件选择器、再建一个无名空 buffer;`hx --tutor` 的 tutor buffer
+    /// 被刻意 `set_path(None)`;`cat x | hx` 的 buffer 也没有路径。
+    /// 只靠 `doc.path` 判断"启动时有没有打开文件"会把这三类都判错
+    /// (内建 dashboard 因此在 `hx <目录>` 时弹在文件选择器上面 —— 实测 bug)。
+    pub open_paths: usize,
 }
 
 /// `layout-change` —— 布局变动;`kind` 是种类名,缺种类时是 **null**(不是"没有这个字段")

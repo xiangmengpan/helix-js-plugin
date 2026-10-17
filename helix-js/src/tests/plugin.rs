@@ -347,7 +347,7 @@ fn dashboard_skips_startup_when_a_file_was_opened() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    emit_startup(&opened).unwrap();
+    emit_startup(&opened, 0).unwrap();
     let reqs = take_ui_requests();
     assert!(
         !has_popup(&reqs),
@@ -362,11 +362,21 @@ fn dashboard_skips_startup_when_a_file_was_opened() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    emit_startup(&blank).unwrap();
+    emit_startup(&blank, 0).unwrap();
     let reqs = take_ui_requests();
     assert!(
         has_popup(&reqs),
         "无文件启动时 dashboard 应该弹(否则这个插件等于失效);reqs={reqs:?}"
+    );
+
+    // ③ 当前 buffer **无路径**,但命令行指定了东西(`hx <目录>` → 选择器浮层 /
+    //    `--tutor` / 管道 stdin)⇒ 不弹。这是第二个实测 bug:只判 doc.path 会让
+    //    dashboard 弹在文件选择器上面。
+    emit_startup(&blank, 1).unwrap();
+    let reqs = take_ui_requests();
+    assert!(
+        !has_popup(&reqs),
+        "命令行指定了目录/tutor/stdin(open_paths>0)时 dashboard 不该弹;reqs={reqs:?}"
     );
 }
 

@@ -300,7 +300,17 @@ interface EventHeader {
   /** 事件名(= `helix.on` 的第一参) */
   type: EventName;
 }
-interface EventStartup extends EventHeader {}
+interface EventStartup extends EventHeader {
+  /**
+   * 启动时命令行让打开的东西数量:**文件/目录参数 + `--tutor` + 管道 stdin(非 tty)**。
+   *
+   * 为什么它不是"当前 buffer 有没有 path":`hx <目录>` 会先弹文件选择器再建无名 buffer、
+   * `--tutor` 的 buffer 被 `set_path(None)`、管道 stdin 也没有路径 —— 这三种都是
+   * "用户已经指定了要打开什么",只看 `doc.path` 会把它们判成空启动。
+   * `0` 才是真正的"空启动"(该弹启动屏)。
+   */
+  open_paths: number;
+}
 /** `kind` 缺种类时是 **null**(不是 undefined) */
 interface EventLayoutChange extends EventHeader {
   kind: string | null;

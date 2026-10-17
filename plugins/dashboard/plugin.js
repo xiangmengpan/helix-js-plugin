@@ -236,14 +236,19 @@ helix.register_command("dashboard-diag", () => {
 // ── 启动自动显示 ──────────────────────────────────────────────────────────
 // 只在"**启动时没打开任何文件**"的情况下显示 —— 这是本插件唯一该自动弹出的场景。
 //
-// ⚠️ 曾经的 bug(实测):这里无条件 `open_dashboard()`,于是 `hx some/file` 也会弹,
-//    和文件选择器/编辑区叠在一起。根因是**看不到事实**:那时 `startup` 的 payload 是
-//    写死的空 ctx(`path=null, text=""`)⇒ 处理器无从判断。现在 payload 带真实当前 buffer,
-//    判据是 `doc.path`(为空 = 无名 buffer = 启动时确实没打开文件)。
-helix.on("startup", (doc) => {
+// ⚠️ 两次实测 bug,都把这条判据往前推了一步:
+//   1. 最初无条件 `open_dashboard()` ⇒ `hx some/file` 也弹,和编辑区叠在一起。
+//      根因是"看不到事实"(payload 那时是写死的空 ctx)⇒ 改为看 `doc.path`。
+//   2. **`doc.path` 不够**:`hx <目录>` 会先弹文件选择器、再建一个**无名** buffer;
+//      `hx --tutor` 的 buffer 被刻意 `set_path(None)`;`cat x | hx` 也没有路径。
+//      这三种都是"用户已经指定了要打开什么",却长得和空启动一模一样。
+//      ⇒ 改用 `payload.open_paths`(命令行让打开的东西数量,0 = 真的空启动)。
+helix.on("startup", (doc, ev) => {
   const cfg = guard(() => helix.get_config("dashboard"), {}) || {};
   if (cfg.enabled === false) return;
   // 有路径 ⇒ 启动时打开了文件(即使文件是空的)⇒ **不弹**
   if (doc && doc.path) return;
+  // 命令行指定了东西(目录 → 选择器 / --tutor / 管道 stdin)⇒ 也不弹
+  if (ev && ev.open_paths > 0) return;
   open_dashboard();
 });

@@ -1011,7 +1011,7 @@ pub fn has_handlers(name: &str) -> bool {
 /// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。
 /// extra 用于 mode-change 的 mode 字符串参数。
 pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Result<()> {
-    emit_event_impl(name, ctx, extra, None)
+    emit_event_impl(name, ctx, extra, None, 0)
 }
 
 /// `layout-change` 事件入口(**无需命令上下文**)。
@@ -1029,8 +1029,8 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
 /// "path=None / text=""" ⇒ 处理器**无法**判断"启动时到底有没有打开文件",
 /// 而内建 dashboard 正是靠这个判断"要不要显示启动屏"的(实测 bug:带路径打开文件时
 /// dashboard 照样弹出,和文件选择器叠在一起)。
-pub fn emit_startup(ctx: &CommandContext) -> Result<()> {
-    match emit_event_impl("startup", ctx, None, None) {
+pub fn emit_startup(ctx: &CommandContext, open_paths: usize) -> Result<()> {
+    match emit_event_impl("startup", ctx, None, None, open_paths) {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）
@@ -1057,7 +1057,7 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
         selection: ((0, 0), (0, 0)),
         docs: Vec::new(),
     };
-    match emit_event_impl("layout-change", &ctx, kind, None) {
+    match emit_event_impl("layout-change", &ctx, kind, None, 0) {
         Ok(()) => Ok(()),
         Err(e) => {
             // **让失败可见**：只 log::warn 会静默（我曾因此误判多轮 ✗）
@@ -1069,7 +1069,7 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
 
 /// doc-change 事件入口：参数附带防抖窗口内合并的变更范围（doc.changes）。
 pub fn emit_doc_change(ctx: &CommandContext, changes: &[DocChange]) -> Result<()> {
-    emit_event_impl("doc-change", ctx, None, Some(changes))
+    emit_event_impl("doc-change", ctx, None, Some(changes), 0)
 }
 
 /// 事件触发公共实现；changes 为 Some 时序列化合并范围到 doc.changes。
@@ -1078,6 +1078,8 @@ fn emit_event_impl(
     ctx: &CommandContext,
     extra: Option<&str>,
     changes: Option<&[DocChange]>,
+    // 只有 `startup` 用:命令行传入的"要打开的东西"数量(见 `StartupPayload::open_paths`)
+    startup_open_paths: usize,
 ) -> Result<()> {
     crate::init();
     crate::state::with_edits(|c| c.clear());
@@ -1129,8 +1131,11 @@ fn emit_event_impl(
         // 位置参数保持原样(既有订阅者零迁移);payload 是往前兼容的那一面 ——
         // 它回答"这是哪个事件、协议第几版、字段叫什么",而位置参数回答不了。
         let ev_changes = changes.map(|c| changes_to_ev(c, ctx)).unwrap_or_default();
-        let payload = payload_js(engine, &build_event_payload(name, ctx, extra, &ev_changes))
-            .map_err(|e| anyhow!("failed to build event payload: {e}"))?;
+        let payload = payload_js(
+            engine,
+            &build_event_payload(name, ctx, extra, &ev_changes, startup_open_paths),
+        )
+        .map_err(|e| anyhow!("failed to build event payload: {e}"))?;
         let undefined = JsValue::undefined();
         for (idx, handler) in handlers.iter().enumerate() {
             // C-2 归属:事件处理器的属主(注册期按下标绑定)
@@ -1267,13 +1272,17 @@ fn build_event_payload(
     ctx: &CommandContext,
     extra: Option<&str>,
     changes: &[EvChange],
+    startup_open_paths: usize,
 ) -> EventPayload {
     let hdr = BusHeader::new(name);
     let cursor = ctx.cursor.into();
     let selection = ctx.selection.into();
     let path = || ctx.path.clone();
     match name {
-        "startup" => EventPayload::Startup(StartupPayload { hdr }),
+        "startup" => EventPayload::Startup(StartupPayload {
+            hdr,
+            open_paths: startup_open_paths,
+        }),
         "layout-change" => EventPayload::LayoutChange(LayoutChangePayload {
             hdr,
             kind: extra.map(|k| k.to_string()),

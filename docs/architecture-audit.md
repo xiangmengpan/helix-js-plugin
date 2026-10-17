@@ -759,6 +759,28 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "t
 
 ---
 
+## 11. 后续缺陷修复(收尾之后)
+
+### 11.1 dashboard 在 `hx <目录>` / `--tutor` / 管道启动时仍弹出
+
+- **症状**:`hx <path>`(尤其是**目录**:helix 会先弹文件选择器)启动时,dashboard 启动屏
+  仍然盖在选择器/content 上面。文件参数(有 path)反而是好的。
+- **根因**:插件判据是 `doc.path`(当前 buffer 有没有路径)。但下列三种情况**当前 buffer 没有路径,
+  用户却已经指定了要打开什么**:`hx <目录>`(先弹选择器,再建无名滚动 buffer)、
+  `hx --tutor`(buffer 刻意 `set_path(None)`)、`cat x | hx`(管道内容无路径)。
+  这是 dashboard 第二次踩「**看不到事实**」:第一次是 payload 为空 ctx,这次是事实本身缺失。
+- **修法(加法,不动既有字段)**:`startup` 的 payload 增加 `open_paths`
+  (= 文件/目录参数 + `--tutor` + 非 tty stdin;`0` 才是真正的空启动)。
+  - Rust:`StartupPayload { hdr, open_paths }`;`Application::new` 在 `args` 被消费前取三个事实,
+    纯函数 `startup_open_paths()` 求和(带单测,5 种启动方式逐条断言);
+  - `plugins/dashboard/plugin.js`:`if (doc?.path) return; if (ev?.open_paths > 0) return;`
+  - `plugins/helix.d.ts`(`EventStartup.open_paths`)+ `docs/api/events.md`(5 行对照表)。
+- **验证**:helix-js 的 dashboard 测试新增第 ③ 例(无路径 + `open_paths=1` ⇒ 不弹);
+  payload 形状测试断言 3 个键;`--workspace --lib` 718 passed / 0 failed;377 集成测试不变;
+  api-check 三段不变(134 / 20 / 15 —— `open_paths` 是 payload 字段,不是新成员)。
+
+---
+
 ## 附:体检要点(为什么是这 12 项)
 
 | 类别 | 症状 | 证据强度 |

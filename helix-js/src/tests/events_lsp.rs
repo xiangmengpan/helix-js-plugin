@@ -133,14 +133,16 @@ fn event_payload_json_is_flat_and_named() {
     assert!(v.get("hdr").is_none(), "公共头必须摊平,不能嵌套");
     assert_eq!(v["changes"][0]["oldRange"]["start"]["row"], 0);
     assert_eq!(v["changes"][0]["newRange"]["end"]["col"], 2);
-    // 单事件:startup 只有公共头
+    // 单事件:startup = 公共头 + open_paths(命令行让打开的东西数量)
     let startup = EventPayload::Startup(StartupPayload {
         hdr: BusHeader::new("startup"),
+        open_paths: 2,
     });
     let sv = startup.to_json();
     assert_eq!(sv["type"], "startup");
     assert_eq!(sv["api_version"], API_VERSION);
-    assert_eq!(sv.as_object().unwrap().len(), 2);
+    assert_eq!(sv["open_paths"], 2);
+    assert_eq!(sv.as_object().unwrap().len(), 3);
 }
 
 #[test]

@@ -117,6 +117,49 @@ fn setup_integration_logging() {
     crate::logging::init_stdout(level);
 }
 
+#[cfg(test)]
+mod startup_open_paths_tests {
+    use super::{startup_open_paths, CliStartupFacts};
+
+    fn f(files: usize, load_tutor: bool, stdin_is_tty: bool) -> CliStartupFacts {
+        CliStartupFacts {
+            files,
+            load_tutor,
+            stdin_is_tty,
+        }
+    }
+
+    /// 只有「真的空启动」是 0 —— 其它都算「用户已指定要打开什么」。
+    #[test]
+    fn counts_every_way_of_asking_for_something() {
+        assert_eq!(startup_open_paths(&f(0, false, true)), 0, "`hx`");
+        assert_eq!(
+            startup_open_paths(&f(1, false, true)),
+            1,
+            "`hx file` / `hx <目录>`"
+        );
+        assert_eq!(startup_open_paths(&f(3, false, true)), 3, "`hx a b c`");
+        assert_eq!(startup_open_paths(&f(0, true, true)), 1, "`hx --tutor`");
+        assert_eq!(startup_open_paths(&f(0, false, false)), 1, "`cat x | hx`");
+    }
+}
+
+/// 启动时命令行"要打开的东西"(只保留判定所需的三个事实)。
+struct CliStartupFacts {
+    files: usize,
+    load_tutor: bool,
+    stdin_is_tty: bool,
+}
+
+/// `startup` payload 里的 `open_paths`:**命令行让打开了几样东西**。
+///
+/// 三种来源相加:文件/目录参数、`--tutor`、非 tty stdin(管道内容)。
+/// 这个数字是「用户已经指定了要打开什么」的**事实**,而不是"当前 buffer 有没有路径"
+/// —— 后者在 `hx <目录>` / `--tutor` / 管道三种情况下都会漏判。
+fn startup_open_paths(f: &CliStartupFacts) -> usize {
+    f.files + usize::from(f.load_tutor) + usize::from(!f.stdin_is_tty)
+}
+
 impl Application {
     pub fn new(
         args: Args,
@@ -126,6 +169,16 @@ impl Application {
     ) -> Result<Self, Error> {
         #[cfg(feature = "integration")]
         setup_integration_logging();
+
+        // `startup` 事件要告诉插件「命令行让打开了几样东西」—— 必须在 `args` 被消费前取。
+        // 为什么不能只看当前 buffer 的 path:`hx <目录>` 先弹选择器再建无名 buffer、
+        // `--tutor` 的 buffer 被刻意 set_path(None)、管道 stdin 也没有路径 —— 这三类
+        // 都会让内建 dashboard 误判成"空启动"而弹在选择器/content 上面(实测 bug)。
+        let cli_facts = CliStartupFacts {
+            files: args.files.len(),
+            load_tutor: args.load_tutor,
+            stdin_is_tty: stdin().is_terminal(),
+        };
 
         use helix_view::editor::Action;
 
@@ -359,7 +412,8 @@ impl Application {
         // 没有订阅者就不构造(ctx 会克隆所有 buffer 全文,别给没人听的事件付这个钱)。
         if helix_js::has_handlers("startup") {
             let ctx = crate::commands::typed::command_context(&mut editor);
-            if let Err(e) = js_host.emit_startup(&ctx) {
+            let open_paths = startup_open_paths(&cli_facts);
+            if let Err(e) = js_host.emit_startup(&ctx, open_paths) {
                 log::warn!("startup event failed: {e}");
             }
         }

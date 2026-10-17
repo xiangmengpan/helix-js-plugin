@@ -18,6 +18,29 @@
 | `component-event` | 组件鼠标事件 | `(id, {kind, x, y})`(返回 true 消费) |
 | `term-open/term-mode-change/term-exit/term-close/term-resize/term-title/term-key` | 终端系 | `(ptyId, ...)`(term-key 返回 normal/pass/consume/minimize/close) |
 | `layout-change` | 布局变更后(分屏/关闭/浮窗/堆叠/raise/pin/embed;唯一汇聚点是 `Compositor::sync_layout_cache`) | `(kind, doc)`,`kind` 缺省时为 **`null`**(形状**恒定**,见文末) |
+| `startup` | 初始文件处理之后(启动完成) | `(doc, payload)`,见下方「startup 的 payload」 |
+
+### `startup` 的 payload
+
+```js
+helix.on("startup", (doc, ev) => {
+  // ev.open_paths = 命令行让打开的东西数量(文件/目录参数 + --tutor + 管道 stdin)
+  if (doc.path) return;        // 打开了文件
+  if (ev.open_paths > 0) return;  // 指向目录(会弹选择器)/ --tutor / 管道内容
+  open_welcome_screen();       // 只有这里才是真正的"空启动"
+});
+```
+
+**为什么不用 `doc.path` 一处判断**(两次实测 bug 的结论):下面三种情况当前 buffer **没有路径**,
+但用户**已经指定了要打开什么** —— 只看 `doc.path` 会误判成空启动:
+
+| 启动方式 | 当前 buffer | `open_paths` |
+|---|---|---|
+| `hx`(无参) | 无名空 buffer | **0** |
+| `hx note.txt` | 有路径 | 1 |
+| `hx <目录>` | 无名空 buffer + **文件选择器浮层** | 1 |
+| `hx --tutor` | tutor 内容(刻意 `set_path(None)`) | 1 |
+| `cat x \| hx` | 管道内容(无路径) | 1 |
 
 `doc-change` 的 `doc` 额外带 `changes`(防抖窗口内变更的**合并范围**,无变更时 `[]`)：
 
