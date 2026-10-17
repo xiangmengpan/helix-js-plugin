@@ -83,6 +83,12 @@ jobs:
       - name: Run cargo fmt
         run: cargo fmt --all --check
 
+      # 库里还有一批只跑在 `--lib` 的用例(server_manager / commands / view 等):
+      # 只跑集成测试会漏掉它们。2026-10-17 前 `cargo test -p helix-term --lib` 一直是红的
+      # (D8:进程级扩展配方缓存 + SM_* 环境变量并发互踩),修好后纳入门禁。
+      - name: Run library unit tests
+        run: cargo test --workspace --lib
+
       - name: Run cargo clippy
         # 带 --features integration:集成测试目标(`#[cfg(feature = "integration")]`)也过一遍 lint。
         # 不带它时,`plugin_roots_for` 这类"只在某 cfg 分支被调用"的项会漏检(D6 实证)。

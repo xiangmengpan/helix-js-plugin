@@ -216,10 +216,45 @@ fn parse_builtin_recipes(text: &str) -> Result<Vec<Spec>> {
     Ok(out.into_iter().map(|(_, _, s)| s).collect())
 }
 
-static EXT: OnceLock<Mutex<Vec<Spec>>> = OnceLock::new();
+/// 扩展配方的存放点。
+///
+/// **生产**:进程级 `OnceLock<Mutex<Vec<Spec>>>` —— worker 线程(server_tasks)与主线程
+/// 都要看到同一份配置。
+///
+/// **测试**:thread-local —— 这是 2026-10-17(D8)的实测结论。cargo 默认并行,
+/// `EXT` 是进程级可写缓存,任何一条用例(或它派生的 worker 线程)调用
+/// `apply_server_config` 都会把并发用例的配方换掉,于是出现
+/// `install("asset-ra")` 间歇报 "unknown server"、`builtin_recipes` 间歇看到
+/// "可安装的 pyright"。这类"测试之间的共享可变状态"没法靠加锁彻底解决
+/// (worker 线程不归测试管),所以测试期把它降级成线程私有;生产的跨线程语义不变。
+#[cfg(not(test))]
+static EXT: std::sync::OnceLock<std::sync::Mutex<Vec<Spec>>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static EXT_TLS: std::cell::RefCell<Vec<Spec>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// 重读 config 扩展配方(每次 server 操作前从 [server-manager.registry] 解析后调用)
 pub fn set_ext(specs: Vec<Spec>) {
-    *EXT.get_or_init(Default::default).lock().unwrap() = specs;
+    #[cfg(not(test))]
+    {
+        *EXT.get_or_init(Default::default).lock().unwrap() = specs;
+    }
+    #[cfg(test)]
+    EXT_TLS.with(|c| *c.borrow_mut() = specs);
+}
+
+/// 当前扩展配方快照(测试期读 thread-local)。
+fn ext_specs() -> Option<Vec<Spec>> {
+    #[cfg(not(test))]
+    {
+        EXT.get().map(|m| m.lock().unwrap().clone())
+    }
+    #[cfg(test)]
+    {
+        Some(EXT_TLS.with(|c| c.borrow().clone()))
+    }
 }
 
 /// 全部配方:内置 + config/配方文件扩展(快照;同名后者覆盖内置,不重复)。
@@ -227,8 +262,7 @@ pub fn set_ext(specs: Vec<Spec>) {
 /// 顺序:内置保持文件 order;扩展按名(apply_server_config 的 BTreeMap)追加。
 pub fn all() -> Vec<Spec> {
     let mut v = builtin_specs();
-    if let Some(m) = EXT.get() {
-        let ext = m.lock().unwrap().clone();
+    if let Some(ext) = ext_specs() {
         let names: std::collections::HashSet<&str> = ext.iter().map(|s| s.name.as_str()).collect();
         v.retain(|s| !names.contains(s.name.as_str()));
         v.extend(ext);

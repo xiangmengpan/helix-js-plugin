@@ -7,7 +7,6 @@
 //! - languages.toml 标记段自动写(T3)
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 
 pub(crate) mod archive;
 pub(crate) mod download;
@@ -70,6 +69,7 @@ mod tests {
     /// 用 `file://` 假源(现成的 `make_tar_gz`)避免依赖网络。
     #[test]
     fn archive_assets_install_end_to_end() {
+        let _m = sm_lock();
         let dir = tempfile::tempdir().unwrap();
         let arc = dir.path().join("ra.tar.gz");
         // 假包结构:顶层 <bin>-1.0.0/<bin> → strip=1 后落在 <out>/<bin>
@@ -112,7 +112,9 @@ url = "file://{}"
             "本条资产 url 不含 {{version}} → 不需要版本"
         );
 
-        install("asset-ra", "1.0.0").unwrap();
+        // 用**已解析**的 spec 安装:并行测试里别的用例调用 `apply_server_config` 会改写
+        // 进程级 EXT,`install(name)` 会在"查到配方"与"用配方"之间丢配方(D8 实测)。
+        install_spec(&spec, "1.0.0").unwrap();
         assert!(
             managed_bin("asset-ra").exists(),
             "经逐平台资产安装后,bin 软链必须建成"
@@ -125,6 +127,7 @@ url = "file://{}"
     /// 解析/选择/消费点**三条都无覆盖**。
     #[test]
     fn archive_assets_per_platform() {
+        let _m = sm_lock();
         let tbl: toml::Table = r#"
             [ra]
             kind = "lsp"
@@ -236,8 +239,24 @@ url = "file://{}"
     }
 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    /// EnvGuard 类测试改进程级环境变量,cargo 并行会互踩 → 串行化
+    /// 本模块的测试共享**进程级**状态:`SM_*` 环境变量、`EXT: OnceLock` 扩展配方缓存、
+    /// managed 目录与 PATH。cargo 默认并行 ⇒ 必须串行化。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 统一入口:取锁 + 清空扩展配方。
+    ///
+    /// D8(2026-10-17)实测出来的两类共享状态:
+    /// 1. **`SM_*` 环境变量 / managed 目录 / PATH** —— 进程级,靠这把锁串行化;
+    /// 2. **扩展配方 `EXT`** —— 原来也是进程级可写缓存,`apply_server_config` 会整体替换它。
+    ///    加锁**不够**:`commands::server_tasks` 的用例会派生 `server-task-worker` 线程,
+    ///    那个线程不归测试管,照样能改写。所以 `EXT` 在测试期降级成 thread-local
+    ///    (见 `registry.rs`),这里再清一次只是让"本用例从空注册表开始"这件事显式可见。
+    fn sm_lock() -> std::sync::MutexGuard<'static, ()> {
+        // poison 不能放大:一个用例 panic 后其余用例仍要继续(见模块头注释)
+        let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        registry::set_ext(Vec::new());
+        g
+    }
     fn tmp_root() -> PathBuf {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let d = std::env::temp_dir().join(format!("sm-test-{}-{n}", std::process::id()));
@@ -248,7 +267,7 @@ url = "file://{}"
 
     #[test]
     fn mirror_url_rewrite_and_file_passthrough() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         apply_server_config(None).unwrap(); // 清掉可能残留的 mirror/ext
         assert_eq!(mirror_url("https://x/y"), "https://x/y", "无 mirror 原样");
         assert_eq!(
@@ -260,6 +279,7 @@ url = "file://{}"
 
     #[test]
     fn sha256_and_extract_roundtrip() {
+        let _m = sm_lock();
         let root = tmp_root();
         let arc = root.join("rel.tar.gz");
         let sha = make_tar_gz(&arc, "demo-bin").unwrap();
@@ -272,7 +292,7 @@ url = "file://{}"
 
     #[test]
     fn archive_install_update_remove_lifecycle() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("src/rel.tar.gz");
@@ -339,7 +359,7 @@ url = "file://{}"
 
     #[test]
     fn tool_install_expands_placeholders_and_links_bin() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let fake = make_fake_tool(&root, "demo-tool");
@@ -378,7 +398,7 @@ url = "file://{}"
 
     #[test]
     fn tool_failure_cleans_up_and_keeps_old_on_upgrade() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let ok_tool = make_fake_tool(&root, "demo-tool");
@@ -419,7 +439,7 @@ url = "file://{}"
 
     #[test]
     fn tool_success_without_bin_fails_cleanly() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let fake = write_sh(&root, "noop-tool.sh", "#!/bin/sh\nmkdir -p \"$1\"\n");
@@ -466,7 +486,7 @@ url = "file://{}"
 
     #[test]
     fn langs_rewrite_from_empty_builds_section_idempotent() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
@@ -491,7 +511,7 @@ url = "file://{}"
 
     #[test]
     fn langs_user_content_preserved_and_section_replaced() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "# 用户注释\n[[language]]\nname = \"haskell\"\nscope = \"source.haskell\"\n\n\
@@ -515,7 +535,7 @@ url = "file://{}"
 
     #[test]
     fn langs_conflict_user_defined_language_skipped_with_hint() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "[[language]]\nname = \"rust\"\nroots = [\"my-own-root\"]\n";
@@ -539,7 +559,7 @@ url = "file://{}"
 
     #[test]
     fn langs_dap_debugpy_emits_debugger_block() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("debugpy");
@@ -556,7 +576,7 @@ url = "file://{}"
 
     #[test]
     fn langs_bad_user_toml_and_unbalanced_marker_abort() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let p = &langs;
@@ -581,7 +601,7 @@ url = "file://{}"
 
     #[test]
     fn langs_remove_clears_entry() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
@@ -595,7 +615,7 @@ url = "file://{}"
 
     #[test]
     fn langs_user_own_server_table_not_duplicated() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         let existing = "[language-server.rust-analyzer]\ncommand = \"/mine/custom/ra\"\n";
@@ -620,7 +640,7 @@ url = "file://{}"
     /// command 指向受管绝对路径;python 获得 debugpy debugger。
     #[test]
     fn langs_loader_merge_resolves_managed_servers() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _a, _b, _gp) = sm_env(&root);
         install_fake("rust-analyzer");
@@ -668,7 +688,7 @@ url = "file://{}"
 
     #[test]
     fn config_mirror_and_ext_recipe_install_loop() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (langs, _ga, _gb, _gp) = sm_env(&root);
         // file:// 假 release(tar.gz 顶层 my-ls-1.0.0/,strip=1)
@@ -720,7 +740,7 @@ url = "file://{}"
 
     #[test]
     fn config_ext_recipe_validation_errors() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         // url 含 {version} 但缺 version 字段
         let bad: toml::Table =
             toml::from_str("url = \"https://x/{version}/y.tar.gz\"\nbin = \"x\"\n").unwrap();
@@ -777,7 +797,7 @@ url = "file://{}"
 
     #[test]
     fn plain_gz_single_binary_installs_and_runs() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("ra.gz");
@@ -823,7 +843,7 @@ url = "file://{}"
 
     #[test]
     fn availability_prefers_managed_over_local() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _a, _b, _p) = sm_env(&root);
         let bin_dir = fake_local_bin(&root, "rust-analyzer");
@@ -841,7 +861,7 @@ url = "file://{}"
 
     #[test]
     fn local_server_writes_path_command_and_ignore_removes_it() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (langs, _a, _b, _p) = sm_env(&root);
         let bin_dir = fake_local_bin(&root, "rust-analyzer");
@@ -871,6 +891,7 @@ url = "file://{}"
 
     #[test]
     fn spec_description_homepage_and_upgradable() {
+        let _m = sm_lock();
         // parse_ext_recipe 支持 description/homepage
         let ok: toml::Table = toml::from_str(
             "url = \"file:///v{version}/x.tar.gz\"\nbin = \"z\"\nversion = \"1.0\"\n\
@@ -886,6 +907,7 @@ url = "file://{}"
 
     #[test]
     fn builtin_specs_all_have_description_and_homepage() {
+        let _m = sm_lock();
         // M5:内置 7 配方补展示数据(arsenal 行/信息弹窗显示)——缺描述/主页=遗漏
         let specs = registry::builtin_specs();
         assert_eq!(specs.len(), 7, "内置配方数变更需同步测试");
@@ -908,6 +930,7 @@ url = "file://{}"
     /// 内置配方数据化:文件加载、order 保序、占位与动态版本标志语义与旧硬编码一致
     #[test]
     fn builtin_recipes_loaded_from_toml_keep_semantics() {
+        let _m = sm_lock();
         let specs = registry::builtin_specs();
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -923,25 +946,33 @@ url = "file://{}"
             ],
             "order 字段保序(rust-analyzer 必须首位:arsenal sel0/导航依赖)"
         );
-        let ra = registry::get("rust-analyzer").unwrap();
+        let ra = specs.iter().find(|s| s.name == "rust-analyzer").unwrap();
         assert_eq!(ra.kind, registry::Kind::Lsp);
         assert_eq!(ra.languages, vec!["rust"]);
         assert_eq!(ra.bin_name, "rust-analyzer");
         assert!(ra.is_installable(), "RA url 非空应可装");
         assert!(ra.version.is_none());
         assert!(
-            needs_version(&ra),
+            needs_version(ra),
             "url 含 {{version}} + 无 version → 需显式版本"
         );
-        // 占位条目(url = "" / cmd = "")不可装,保留展示数据
+        // 占位条目(url = "" / cmd = "")不可装,保留展示数据。
+        // ⚠ 这里查的是**内置**集合(`specs`),不是 `registry::get`:`get` 会把
+        // 进程级的 `EXT`(其他用例 / 其他测试模块塞进来的扩展配方)合并进来,
+        // 于是"pyright 是占位"会被用户配置里的 pyright 覆盖掉 —— D8 的间歇失败就是这条。
+        // 本用例的名字与意图都只关于**内置 TOML**。
         for n in ["gopls", "pyright", "clangd", "debugpy", "black", "prettier"] {
-            let s = registry::get(n).unwrap();
+            let s = specs.iter().find(|s| s.name == n).unwrap();
             assert!(!s.is_installable(), "{n} 应为占位(no source)");
             assert!(!s.description.is_empty() && s.homepage.is_some());
         }
         // Tool 占位:cmd 空 = Install::Tool(区别于 archive 占位)
         assert!(matches!(
-            registry::get("debugpy").unwrap().install,
+            specs
+                .iter()
+                .find(|s| s.name == "debugpy")
+                .unwrap()
+                .install,
             registry::Install::Tool { ref cmd, .. } if cmd.is_empty()
         ));
     }
@@ -949,7 +980,7 @@ url = "file://{}"
     /// 同名覆盖:扩展配方替掉内置(不重复);内置顺序保留,扩展追加
     #[test]
     fn ext_overrides_builtin_same_name_without_duplicate() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let tbl: toml::Table = toml::from_str(
             "cmd = \"npm\"\nargs = [\"install\", \"--prefix\", \"{prefix}\", \"pyright\"]\nbin-name = \"pyright-langserver\"\ndescription = \"overridden\"\n",
         )
@@ -972,7 +1003,7 @@ url = "file://{}"
 
     #[test]
     fn is_upgradable_contains_semantics() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         // 配方 version=1.0.0;受管装 bin 输出 "my-ls 1.0.0"(detected 含 recipe 版本 → 同版)
@@ -1018,6 +1049,7 @@ url = "file://{}"
 
     #[test]
     fn needs_version_archive_template_semantics() {
+        let _m = sm_lock();
         // 内置活配方 rust-analyzer:url 含 {version} 且 recipe 无固定 version → 需显式版本
         let ra = registry::all()
             .into_iter()
@@ -1069,6 +1101,7 @@ url = "file://{}"
 
     #[test]
     fn progress_aggregator_monotonic_throttled() {
+        let _m = sm_lock();
         // 聚合器:回调每 ≥throttle_bytes 或 ≥interval 触发;结束 flush 到 100%
         let mut hits = Vec::new();
         let mut cb = |n, total| {
@@ -1089,7 +1122,7 @@ url = "file://{}"
 
     #[test]
     fn download_to_file_reports_progress_once_with_size() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let src = root.join("payload.bin");
         let body = vec![0xabu8; 1024 * 5]; // 5KiB
@@ -1115,7 +1148,7 @@ url = "file://{}"
     /// 此处覆盖可离线判定的 ok/err 分支(均不触网)。
     #[test]
     fn run_task_branches_ok_and_err_hermetic() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _a, _b, _p) = sm_env(&root);
         // 未知 op / 未知 server / unmanage 缺失 → ok:false 文案
@@ -1157,6 +1190,7 @@ url = "file://{}"
 
     #[test]
     fn parse_ext_recipe_tool_and_archive_mutual_exclusive() {
+        let _m = sm_lock();
         // Tool:cmd+args
         let t: toml::Table = toml::from_str(
             "cmd = \"npm\"\nargs = [\"install\", \"--prefix\", \"{prefix}\", \"typescript-language-server\"]\n\
@@ -1189,7 +1223,7 @@ url = "file://{}"
 
     #[test]
     fn recipes_file_merges_and_overrides_config_registry() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, ga, gb, gp) = sm_env(&root);
         // 独立配方文件(经 SM_SERVER_RECIPES 覆写):tool + archive 各一
@@ -1218,6 +1252,7 @@ url = "file://{}"
     /// 配方数据文件(contrib/)完整性:每条可解析、结构有效;仓库副本与发布物同源
     #[test]
     fn bundled_recipes_file_parses_and_is_healthy() {
+        let _m = sm_lock();
         let raw = include_str!("../../../contrib/server-manager-recipes.toml");
         let v: toml::Value = toml::from_str(raw).expect("contrib 配方文件可解析");
         let reg = v
@@ -1246,6 +1281,7 @@ url = "file://{}"
 
     #[test]
     fn parse_ext_recipe_explicit_empty_url_is_placeholder() {
+        let _m = sm_lock();
         let t: toml::Table =
             toml::from_str("url = \"\"\n\ndescription = \"安装:见官网(仅占位引导)\"\n").unwrap();
         let spec = registry::parse_ext_recipe("lua-ls", &t).unwrap();
@@ -1259,7 +1295,7 @@ url = "file://{}"
 
     #[test]
     fn run_task_tool_install_without_version_passes_gate() {
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let (_langs, _ga, _gb, _gp) = sm_env(&root);
         // Tool 配方 /bin/false:版本门应放行(不再报"未给 version"),执行失败属另一原因
@@ -1301,6 +1337,7 @@ url = "file://{}"
     /// 钩子必清——主线程后续同步 :server install 不会消费到残留幽灵钩子。
     #[test]
     fn clear_download_progress_drops_hook() {
+        let _m = sm_lock();
         with_download_progress(Box::new(|_, _| {}));
         assert!(download_progress_hook_set(), "钩子已挂");
         clear_download_progress();
@@ -1313,7 +1350,7 @@ url = "file://{}"
     #[test]
     fn download_progress_hook_consumed_by_install_adhoc() {
         // DL_PROGRESS 线程局部钩子:install_adhoc 下载前挂载,take 一次消费并收到字节回调
-        let _m = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _m = sm_lock();
         let root = tmp_root();
         let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
         let arc = root.join("src/rel.tar.gz");

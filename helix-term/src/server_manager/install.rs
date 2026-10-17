@@ -107,6 +107,16 @@ pub(crate) fn path_in_path(bin: &str) -> Option<PathBuf> {
 /// 测试/自定义源走 *_adhoc 注入)
 pub fn install(name: &str, version: &str) -> Result<()> {
     let spec = registry::get(name).ok_or_else(|| anyhow!("unknown server '{name}'"))?;
+    install_spec(&spec, version)
+}
+
+/// 用**已解析**的配方安装。
+///
+/// 为什么单独拆出来:注册表是**进程级**的(`EXT` 缓存 + `SM_*` 配置),并行测试里
+/// 另一条用例调用 `apply_server_config` 就能在"查到配方"与"用配方安装"之间把它换掉
+/// (D8 实测:`install("asset-ra")` 间歇报 unknown server)。拿着 `&Spec` 安装就没有这个窗口。
+pub(crate) fn install_spec(spec: &registry::Spec, version: &str) -> Result<()> {
+    let name = spec.name.as_str();
     match &spec.install {
         registry::Install::Archive {
             url_template,
