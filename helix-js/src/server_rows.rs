@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 use std::collections::HashMap;
 
 use crate::state::{with_engine, UI_REQUESTS};
@@ -37,9 +37,9 @@ pub(crate) fn js_server_rows(
 ) -> boa_engine::JsResult<JsValue> {
     let cb = args.first().cloned().unwrap_or(JsValue::undefined());
     if cb.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.server.rows: callback function required",
-        ))));
+        ));
     }
     let id = next_id();
     with_callbacks(|m| {

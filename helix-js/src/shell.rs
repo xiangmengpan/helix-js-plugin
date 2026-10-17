@@ -313,11 +313,7 @@ pub(crate) fn js_run_async(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.run_async: command must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.run_async: command must be a string"))?;
     // C-2 检查点:异步起进程同属 `process`(与 helix.run 同一能力)
     crate::permissions::check_js("helix.run_async", crate::permissions::CAP_PROCESS)?;
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
@@ -347,19 +343,13 @@ pub(crate) fn js_spawn(
         .first()
         .unwrap_or(&JsValue::undefined())
         .as_object()
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.spawn: options object required",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("helix.spawn: options object required"))?;
     // C-2 检查点:spawn 同属 `process`
     crate::permissions::check_js("helix.spawn", crate::permissions::CAP_PROCESS)?;
     let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
     let on_chunk = opts.get(JsString::from("onChunk"), ctx)?;
     if on_chunk.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.spawn: onChunk must be a function",
-        ))));
+        return Err(crate::js_err("helix.spawn: onChunk must be a function"));
     }
     let on_exit = opts.get(JsString::from("onExit"), ctx)?;
     let on_exit = on_exit.as_callable().map(|_| on_exit);
@@ -369,11 +359,8 @@ pub(crate) fn js_spawn(
         if v.is_null_or_undefined() {
             false
         } else {
-            v.try_js_into::<bool>(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "helix.spawn: 'pty' must be a boolean",
-                )))
-            })?
+            v.try_js_into::<bool>(ctx)
+                .map_err(|_| crate::js_err("helix.spawn: 'pty' must be a boolean"))?
         }
     };
     let id = crate::state::next_term_id();
@@ -384,20 +371,15 @@ pub(crate) fn js_spawn(
     if pty {
         #[cfg(unix)]
         {
-            let (master, slave) = pty::open_pty().map_err(|e| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "helix.spawn: pty: {e}"
-                ))))
-            })?;
+            let (master, slave) =
+                pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
             // 先注册 master fd 再起 worker：spawn 返回后 JS 立即可 term_resize
             crate::state::with_term_masters(|m| m.insert(id, master.fd()));
             spawn_pty_worker(id, &cmd, term_tx, rx, master, slave);
         }
         #[cfg(not(unix))]
         {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.spawn: pty requires a unix platform",
-            ))));
+            return Err(crate::js_err("helix.spawn: pty requires a unix platform"));
         }
     } else {
         spawn_worker(id, &cmd, false, term_tx, rx);
@@ -418,8 +400,7 @@ pub(crate) fn js_term_write(
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
-    term_write(id, &text)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
+    term_write(id, &text).map_err(|e| crate::js_err(e.to_string()))?;
     Ok(JsValue::undefined())
 }
 
@@ -443,8 +424,7 @@ pub(crate) fn js_term_kill(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
-    term_kill(id)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(e.to_string()))))?;
+    term_kill(id).map_err(|e| crate::js_err(e.to_string()))?;
     Ok(JsValue::undefined())
 }
 
@@ -482,39 +462,21 @@ pub(crate) fn js_term_resize(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.term_resize: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.term_resize: id must be a number"))?;
     let rows: u16 = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.term_resize: rows must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.term_resize: rows must be a number"))?;
     let cols: u16 = args
         .get(2)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.term_resize: cols must be a number",
-            )))
-        })?;
-    let fd = crate::state::with_term_masters(|m| m.get(&id).copied()).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.term_resize: unknown id",
-        )))
-    })?;
-    pty::set_winsize(fd, rows, cols).map_err(|e| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.term_resize: {e}"
-        ))))
-    })?;
+        .map_err(|_| crate::js_err("helix.term_resize: cols must be a number"))?;
+    let fd = crate::state::with_term_masters(|m| m.get(&id).copied())
+        .ok_or_else(|| crate::js_err("helix.term_resize: unknown id"))?;
+    pty::set_winsize(fd, rows, cols)
+        .map_err(|e| crate::js_err(format!("helix.term_resize: {e}")))?;
     Ok(JsValue::undefined())
 }
 
@@ -623,11 +585,7 @@ pub(crate) fn js_read_file_async(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.read_file_async: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.read_file_async: path must be a string"))?;
     // C-2 检查点:异步读同属 `fs_read`
     crate::permissions::check_js("helix.read_file_async", crate::permissions::CAP_FS_READ)?;
     // 返回 promise：worker 结果经 resolve_async_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
@@ -655,22 +613,14 @@ pub(crate) fn js_write_file_async(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.write_file_async: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.write_file_async: path must be a string"))?;
     // C-2 检查点:异步写同属 `fs_write`
     crate::permissions::check_js("helix.write_file_async", crate::permissions::CAP_FS_WRITE)?;
     let content: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.write_file_async: content must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.write_file_async: content must be a string"))?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     with_async_promises(|m| {
@@ -697,11 +647,7 @@ pub(crate) fn js_stat_async(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.stat_async: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.stat_async: path must be a string"))?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     with_async_promises(|m| {
@@ -741,11 +687,7 @@ pub(crate) fn js_glob_async(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.glob_async: pattern must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.glob_async: pattern must be a string"))?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     with_async_promises(|m| {
@@ -767,11 +709,7 @@ pub(crate) fn js_read_tree(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "read_tree: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("read_tree: path must be a string"))?;
     let depth = match args.get(1).and_then(|v| v.as_object()) {
         Some(o) => o
             .get(JsString::from("depth"), context)?

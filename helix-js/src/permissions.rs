@@ -322,9 +322,7 @@ pub(crate) fn check(cap: &str) -> anyhow::Result<()> {
 pub(crate) fn check_js(api: &str, cap: &str) -> boa_engine::JsResult<()> {
     match check(cap) {
         Ok(()) => Ok(()),
-        Err(e) => Err(boa_engine::JsError::from_opaque(boa_engine::JsValue::from(
-            boa_engine::JsString::from(format!("{api}: {e}")),
-        ))),
+        Err(e) => Err(crate::js_err(format!("{api}: {e}"))),
     }
 }
 

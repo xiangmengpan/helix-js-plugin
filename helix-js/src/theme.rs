@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 
 use crate::state::{mark_theme_dirty, take_theme_dirty_flag, with_theme_overrides};
 use crate::types::SetThemeReq;
@@ -51,28 +51,25 @@ fn parse_style_value(
 ) -> boa_engine::JsResult<StyleOverride> {
     if v.is_string() {
         return Ok(StyleOverride {
-            fg: Some(v.try_js_into::<String>(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: invalid color value"
-                ))))
-            })?),
+            fg: Some(
+                v.try_js_into::<String>(ctx)
+                    .map_err(|_| crate::js_err(format!("{api}: invalid color value")))?,
+            ),
             ..Default::default()
         });
     }
     let Some(obj) = v.as_object() else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("{api}: expected a color string or {{ fg, bg, modifiers }} object"),
-        ))));
+        return Err(crate::js_err(format!(
+            "{api}: expected a color string or {{ fg, bg, modifiers }} object"
+        )));
     };
     let mut out = StyleOverride::default();
     for key in ["fg", "bg"] {
         if let Ok(val) = obj.get(JsString::from(key), ctx) {
             if val.is_string() {
-                let c: String = val.try_js_into(ctx).map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: '{key}' must be a string"
-                    ))))
-                })?;
+                let c: String = val
+                    .try_js_into(ctx)
+                    .map_err(|_| crate::js_err(format!("{api}: '{key}' must be a string")))?;
                 if key == "fg" {
                     out.fg = Some(c);
                 } else {
@@ -86,11 +83,9 @@ fn parse_style_value(
             .as_object()
             .and_then(|o| boa_engine::object::builtins::JsArray::from_object(o.clone()).ok())
         {
-            let len: u64 = arr.length(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: modifiers length"
-                ))))
-            })?;
+            let len: u64 = arr
+                .length(ctx)
+                .map_err(|_| crate::js_err(format!("{api}: modifiers length")))?;
             for i in 0..len {
                 if let Ok(item) = arr.get(i, ctx) {
                     if let Ok(s) = item.try_js_into::<String>(ctx) {
@@ -116,9 +111,9 @@ pub(crate) fn js_set_theme(
         .unwrap_or(&JsValue::undefined())
         .as_object()
         .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
+            crate::js_err(format!(
                 "{api}: expected an object of {{ scope: color|{{fg,bg,modifiers}} }}"
-            ))))
+            ))
         })?;
     let mut overrides = HashMap::new();
     for key in obj.own_property_keys(ctx)? {
@@ -174,9 +169,7 @@ pub(crate) fn js_get_style(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let Some(scope) = args.first().and_then(|v| v.as_string()) else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.get_style: expected a scope string",
-        ))));
+        return Err(crate::js_err("helix.get_style: expected a scope string"));
     };
     let scope = scope.to_std_string_escaped();
     let Some(src) = STYLE_SOURCE.get() else {
@@ -197,11 +190,7 @@ pub(crate) fn js_get_style(
     let mods = boa_engine::object::builtins::JsArray::new(ctx)?;
     for m in &info.modifiers {
         mods.push(JsValue::from(JsString::from(m.clone())), ctx)
-            .map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "helix.get_style: modifiers push",
-                )))
-            })?;
+            .map_err(|_| crate::js_err("helix.get_style: modifiers push"))?;
     }
     let obj = boa_engine::object::ObjectInitializer::new(ctx)
         .property(
@@ -236,9 +225,7 @@ pub(crate) fn js_theme_info(
     let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
     for t in &themes {
         arr.push(JsValue::from(JsString::from(t.clone())), ctx)
-            .map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from("helix.theme_info: push")))
-            })?;
+            .map_err(|_| crate::js_err("helix.theme_info: push"))?;
     }
     let obj = boa_engine::object::ObjectInitializer::new(ctx)
         .property(
@@ -266,15 +253,13 @@ pub(crate) fn js_set_theme_name(
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let Some(name) = args.first().and_then(|v| v.as_string()) else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.set_theme_name: expected a theme name string",
-        ))));
+        ));
     };
     let name = name.to_std_string_escaped();
     if name.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.set_theme_name: empty theme name",
-        ))));
+        return Err(crate::js_err("helix.set_theme_name: empty theme name"));
     }
     crate::state::UI_REQUESTS
         .get()

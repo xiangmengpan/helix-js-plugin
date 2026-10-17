@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 
 /// 诊断图标覆盖集（severity 名 → 图标字符；空 = 渲染侧默认 ●）
 static DIAGNOSTIC_ICONS: OnceLock<std::sync::Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -25,9 +25,9 @@ pub(crate) fn js_set_diagnostic_icons(
         .unwrap_or(&JsValue::undefined())
         .as_object()
         .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
+            crate::js_err(format!(
                 "{api}: expected an object of {{ error, warning, info, hint }}"
-            ))))
+            ))
         })?;
     let mut map = HashMap::new();
     for key in ["error", "warning", "info", "hint"] {

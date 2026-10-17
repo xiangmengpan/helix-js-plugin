@@ -1,5 +1,5 @@
 //! 输入组件编辑状态：InputState + input_edit 纯函数 + InputStates 存储。
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 use std::collections::HashMap;
 
 /// 单个 input 节点的编辑状态（引擎权威）
@@ -232,29 +232,17 @@ pub(crate) fn js_set_input_value(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "set_input_value: popup id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("set_input_value: popup id must be a number"))?;
     let node_id: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "set_input_value: node id must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("set_input_value: node id must be a string"))?;
     let value: String = args
         .get(2)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "set_input_value: value must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("set_input_value: value must be a string"))?;
     with_input_states(|m| {
         // 保留既有 multiline 标志：set_input_value 只改值,不改节点的多行属性
         let multiline = m

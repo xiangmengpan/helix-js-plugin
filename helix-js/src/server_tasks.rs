@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -211,33 +211,27 @@ pub(crate) fn js_server_task(
         .filter(|o| o.is_array())
         .and_then(|o| JsArray::from_object(o.clone()).ok())
         .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.server.task: items must be an array of { op, name, version? }",
-            )))
+            crate::js_err("helix.server.task: items must be an array of { op, name, version? }")
         })?;
     let cb = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if cb.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.server.task: callback must be a function",
-        ))));
+        ));
     }
-    let len = arr
-        .length(ctx)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("{e}")))))?;
+    let len = arr.length(ctx).map_err(|e| crate::js_err(format!("{e}")))?;
     if len == 0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.server.task: items must not be empty",
-        ))));
+        return Err(crate::js_err("helix.server.task: items must not be empty"));
     }
     let mut items = Vec::with_capacity(len as usize);
     for i in 0..len {
-        let elem = arr.get(i, ctx).map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!("item {i}: {e}"))))
-        })?;
+        let elem = arr
+            .get(i, ctx)
+            .map_err(|e| crate::js_err(format!("item {i}: {e}")))?;
         let obj = elem.as_object().ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
+            crate::js_err(format!(
                 "helix.server.task: item {i} must be {{ op, name, version? }}"
-            ))))
+            ))
         })?;
         let mut get_str = |key: &str| -> boa_engine::JsResult<String> {
             let v = obj.get(JsString::from(key), ctx)?;
@@ -245,18 +239,16 @@ pub(crate) fn js_server_task(
                 Ok(String::new())
             } else {
                 v.try_js_into(ctx).map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    crate::js_err(format!(
                         "helix.server.task: item {i} '{key}' must be a string"
-                    ))))
+                    ))
                 })
             }
         };
         let op = get_str("op")?;
         let name = get_str("name")?;
         if op.is_empty() {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.server.task: item op required",
-            ))));
+            return Err(crate::js_err("helix.server.task: item op required"));
         }
         let version = {
             let v = obj.get(JsString::from("version"), ctx)?;
@@ -269,9 +261,9 @@ pub(crate) fn js_server_task(
                     v.as_string()
                         .map(|s| s.to_std_string_escaped())
                         .ok_or_else(|| {
-                            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                            crate::js_err(format!(
                                 "helix.server.task: item {i} 'version' must be a string"
-                            ))))
+                            ))
                         })?,
                 )
             }

@@ -6,6 +6,7 @@
 //!
 //! 注意:本文件里的 `layout_*` Rust 入口(`layout_save/load/list/delete`)当前**没有调用方**,
 //! 疑似与 `:layout` 的 JS 实现构成两套实现 —— 见 `docs/architecture-audit.md` D7。
+use crate::js_err;
 
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
@@ -26,19 +27,13 @@ pub(crate) fn js_split(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)?;
     if !["right", "left", "top", "bottom"].contains(&dir.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("helix.split: unknown dir '{dir}'"),
-        ))));
+        return Err(crate::js_err(format!("helix.split: unknown dir '{dir}'")));
     }
     let opts = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .as_object()
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.split: opts object required",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("helix.split: opts object required"))?;
     // 新叶子预分配 id（面板回调注册在 POPUPS 下）
     let id = crate::state::next_terminal_view_id();
     let (kind, cmd, size) =
@@ -49,9 +44,9 @@ pub(crate) fn js_split(
         } else if let Some(panel) = opts.get(JsString::from("panel"), ctx)?.as_object() {
             let render = panel.get(JsString::from("render"), ctx)?;
             if render.as_callable().is_none() {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                return Err(crate::js_err(
                     "helix.split: panel render must be a function",
-                ))));
+                ));
             }
             let on_key = panel.get(JsString::from("onKey"), ctx)?;
             let size: u16 = obj_opt_u16(&panel, "size", ctx, "helix.split")?.unwrap_or(30);
@@ -70,9 +65,9 @@ pub(crate) fn js_split(
             });
             ("panel".to_string(), None, size)
         } else {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            return Err(crate::js_err(
                 "helix.split: opts must have 'terminal' or 'panel'",
-            ))));
+            ));
         };
     UI_REQUESTS
         .get()
@@ -99,18 +94,18 @@ pub(crate) fn js_buffer_open(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)?;
     if path.trim().is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.buffer_open: path must be a non-empty string",
-        ))));
+        ));
     }
     let split = if let Some(opts) = args.get(1).unwrap_or(&JsValue::undefined()).as_object() {
         let s = obj_opt_str(&opts, "split", ctx, "helix.buffer_open")?;
         match s.as_deref() {
             Some("h") | Some("v") => s,
             Some(other) => {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    format!("helix.buffer_open: split must be 'h' or 'v', got '{other}'"),
-                ))));
+                return Err(crate::js_err(format!(
+                    "helix.buffer_open: split must be 'h' or 'v', got '{other}'"
+                )));
             }
             None => None,
         }
@@ -235,9 +230,7 @@ pub(crate) fn js_resize_leaf_dir(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)?;
     if dir != "h" && dir != "v" {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "layout_resize: dir must be 'h' or 'v'",
-        ))));
+        return Err(crate::js_err("layout_resize: dir must be 'h' or 'v'"));
     }
     let delta: f64 = args
         .get(2)
@@ -328,9 +321,9 @@ pub(crate) fn js_focus_leaf_dir(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)?;
     if parse_dir(&dir).is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "layout_focus: dir must be left/right/up/down",
-        ))));
+        ));
     }
     UI_REQUESTS
         .get()
@@ -356,9 +349,9 @@ pub(crate) fn js_swap_leaf_dir(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)?;
     let Some(_) = parse_dir(&dir) else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "layout_swap_dir: dir must be left/right/up/down",
-        ))));
+        ));
     };
     UI_REQUESTS
         .get()
@@ -399,26 +392,18 @@ pub(crate) fn js_layout_fix(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "layout_fix: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("layout_fix: id must be a number"))?;
     if id < 0.0 || id.fract() != 0.0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "layout_fix: id must be a non-negative integer",
-        ))));
+        ));
     }
     let fixed: bool = args
         .get(1)
         .cloned()
         .unwrap_or(JsValue::from(false))
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "layout_fix: fixed must be a boolean",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("layout_fix: fixed must be a boolean"))?;
     UI_REQUESTS
         .get()
         .unwrap()
@@ -440,20 +425,14 @@ pub(crate) fn js_json_parse(
     let json_global = ctx.global_object().get(JsString::from("JSON"), ctx)?;
     let parse = json_global
         .as_object()
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "{api}: JSON missing"
-            ))))
-        })?
+        .ok_or_else(|| crate::js_err(format!("{api}: JSON missing")))?
         .get(JsString::from("parse"), ctx)?;
-    let parse = parse.as_callable().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: JSON.parse missing"
-        ))))
-    })?;
+    let parse = parse
+        .as_callable()
+        .ok_or_else(|| crate::js_err(format!("{api}: JSON.parse missing")))?;
     parse
         .call(&json_global, &[JsValue::from(JsString::from(json))], ctx)
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("{api}: {e}")))))
+        .map_err(|e| crate::js_err(format!("{api}: {e}")))
 }
 
 /// 读取最近一次布局树序列化（helix-term 树变更时缓存；可能滞后一个操作）
@@ -524,13 +503,11 @@ pub(crate) fn js_pane_list(
     if json.is_empty() {
         return js_json_parse("{\"panes\":[]}".to_string(), ctx, "pane.list")
             .and_then(|o| o.as_object().unwrap().get(JsString::from("panes"), ctx))
-            .map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from("pane.list: 解析失败")))
-            });
+            .map_err(|_| crate::js_err("pane.list: 解析失败"));
     }
     js_json_parse(json, ctx, "pane.list")
         .and_then(|o| o.as_object().unwrap().get(JsString::from("panes"), ctx))
-        .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("pane.list: 解析失败"))))
+        .map_err(|_| crate::js_err("pane.list: 解析失败"))
 }
 
 /// `helix.pane.raise(id)` —— 把浮动 pane 提到最上层(仅浮窗有意义;非浮窗是无操作)
@@ -565,11 +542,7 @@ pub(crate) fn js_pane_pin(
         .try_js_into(ctx)?;
     let on: bool = args
         .get(1)
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.pane.pin: 需要显式 on(true/false);不隐式取反",
-            )))
-        })?
+        .ok_or_else(|| crate::js_err("helix.pane.pin: 需要显式 on(true/false);不隐式取反"))?
         .try_js_into(ctx)?;
     UI_REQUESTS
         .get()
@@ -613,11 +586,7 @@ pub(crate) fn js_stack_activate(
         .try_js_into(ctx)?;
     let member: u64 = args
         .get(1)
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.stack.activate: 需要 member(要显示的那个成员)",
-            )))
-        })?
+        .ok_or_else(|| crate::js_err("helix.stack.activate: 需要 member(要显示的那个成员)"))?
         .try_js_into(ctx)?;
     UI_REQUESTS
         .get()
@@ -684,7 +653,7 @@ pub(crate) fn js_stack_list(
         "stack.list",
     )
     .and_then(|o| o.as_object().unwrap().get(JsString::from("stacks"), ctx))
-    .map_err(|_| JsError::from_opaque(JsValue::from(JsString::from("stack.list: 解析失败"))))
+    .map_err(|_| crate::js_err("stack.list: 解析失败"))
 }
 
 /// `helix.pane.info(id)` —— 单个 pane 的信息(找不到 → `null`)。
@@ -698,11 +667,7 @@ pub(crate) fn js_pane_info(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.pane.info: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.pane.info: id must be a number"))?;
     let arr = js_pane_list(&JsValue::undefined(), &[], ctx)?;
     let Some(arr) = arr.as_object() else {
         return Ok(JsValue::null());
@@ -807,11 +772,7 @@ pub(crate) fn js_focus_buffer(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "focus_buffer: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("focus_buffer: id must be a number"))?;
     crate::state::UI_REQUESTS
         .get()
         .unwrap()
@@ -830,11 +791,7 @@ pub(crate) fn js_get_component_state(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "get_component_state: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("get_component_state: id must be a number"))?;
     let Some(json) = crate::state::get_component_state_json(id) else {
         return Ok(JsValue::null());
     };
@@ -849,19 +806,15 @@ pub(crate) fn js_restore_layout(
 ) -> boa_engine::JsResult<JsValue> {
     let dump = args.first().cloned().unwrap_or(JsValue::undefined());
     if dump.is_null_or_undefined() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.restore_layout: layout object required",
-        ))));
+        ));
     }
     // 用 JSON.stringify 序列化传入对象
     let json: String = ctx
         .eval(Source::from_bytes("JSON.stringify(arguments[0])"))
         .and_then(|v| v.try_js_into::<String>(ctx))
-        .map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "restore_layout: {e}"
-            ))))
-        })?;
+        .map_err(|e| crate::js_err(format!("restore_layout: {e}")))?;
     UI_REQUESTS
         .get()
         .unwrap()
@@ -931,14 +884,10 @@ fn layout_delete_in(dir: &std::path::Path, name: &str) -> Result<bool, String> {
     }
 }
 
-fn js_err(msg: String) -> JsError {
-    JsError::from_opaque(JsValue::from(JsString::from(msg)))
-}
-
 fn want_dir() -> Result<&'static std::path::Path, JsError> {
     crate::state::layouts_dir()
         .map(|p| p.as_path())
-        .ok_or_else(|| js_err("布局目录未设置(helix-term 启动时应设置)".into()))
+        .ok_or_else(|| js_err("布局目录未设置(helix-term 启动时应设置)"))
 }
 
 fn arg_name(args: &[JsValue], ctx: &mut Context, who: &str) -> Result<String, JsError> {
@@ -958,7 +907,7 @@ pub(crate) fn js_layout_save(
     let json = crate::state::layout_json();
     if json.is_empty() {
         return Err(js_err(
-            "helix.layout.save: 还没有布局快照(需编辑器先渲染过至少一帧)".into(),
+            "helix.layout.save: 还没有布局快照(需编辑器先渲染过至少一帧)",
         ));
     }
     layout_save_in(want_dir()?, &name, &json).map_err(js_err)?;

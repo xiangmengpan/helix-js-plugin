@@ -4,7 +4,7 @@ use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 #[cfg(unix)]
 use boa_engine::Source;
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 
 #[cfg(unix)]
 use crate::pty;
@@ -30,15 +30,14 @@ pub(crate) fn opt_u16(
     if v.is_null_or_undefined() {
         return Ok(None);
     }
-    let n: f64 = v.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "'{name}' must be a number"
-        ))))
-    })?;
+    let n: f64 = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("'{name}' must be a number")))?;
     if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("'{name}' must be an integer in [0, {}]", u16::MAX),
-        ))));
+        return Err(crate::js_err(format!(
+            "'{name}' must be an integer in [0, {}]",
+            u16::MAX
+        )));
     }
     Ok(Some(n as u16))
 }
@@ -57,43 +56,40 @@ fn opt_dim(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<O
         return Ok(None);
     }
     if v.is_number() {
-        let n: f64 = v.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "'{name}' must be a number"
-            ))))
-        })?;
+        let n: f64 = v
+            .try_js_into(ctx)
+            .map_err(|_| crate::js_err(format!("'{name}' must be a number")))?;
         if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                format!("'{name}' must be an integer in [0, {}]", u16::MAX),
-            ))));
+            return Err(crate::js_err(format!(
+                "'{name}' must be an integer in [0, {}]",
+                u16::MAX
+            )));
         }
         return Ok(Some(Dim::Px(n as u16)));
     }
     // 非数字:必须为 "NN%" 百分比字符串
-    let s: String = v.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "'{name}' must be a number (px) or a 'NN%' string"
-        ))))
-    })?;
+    let s: String = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("'{name}' must be a number (px) or a 'NN%' string")))?;
     let Some(num) = s.strip_suffix('%') else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("'{name}' must be a number (px) or a 'NN%' string"),
-        ))));
+        return Err(crate::js_err(format!(
+            "'{name}' must be a number (px) or a 'NN%' string"
+        )));
     };
     if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("'{name}' percent must be a whole number in 1..=100"),
-        ))));
+        return Err(crate::js_err(format!(
+            "'{name}' percent must be a whole number in 1..=100"
+        )));
     }
     let pct: u16 = num.parse().map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
+        crate::js_err(format!(
             "'{name}' percent must be a whole number in 1..=100"
-        ))))
+        ))
     })?;
     if !(1..=100).contains(&pct) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("'{name}' percent must be in 1..=100"),
-        ))));
+        return Err(crate::js_err(format!(
+            "'{name}' percent must be in 1..=100"
+        )));
     }
     Ok(Some(Dim::Pct(pct)))
 }
@@ -115,16 +111,10 @@ pub(crate) fn js_open_popup(
         .first()
         .unwrap_or(&JsValue::undefined())
         .as_object()
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_popup: options object required",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("open_popup: options object required"))?;
     let render = opts.get(JsString::from("render"), ctx)?;
     if render.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "open_popup: render must be a function",
-        ))));
+        return Err(crate::js_err("open_popup: render must be a function"));
     }
     let on_key = opts.get(JsString::from("onKey"), ctx)?;
     let on_key = on_key.as_callable().map(|_| on_key);
@@ -137,11 +127,8 @@ pub(crate) fn js_open_popup(
         if v.is_null_or_undefined() {
             "plugin-popup".to_string()
         } else {
-            v.try_js_into::<String>(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "open_popup: 'layer' must be a string",
-                )))
-            })?
+            v.try_js_into::<String>(ctx)
+                .map_err(|_| crate::js_err("open_popup: 'layer' must be a string"))?
         }
     };
     // position: "center" 字符串 → 居中浮层;{row, col} 对象 → anchor 参照点;缺省 → anchor
@@ -151,30 +138,22 @@ pub(crate) fn js_open_popup(
             (None, false)
         } else if let Some(obj) = v.as_object() {
             let row = opt_u16(&obj.get(JsString::from("row"), ctx)?, ctx, "position.row")?
-                .ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "open_popup: 'position.row' is required",
-                    )))
-                })?;
+                .ok_or_else(|| crate::js_err("open_popup: 'position.row' is required"))?;
             let col = opt_u16(&obj.get(JsString::from("col"), ctx)?, ctx, "position.col")?
-                .ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "open_popup: 'position.col' is required",
-                    )))
-                })?;
+                .ok_or_else(|| crate::js_err("open_popup: 'position.col' is required"))?;
             (Some((row, col)), false)
         } else {
             let s: String = v.try_js_into(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
+                crate::js_err(
                     "open_popup: 'position' must be an object with row/col or the string \"center\""
-                )))
+                )
             })?;
             if s == "center" {
                 (None, true)
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
+                return Err(crate::js_err(
                     "open_popup: 'position' must be an object with row/col or \"center\"",
-                ))));
+                ));
             }
         }
     };
@@ -185,14 +164,14 @@ pub(crate) fn js_open_popup(
     let (width, height, size_pct) = match (width, height) {
         (Some(Dim::Pct(w)), Some(Dim::Pct(h))) if center => (None, None, Some((w, h))),
         (Some(Dim::Pct(_)), _) | (_, Some(Dim::Pct(_))) if !center => {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            return Err(crate::js_err(
                 "open_popup: percentage sizes require position: \"center\"",
-            ))));
+            ));
         }
         (Some(Dim::Pct(_)), _) | (_, Some(Dim::Pct(_))) => {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            return Err(crate::js_err(
                 "open_popup: percentage width/height must be given as a pair",
-            ))));
+            ));
         }
         (Some(Dim::Px(w)), Some(Dim::Px(h))) => (Some(w), Some(h), None),
         (Some(Dim::Px(w)), None) => (Some(w), None, None),
@@ -251,19 +230,15 @@ pub(crate) fn js_set_component_render(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "set_component_render: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("set_component_render: id must be a number"))?;
     let render = match args.get(1) {
         Some(v) => v,
         None => &JsValue::undefined(),
     };
     if render.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "set_component_render: render must be a function",
-        ))));
+        ));
     }
     // 第三个可选参数 `{ pure: true }`:插件声明"我的渲染**只依赖宿主传入的输入**"
     // (focus + ctx{width,height} + 调用前宿主 `set_*` 喂进来、我读到的快照),**不含**主题 /
@@ -272,17 +247,13 @@ pub(crate) fn js_set_component_render(
     let mut pure = false;
     if let Some(v) = args.get(2) {
         if !v.is_undefined() && !v.is_null() {
-            let obj = v.as_object().ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "set_component_render: opts must be an object",
-                )))
-            })?;
+            let obj = v
+                .as_object()
+                .ok_or_else(|| crate::js_err("set_component_render: opts must be an object"))?;
             let p = obj.get(JsString::from("pure"), ctx)?;
             if !p.is_undefined() {
                 pure = p.as_boolean().ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "set_component_render: opts.pure must be a boolean",
-                    )))
+                    crate::js_err("set_component_render: opts.pure must be a boolean")
                 })?;
             }
         }
@@ -317,29 +288,19 @@ pub(crate) fn js_open_panel(
         .first()
         .unwrap_or(&JsValue::undefined())
         .as_object()
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_panel: options object required",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("open_panel: options object required"))?;
     let side: String = opts
         .get(JsString::from("side"), ctx)?
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_panel: 'side' must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("open_panel: 'side' must be a string"))?;
     if !PANEL_SIDES.contains(&side.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("open_panel: unknown side '{side}' (expected right|left|bottom)"),
-        ))));
+        return Err(crate::js_err(format!(
+            "open_panel: unknown side '{side}' (expected right|left|bottom)"
+        )));
     }
     let render = opts.get(JsString::from("render"), ctx)?;
     if render.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "open_panel: render must be a function",
-        ))));
+        return Err(crate::js_err("open_panel: render must be a function"));
     }
     let on_close = opts.get(JsString::from("onClose"), ctx)?;
     let on_close = on_close.as_callable().map(|_| on_close);
@@ -347,15 +308,14 @@ pub(crate) fn js_open_panel(
     let on_key = on_key.as_callable().map(|_| on_key);
     let size = {
         let v = opts.get(JsString::from("size"), ctx)?;
-        let n: f64 = v.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_panel: 'size' must be a number",
-            )))
-        })?;
+        let n: f64 = v
+            .try_js_into(ctx)
+            .map_err(|_| crate::js_err("open_panel: 'size' must be a number"))?;
         if !n.is_finite() || n < 1.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                format!("open_panel: 'size' must be an integer in [1, {}]", u16::MAX),
-            ))));
+            return Err(crate::js_err(format!(
+                "open_panel: 'size' must be an integer in [1, {}]",
+                u16::MAX
+            )));
         }
         n as u16
     };
@@ -363,20 +323,16 @@ pub(crate) fn js_open_panel(
     // 节点焦点路由开关（缺省 false）：启用后 Tab 移动焦点/Esc 取消/节点按键直达
     let focusable = match opts.get(JsString::from("focusable"), ctx)? {
         v if v.is_undefined() => false,
-        v => v.try_js_into::<bool>(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_panel: 'focusable' must be a boolean",
-            )))
-        })?,
+        v => v
+            .try_js_into::<bool>(ctx)
+            .map_err(|_| crate::js_err("open_panel: 'focusable' must be a boolean"))?,
     };
     // 侧栏 rail 开关（缺省 false）:true 且 side=left/right → 固定边缘全高(不参与窗口分割)
     let rail = match opts.get(JsString::from("rail"), ctx)? {
         v if v.is_undefined() => false,
-        v => v.try_js_into::<bool>(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_panel: 'rail' must be a boolean",
-            )))
-        })?,
+        v => v
+            .try_js_into::<bool>(ctx)
+            .map_err(|_| crate::js_err("open_panel: 'rail' must be a boolean"))?,
     };
 
     let id = crate::state::next_popup_id();
@@ -420,11 +376,7 @@ pub(crate) fn js_close_panel(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(_ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "close_panel: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("close_panel: id must be a number"))?;
     if crate::state::last_panel_id() == Some(id) {
         crate::state::set_last_panel_id(None);
     };
@@ -456,51 +408,33 @@ pub(crate) fn js_open_terminal(
         .first()
         .unwrap_or(&JsValue::undefined())
         .as_object()
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_terminal: options object required",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("open_terminal: options object required"))?;
     let cmd: String = opts
         .get(JsString::from("cmd"), ctx)?
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_terminal: 'cmd' must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("open_terminal: 'cmd' must be a string"))?;
     if cmd.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "open_terminal: 'cmd' must not be empty",
-        ))));
+        return Err(crate::js_err("open_terminal: 'cmd' must not be empty"));
     }
     let side: String = opts
         .get(JsString::from("side"), ctx)?
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_terminal: 'side' must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("open_terminal: 'side' must be a string"))?;
     if !PANEL_SIDES.contains(&side.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("open_terminal: unknown side '{side}' (expected right|left|bottom)"),
-        ))));
+        return Err(crate::js_err(format!(
+            "open_terminal: unknown side '{side}' (expected right|left|bottom)"
+        )));
     }
     let size = {
         let v = opts.get(JsString::from("size"), ctx)?;
-        let n: f64 = v.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_terminal: 'size' must be a number",
-            )))
-        })?;
+        let n: f64 = v
+            .try_js_into(ctx)
+            .map_err(|_| crate::js_err("open_terminal: 'size' must be a number"))?;
         if !n.is_finite() || n < 1.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                format!(
-                    "open_terminal: 'size' must be an integer in [1, {}]",
-                    u16::MAX
-                ),
-            ))));
+            return Err(crate::js_err(format!(
+                "open_terminal: 'size' must be an integer in [1, {}]",
+                u16::MAX
+            )));
         }
         n as u16
     };
@@ -516,27 +450,15 @@ pub(crate) fn js_open_terminal(
             .eval(Source::from_bytes(
                 "(function(vid) { return function(chunk) { helix.term_feed(vid, chunk); }; })",
             ))
-            .map_err(|e| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "open_terminal: bridge factory: {e}"
-                ))))
-            })?;
+            .map_err(|e| crate::js_err(format!("open_terminal: bridge factory: {e}")))?;
         let factory = factory
             .as_callable()
             .and_then(JsFunction::from_object)
-            .ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "open_terminal: internal bridge error",
-                )))
-            })?;
+            .ok_or_else(|| crate::js_err("open_terminal: internal bridge error"))?;
         let undefined = JsValue::undefined();
         let bridge = factory
             .call(&undefined, &[JsValue::from(view_id)], ctx)
-            .map_err(|e| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "open_terminal: bridge: {e}"
-                ))))
-            })?;
+            .map_err(|e| crate::js_err(format!("open_terminal: bridge: {e}")))?;
         // spawn pty（与 js_spawn 的 pty 路径同款）：注册回调/worker/master → 起 worker
         let pty_id = crate::state::next_term_id();
         // 注册表键用 pty_id（term_kill 按 pty_id 清理）；view_id 是 UI 层/JS 侧句柄
@@ -554,11 +476,8 @@ pub(crate) fn js_open_terminal(
         crate::state::with_term_workers(|m| m.insert(pty_id, tx));
         let term_tx =
             crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
-        let (master, slave) = pty::open_pty().map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "open_terminal: pty: {e}"
-            ))))
-        })?;
+        let (master, slave) =
+            pty::open_pty().map_err(|e| crate::js_err(format!("open_terminal: pty: {e}")))?;
         crate::state::with_term_masters(|m| m.insert(pty_id, master.fd()));
         spawn_pty_worker(pty_id, &cmd, term_tx, rx, master, slave);
         UI_REQUESTS
@@ -578,9 +497,7 @@ pub(crate) fn js_open_terminal(
     #[cfg(not(unix))]
     {
         let _ = (cmd, side, size, on_exit);
-        Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "open_terminal: requires a unix platform",
-        ))))
+        Err(crate::js_err("open_terminal: requires a unix platform"))
     }
 }
 
@@ -595,20 +512,12 @@ pub(crate) fn js_term_feed(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "term_feed: view_id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("term_feed: view_id must be a number"))?;
     let chunk: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "term_feed: chunk must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("term_feed: chunk must be a string"))?;
     UI_REQUESTS
         .get()
         .unwrap()
@@ -631,9 +540,9 @@ pub(crate) fn js_set_terminal_mode(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
     if !["dock", "fullscreen", "floating", "minimized"].contains(&mode.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("helix.set_terminal_mode: unknown mode '{mode}'"),
-        ))));
+        return Err(crate::js_err(format!(
+            "helix.set_terminal_mode: unknown mode '{mode}'"
+        )));
     }
     UI_REQUESTS
         .get()
@@ -724,18 +633,12 @@ pub(crate) fn js_read_file(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "read_file: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("read_file: path must be a string"))?;
     // C-2 检查点:读任意文件需要 `fs_read`
     crate::permissions::check_js("helix.read_file", crate::permissions::CAP_FS_READ)?;
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(JsValue::from(JsString::from(text))),
-        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("read_file('{path}'): {e}"),
-        )))),
+        Err(e) => Err(crate::js_err(format!("read_file('{path}'): {e}"))),
     }
 }
 
@@ -754,31 +657,21 @@ pub(crate) fn js_write_file(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "write_file: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("write_file: path must be a string"))?;
     // C-2 检查点:写文件需要 `fs_write`
     crate::permissions::check_js("helix.write_file", crate::permissions::CAP_FS_WRITE)?;
     let text: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "write_file: text must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("write_file: text must be a string"))?;
     // 父目录按需创建(与 `helix.write_plugin_file` 同款;manifest 的目录通常已存在)
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&path, text) {
         Ok(()) => Ok(JsValue::undefined()),
-        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("write_file('{path}'): {e}"),
-        )))),
+        Err(e) => Err(crate::js_err(format!("write_file('{path}'): {e}"))),
     }
 }
 
@@ -791,19 +684,11 @@ pub(crate) fn js_read_dir(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "read_dir: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("read_dir: path must be a string"))?;
     // C-2 检查点:列目录需要 `fs_read`
     crate::permissions::check_js("helix.read_dir", crate::permissions::CAP_FS_READ)?;
     let mut entries: Vec<(String, bool, String)> = std::fs::read_dir(&path)
-        .map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "read_dir('{path}'): {e}"
-            ))))
-        })?
+        .map_err(|e| crate::js_err(format!("read_dir('{path}'): {e}")))?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -847,11 +732,7 @@ pub(crate) fn js_open_file(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "open_file: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("open_file: path must be a string"))?;
     let (row, col, scratch) = match args.get(1) {
         Some(obj) if obj.is_object() => {
             let o = obj.as_object().unwrap();
@@ -884,24 +765,16 @@ pub(crate) fn js_move_panel(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "move_panel: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("move_panel: id must be a number"))?;
     let side: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "move_panel: side must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("move_panel: side must be a string"))?;
     if !PANEL_SIDES.contains(&side.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("move_panel: unknown side '{side}' (expected right|left|bottom)"),
-        ))));
+        return Err(crate::js_err(format!(
+            "move_panel: unknown side '{side}' (expected right|left|bottom)"
+        )));
     }
     UI_REQUESTS
         .get()
@@ -920,9 +793,7 @@ pub(crate) fn js_set_buffer_icon(
     let undefined = JsValue::undefined();
     let hook = args.first().unwrap_or(&undefined);
     if !hook.is_callable() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "set_buffer_icon: expected a function",
-        ))));
+        return Err(crate::js_err("set_buffer_icon: expected a function"));
     }
     with_buffer_icon_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
@@ -936,9 +807,7 @@ pub(crate) fn js_set_completion_icon(
     let undefined = JsValue::undefined();
     let hook = args.first().unwrap_or(&undefined);
     if !hook.is_callable() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "set_completion_icon: expected a function",
-        ))));
+        return Err(crate::js_err("set_completion_icon: expected a function"));
     }
     crate::state::with_completion_icon_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
@@ -955,11 +824,9 @@ pub(crate) fn obj_opt_str(
     if v.is_null_or_undefined() {
         return Ok(None);
     }
-    let s: String = v.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: '{key}' must be a string"
-        ))))
-    })?;
+    let s: String = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: '{key}' must be a string")))?;
     Ok(Some(s))
 }
 
@@ -974,15 +841,14 @@ pub(crate) fn obj_opt_u16(
     if v.is_null_or_undefined() {
         return Ok(None);
     }
-    let n: f64 = v.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: '{key}' must be a number"
-        ))))
-    })?;
+    let n: f64 = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: '{key}' must be a number")))?;
     if !n.is_finite() || n < 0.0 || n > u16::MAX as f64 || n.fract() != 0.0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("{api}: '{key}' must be an integer in [0, {}]", u16::MAX),
-        ))));
+        return Err(crate::js_err(format!(
+            "{api}: '{key}' must be an integer in [0, {}]",
+            u16::MAX
+        )));
     }
     Ok(Some(n as u16))
 }
@@ -998,11 +864,9 @@ pub(crate) fn obj_opt_bool(
     if v.is_null_or_undefined() {
         return Ok(None);
     }
-    let b: bool = v.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: '{key}' expects a boolean"
-        ))))
-    })?;
+    let b: bool = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: '{key}' expects a boolean")))?;
     Ok(Some(b))
 }
 
@@ -1019,11 +883,7 @@ pub(crate) fn js_el(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "{api}: 'type' must be a string"
-            ))))
-        })?;
+        .map_err(|_| crate::js_err(format!("{api}: 'type' must be a string")))?;
     // 先收集字段再一次性建对象：builder 持有 &mut ctx，中途再借 ctx 会冲突
     let arg = args.get(1).cloned().unwrap_or(JsValue::undefined());
     let opts = args.get(2).filter(|o| !o.is_null_or_undefined());
@@ -1040,17 +900,15 @@ pub(crate) fn js_el(
             {
                 // 数组直通（parse_node 解析）
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    format!("{api}: 'text' expects a string or an array of segments"),
-                ))));
+                return Err(crate::js_err(format!(
+                    "{api}: 'text' expects a string or an array of segments"
+                )));
             }
             props.push(("text".into(), arg));
             if let Some(opts) = opts {
-                let obj = opts.as_object().ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: options must be an object"
-                    ))))
-                })?;
+                let obj = opts
+                    .as_object()
+                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
                 if let Some(style) = obj_opt_str(&obj, "style", ctx, api)? {
                     props.push(("style".into(), JsString::from(style).into()));
                 }
@@ -1069,16 +927,14 @@ pub(crate) fn js_el(
             // button(label, { id, onPress, style })
             props.push(("text".into(), arg));
             if let Some(opts) = opts {
-                let obj = opts.as_object().ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: options must be an object"
-                    ))))
-                })?;
+                let obj = opts
+                    .as_object()
+                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
                 let id_val = obj.get(JsString::from("id"), ctx)?;
                 if id_val.try_js_into::<String>(ctx).is_err() {
-                    return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                        format!("{api}: 'button' requires an 'id' string"),
-                    ))));
+                    return Err(crate::js_err(format!(
+                        "{api}: 'button' requires an 'id' string"
+                    )));
                 }
                 props.push(("id".into(), id_val));
                 for key in ["onPress", "onKey", "style", "width", "flex"] {
@@ -1088,23 +944,21 @@ pub(crate) fn js_el(
                     }
                 }
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    format!("{api}: 'button' requires options with 'id'"),
-                ))));
+                return Err(crate::js_err(format!(
+                    "{api}: 'button' requires options with 'id'"
+                )));
             }
         }
         "input" => {
             // input({ id, value, onKey, width })
             let obj = arg.as_object().ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: 'input' expects an options object"
-                ))))
+                crate::js_err(format!("{api}: 'input' expects an options object"))
             })?;
             let id_val = obj.get(JsString::from("id"), ctx)?;
             if id_val.try_js_into::<String>(ctx).is_err() {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    format!("{api}: 'input' requires an 'id' string"),
-                ))));
+                return Err(crate::js_err(format!(
+                    "{api}: 'input' requires an 'id' string"
+                )));
             }
             props.push(("id".into(), id_val));
             props.push(("value".into(), obj.get(JsString::from("value"), ctx)?));
@@ -1117,17 +971,13 @@ pub(crate) fn js_el(
         }
         "row" | "col" | "scroll" => {
             let _: JsArray = arg.try_js_into(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{api}: '{type_}' expects an array of nodes"
-                ))))
+                crate::js_err(format!("{api}: '{type_}' expects an array of nodes"))
             })?;
             props.push(("children".into(), arg.clone()));
             if let Some(opts) = opts {
-                let obj = opts.as_object().ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: options must be an object"
-                    ))))
-                })?;
+                let obj = opts
+                    .as_object()
+                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
                 let is_scroll = type_ == "scroll";
                 if let Some(v) =
                     obj_opt_u16(&obj, if is_scroll { "height" } else { "gap" }, ctx, api)?
@@ -1145,9 +995,9 @@ pub(crate) fn js_el(
             }
         }
         other => {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                format!("{api}: unknown type '{other}' (expected text|row|col|scroll)"),
-            ))));
+            return Err(crate::js_err(format!(
+                "{api}: unknown type '{other}' (expected text|row|col|scroll)"
+            )));
         }
     }
     let mut builder = ObjectInitializer::new(ctx);
@@ -1170,18 +1020,16 @@ fn parse_line_item(
             .get(JsString::from("text"), ctx)?
             .try_js_into(ctx)
             .map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                crate::js_err(format!(
                     "{what} render line {i}: object must have a string 'text' property"
-                ))))
+                ))
             })?;
         let style = obj.get(JsString::from("style"), ctx)?;
         let style = if style.is_null_or_undefined() {
             None
         } else {
             Some(style.try_js_into::<String>(ctx).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
-                    "{what} render line {i}: 'style' must be a string"
-                ))))
+                crate::js_err(format!("{what} render line {i}: 'style' must be a string"))
             })?)
         };
         Ok(match style {
@@ -1191,9 +1039,9 @@ fn parse_line_item(
     } else if let Ok(text) = item.try_js_into::<String>(ctx) {
         Ok(StyledLine::plain(text))
     } else {
-        Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("{what} render line {i} must be a string or an object with 'text'"),
-        ))))
+        Err(crate::js_err(format!(
+            "{what} render line {i} must be a string or an object with 'text'"
+        )))
     }
 }
 
@@ -1366,19 +1214,13 @@ fn parse_node(
     what: &str,
 ) -> boa_engine::JsResult<CompNode> {
     let api = format!("{what} render");
-    let obj = value.as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "{api}: node must be an object with 'type'"
-        ))))
-    })?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| crate::js_err(format!("{api}: node must be an object with 'type'")))?;
     let type_: String = obj
         .get(JsString::from("type"), ctx)?
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "{api}: node 'type' must be a string"
-            ))))
-        })?;
+        .map_err(|_| crate::js_err(format!("{api}: node 'type' must be a string")))?;
     match type_.as_str() {
         "text" => {
             let text_val = obj.get(JsString::from("text"), ctx)?;
@@ -1398,26 +1240,26 @@ fn parse_node(
                 for i in 0..len {
                     let item = arr.get(i, ctx)?;
                     let obj = item.as_object().ok_or_else(|| {
-                        JsError::from_opaque(JsValue::from(JsString::from(format!(
+                        crate::js_err(format!(
                             "{api}: rich text segments must be objects with 'text'"
-                        ))))
+                        ))
                     })?;
                     let t: String = obj
                         .get(JsString::from("text"), ctx)?
                         .try_js_into(ctx)
                         .map_err(|_| {
-                            JsError::from_opaque(JsValue::from(JsString::from(format!(
+                            crate::js_err(format!(
                                 "{api}: rich text segment must have a string 'text'"
-                            ))))
+                            ))
                         })?;
                     let st = obj_opt_str(&obj, "style", ctx, &api)?;
                     spans.push(TextSpan { text: t, style: st });
                 }
                 spans
             } else {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    format!("{api}: text node 'text' must be a string or an array of segments"),
-                ))));
+                return Err(crate::js_err(format!(
+                    "{api}: text node 'text' must be a string or an array of segments"
+                )));
             };
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
             let node_id = obj_opt_str(&obj, "id", ctx, &api)?;
@@ -1465,9 +1307,7 @@ fn parse_node(
                 .get(JsString::from("id"), ctx)?
                 .try_js_into(ctx)
                 .map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: button node must have a string 'id'"
-                    ))))
+                    crate::js_err(format!("{api}: button node must have a string 'id'"))
                 })?;
             let label = parse_text_spans(&obj, ctx, &api)?;
             let width = obj_opt_u16(&obj, "width", ctx, &api)?;
@@ -1484,11 +1324,7 @@ fn parse_node(
             let node_id: String = obj
                 .get(JsString::from("id"), ctx)?
                 .try_js_into(ctx)
-                .map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
-                        "{api}: input node must have a string 'id'"
-                    ))))
-                })?;
+                .map_err(|_| crate::js_err(format!("{api}: input node must have a string 'id'")))?;
             let js_value: String = obj
                 .get(JsString::from("value"), ctx)?
                 .try_js_into(ctx)
@@ -1525,11 +1361,9 @@ fn parse_node(
                 multiline,
             })
         }
-        other => Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!(
-                "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
-            ),
-        )))),
+        other => Err(crate::js_err(format!(
+            "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
+        ))),
     }
 }
 
@@ -1552,26 +1386,26 @@ fn parse_text_spans(
         for i in 0..len {
             let item = arr.get(i, ctx)?;
             let seg_obj = item.as_object().ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!(
+                crate::js_err(format!(
                     "{api}: rich text segments must be objects with 'text'"
-                ))))
+                ))
             })?;
             let t: String = seg_obj
                 .get(JsString::from("text"), ctx)?
                 .try_js_into(ctx)
                 .map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(format!(
+                    crate::js_err(format!(
                         "{api}: rich text segment must have a string 'text'"
-                    ))))
+                    ))
                 })?;
             let st = obj_opt_str(&seg_obj, "style", ctx, api)?;
             spans.push(TextSpan { text: t, style: st });
         }
         Ok(spans)
     } else {
-        Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("{api}: 'text' must be a string or an array of segments"),
-        ))))
+        Err(crate::js_err(format!(
+            "{api}: 'text' must be a string or an array of segments"
+        )))
     }
 }
 
@@ -1617,25 +1451,19 @@ fn parse_children(
     let api = format!("{what} render");
     let v = obj.get(JsString::from("children"), ctx)?;
     let arr: JsArray = v.try_js_into(ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
+        crate::js_err(format!(
             "{api}: container node must have an array 'children'"
-        ))))
+        ))
     })?;
     let len: usize = arr
         .get(JsString::from("length"), ctx)?
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "{api}: children length invalid"
-            ))))
-        })?;
+        .map_err(|_| crate::js_err(format!("{api}: children length invalid")))?;
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
-        let item = arr.get(i, ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "{api}: children[{i}] read failed"
-            ))))
-        })?;
+        let item = arr
+            .get(i, ctx)
+            .map_err(|_| crate::js_err(format!("{api}: children[{i}] read failed")))?;
         out.push(parse_node(&item, ctx, id, what)?);
     }
     Ok(out)
@@ -1789,9 +1617,9 @@ pub(crate) fn js_set_statusline(
         with_statusline_hook(|h| *h = Some(arg));
         crate::state::set_statusline_replace(replace);
     } else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.set_statusline: expected a function or null",
-        ))));
+        ));
     }
     Ok(JsValue::undefined())
 }
@@ -2125,9 +1953,8 @@ pub(crate) fn js_term_list(
                 Attribute::all(),
             )
             .build();
-        arr.push(item, ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from("helix.term_list: push")))
-        })?;
+        arr.push(item, ctx)
+            .map_err(|_| crate::js_err("helix.term_list: push"))?;
     }
     Ok(arr.into())
 }
@@ -2139,19 +1966,15 @@ pub(crate) fn js_term_close(
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let Some(v) = args.first() else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.term_close: expected view_id",
-        ))));
+        return Err(crate::js_err("helix.term_close: expected view_id"));
     };
-    let view_id: f64 = v.try_js_into(_ctx).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.term_close: view_id must be a number",
-        )))
-    })?;
+    let view_id: f64 = v
+        .try_js_into(_ctx)
+        .map_err(|_| crate::js_err("helix.term_close: view_id must be a number"))?;
     if view_id < 0.0 || view_id.fract() != 0.0 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.term_close: view_id must be a non-negative integer",
-        ))));
+        ));
     }
     crate::state::UI_REQUESTS
         .get()
@@ -2212,9 +2035,7 @@ pub(crate) fn js_set_completion_render(
     let undefined = JsValue::undefined();
     let hook = args.first().unwrap_or(&undefined);
     if !hook.is_callable() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "set_completion_render: expected a function",
-        ))));
+        return Err(crate::js_err("set_completion_render: expected a function"));
     }
     crate::state::with_completion_render_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())

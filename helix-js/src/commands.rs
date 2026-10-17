@@ -5,7 +5,7 @@ use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::NativeFunction;
-use boa_engine::{Context, JsError, JsString, JsValue, Source};
+use boa_engine::{Context, JsString, JsValue, Source};
 
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
@@ -51,9 +51,7 @@ pub(crate) fn js_register_command(
         .try_js_into(context)?;
     let func = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if name.is_empty() || name.chars().any(char::is_whitespace) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("invalid command name: {name:?}"),
-        ))));
+        return Err(crate::js_err(format!("invalid command name: {name:?}")));
     }
     // 先校验/存入 doc 再注册：第三参类型非法（如 42）时整体失败，不产生半注册
     if let Some(doc_arg) = args.get(2) {
@@ -96,14 +94,10 @@ pub(crate) fn js_remove_plugin_file(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.remove_plugin_file: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.remove_plugin_file: path must be a string"))?;
     match crate::state::remove_plugin_file(&rel) {
         Ok(b) => Ok(JsValue::from(b)),
-        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(e)))),
+        Err(e) => Err(crate::js_err(e)),
     }
 }
 
@@ -118,27 +112,19 @@ pub(crate) fn js_write_plugin_file(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.write_plugin_file: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.write_plugin_file: path must be a string"))?;
     let text: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.write_plugin_file: text must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.write_plugin_file: text must be a string"))?;
     // C-2 检查点:写插件自身文件属于 `fs_write`
     crate::permissions::check_js("helix.write_plugin_file", crate::permissions::CAP_FS_WRITE)?;
     match crate::state::write_plugin_file(&rel, &text) {
         Ok(p) => Ok(JsValue::from(JsString::from(
             p.to_string_lossy().to_string(),
         ))),
-        Err(e) => Err(JsError::from_opaque(JsValue::from(JsString::from(e)))),
+        Err(e) => Err(crate::js_err(e)),
     }
 }
 
@@ -242,11 +228,7 @@ pub(crate) fn js_runtime_path(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.runtime_path: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.runtime_path: name must be a string"))?;
     Ok(match crate::state::runtime_path(&name) {
         Some(p) => JsValue::from(JsString::from(p.to_string_lossy().to_string())),
         None => JsValue::null(),
@@ -262,15 +244,9 @@ pub(crate) fn js_load(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.load: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.load: name must be a string"))?;
     if name.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.load: name must not be empty",
-        ))));
+        return Err(crate::js_err("helix.load: name must not be empty"));
     }
     load_script_checked(ctx, &name)
 }
@@ -312,9 +288,9 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
                 .collect::<Vec<_>>()
                 .join(" -> ")
         });
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("helix.load: circular dependency: {chain}"),
-        ))));
+        return Err(crate::js_err(format!(
+            "helix.load: circular dependency: {chain}"
+        )));
     }
     // eval 前入栈（嵌套 load 期间本 key 保持可见）；借用即刻释放，不跨 eval 持有。
     // §4-2 的关键一步:prefer 的对象是**父插件的根**,不是本文件自己的根
@@ -333,26 +309,16 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
                 &key,
                 parent_root.as_deref(),
             )
-            .ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "helix.load: plugins dir not set",
-                )))
-            })?
+            .ok_or_else(|| crate::js_err("helix.load: plugins dir not set"))?
         };
-        let src = std::fs::read_to_string(&path).map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "helix.load('{key}'): {e}"
-            ))))
-        })?;
+        let src = std::fs::read_to_string(&path)
+            .map_err(|e| crate::js_err(format!("helix.load('{key}'): {e}")))?;
         // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
         crate::state::with_last_plugin_deps(|d| d.clear());
         // C-1/C-2:同一时刻清空"本次 eval 声明过 manifest 吗"的标记
         crate::permissions::begin_manifest();
-        eval_wrapped(ctx, &src).map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "helix.load('{key}') failed: {e}"
-            ))))
-        })?;
+        eval_wrapped(ctx, &src)
+            .map_err(|e| crate::js_err(format!("helix.load('{key}') failed: {e}")))?;
         // C-2 的"内置"判据 = **提供根**是不是用户插件目录(用户层 = 最后一个根)。
         // 内置 17 个插件随软件分发(runtime/plugins)⇒ 永不询问;用户同名覆盖
         // (config/plugins 里那份)则按第三方对待。
@@ -396,11 +362,7 @@ pub(crate) fn js_plugin(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.plugin: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.plugin: name must be a string"))?;
     let mut manifest = crate::types::PluginManifest {
         name: name.clone(),
         ..Default::default()
@@ -419,10 +381,10 @@ pub(crate) fn js_plugin(
             // 声明面版本**要比一比**:高于编辑器支持的版本 ⇒ 直接报错，不默默降级
             // (插件按它不认识的语义跑，比"加载失败"更糟)。
             if v > u32::from(crate::types::API_VERSION) {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(format!(
+                return Err(crate::js_err(format!(
                     "helix.plugin('{name}'): schema_version {v} 高于本编辑器支持的 {}（升级编辑器或降级插件）",
                     crate::types::API_VERSION
-                )))));
+                )));
             }
             manifest.schema_version = Some(v);
         }
@@ -502,11 +464,7 @@ pub(crate) fn js_server_search(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.server.search: keyword required",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.server.search: keyword required"))?;
     push_server_op("search", Some(kw));
     Ok(JsValue::undefined())
 }
@@ -520,11 +478,7 @@ pub(crate) fn js_server_install(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.server.install: name required",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.server.install: name required"))?;
     push_server_op("install", Some(name));
     Ok(JsValue::undefined())
 }
@@ -536,13 +490,11 @@ pub(crate) fn js_server_update(
 ) -> boa_engine::JsResult<JsValue> {
     // 无参 = 更新全部(与 :server update 一致)
     let name: Option<String> = match args.first() {
-        Some(v) if !v.is_undefined() && !v.is_null() => {
-            Some(v.clone().try_js_into(context).map_err(|_| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "helix.server.update: name must be a string",
-                )))
-            })?)
-        }
+        Some(v) if !v.is_undefined() && !v.is_null() => Some(
+            v.clone()
+                .try_js_into(context)
+                .map_err(|_| crate::js_err("helix.server.update: name must be a string"))?,
+        ),
         _ => None,
     };
     push_server_op("update", name);
@@ -558,11 +510,7 @@ pub(crate) fn js_server_remove(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.server.remove: name required",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.server.remove: name required"))?;
     push_server_op("remove", Some(name));
     Ok(JsValue::undefined())
 }
@@ -617,48 +565,34 @@ pub(crate) fn js_lazy(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     if args.len() < 2 {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+        return Err(crate::js_err(
             "helix.lazy: name and at least one command required",
-        ))));
+        ));
     }
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.lazy: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.lazy: name must be a string"))?;
     if name.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.lazy: name must not be empty",
-        ))));
+        return Err(crate::js_err("helix.lazy: name must not be empty"));
     }
     let factory = ctx
         .eval(Source::from_bytes(
             "(function(n, c) { return function(ctx) { helix.load(n); helix.run_command(c, ctx); }; })",
         ))
-        .map_err(|e| JsError::from_opaque(JsValue::from(JsString::from(format!("helix.lazy: {e}")))))?;
+        .map_err(|e| crate::js_err(format!("helix.lazy: {e}")))?;
     let factory = factory
         .as_callable()
         .and_then(JsFunction::from_object)
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.lazy: internal factory error",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("helix.lazy: internal factory error"))?;
     let undefined = JsValue::undefined();
     for cmd in &args[1..] {
-        let cmd: String = cmd.try_js_into(ctx).map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.lazy: command names must be strings",
-            )))
-        })?;
+        let cmd: String = cmd
+            .try_js_into(ctx)
+            .map_err(|_| crate::js_err("helix.lazy: command names must be strings"))?;
         if cmd.is_empty() || cmd.chars().any(char::is_whitespace) {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                format!("invalid command name: {cmd:?}"),
-            ))));
+            return Err(crate::js_err(format!("invalid command name: {cmd:?}")));
         }
         let closure = factory
             .call(
@@ -669,9 +603,7 @@ pub(crate) fn js_lazy(
                 ],
                 ctx,
             )
-            .map_err(|e| {
-                JsError::from_opaque(JsValue::from(JsString::from(format!("helix.lazy: {e}"))))
-            })?;
+            .map_err(|e| crate::js_err(format!("helix.lazy: {e}")))?;
         with_registry(|r| r.insert(cmd, closure));
     }
     Ok(JsValue::undefined())
@@ -752,9 +684,7 @@ fn parse_command_ctx(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<Com
             ((0, 0), (0, 0))
         } else {
             let sel_obj = sel.as_object().ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "helix.run_command: 'selection' must be an object with anchor/head",
-                )))
+                crate::js_err("helix.run_command: 'selection' must be an object with anchor/head")
             })?;
             let anchor = parse_pos(&sel_obj.get(JsString::from("anchor"), ctx)?, ctx, (0, 0))?;
             let head = parse_pos(&sel_obj.get(JsString::from("head"), ctx)?, ctx, (0, 0))?;
@@ -782,38 +712,20 @@ pub(crate) fn js_run_command(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.run_command: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.run_command: name must be a string"))?;
     let command_ctx = parse_command_ctx(args.get(1).unwrap_or(&JsValue::undefined()), ctx)?;
-    let func = with_registry(|r| r.get(&name).cloned()).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.run_command: '{name}' is not registered"
-        ))))
-    })?;
+    let func = with_registry(|r| r.get(&name).cloned())
+        .ok_or_else(|| crate::js_err(format!("helix.run_command: '{name}' is not registered")))?;
     let func = func
         .as_callable()
         .and_then(JsFunction::from_object)
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "registered value for '{name}' is not a function"
-            ))))
-        })?;
-    let arg = ctx_to_js(&command_ctx, ctx).map_err(|e| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "helix.run_command: {e}"
-        ))))
-    })?;
+        .ok_or_else(|| crate::js_err(format!("registered value for '{name}' is not a function")))?;
+    let arg = ctx_to_js(&command_ctx, ctx)
+        .map_err(|e| crate::js_err(format!("helix.run_command: {e}")))?;
     let undefined = JsValue::undefined();
     func.call(&undefined, &[arg], ctx)
         .map(|_| JsValue::undefined())
-        .map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "helix.run_command('{name}') failed: {e}"
-            ))))
-        })
+        .map_err(|e| crate::js_err(format!("helix.run_command('{name}') failed: {e}")))
 }
 
 /// helix.map 允许的 mode 白名单
@@ -830,18 +742,14 @@ pub(crate) fn js_map(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
     if !KEYMAP_MODES.contains(&mode.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("helix.map: unknown mode '{mode}'"),
-        ))));
+        return Err(crate::js_err(format!("helix.map: unknown mode '{mode}'")));
     }
     let key: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
     if key.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.map: key must not be empty",
-        ))));
+        return Err(crate::js_err("helix.map: key must not be empty"));
     }
     let command_arg = args.get(2).cloned().unwrap_or(JsValue::undefined());
 
@@ -961,11 +869,7 @@ pub(crate) fn js_by_path(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.by_path: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.by_path: path must be a string"))?;
     let canonical = helix_stdx::path::canonicalize(&path)
         .to_string_lossy()
         .into_owned();
@@ -1085,14 +989,10 @@ pub(crate) fn js_on(
         .try_js_into(context)?;
     let handler = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if !EVENT_WHITELIST.contains(&name.as_str()) {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("helix.on: unknown event '{name}'"),
-        ))));
+        return Err(crate::js_err(format!("helix.on: unknown event '{name}'")));
     }
     if handler.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.on: handler must be a function",
-        ))));
+        return Err(crate::js_err("helix.on: handler must be a function"));
     }
     if let Some(owner) = crate::permissions::current_declared() {
         crate::permissions::bind_handler_owner(&name, &owner);
@@ -1724,20 +1624,12 @@ pub(crate) fn js_term_state(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "term_state: ptyId must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("term_state: ptyId must be a number"))?;
     let key: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "term_state: key must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("term_state: key must be a string"))?;
     let value = match args.get(2) {
         Some(v) => v,
         None => &JsValue::undefined(),
@@ -1748,11 +1640,9 @@ pub(crate) fn js_term_state(
             .map(|v| JsValue::from(JsString::from(v)))
             .unwrap_or(JsValue::undefined()));
     }
-    let v: String = value.try_js_into(context).map_err(|_| {
-        JsError::from_opaque(JsValue::from(JsString::from(
-            "term_state: value must be a string",
-        )))
-    })?;
+    let v: String = value
+        .try_js_into(context)
+        .map_err(|_| crate::js_err("term_state: value must be a string"))?;
     write_term_state(pty_id, &key, &v);
     Ok(JsValue::undefined())
 }
@@ -1834,17 +1724,13 @@ pub(crate) fn js_set_selection(
             let arr = JsArray::from_object(obj.clone()).expect("is_array checked");
             let len = arr.length(context)?;
             if len == 0 {
-                return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                    "set_selection: empty selection array",
-                ))));
+                return Err(crate::js_err("set_selection: empty selection array"));
             }
             let mut selections = Vec::with_capacity(len as usize);
             for i in 0..len {
                 let elem = arr.get(i, context)?;
                 let el = elem.as_object().ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "set_selection: each array element must be { anchor, head }",
-                    )))
+                    crate::js_err("set_selection: each array element must be { anchor, head }")
                 })?;
                 let anchor = parse_sel_pos(&el.get(JsString::from("anchor"), context)?, context)?;
                 let head = parse_sel_pos(&el.get(JsString::from("head"), context)?, context)?;
@@ -1884,17 +1770,13 @@ pub(crate) fn js_set_selection(
 /// 解析多选区的 { row, col }——字段缺失/非对象 → Err（与 parse_pos 的缺省语义不同，
 /// 多选区坐标必须完整显式）
 fn parse_sel_pos(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<(usize, usize)> {
-    let obj = v.as_object().ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(
-            "set_selection: anchor/head must be { row, col }",
-        )))
-    })?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| crate::js_err("set_selection: anchor/head must be { row, col }"))?;
     let row = obj.get(JsString::from("row"), ctx)?;
     let col = obj.get(JsString::from("col"), ctx)?;
     if row.is_null_or_undefined() || col.is_null_or_undefined() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "set_selection: anchor/head missing row/col",
-        ))));
+        return Err(crate::js_err("set_selection: anchor/head missing row/col"));
     }
     Ok((
         row.try_js_into::<usize>(ctx)?,
@@ -1922,11 +1804,7 @@ pub(crate) fn js_run(
         .arg("-c")
         .arg(&cmd)
         .output()
-        .map_err(|e| {
-            JsError::from_opaque(JsValue::from(JsString::from(format!(
-                "helix.run: failed to spawn: {e}"
-            ))))
-        })?;
+        .map_err(|e| crate::js_err(format!("helix.run: failed to spawn: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr: String = stderr.chars().take(RUN_OUTPUT_LIMIT).collect();
@@ -1934,9 +1812,9 @@ pub(crate) fn js_run(
             .status
             .code()
             .map_or_else(|| "signal".to_string(), |c| c.to_string());
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            format!("helix.run: command failed ({code}): {stderr}"),
-        ))));
+        return Err(crate::js_err(format!(
+            "helix.run: command failed ({code}): {stderr}"
+        )));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut stdout: String = stdout.chars().take(RUN_OUTPUT_LIMIT).collect();
@@ -2086,11 +1964,7 @@ pub(crate) fn js_set_virtual_text(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.set_virtual_text: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.set_virtual_text: path must be a string"))?;
     let canonical = helix_stdx::path::canonicalize(&path)
         .to_string_lossy()
         .into_owned();
@@ -2146,11 +2020,7 @@ pub(crate) fn js_set_highlight(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.set_highlight: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.set_highlight: path must be a string"))?;
     let canonical = helix_stdx::path::canonicalize(&path)
         .to_string_lossy()
         .into_owned();

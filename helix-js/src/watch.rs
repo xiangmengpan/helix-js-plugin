@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -124,21 +124,13 @@ pub(crate) fn js_watch(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.watch: path must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.watch: path must be a string"))?;
     if path.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.watch: path must not be empty",
-        ))));
+        return Err(crate::js_err("helix.watch: path must not be empty"));
     }
     let cb = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if cb.as_callable().is_none() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "helix.watch: callback must be a function",
-        ))));
+        return Err(crate::js_err("helix.watch: callback must be a function"));
     }
     let id = next_watch_id();
     with_watch_callbacks(|m| {
@@ -163,11 +155,7 @@ pub(crate) fn js_unwatch(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "helix.unwatch: id must be a number",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("helix.unwatch: id must be a number"))?;
     with_watch_callbacks(|m| {
         m.remove(&id);
     });

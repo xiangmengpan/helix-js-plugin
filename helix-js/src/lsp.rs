@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::JsPromise;
-use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
+use boa_engine::{Context, JsNativeError, JsString, JsValue};
 
 use crate::state::WakeSender;
 
@@ -68,11 +68,7 @@ fn enqueue_lsp_request(
                 .first()
                 .unwrap_or(&JsValue::undefined())
                 .try_js_into(context)
-                .map_err(|_| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "helix.lsp.rename: newName must be a string",
-                    )))
-                })?;
+                .map_err(|_| crate::js_err("helix.lsp.rename: newName must be a string"))?;
             Some(serde_json::Value::String(name))
         }
         LspMethod::ExecuteCodeAction => {
@@ -81,18 +77,12 @@ fn enqueue_lsp_request(
                 .unwrap_or(&JsValue::undefined())
                 .as_object()
                 .ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "helix.lsp.execute_code_action: action must be an object",
-                    )))
+                    crate::js_err("helix.lsp.execute_code_action: action must be an object")
                 })?;
             Some(
                 JsValue::from(obj.clone())
                     .to_json(context)
-                    .map_err(|e| {
-                        JsError::from_opaque(JsValue::from(JsString::from(format!(
-                            "helix.lsp.execute_code_action: {e}"
-                        ))))
-                    })?
+                    .map_err(|e| crate::js_err(format!("helix.lsp.execute_code_action: {e}")))?
                     .unwrap_or(serde_json::Value::Null),
             )
         }

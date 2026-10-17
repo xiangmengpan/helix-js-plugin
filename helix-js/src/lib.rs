@@ -100,6 +100,17 @@ pub fn init() {
 
 /// 建引擎并在其中注册 `helix` 全局(逐字搬自 `init()`,仅去掉槽相关的 3 行)。
 /// 由 [`crate::host::JsHost::new`] 调用。
+/// JS 侧可见的错误:`throw new Error(msg)`(opaque 的 Error 对象)。
+///
+/// 为什么收成一个函数:这个形状原先在本 crate 出现 **238 次**
+/// (`JsError::from_opaque(JsValue::from(JsString::from(msg)))`),占了参数校验代码
+/// 一半的宽度,把「校验什么」挤出视线。语义完全不变。
+pub(crate) fn js_err(msg: impl Into<String>) -> boa_engine::JsError {
+    boa_engine::JsError::from_opaque(boa_engine::JsValue::from(boa_engine::JsString::from(
+        msg.into(),
+    )))
+}
+
 pub(crate) fn build_engine(engine: &mut Context) {
     // 各命名空间先独立构建(`ObjectInitializer` 独占 `&mut Context`),再挂到 helix 上。
     // 成员注册表在 `register/*`:这里只负责**拼装顺序**,不再写 134 份样板。

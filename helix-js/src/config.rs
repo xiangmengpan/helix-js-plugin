@@ -6,7 +6,7 @@
 use crate::state::{with_config_schemas, CONFIGS};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue};
+use boa_engine::{Context, JsString, JsValue};
 
 /// 声明插件配置 schema:helix.define_config("filetree", {key: {type, default, doc}})
 pub(crate) fn js_define_config(
@@ -18,21 +18,13 @@ pub(crate) fn js_define_config(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "define_config: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("define_config: name must be a string"))?;
     if name.is_empty() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "define_config: name must not be empty",
-        ))));
+        return Err(crate::js_err("define_config: name must not be empty"));
     }
     let schema = args.get(1).cloned().unwrap_or(JsValue::undefined());
     if !schema.is_object() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "define_config: schema must be an object",
-        ))));
+        return Err(crate::js_err("define_config: schema must be an object"));
     }
     // schema 对象序列化为 JSON 字符串(经 JSON.stringify)
     let json: String = schema
@@ -55,11 +47,7 @@ pub(crate) fn js_get_config(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "get_config: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("get_config: name must be a string"))?;
     let json = CONFIGS
         .get()
         .map(|m| m.lock().unwrap().clone())
@@ -93,11 +81,7 @@ pub(crate) fn js_get_config_docs(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "get_config_docs: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("get_config_docs: name must be a string"))?;
     let schema = with_config_schemas(|m| m.get(&name).cloned());
     let Some(schema) = schema else {
         return Ok(JsValue::null());

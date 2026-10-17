@@ -4,7 +4,7 @@
 
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::FunctionObjectBuilder;
-use boa_engine::{Context, JsError, JsObject, JsString, JsValue, NativeFunction};
+use boa_engine::{Context, JsObject, JsString, JsValue, NativeFunction};
 
 use crate::state::{with_engine, with_picker_sources};
 use crate::types::{OpenPickerReq, UiRequest};
@@ -26,40 +26,26 @@ pub(crate) fn js_picker_define(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "picker.define: name must be a string",
-            )))
-        })?;
+        .map_err(|_| crate::js_err("picker.define: name must be a string"))?;
     let Some(config) = args.get(1).and_then(|v| v.as_object()) else {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "picker.define: config must be an object",
-        ))));
+        return Err(crate::js_err("picker.define: config must be an object"));
     };
     // 校验 columns：字符串数组
     let columns = config.get(JsString::from("columns"), context)?;
     columns
         .as_object()
         .and_then(|o| o.get(JsString::from("length"), context).ok())
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "picker.define: columns must be an array",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("picker.define: columns must be an array"))?;
     // 校验 items：可调用
     let items = config.get(JsString::from("items"), context)?;
     if !items.is_callable() {
-        return Err(JsError::from_opaque(JsValue::from(JsString::from(
-            "picker.define: items must be a function",
-        ))));
+        return Err(crate::js_err("picker.define: items must be a function"));
     }
     // S2:校验**可选** onKey —— 存在则必须是函数 ✓(absent/undefined 合法 ⇒ 零行为变化 ✓)
     // 契约见 picker_key_hook:返回 "handled" 才消费;抛错 = 未处理 ✓
     if let Ok(cb) = config.get(JsString::from("onKey"), context) {
         if !cb.is_undefined() && cb.as_callable().is_none() {
-            return Err(JsError::from_opaque(JsValue::from(JsString::from(
-                "picker.define: onKey must be a function",
-            ))));
+            return Err(crate::js_err("picker.define: onKey must be a function"));
         }
     }
     with_picker_sources(|m| {
@@ -153,38 +139,23 @@ pub(crate) fn js_picker_run(
         .first()
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
-        .map_err(|_| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "picker.run: name must be a string",
-            )))
-        })?;
-    let config = with_picker_sources(|m| m.get(&name).cloned()).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(format!(
-            "picker.run: source '{name}' not defined"
-        ))))
-    })?;
+        .map_err(|_| crate::js_err("picker.run: name must be a string"))?;
+    let config = with_picker_sources(|m| m.get(&name).cloned())
+        .ok_or_else(|| crate::js_err(format!("picker.run: source '{name}' not defined")))?;
     let config_obj = config.as_object().unwrap().clone();
     // 列名随请求下发（define 已校验 columns 是数组）：term 侧建表头 + 行宽校验用
     let columns = read_cells(
         &config_obj
             .get(JsString::from("columns"), context)?
             .as_object()
-            .ok_or_else(|| {
-                JsError::from_opaque(JsValue::from(JsString::from(
-                    "picker.run: source has no columns array",
-                )))
-            })?,
+            .ok_or_else(|| crate::js_err("picker.run: source has no columns array"))?,
         context,
     )?;
     let items_fn = config_obj.get(JsString::from("items"), context)?;
     let items_fn = items_fn
         .as_callable()
         .and_then(JsFunction::from_object)
-        .ok_or_else(|| {
-            JsError::from_opaque(JsValue::from(JsString::from(
-                "picker.run: source has no callable items",
-            )))
-        })?;
+        .ok_or_else(|| crate::js_err("picker.run: source has no callable items"))?;
     let result = items_fn.call(&JsValue::undefined(), &[], context)?;
     // 同步数组 → 立即 push；Promise → .then 续体里 push
     push_open_picker(&name, columns, result, context)?;
@@ -356,11 +327,10 @@ fn push_request(req: UiRequest) {
 
 /// items 行 → `Vec<RowSpec>`；行 = 数组 `[c1,c2]` 或对象 {cells, payload}
 fn parse_rows(value: JsValue, context: &mut Context) -> boa_engine::JsResult<Vec<RowSpec>> {
-    let rows_arr = value.as_object().filter(|o| o.is_array()).ok_or_else(|| {
-        JsError::from_opaque(JsValue::from(JsString::from(
-            "picker: items must return an array of rows",
-        )))
-    })?;
+    let rows_arr = value
+        .as_object()
+        .filter(|o| o.is_array())
+        .ok_or_else(|| crate::js_err("picker: items must return an array of rows"))?;
     let length = rows_arr
         .get(JsString::from("length"), context)?
         .as_number()
@@ -374,8 +344,7 @@ fn parse_rows(value: JsValue, context: &mut Context) -> boa_engine::JsResult<Vec
 }
 
 fn parse_row(value: JsValue, context: &mut Context) -> boa_engine::JsResult<RowSpec> {
-    let err =
-        |msg: &str| JsError::from_opaque(JsValue::from(JsString::from(format!("picker: {msg}"))));
+    let err = |msg: &str| crate::js_err(format!("picker: {msg}"));
     let Some(obj) = value.as_object() else {
         return Err(err("each row must be an array or object"));
     };
