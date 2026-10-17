@@ -941,6 +941,7 @@ fn has_component_render_probes_without_calling_js() {
 /// 手法:另起一条**没有宿主**的线程调用它们,断言返回空答案**且**宿主仍不存在。
 #[test]
 fn queries_do_not_create_a_host() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::thread::spawn(|| {
         assert!(!crate::host::engine_exists(), "新线程本不该有宿主");
 

@@ -1150,31 +1150,31 @@ mod engine_ownership_tests {
         std::mem::forget(other);
     }
 
-    /// **`clear_active` 之后,查询类入口不得顺手建宿主**(G11a 不变量)。
+    /// **查询类入口不得顺手建宿主**(G11a 不变量)。
     ///
     /// 由来:`init()` 在没有宿主时会 `install_default(JsHost::new())` —— 那是整个 boa 引擎。
     /// 查询类入口(`engine_exists` / `try_current_host_key` / `try_with_*`)被放在每帧路径上,
-    /// 为一个布尔建引擎是静默的性能事故;这条测试把它钉住。
+    /// 为一个布尔建引擎是静默的性能事故。
+    ///
+    /// 做法:**在一条干净线程上**验(thread_local 的 `DEFAULT_HOST` 在该线程为空),
+    /// 这样不用动测试线程的默认宿主、也就不会和并行用例互相踩。
     #[test]
-    fn queries_do_not_create_host_after_clear() {
-        let _g = crate::tests::TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        crate::init();
-        // 先把默认宿主接管出来(槽清空),再 clear_active ⇒ 两类查询都必须给 None
-        let host = take_existing().expect("init() 之后应有默认宿主可接管");
-        clear_active();
-        assert!(!engine_exists(), "无宿主时 engine_exists() 必须为 false");
-        assert!(
-            try_current_host_key().is_none(),
-            "无宿主时 try_current_host_key() 必须给 None(而不是 init())"
-        );
-        assert!(
-            try_with_host_ref(|_| ()).is_none(),
-            "无宿主时 try_with_host_ref() 必须给 None"
-        );
-        // 停放回去,别给同线程后续测试留一个空槽
-        park_or_forget(host);
+    fn queries_do_not_create_host() {
+        std::thread::spawn(|| {
+            assert!(!engine_exists(), "无宿主时 engine_exists() 必须为 false");
+            assert!(
+                try_current_host_key().is_none(),
+                "无宿主时 try_current_host_key() 必须给 None(而不是 init())"
+            );
+            assert!(
+                try_with_host_ref(|_| ()).is_none(),
+                "无宿主时 try_with_host_ref() 必须给 None"
+            );
+            // 关键:以上三个查询不得留下宿主
+            assert!(!engine_exists(), "查询之后仍然不得有宿主");
+        })
+        .join()
+        .expect("线程内断言失败");
     }
 
     /// **队列要按宿主隔离,而不是进程级共享**(T1 步骤 2 的目标行为)。

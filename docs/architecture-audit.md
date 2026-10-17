@@ -483,7 +483,8 @@ cargo integration-test
   3. **删掉 4 处自相矛盾的 Phase B 说法**(模块头、结构体注释、两条测试注释),
      改成指向本 spec 的结论。
   4. **补 2 条不变量测试**:`host_key_is_stable_per_host_and_falls_back`、
-     `queries_do_not_create_host_after_clear`(后者钉住「查询类入口不得顺手建引擎」)。
+     `queries_do_not_create_host`(后者钉住「查询类入口不得顺手建引擎」,且在**干净线程**上验,
+     不动测试线程的默认宿主)。
 - **G11b 为什么判为「不该做」**(本项最有价值的结论)
   | 状态 | 类型 | 为什么不能进宿主 |
   |---|---|---|
@@ -647,10 +648,16 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 ### 9.4 其它遗留(都记录在案,均不阻塞)
 
 1. **`tsc --noEmit` 不在 CI**:`docs/` 把它列为插件侧检查,但 `build.yml` 里没有这一步(本机也没装 tsc)。类型面目前靠 `helix.d.ts` 人工维护 + api-check 的名字对账。
-2. **12 处 `#[ignore]`**:fork 侧 6 处(已全部修好并 `--ignored` 6/6 通过,默认不跑是因为慢),其余为上游。
-3. **fork 内 13 处 `TODO/FIXME/ponytail`**:`ponytail:` 是**有意的取舍记录**(每条都写了为什么+量化),不是待办;`TODO` 里多数是上游 25.7.1 的原文。
-4. **2 个 pre-existing stash**(`user-wip-application`、基于 `bbb090d7e` 的 WIP):不是本次产物,原样保留。
-5. **`docs/CONTRIBUTING.md`「367 tests」与 `docs/server-manager.md` 的 `server_manager.rs` 路径**:本次已顺手修正(377 / `server_manager/mod.rs`)。
+2. **一次未能复现的偶发红**:收尾时 `cargo test -p helix-js` 有 1 次(9 次里)整模块
+   失败且耗时 71s(平时 11.7s)⇒ 是「某个等待型用例超时后被 TEST_LOCK 放大」那一类
+   (模块注释 2026-10-14 记过同款事故)。随后 8 轮单跑 + 4 轮 `--workspace --lib` 全绿,
+   无法复现;已顺手把两处「不持锁却碰宿主」的测试收进 `TEST_LOCK`(其中 G11 新增的那条
+   改成在**干净线程**上验,彻底不碰测试线程的默认宿主)。若将来复现,按 `wait_for_term_event`
+   的超时日志定位。
+3. **12 处 `#[ignore]`**:fork 侧 6 处(已全部修好并 `--ignored` 6/6 通过,默认不跑是因为慢),其余为上游。
+4. **fork 内 13 处 `TODO/FIXME/ponytail`**:`ponytail:` 是**有意的取舍记录**(每条都写了为什么+量化),不是待办;`TODO` 里多数是上游 25.7.1 的原文。
+5. **2 个 pre-existing stash**(`user-wip-application`、基于 `bbb090d7e` 的 WIP):不是本次产物,原样保留。
+6. **`docs/CONTRIBUTING.md`「367 tests」与 `docs/server-manager.md` 的 `server_manager.rs` 路径**:本次已顺手修正(377 / `server_manager/mod.rs`)。
 
 ### 9.5 结论
 
