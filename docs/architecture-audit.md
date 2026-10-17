@@ -601,6 +601,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **S2-a** | 本条(`refactor(term): …`) | `server_op` **269→22**(clippy 口径);最长 handler 53;`typed.rs` 6307→6028;`--workspace --lib` / 377 集成 / api-check 三段 / docgen 全绿 | 照 G7 同法:`typed/server_ops/` 7 个 handler + 分派;分支体逐行搬,判断条件未改 |
 | 2026-10-17 | **G10b spec** | 本条(`docs: G10b spec`) | 无代码改动;spec 含实测(handle_event 147 / 7 段 / 23+26+14+1 条测试)与逐条行为对照清单 | 状态 🟡;结论是不接 JsSurface(共享面为零),同文件拆 6 个方法 |
 | 2026-10-17 | **G10b** | 本条(`refactor(ui): …`) | `handle_event` 147→**12**;最长方法 49;终端测试 23 + 27 + 14 + 1 全绿;377 集成不变;`--workspace --lib` / api-check / docgen 全绿 | 不接 JsSurface;同文件按事件种类拆 7 个方法,分支体逐行搬(结构行差异已逐条核对) |
+| 2026-10-17 | **S3-a** | `7a5c4f485` | 239 处错误构造 → 1 个 `js_err`;净 **−517 行**(419+/936−);popup.rs −179;172 测试 / `--ignored` 6/6 / 377 集成 / api-check 不变 | 根因是样板而非长函数;`js_err` 放 crate 根,`layout_api` 的本地包装删除 |
 
 ---
 
@@ -622,6 +623,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 两者 20 行共享窗口 | 73 | **0** | G10 |
 | 跨文件重复(20 行窗口) | 47 个块 | **2 对文件 / 12 个窗口** | 见 9.2 |
 | 长函数(>100 行,唯一) | 70 | **63** | fork 相关 16 → **12**(`server_op` 269→22、`plugin_terminal::handle_event` 147→12) |
+| JS 错误构造样板 | 239 处 | **0**(统一 `crate::js_err`) |
 | `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
 | `helix-js` 测试 | 176 | **178** | +2 条不变量 |
 | 集成测试 | 377 | **377** | 未增未减 |
@@ -643,7 +645,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `popup.rs::parse_node` | 161 | S3:JSON → 节点的递归下降,拆开反而更难读 |
 | ~~`plugin_terminal.rs::handle_event`~~ | ~~147~~ → **12** | ✅ **已拆**(2026-10-17,G10b):`on_mouse` 18 / `on_paste` 8 / `on_key` 35 / `term_key_decision` 28 / `normal_mode_key` 49 / `insert_mode_key` 13 / `copy_visible` 11;不接 `JsSurface`(共享面为零) |
 | `ui_op.rs::apply` | 139 | **不做**:24 个 arm 的单 match,每个 arm 5–6 行;拆成 24 个函数只是把 match 搬走 |
-| `popup.rs::{js_open_popup, js_open_terminal, js_el}` | 112–135 | S3:三个都是「解析 JS 参数 + 校验」的直线代码,6 行样板可压表(与 G6 的第二步同法),收益中等 |
+| ~~`popup.rs::{js_open_popup, js_open_terminal, js_el}`~~ | 120/136/143 → **103/101/129** | ✅ **已清**(2026-10-17):根因不是「函数太长」,而是**错误构造样板** —— `JsError::from_opaque(JsValue::from(JsString::from(..)))` 全 crate **239 处**,统一成 `crate::js_err(..)` 后净 **−517 行** |
 | `typed.rs::server_panel` | 109 | S3 |
 | `server_rows.rs::deliver` | 108 | S3 |
 | `server_manager::{parse_ext_recipe, build_section, run_task}` | 101–132 | **不改**:G8b 判据是 <150,已达标 |
