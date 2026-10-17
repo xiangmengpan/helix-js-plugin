@@ -32,6 +32,19 @@ helix.plugin("plugin-manager", {
   permissions: { process: true, fs_read: true, fs_write: true },
 });
 
+/// 能力清单查询(`helix.permissions()`):git 操作需要 `process`。
+/// 没声明 `permissions` 的插件(legacy)与内置插件恒为 true;声明了但没要 process
+/// (或用户 deny)时为 false ⇒ 调用方**明确报错并跳过**,而不是 spawn 一次再收含混失败。
+/// try/catch 兼作老编辑器兼容:没有这个 API 时按"可用"处理。
+function hasProcess() {
+  try { return !!(helix.permissions && helix.permissions().process); } catch (e) { return true; }
+}
+
+/// 统一的"没有 process 时"的提示(两处 git 调用共用,措辞一致)
+function noProcessMsg(what) {
+  return "plugin " + what + ": 当前能力清单没有 process(在 manifest 声明 permissions.process,或用 :js-permission allow <plugin> process)";
+}
+
 /// shell 单引号引用(与 statusline 插件同款)
 function shq(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
@@ -160,6 +173,10 @@ function runOp(sub, arg) {
       const isGit = /^[a-z+]+:\/\//i.test(arg) || arg.endsWith(".git");
 
       if (isGit) {
+        if (!hasProcess()) {
+          helix.echo(noProcessMsg("install"));
+          break;
+        }
         // git 源:名字取 URL 末段(去掉 .git),clone 到 <plugins>/<name>
         const base = arg.replace(/\/+$/, "").split("/").pop().replace(/\.git$/, "");
         const dest = mp + "/" + base;
@@ -251,6 +268,10 @@ function runOp(sub, arg) {
           continue;
         }
         if (e.kind !== "git" || e.pinned) continue;
+        if (!hasProcess()) {
+          helix.echo(noProcessMsg("update"));
+          break;
+        }
         const dir = mp + "/" + t;
         try {
           helix.run(

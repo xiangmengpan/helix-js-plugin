@@ -25,8 +25,17 @@ function current_cfg() {
 // 图标已收进核心:直接用 `helix.icons.*`(原先的懒加载 + 逐处 `ICONS ? … : 回退` 已删)
 let gitBranch = "";      // 当前 git 分支（异步查询缓存）
 
+// 能力清单查询(`helix.permissions()`):**不问就放行吗**。
+// 没声明 `permissions` 的插件(legacy)与内置插件恒为 true;声明了但没要 `process`
+// (或用户 deny)时为 false ⇒ 这里**降级为"无分支"**,而不是 spawn 一次再收失败。
+// try/catch 兼作老编辑器兼容:没有这个 API 时按"可用"处理。
+function hasProcess() {
+  try { return !!(helix.permissions && helix.permissions().process); } catch (e) { return true; }
+}
+
 async function refreshGit(path) {
   if (!path) { gitBranch = ""; return; }
+  if (!hasProcess()) { gitBranch = ""; return; }
   try {
     const out = await helix.run_async("git -C " + shq(dirname(path)) + " branch --show-current");
     gitBranch = (out || "").trim();

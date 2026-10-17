@@ -194,3 +194,66 @@ async fn plugin_without_permissions_is_unaffected() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// `helix.permissions()` 的**实际用法**(内置插件已按这个形状改:`statusline` 查 git 分支、
+/// plugin-manager 查 git 操作前先看 `process`)。
+///
+/// 语义要点(决定了这段码为什么这么写):**没声明 `permissions` 的插件恒 true**
+/// (legacy 放行)⇒ 光"不声明"是**测不到**降级路径的;要触发降级,插件得声明了
+/// **别的**能力而没声明 `process`(或用户 `deny` 了它)。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_degrades_without_process_capability() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("p.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("deg.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        // 声明了 fs_read 但**没有** process ⇒ permissions().process === false
+        helix.plugin("deg", { deps: [], permissions: { fs_read: true } });
+        helix.register_command("deg-guarded", () => {
+            if (!helix.permissions().process) { helix.echo("degraded"); return; }
+            helix.run("git status");
+        });
+        helix.register_command("deg-unguarded", () => { helix.run("git status"); });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            // 带守卫的调用:降级(不 spawn、不报错)
+            (
+                Some(":deg-guarded<ret>"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "degraded");
+                    assert!(
+                        matches!(severity, helix_core::diagnostic::Severity::Info),
+                        "降级不是错误,got {severity:?}"
+                    );
+                }),
+            ),
+            // 对照:不带守卫的同一调用 ⇒ 被检查点拒掉(这就是守卫要避免的体验)
+            (
+                Some(":deg-unguarded<ret>"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert!(
+                        matches!(severity, helix_core::diagnostic::Severity::Error),
+                        "未声明的能力应被拒,got {severity:?}"
+                    );
+                    assert!(status.as_ref().contains("未声明能力"), "{status}");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
