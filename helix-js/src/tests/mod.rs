@@ -89,6 +89,42 @@ fn wait_for_async(all: &mut Vec<AsyncEvent>, pred: impl Fn(&AsyncEvent) -> bool)
     }
 }
 
+/// 状态栏渲染测试的固定快照:字段**全部非默认**,这样断言里"某个值出现了"必定来自这份 ctx
+/// (而不是恰好等于默认值)。
+///
+/// 收在 `tests/mod.rs` 的原因:两份测试(plugin / popup_panel)原本各写一遍 26 行字面量,
+/// 归一化后是 9 个 20 行窗口的重复 —— 新增一个字段要改两处。
+pub(crate) fn statusline_ctx() -> crate::types::StatuslineCtx {
+    crate::types::StatuslineCtx {
+        path: Some("/tmp/a.rs".into()),
+        mode: "insert".into(),
+        cursor: (3, 7),
+        total_lines: 100,
+        diagnostics_error: 2,
+        diagnostics_warning: 1,
+        window_mode: false,
+        active_leaf_type: "editor".into(),
+        active_leaf_path: None,
+        modified: false,
+        selections: 1,
+        selections_primary: 0,
+        read_only: false,
+        encoding: "utf-8".into(),
+        line_ending: "LF".into(),
+        register: None,
+        primary_selection_length: 1,
+        indent_style: "4 spaces".into(),
+        file_type: Some("rust".into()),
+        cwd: "proj".into(),
+        code_action_hint: false,
+        workspace_diagnostics_error: 0,
+        workspace_diagnostics_warning: 0,
+        workspace_diagnostics_info: 0,
+        workspace_diagnostics_hint: 0,
+        spinner: None,
+    }
+}
+
 mod doc_edit;
 mod events_lsp;
 mod fs_async;

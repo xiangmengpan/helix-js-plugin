@@ -602,6 +602,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G10b spec** | 本条(`docs: G10b spec`) | 无代码改动;spec 含实测(handle_event 147 / 7 段 / 23+26+14+1 条测试)与逐条行为对照清单 | 状态 🟡;结论是不接 JsSurface(共享面为零),同文件拆 6 个方法 |
 | 2026-10-17 | **G10b** | 本条(`refactor(ui): …`) | `handle_event` 147→**12**;最长方法 49;终端测试 23 + 27 + 14 + 1 全绿;377 集成不变;`--workspace --lib` / api-check / docgen 全绿 | 不接 JsSurface;同文件按事件种类拆 7 个方法,分支体逐行搬(结构行差异已逐条核对) |
 | 2026-10-17 | **S3-a** | `7a5c4f485` | 239 处错误构造 → 1 个 `js_err`;净 **−517 行**(419+/936−);popup.rs −179;172 测试 / `--ignored` 6/6 / 377 集成 / api-check 不变 | 根因是样板而非长函数;`js_err` 放 crate 根,`layout_api` 的本地包装删除 |
+| 2026-10-17 | **S3-b** | 本条(`test(js): …`) | 夹具重复窗口 **9 → 0**;plugin.rs −27 / popup_panel.rs −26(夹具 +36);172 测试 / `--ignored` 6/6 / 377 集成 / api-check 不变 | 重复的是 26 行 `StatuslineCtx` 字面量 → `tests/mod.rs::statusline_ctx()` |
 
 ---
 
@@ -621,7 +622,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `server_manager` | 1 文件 2,956 行 | **7 文件**(最大 1,339,含 1,283 行测试) | G8a/G8b |
 | `plugin_panel` + `plugin_popup` | 770 行 | **376**(+`js_surface` 310) | G10 |
 | 两者 20 行共享窗口 | 73 | **0** | G10 |
-| 跨文件重复(20 行窗口) | 47 个块 | **2 对文件 / 12 个窗口** | 见 9.2 |
+| 跨文件重复(20 行窗口) | 47 个块 | **1 对文件 / 3 个窗口**(仅上游 dap↔lsp) | 见 9.2 |
 | 长函数(>100 行,唯一) | 70 | **63** | fork 相关 16 → **12**(`server_op` 269→22、`plugin_terminal::handle_event` 147→12) |
 | JS 错误构造样板 | 239 处 | **0**(统一 `crate::js_err`) |
 | `ACTIVE` 裸指针读点 | 5 | **1** | G11a |
@@ -633,7 +634,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 
 | 文件对 | 窗口数 | 判断 |
 |---|---|---|
-| `helix-js/src/tests/plugin.rs` ↔ `tests/popup_panel.rs` | 9 | **S3**:G1 拆分时两边都带了同款测试夹具(`make_tar_gz`/`write_sh`/`load_script_named` 一类)。可以收进 `tests/mod.rs`,纯测试改动 |
+| ~~`helix-js/src/tests/plugin.rs` ↔ `tests/popup_panel.rs`~~ | ~~9~~ → **0** | ✅ **已清**(2026-10-17):重复的是 26 行 `StatuslineCtx` 夹具字面量 → 收进 `tests/mod.rs::statusline_ctx()`(两份各 −27 行) |
 | `helix-dap/src/transport.rs` ↔ `helix-lsp/src/transport.rs` | 3 | **不做**:上游代码(D1),改它只增加未来 merge 成本 |
 
 ### 9.3 fork 相关的长函数(14 个),按「值不值得再动」分三档
@@ -667,8 +668,9 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 ### 9.5 结论
 
 - A/B/C 三批 **12 个目标 + 4 个决策项全部收口**,没有"未解释"的数字变化(每一项的差异都在 §8 有记录)。
-- 剩余事项按上面分档:**S2 两条已全部拆完**(`server_op` 269→22、`plugin_terminal::handle_event` 147→12);
-  其余是 S3 / 明确不动。**§9 的遗留清单已清空到只剩 S3。**
+- **§9 的 S2/S3 已全部清完**,剩下的只有明确**不做**的三条:
+  `ui_op::apply`(24 arm 单 match)、`helix-dap ↔ helix-lsp` transport 重复(上游)、
+  `popup.rs::parse_node`(递归下降,拆开更难读)。
 - 门禁现状:`fmt` / `clippy`(两种口径)/ `cargo test --workspace --lib` / `cargo test -p helix-js`(+`--ignored`)/ `cargo integration-test`(377)/ `api-check`(三道)/ `docgen` 零 diff —— 全部绿。
 
 ---
