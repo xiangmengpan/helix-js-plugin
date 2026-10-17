@@ -621,7 +621,7 @@ fn decorations_cleared_on_reload() {
 }
 
 #[test]
-#[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
+#[ignore = "手动跑(--ignored):会复制仓库 plugins/ 并做一次 reload,较慢;默认套件不跑"]
 fn reload_keeps_plugins_with_deps_and_hooks() {
     // 模拟真实 init.js 场景:相对名 + deps 声明 + set_statusline + 命令 + 事件
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -776,7 +776,7 @@ fn reload_after_init_midway_failure_keeps_dependent_plugins() {
 }
 
 #[test]
-#[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
+#[ignore = "手动跑(--ignored):会复制仓库 plugins/ 并做一次 reload,较慢;默认套件不跑"]
 fn reload_users_real_plugins_dir() {
     // 复制用户真实 ~/.config/helix/plugins 到 tempdir,用用户 init.js 序列 reload。
     // 用户 filetree 是改版(offset scroll)+ 有 test.js——最接近真实环境。
@@ -836,7 +836,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 }
 
 #[test]
-#[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
+#[ignore = "手动跑(--ignored):会复制仓库 plugins/ 并做一次 reload,较慢;默认套件不跑"]
 fn reload_missing_relative_load_then_dependent_pollution() {
     // 用户场景:init.js 里 load 一个不存在的相对名文件(如"禁用"后仍留 load 行的 terminal.js)
     // → init.js eval 失败 → 循环单独 eval 后续 features/* → 它们相对名 load icons(重新 eval=嵌套)
@@ -1001,7 +1001,7 @@ fn circular_runtime_load_errors_not_crash() {
 }
 
 #[test]
-#[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
+#[ignore = "手动跑(--ignored):会复制仓库 plugins/ 并做一次 reload,较慢;默认套件不跑"]
 fn reload_all_real_plugins_keeps_commands() {
     // 加载仓库全部真实插件(init.js 同款序列)+ reload,验证命令/钩子保留
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1029,13 +1029,13 @@ fn reload_all_real_plugins_keeps_commands() {
         &d,
     );
     set_plugins_dir(d.clone());
-    // 模拟 init.js:加载 features(含 terminal/which-key/tabbar/picker + map 回调)
-    let init_src = r#"helix.load("features/terminal.js");
-helix.load("features/statusline.js");
-helix.load("features/filetree/index.js");
-helix.load("features/which-key.js");
-helix.load("features/tabbar.js");
-helix.load("features/picker.js")
+    // 模拟 init.js:裸名加载(=`<name>/plugin.js`,与 plugins/init.js 同一套名字)。
+    // 2026-10 起插件是目录布局,旧的 features/*.js 扁平布局已不存在。
+    let init_src = r#"helix.load("terminal");
+helix.load("statusline");
+helix.load("filetree");
+helix.load("which-key");
+helix.load("tabbar");
 helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     let init_path = d.join("init.js");
     let r = load_script_named(&init_path.display().to_string(), init_src);
@@ -1065,7 +1065,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
 }
 
 #[test]
-#[ignore = "依赖开发机 ~/.config/helix/plugins/features(旧扁平布局),该布局已不存在 ⇒ 只会早退"]
+#[ignore = "手动跑(--ignored):会复制仓库 plugins/ 并做一次 reload,较慢;默认套件不跑"]
 fn reload_real_statusline_render_ok() {
     // 用户场景:statusline.js 依赖 icons,reload 后 render(状态栏渲染)不应抛错/返回空
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1074,18 +1074,17 @@ fn reload_real_statusline_render_ok() {
     let d = dir.path().to_path_buf();
     std::mem::forget(dir);
     set_plugins_dir(d.clone());
-    std::fs::create_dir_all(d.join("lib")).unwrap();
-    std::fs::create_dir_all(d.join("features")).unwrap();
-    // 复制仓库 statusline.js + icons.js
+    std::fs::create_dir_all(d.join("statusline")).unwrap();
+    // 复制仓库 statusline 插件(2026-10 起的布局:plugins/statusline/plugin.js)。
+    // 图标已收进核心(helix-js/src/icons.rs),statusline 的 deps 是空的 ⇒ 不再拷 icons。
     let repo = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins"));
     std::fs::copy(
-        repo.join("features/statusline.js"),
-        d.join("features/statusline.js"),
+        repo.join("statusline/plugin.js"),
+        d.join("statusline/plugin.js"),
     )
     .unwrap();
-    std::fs::copy(repo.join("lib/icons.js"), d.join("lib/icons.js")).unwrap();
-    let src = std::fs::read_to_string(d.join("features/statusline.js")).unwrap();
-    let r = load_script_named("features/statusline.js", &src);
+    let src = std::fs::read_to_string(d.join("statusline/plugin.js")).unwrap();
+    let r = load_script_named("statusline/plugin.js", &src);
     eprintln!("load statusline result: {r:?}");
     r.unwrap();
     let _ = take_messages();

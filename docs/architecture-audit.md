@@ -450,7 +450,7 @@ cargo integration-test
 | **D2** | 是否允许收窄 `helix-js` 公共面(G3,会连带改 helix-term 约 15 个文件)? | **允许**,但先量规模;超 2 倍预估就拆 G3a/G3b | G3, G6, G7, G11 |
 | **D3** | 每项都跑全量 `cargo integration-test`(367 tests / ~180s)? | **A 批只跑相关子集,B/C 批全量** | 全部 |
 | **D4** | C 批 spec 是否要我写完等你确认后才动代码? | **是**(本文 §2 铁律 5) | G9–G12 |
-| **D5** | 新发现:2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`,路径已废弃),是否纳入清理? | **纳入**为独立小项(修路径或删测试),别混进 G1 | — |
+| **D5** | ~~2 个 `#[ignore]` 测试已在坏死(拷 `plugins/features/*.js`)~~ | **已修**(2026-10-17):路径改到 `plugins/<name>/plugin.js`;`--ignored` 由 4/6 变 **6/6 通过** | — |
 | **D6** | 新发现:`cargo clippy --features integration -- -D warnings` 改动前就红(`plugin_roots_for` 在开 feature 时是 dead code)。是否修? | **修**:给该 fn 加 `#[cfg(any(not(feature = "integration"), test))]`,并把 feature 纳入 CI 门禁 | — |
 | **D7** | G3 量出 **9 个零调用方的 public 函数**(`emit_hook`/`emit_term_close`/`layout_{save,load,list,delete}`/`picker_has_on_key`/`decide`/`emit_lsp_diagnostics`),其中 `layout_*` 疑似与 JS 侧 `:layout` 构成 R3「两套实现」。删除还是接线? | **先查 `:layout` 走哪套**,死的那套删掉;这项单独做,不混进收窄 | — |
 
@@ -486,6 +486,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G6** | 本条(`refactor(js): … (G6)`) | `build_engine` 773→**94**;api-check **逐项计数不变**(134/20/15);176 测试 / 377 集成不变 | 13 个 register 文件;同步扩展**两个**检查脚本(否则门禁失明);修掉容器正则误判 |
 | 2026-10-17 | **G7** | 本条(`refactor(term): … (G7)`) | `apply_ui_requests` 689→**59**;最长 handler 85;176 测试 / 377 集成不变;clippy 0 warning | 43 个 handler 按族分 8 文件;组合 arm / 同名遮蔽两个坑 |
 | 2026-10-17 | **G8a** | 本条(`refactor(term): … (G8a)`) | `commands/` 下已无 server_manager;server_manager 集成测试 8 passed;clippy 0 warning;66 处 `commands::server_manager::…` 引用零改动 | 拆分失败原因(glob 环 + cfg(test) 再导出 + clippy 误删)已记入 G8b |
+| 2026-10-17 | **D5** | 本条(`test(js): …`) | `cargo test -p helix-js -- --ignored` **6 passed / 0 failed**(改前 4/6);默认套件 176/170/6 不变;fmt+clippy 绿 | 两个测试拷的是 2026-10 前的扁平布局;`ignore` 理由同步改成真实原因 |
 
 ---
 
