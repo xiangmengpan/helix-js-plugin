@@ -146,6 +146,39 @@ fn panel_onkey() {
     let _ = take_ui_requests();
 }
 
+/// `helix.popup_exists(id)`:插件自查弹层是否还活着(B2)。
+///
+/// 由来:JS 侧没有主动关闭入口,插件记的 popup 句柄会在层被外部移除后永久失效
+/// (症状:`:arsenal` 一直回 "already open")。这条 API 是自愈的唯一手段。
+#[test]
+fn popup_exists_reports_live_layers() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    load_script(r#"helix.open_popup({ render: () => [{ text: "x" }] });"#).unwrap();
+    let id = crate::state::with_popups(|p| p.keys().copied().max()).expect("open_popup 应登记一层");
+    assert!(crate::popup::popup_exists(id), "刚打开的层必须存在");
+
+    // JS 侧读到的结论必须与 Rust 一致(用 throw 让不一致变成 Result::Err)
+    load_script(&format!(
+        r#"if (!helix.popup_exists({id})) throw new Error("should exist");"#
+    ))
+    .unwrap();
+
+    // 关闭(Rust 侧等价于 onKey 的 "close"/reload)→ 必须变 false
+    crate::popup::close_popup(id).unwrap();
+    assert!(!crate::popup::popup_exists(id));
+    load_script(&format!(
+        r#"if (helix.popup_exists({id})) throw new Error("should be gone");"#
+    ))
+    .unwrap();
+
+    // 参数非法 ⇒ 明确报错,不静默给 false
+    assert!(
+        load_script(r#"helix.popup_exists("nope");"#).is_err(),
+        "非法 id 应报错"
+    );
+}
+
 #[test]
 fn popup_lifecycle() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

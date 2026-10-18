@@ -102,6 +102,25 @@ fn opt_dim(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<O
 /// - layer:可选字符串,缺省 "plugin-popup"——同 layer 再 open 替换同层,不同 layer 叠层并存。
 ///
 /// 任一字段非法 → 整体报错,不产生半注册(回调不插入、无 UI 请求)。
+/// `helix.popup_exists(id)` —— 弹层是否仍在 JS 注册表里。
+///
+/// 为什么需要(2026-10):JS 侧**没有**主动关闭弹层的入口(`helix.close_popup` 未注册,
+/// 关闭只能靠 onKey 返回 "close"),于是插件自己记的 `popup` 句柄会在"层被外部移除"
+/// (reload / 别的插件 / Esc)之后**永远**指着已死的层 —— 典型症状:`:arsenal` 一直回
+/// "already open"。有了这条查询,插件能自查自愈;也不再有"只能靠猜"的探测代码。
+pub(crate) fn js_popup_exists(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err("helix.popup_exists: id must be a number"))?;
+    Ok(JsValue::from(popup_exists(id)))
+}
+
 pub(crate) fn js_open_popup(
     _this: &JsValue,
     args: &[JsValue],
