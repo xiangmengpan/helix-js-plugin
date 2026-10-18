@@ -94,6 +94,14 @@ jobs:
         # 不带它时,`plugin_roots_for` 这类"只在某 cfg 分支被调用"的项会漏检(D6 实证)。
         run: cargo clippy --workspace --all-targets --features integration -- -D warnings
 
+      # release 语义单独过一遍:上一条跑在 dev(`debug_assertions=on`),看不见
+      # "只被 `#[cfg(debug_assertions)]` 的表引用、自身却没挂 cfg"的项。
+      # 2026-10-17 实测:`term_native` 在 dev/test 下始终被用到(clippy 全绿),
+      # 只有 `cargo build --profile opt`(出二进制)才报 dead_code —— 属于发布前才会发现的洞。
+      # `cargo check`/`clippy` 不链接,所以这里用 release cfg 的成本只有一次 check(本地 ~50s)。
+      - name: Run cargo clippy (release cfg)
+        run: cargo clippy --release --workspace -- -D warnings
+
       - name: Run cargo doc
         run: cargo doc --no-deps --workspace --document-private-items
         env:
