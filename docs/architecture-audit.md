@@ -779,6 +779,30 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "t
   payload 形状测试断言 3 个键;`--workspace --lib` 718 passed / 0 failed;377 集成测试不变;
   api-check 三段不变(134 / 20 / 15 —— `open_paths` 是 payload 字段,不是新成员)。
 
+### 11.2 arsenal 体检(2026-10-17)与修复
+
+用户报「arsenal 缺点」,按 spec(M3/M4)与代码实测列出 10 条,当天全部处理:
+
+| # | 缺点 | 修法 | 状态 |
+|---|---|---|---|
+| A1 | **批量作用到看不见的行**(标记跨页签保留,batch 用全量 `S.rows`) | `plan_batch()` 先与 `visible()` 取交集,隐藏项进 `skipped.hidden` 并 echo | ✅ |
+| A2 | `x` 单键直接卸载(手滑即丢受管安装) | 确认弹层(`arsenal-confirm`,Enter/y 确认 · Esc/n 取消;local→unmanage) | ✅ |
+| A3 | 批量只能 install | 受管已装行 → `update`;local 行跳过并报告 | ✅ |
+| A4 | 批量里 needs_version 无记忆 → 逐项失败 | 进 `skipped.needsVersion` 并提示逐行处理 | ✅ |
+| A5 | 批中每项 done/error 都全量 `fetch_rows` | 批次结束刷新一次(单项进度由 `row_busy` 就地显示) | ✅ |
+| A6 | 首帧闪「no servers yet」(`server.rows` 是异步) | 抽 `empty_list_text()`:未回传过 → "loading servers…" | ✅ |
+| A7 | 搜索不匹配命令名 | 搜索串加入 `bin` | ✅ |
+| B1 | **`helix.server.*` 不在能力模型内**(任意插件零声明可装二进制) | 8 个入口加 `check_js(CAP_PROCESS)`;意图表 + 文档 + arsenal 声明;新增拒绝/授权测试 | ✅ |
+| B2 | JS 无 `close_popup`/`popupExists` ⇒ 句柄失效后 `:arsenal` 永回 already open | 新增 `helix.popup_exists(id)` + arsenal 自愈;**主动关闭仍未做**(需新 UiRequest + onClose 语义) | ✅ 一半 |
+| C1 | arsenal 的 node 测试自目录布局迁移后**从未跑过**(require `../index.js` 已改名) | require 修成 `../plugin.js`;29 条存量全绿;新增 14 条(batch/x/空文案/刷新/自愈) | ✅ |
+
+**顺带修掉的两个真问题**(都不是 arsenal 自身):
+- 集成测试读开发机 `~/.config/helix/plugins`(13 处):删掉开发机镜像后 5 条立刻红
+  ⇒ 改读仓库 `plugins/`,并在**空 HOME** 下验证 377 全绿(`9713d21d0`)。
+- `cargo test --workspace --lib` 之外的这道「干净环境」验证此前从未跑过 —— 已写进本次记录。
+
+**API 面变化**:`popup_exists` 加入后 api-check 134 → **135 成员**;能力检查点 15 → **23 个 API**。
+
 ---
 
 ## 附:体检要点(为什么是这 12 项)
