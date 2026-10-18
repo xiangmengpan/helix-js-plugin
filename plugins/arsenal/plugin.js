@@ -26,7 +26,7 @@ helix.plugin("arsenal", { deps: [], permissions: { process: true } });
 
 const ST_W = 14; // 状态列宽(列数);行右锚贴框内右缘
 const BUSY_MSG = "arsenal: a task is running, please wait…";
-const LAYERS = { main: "arsenal", menu: "arsenal-menu", input: "arsenal-input", info: "arsenal-info" };
+const LAYERS = { main: "arsenal", menu: "arsenal-menu", input: "arsenal-input", info: "arsenal-info", confirm: "arsenal-confirm" };
 
 // 分类页签序(all 与 installed/local 为状态过滤,其余 kind 过滤)
 const KINDS = ["all", "lsp", "dap", "linter", "formatter", "installed", "local"];
@@ -64,6 +64,7 @@ function wc_pad(s, cols) {
 const S = {
   popup: null, // 主窗 open_popup id(null = 未打开)
   rows: [], // 全部配方行(server.rows 回传)
+  loaded: false, // 至少成功回传过一次(首帧显示 loading 而不是"没有服务器")
   searching: false, // 搜索模态(SEARCH 态;由 / 进入,Esc 退出)
   filter: "", // 搜索查询串(仅 SEARCH 态随字符增长)
   kind: "all", // 当前页签
@@ -113,7 +114,6 @@ function on_task_event(ev) {
     }
   }
   S.busy.cur = S.busy.items[S.busy.idx] || null;
-  fetch_rows(); // done/error 后刷新行状态
   if (S.busy.done + S.busy.fail.length >= S.busy.items.length) {
     const { done, fail, items } = S.busy;
     // 单项成功:done 事件 msg 已直报,不再补汇总(防双 echo);失败或批量才汇总
@@ -125,6 +125,9 @@ function on_task_event(ev) {
     }
     S.busy = null;
     S.row_busy = {};
+    // 批量结束再刷新一次行状态(原实现每个 done/error 都全量刷新:50 项 = 50 次
+    // 注册表重算 + 版本探测,而每项的进度已由 S.row_busy 就地显示)。
+    fetch_rows();
   }
 }
 
@@ -156,6 +159,7 @@ function begin_task(items) {
 function fetch_rows() {
   helix.server.rows((rows) => {
     S.rows = rows || [];
+    S.loaded = true;
     if (S.sel >= S.rows.length) S.sel = Math.max(0, S.rows.length - 1);
   });
 }
@@ -204,7 +208,9 @@ function visible() {
     if (S.kind !== "all" && S.kind !== "installed" && S.kind !== "local" && r.kind !== S.kind)
       return false;
     if (!f) return true;
-    return (r.name + " " + (r.languages || []).join(" ") + " " + (r.description || "")).toLowerCase().includes(f);
+    return (r.name + " " + (r.bin || "") + " " + (r.languages || []).join(" ") + " " + (r.description || ""))
+      .toLowerCase()
+      .includes(f);
   });
 }
 
@@ -308,6 +314,13 @@ function footer_text(W) {
     : "↑↓/jk · / search · Enter act · i info · t mark · x rm · u upd · r ref · Esc/q";
 }
 
+/// 空列表文案(纯函数,便于测):**加载完**才说"没有服务器",否则说 loading ——
+/// 原实现无条件说 "no servers yet",而 `server.rows` 是异步的,打开瞬间必闪一句误导。
+function empty_list_text() {
+  if (S.filter && S.searching) return "no matches for '" + wc_trunc(S.filter, 40) + "'";
+  return S.loaded ? "no servers yet — press r to refresh" : "loading servers…";
+}
+
 function main_render(focus, ctx) {
   try {
     const W = Math.max(30, (ctx && ctx.width) || 90);
@@ -322,7 +335,7 @@ function main_render(focus, ctx) {
       lines.push(
         helix.el(
           "text",
-          frame_mid(W, S.filter && S.searching ? "no matches for '" + wc_trunc(S.filter, Math.max(1, W - 8)) + "'" : "no servers yet — press r to refresh"),
+          frame_mid(W, wc_ell(empty_list_text(), Math.max(1, W - 8))),
           { style: "ui.virtual" }
         )
       );
@@ -419,6 +432,43 @@ function open_version_input(r, op) {
       if (k.length === 1) {
         S.vinput.val += k;
         return "handled";
+      }
+      return "handled";
+    },
+  });
+}
+
+/// `x` 的确认弹层。
+///
+/// 为什么要确认(2026-10):原实现单键即 `run_action("remove")`,手滑就卸载掉受管安装
+/// (并改写 languages.toml),没有撤销。弹层里 Enter/y 确认、Esc/n 取消。
+function open_remove_confirm(r) {
+  const op = r.local ? "unmanage" : "remove";
+  const W = 62;
+  const line1 =
+    op === "remove"
+      ? "remove managed install? (languages.toml entry is rewritten)"
+      : "stop auto-wiring this local tool? (it stays on PATH)";
+  helix.open_popup({
+    layer: LAYERS.confirm,
+    position: "center",
+    width: W,
+    height: 4,
+    render: () =>
+      helix.el(
+        "col",
+        build_box(r.name + " · confirm", W, [
+          { text: line1 },
+          { text: "Enter/y confirm · Esc/n cancel", style: "ui.virtual" },
+        ])
+      ),
+    onKey: (key) => {
+      if (key.ctrl || key.alt) return "handled";
+      const k = key.name;
+      if (k === "Esc" || k === "n" || k === "q") return "close";
+      if (k === "Enter" || k === "y") {
+        run_action(op, r.name);
+        return "close";
       }
       return "handled";
     },
@@ -543,29 +593,95 @@ function open_action_menu() {
 }
 
 // 批量:marks 集合快照 → 仅可安装项(未装+installable)install;版本用 vinputs 记忆
+/// 批量提交的**纯**规划(不碰 helix / 不改 S):把标记行按「可见性 + 状态」分流。
+///
+/// 三条规则都是实测 bug 换来的(2026-10-17):
+///  1. **只处理当前可见的行** —— 标记跨页签/搜索保留,原实现用全量 `S.rows` 过滤,
+///     会把看不见的页签里的行也提交(标 3 行切到 lsp,Enter 装了 dap 的);
+///  2. **已装(受管)行 → update**(原实现只装未装,批量升级根本不存在);
+///  3. **needs_version 且无版本记忆 → 跳过并报告** —— 原实现照发,
+///     让 server 端逐项报「配方未给固定 version」,等于 N 条错误。
+///
+/// 返回 `{ items, skipped: { hidden, local, noSource, needsVersion } }`;
+/// `items` 直接就是 `helix.server.task` 的载荷(去掉 undefined 字段)。
+function plan_batch(rows, marks, visibleNames, vinputs) {
+  const items = [];
+  const skipped = { hidden: [], local: [], noSource: [], needsVersion: [] };
+  const seen = new Set();
+  for (const name of marks) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const r = rows.find((x) => x.name === name);
+    if (!r) continue;
+    if (visibleNames && !visibleNames.has(name)) {
+      skipped.hidden.push(name);
+      continue;
+    }
+    if (r.installed && r.local) {
+      skipped.local.push(name); // 本机已有:既不能装也不能卸(batch 不做 unmanage)
+      continue;
+    }
+    if (r.installed) {
+      // 受管已装 → update。needs_version 的 update **恒需显式版本**(不读记忆,防锁死换版入口)
+      if (r.needs_version) {
+        skipped.needsVersion.push(name);
+        continue;
+      }
+      items.push({ op: "update", name });
+      continue;
+    }
+    if (!r.installable) {
+      skipped.noSource.push(name);
+      continue;
+    }
+    const version = r.needs_version ? (vinputs || {})[name] : undefined;
+    if (r.needs_version && !version) {
+      skipped.needsVersion.push(name); // 没有记忆就不猜版本
+      continue;
+    }
+    items.push(version ? { op: "install", name, version } : { op: "install", name });
+  }
+  return { items, skipped };
+}
+
 function batch_run() {
   if (S.busy) {
     // I4:守卫在清 marks 之前——拒绝时保留标记,可稍后重试
     helix.echo(BUSY_MSG);
     return;
   }
-  const marked = [...S.marks];
-  const items = S.rows
-    .filter((r) => marked.includes(r.name) && !r.installed && r.installable)
-    .map((r) => ({ op: "install", name: r.name, version: r.needs_version ? S.vinputs[r.name] : undefined }));
-  if (!items.length) {
-    helix.echo("arsenal: nothing installable among marked rows (mark uninstalled rows with a source)");
+  if (!S.marks.size) {
+    helix.echo("arsenal: no rows marked — press t to mark, Enter to submit");
     return;
   }
-  S.marks.clear(); // 快照即提交:清标记防二次 Enter 重复投
+  const visibleNames = new Set(visible().map((r) => r.name));
+  const { items, skipped } = plan_batch(S.rows, S.marks, visibleNames, S.vinputs);
+  const notes = [];
+  if (skipped.hidden.length) notes.push(skipped.hidden.length + " hidden by tab/search");
+  if (skipped.local.length) notes.push(skipped.local.length + " local (not managed)");
+  if (skipped.noSource.length) notes.push(skipped.noSource.length + " without download source");
+  if (skipped.needsVersion.length) notes.push(skipped.needsVersion.length + " need an explicit version (run individually)");
+  if (!items.length) {
+    helix.echo("arsenal: nothing batchable among marked rows" + (notes.length ? " — " + notes.join("; ") : ""));
+    return;
+  }
+  // 快照即提交:只清**已提交**行的标记;跳过的保留(便于逐行处理/重试)
+  for (const it of items) S.marks.delete(it.name);
   begin_task(items);
+  if (notes.length) helix.echo("arsenal: queued " + items.length + "; skipped " + notes.join("; "));
 }
 
 // ────────────────────────── 开关 ──────────────────────────
 
 function open_arsenal() {
+  // 自愈:层可能被 onKey 的 "close" / reload / 别的插件移除,而 JS 侧没有主动关闭入口
+  // (`helix.close_popup` 未注册)⇒ 本地句柄会永久失效(原症状:`:arsenal` 一直回 already open)。
+  // `helix.popup_exists` 让我们能自查;老版本没有这个 API 时退化为"信任本地句柄"。
+  if (S.popup !== null && typeof helix.popup_exists === "function" && !helix.popup_exists(S.popup)) {
+    S.popup = null;
+  }
   if (S.popup !== null) {
-    helix.echo("arsenal: already open (Esc/q to close)"); // 无 JS 弹层移除请求 → 关闭走按键路径
+    helix.echo("arsenal: already open (Esc/q to close)");
     return;
   }
   fetch_rows();
@@ -685,8 +801,7 @@ function handle_key(key) {
   }
   if (k === "x") {
     const r = selected_row();
-    if (r && r.installed && r.local) run_action("unmanage", r.name);
-    else if (r && r.installed) run_action("remove", r.name);
+    if (r && r.installed) open_remove_confirm(r);
     else helix.echo("arsenal: selected row not removable (press Enter to see actions)");
     return "handled";
   }
@@ -710,6 +825,7 @@ if (typeof module !== "undefined" && module.exports) {
     S, KINDS, KIND_GLYPH, LAYERS,
     wc_len, wc_trunc, wc_ell, wc_pad,
     visible, status_text, move, tab_step, tab_next, tab_prev, toggle_mark,
-    handle_key, main_render, row_actions, run_action, batch_run, footer_text,
+    handle_key, main_render, row_actions, run_action, batch_run, plan_batch,
+    open_remove_confirm, empty_list_text, open_arsenal, footer_text,
   };
 }

@@ -15,6 +15,8 @@ const assert = require('node:assert/strict');
 
 // ── helix 最小桩(须在 require 之前就位:index.js 顶层调用 helix.plugin) ──
 const calls = { echo: [], popups: [], tasks: [], rowsFetch: [] };
+// 哪些 popup id 仍存活(popup_exists 桩的依据)
+const alivePopups = new Set();
 let popup_seq = 1;
 global.helix = {
   plugin() {},
@@ -28,7 +30,12 @@ global.helix = {
   open_popup(opts) {
     const id = popup_seq++;
     calls.popups.push({ id, opts });
+    alivePopups.add(id);
     return id;
+  },
+  // popup_exists:默认按 alivePopups 判定(测试可模拟"层被外部关闭")
+  popup_exists(id) {
+    return alivePopups.has(id);
   },
   server: {
     task(items, cb) {
@@ -42,7 +49,7 @@ global.helix = {
   },
 };
 
-const M = require('../index.js');
+const M = require('../plugin.js');
 const S = M.S;
 
 // ── 行夹具:needs_version 只可能来自内置活配方(rust-analyzer 形态) ──
@@ -324,6 +331,153 @@ test('batch_run:needs_version 用记忆、固定配方不带 version', () => {
     { op: 'install', name: 'black' },
   ]);
   assert.equal(S.marks.size, 0, '快照即提交');
+});
+
+// ── f5:open_arsenal 自愈(S.popup 可能指向已被外部关闭的层)──
+test('open_arsenal:句柄失效(层被外部关掉)→ 自愈并重新打开', () => {
+  S.rows = [FIXED];
+  S.popup = 4242; // 一个早已不存在的层
+  alivePopups.clear();
+  const before = calls.popups.length;
+  M.open_arsenal();
+  assert.ok(calls.popups.length > before, '应当重新打开,而不是回 already open');
+  assert.notEqual(S.popup, 4242, '句柄应更新为新层');
+});
+
+test('open_arsenal:句柄仍有效 → 不重复开层,提示 already open', () => {
+  S.rows = [FIXED];
+  S.popup = 777;
+  alivePopups.add(777);
+  const before = calls.popups.length;
+  M.open_arsenal();
+  assert.equal(calls.popups.length, before, '不得重复开层');
+  assert.ok(calls.echo.some((m) => m.includes('already open')), JSON.stringify(calls.echo));
+});
+
+// ── f4:搜索覆盖命令名 / 首帧文案 / 批中不刷新(2026-10)──
+test('visible:查询匹配 bin(命令名),不只 name/描述', () => {
+  S.rows = [
+    { ...FIXED, name: 'pyright', bin: 'pyright-langserver', languages: ['python'], description: 'type checker' },
+    { ...FIXED, name: 'gopls', bin: 'gopls', languages: ['go'], description: 'go lang server' },
+  ];
+  S.kind = 'all';
+  S.searching = true;
+  S.filter = 'langserver';
+  assert.deepEqual(M.visible().map((r) => r.name), ['pyright'], '按 bin 命中');
+});
+
+test('empty_list_text:未回传过数据时是 loading,回传后才说没有服务器', () => {
+  S.searching = false;
+  S.filter = '';
+  S.loaded = false;
+  assert.ok(M.empty_list_text().includes('loading servers'), '首帧应是 loading');
+  S.loaded = true;
+  assert.ok(M.empty_list_text().includes('no servers yet'), '加载完才算"没有服务器"');
+  S.searching = true;
+  S.filter = 'zzz';
+  assert.ok(M.empty_list_text().includes("no matches for 'zzz'"), '搜索无匹配优先');
+});
+
+test('批量:每个 done/error 不再各自全量 fetch,只在批次结束刷新一次', () => {
+  S.rows = [FIXED, { ...FIXED, name: 'b' }];
+  S.marks = new Set(['gopls', 'b']);
+  const before = calls.rowsFetch.length;
+  M.batch_run();
+  feed('done', 'gopls', "installed 'gopls'");
+  assert.equal(calls.rowsFetch.length, before, '批中不刷新');
+  feed('done', 'b', "installed 'b'");
+  assert.equal(calls.rowsFetch.length, before + 1, '批次结束刷新一次');
+});
+
+// ── f3:x 卸载确认(2026-10:原实现单键即卸,手滑就丢受管安装)──
+test('x:受管已装行 → 先弹确认,不立即提交任务', () => {
+  S.rows = [{ ...FIXED, name: 'gopls', installed: true, local: false, version: 'v1' }];
+  M.handle_key({ name: 'x' });
+  assert.equal(calls.tasks.length, 0, '确认前不得提交');
+  const last = calls.popups.at(-1);
+  assert.equal(last.opts.layer, 'arsenal-confirm', JSON.stringify(last.opts.layer));
+  // Enter 确认 → 提交 remove
+  last.opts.onKey({ name: 'Enter' });
+  assert.deepEqual(calls.tasks[0].items, [{ op: 'remove', name: 'gopls' }]);
+});
+
+test('x:确认弹层 Esc/n 取消 → 不提交', () => {
+  S.rows = [{ ...FIXED, name: 'gopls', installed: true, local: false }];
+  M.handle_key({ name: 'x' });
+  const last = calls.popups.at(-1);
+  last.opts.onKey({ name: 'Esc' });
+  assert.equal(calls.tasks.length, 0, 'Esc 取消不得提交');
+  M.handle_key({ name: 'x' });
+  calls.popups.at(-1).opts.onKey({ name: 'n' });
+  assert.equal(calls.tasks.length, 0, 'n 取消不得提交');
+});
+
+test('x:local 行确认后走 unmanage(不是 remove)', () => {
+  S.rows = [{ ...FIXED, name: 'local-tool', installed: true, local: true }];
+  M.handle_key({ name: 'x' });
+  calls.popups.at(-1).opts.onKey({ name: 'y' });
+  assert.deepEqual(calls.tasks[0].items, [{ op: 'unmanage', name: 'local-tool' }]);
+});
+
+// ── f2:batch 规划(2026-10 修三处 bug:看不见的标记 / 只装不升 / 版本缺失逐项失败)──
+test('plan_batch:隐藏标记(当前页签/搜索看不见)不提交', () => {
+  S.rows = [
+    { ...FIXED, name: 'a', kind: 'lsp' },
+    { ...FIXED, name: 'b', kind: 'dap' },
+  ];
+  const r = M.plan_batch(S.rows, new Set(['a', 'b']), new Set(['a']), {});
+  assert.deepEqual(r.items, [{ op: 'install', name: 'a' }]);
+  assert.deepEqual(r.skipped.hidden, ['b']);
+});
+
+test('plan_batch:受管已装行 → update(不再"只装未装")', () => {
+  S.rows = [
+    { ...FIXED, name: 'managed', installed: true, local: false, version: 'v1' },
+  ];
+  const r = M.plan_batch(S.rows, new Set(['managed']), null, {});
+  assert.deepEqual(r.items, [{ op: 'update', name: 'managed' }]);
+});
+
+test('plan_batch:local 行 / 无源行 / needs_version 无记忆 → 各自进 skipped', () => {
+  S.rows = [
+    { ...FIXED, name: 'local', installed: true, local: true },
+    { ...FIXED, name: 'nosrc', installable: false },
+    { ...NV_INSTALLABLE, name: 'nv' },
+  ];
+  const r = M.plan_batch(S.rows, new Set(['local', 'nosrc', 'nv']), null, {});
+  assert.deepEqual(r.items, []);
+  assert.deepEqual(r.skipped.local, ['local']);
+  assert.deepEqual(r.skipped.noSource, ['nosrc']);
+  assert.deepEqual(r.skipped.needsVersion, ['nv']);
+});
+
+test('plan_batch:needs_version 有记忆 → install 带 version', () => {
+  S.rows = [{ ...NV_INSTALLABLE, name: 'nv' }];
+  const r = M.plan_batch(S.rows, new Set(['nv']), null, { nv: '3.1' });
+  assert.deepEqual(r.items, [{ op: 'install', name: 'nv', version: '3.1' }]);
+});
+
+test('batch_run:只清已提交的标记,跳过的保留并 echo 原因', () => {
+  S.rows = [
+    { ...FIXED, name: 'ok' },
+    { ...NV_INSTALLABLE, name: 'nv' },
+  ];
+  S.marks = new Set(['ok', 'nv']);
+  M.batch_run();
+  assert.deepEqual(calls.tasks[0].items, [{ op: 'install', name: 'ok' }]);
+  assert.deepEqual([...S.marks], ['nv'], '跳过的保留标记,便于逐行处理');
+  assert.ok(
+    calls.echo.some((m) => m.includes('need an explicit version')),
+    '跳过的原因必须说出来:' + JSON.stringify(calls.echo)
+  );
+});
+
+test('batch_run:没有标记 → 明确提示,不空提交', () => {
+  S.rows = [FIXED];
+  S.marks = new Set();
+  M.batch_run();
+  assert.equal(calls.tasks.length, 0, '不得提交空批次');
+  assert.ok(calls.echo.some((m) => m.includes('no rows marked')), JSON.stringify(calls.echo));
 });
 
 // ── g:批量完成 echo 边界(单任务成功不再双 echo;失败/批量才汇总) ──
