@@ -542,6 +542,21 @@ pub fn assert_status_not_error(editor: &Editor) {
     }
 }
 
+/// 仓库内置插件目录(`<repo>/plugins`)。
+///
+/// **为什么不用 `~/.config/helix/plugins`**:那是开发机的用户层,CI / 新机器上不存在。
+/// 2026-10-17 实测:删掉开发机上的镜像后,filetree / window_rail 等 5 条集成测试
+/// 直接红(`No such file or directory`)—— 说明它们从来没在干净环境里跑过。
+/// 集成测试要**自包含**:读仓库里的插件源码,别读开发机配置。
+pub fn repo_plugins_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins")
+}
+
+/// 单个内置插件的路径,如 `repo_plugin("filetree/plugin.js")`。
+pub fn repo_plugin(rel: &str) -> std::path::PathBuf {
+    repo_plugins_dir().join(rel)
+}
+
 pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
     let path = file.path();
     let f = std::fs::OpenOptions::new()

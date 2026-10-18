@@ -420,14 +420,13 @@ async fn keymap_hint_builtin_fallback() -> anyhow::Result<()> {
 /// 完整 which-key.js:按 g 前缀 → 中文说明(未命中映射显示原 doc)。
 #[tokio::test(flavor = "multi_thread")]
 async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let wk = format!("{home}/.config/helix/plugins/which-key/plugin.js");
+    let wk = repo_plugin("which-key/plugin.js").display().to_string();
     if !std::path::Path::new(&wk).exists() {
         return Ok(());
     }
     let mut app = AppBuilder::new().build()?;
     // which-key 无 deps(图标已收进核心、不依赖 lib/layout.js —— 那条笔记已过时)
-    helix_js::set_plugins_dir(format!("{home}/.config/helix/plugins").into());
+    helix_js::set_plugins_dir(repo_plugins_dir());
     pump(&mut app, &format!(":plugin-load {wk}<ret>")).await?;
     // 普通前缀 g → 中文说明
     pump(&mut app, "g").await?;
@@ -801,8 +800,7 @@ async fn filetree_enter_opens_and_focuses_editor() -> anyhow::Result<()> {
     let file = dir.path().join("z.txt");
     let file_str = file.to_string_lossy().into_owned();
     std::fs::write(&file, "hello\n")?;
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent".into());
-    let filetree_plugin = format!("{home}/.config/helix/plugins/filetree/plugin.js");
+    let filetree_plugin = repo_plugin("filetree/plugin.js").display().to_string();
     if !std::path::Path::new(&filetree_plugin).exists() {
         return Ok(());
     }

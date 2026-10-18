@@ -126,8 +126,7 @@ async fn rail_focused_can_type_colon_commands() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn probe_key_dispatch_under_rail() -> anyhow::Result<()> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let fp = format!("{home}/.config/helix/plugins/filetree/plugin.js");
+    let fp = repo_plugin("filetree/plugin.js").display().to_string();
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("readme.md"), "hi\n").unwrap();
     let plugin = dir.path().join("filetree.js");

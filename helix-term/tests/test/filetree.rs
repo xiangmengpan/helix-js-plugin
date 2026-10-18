@@ -17,15 +17,15 @@ fn panel_text(app: &mut Application) -> String {
         .join("\n")
 }
 
-/// 建临时目录结构 + 加载真实插件（读取 ~/.config/helix/plugins/features/filetree/index.js）
+/// 建临时目录结构 + 加载真实插件(读仓库 `plugins/filetree/plugin.js`)
 async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
     let dir = tempfile::tempdir()?;
     std::fs::create_dir(dir.path().join("src"))?;
     std::fs::write(dir.path().join("src/main.js"), "console.log(1)\n")?;
     std::fs::write(dir.path().join("readme.md"), "hi\n")?;
     std::fs::write(dir.path().join(".secret.txt"), "s\n")?;
-    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME unset"))?;
-    let src = std::fs::read_to_string(format!("{home}/.config/helix/plugins/filetree/plugin.js"))?;
+    // 读**仓库**里的插件(不是开发机 `~/.config`:那在 CI/新机器上不存在)
+    let src = std::fs::read_to_string(repo_plugin("filetree/plugin.js"))?;
     let plugin = dir.path().join("filetree.js");
     std::fs::write(&plugin, src)?;
     let mut app = AppBuilder::new().build()?;
