@@ -447,6 +447,9 @@ pub(crate) fn js_server_list(
     args: &[JsValue],
     _context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
+    // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
+    crate::permissions::check_js("helix.server.list", crate::permissions::CAP_PROCESS)?;
     let arg = args
         .first()
         .and_then(|v| v.as_string())
@@ -460,6 +463,9 @@ pub(crate) fn js_server_search(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
+    // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
+    crate::permissions::check_js("helix.server.search", crate::permissions::CAP_PROCESS)?;
     let kw: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -474,6 +480,9 @@ pub(crate) fn js_server_install(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
+    // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
+    crate::permissions::check_js("helix.server.install", crate::permissions::CAP_PROCESS)?;
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -488,6 +497,9 @@ pub(crate) fn js_server_update(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
+    // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
+    crate::permissions::check_js("helix.server.update", crate::permissions::CAP_PROCESS)?;
     // 无参 = 更新全部(与 :server update 一致)
     let name: Option<String> = match args.first() {
         Some(v) if !v.is_undefined() && !v.is_null() => Some(
@@ -506,6 +518,9 @@ pub(crate) fn js_server_remove(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
+    // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
+    crate::permissions::check_js("helix.server.remove", crate::permissions::CAP_PROCESS)?;
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -520,6 +535,9 @@ pub(crate) fn js_server_status(
     args: &[JsValue],
     _context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
+    // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
+    crate::permissions::check_js("helix.server.status", crate::permissions::CAP_PROCESS)?;
     let arg = args
         .first()
         .and_then(|v| v.as_string())

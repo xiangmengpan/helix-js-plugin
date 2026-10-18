@@ -19,7 +19,10 @@
 //       update 恒弹输入(升级重询,记忆锁不死换版入口);C/Shift+C 清版本记忆;
 //       bin/source 供信息弹窗显示命令路径与下载源。
 
-helix.plugin("arsenal", { deps: [] });
+// permissions: arsenal 会调 helix.server.*(下载/安装/卸载受管工具 + 改写 languages.toml)。
+// 这些 API 自 2026-10 起受 `process` 能力检查(内置插件本就 grandfathered,显式声明是为了
+// 让 manifest 与事实一致 —— 用户层同名覆盖时按第三方对待,声明才不会被询问)。
+helix.plugin("arsenal", { deps: [], permissions: { process: true } });
 
 const ST_W = 14; // 状态列宽(列数);行右锚贴框内右缘
 const BUSY_MSG = "arsenal: a task is running, please wait…";

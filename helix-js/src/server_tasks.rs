@@ -205,6 +205,8 @@ pub(crate) fn js_server_task(
     args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // B1:后台任务会下载/安装/卸载(写盘 + 起子进程)⇒ 与 `helix.run` 同一能力。
+    crate::permissions::check_js("helix.server.task", crate::permissions::CAP_PROCESS)?;
     let arr = args
         .first()
         .and_then(|v| v.as_object())

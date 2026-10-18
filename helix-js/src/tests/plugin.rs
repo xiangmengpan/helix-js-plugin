@@ -263,6 +263,54 @@ fn open_terminal_needs_process_capability() {
 /// C-2:内置插件(来自**用户插件目录以外**的根)永不询问 —— 17 个内置插件
 /// grandfathered 的根据。内置根与用户根同时存在时,从内置根加载的那个放行,
 /// 从用户根加载的同名插件照旧要问。
+/// B1(2026-10):`helix.server.*` 会下载/安装/卸载并改写 `languages.toml` ⇒ 受 `process` 检查。
+///
+/// 这条测试守两件事:①声明了 `permissions` 却缺 `process` ⇒ **被拒**(在入队/落盘之前);
+/// ②用户授权后同一调用放行(能力模型的自愈路径)。
+#[test]
+fn server_apis_require_process_capability() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    crate::permissions::reset_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_path_buf();
+    std::mem::forget(dir);
+    set_plugins_dir(d.clone());
+    // 只声明 fs_read(不声明 process)⇒ server.* 应被拒
+    load_script(
+        r#"
+        helix.plugin("srv-cap", { permissions: { fs_read: true } });
+        helix.register_command("srv-cap-go", () => { helix.server.list(); });
+        "#,
+    )
+    .unwrap();
+    crate::state::take_ui_requests(); // 清掉加载期残留
+    let ctx = CommandContext {
+        docs: vec![],
+        path: None,
+        text: String::new(),
+        cursor: (0, 0),
+        selection: ((0, 0), (0, 0)),
+    };
+    let err = run_command("srv-cap-go", &ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("process"),
+        "server.list 未声明 process 时必须被拒,且报错要指名能力;err={err}"
+    );
+    assert!(
+        crate::state::take_ui_requests().is_empty(),
+        "被拒时不得留下任何 ServerOp 请求(必须在入队之前拦住)"
+    );
+
+    // 用户允许后放行(不再询问)
+    crate::permissions::decide("srv-cap", "process", true);
+    run_command("srv-cap-go", &ctx).unwrap();
+    assert!(
+        !crate::state::take_ui_requests().is_empty(),
+        "授权后应正常入队 ServerOp"
+    );
+}
+
 #[test]
 fn builtin_plugin_is_grandfathered() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

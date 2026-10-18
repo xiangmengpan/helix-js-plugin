@@ -36,7 +36,31 @@ const rel = (p) => join(ROOT, p);
 /// **意图表**:API 名 → 它该受哪种能力检查。这是"能力模型"的唯一声明处。
 const EXPECTED = {
   // process:起子进程 / shell
-  process: ["run", "run_async", "spawn", "open_terminal"],
+  // B1(2026-10):server.* 会下载/安装/卸载(写盘 + 起子进程)并改写 languages.toml;
+  // rows 还会探测已装工具的版本(`<bin> --version`)。原先**完全没有**检查点:
+  // 任意插件零权限声明就能让 helix 装二进制 —— 能力模型最大的一个洞。
+  // B1(2026-10):server.* 会下载/安装/卸载(写盘 + 起子进程)并改写 languages.toml;
+  // rows 还会探测已装工具的版本(`<bin> --version`)。原先**完全没有**检查点:
+  // 任意插件零权限声明就能让 helix 装二进制 —— 能力模型最大的一个洞。
+  //
+  // ⚠ 名字用**叶子名**:本脚本的注册表解析是"命名空间无关"的(`server_obj` 里的成员
+  // 只记 `list`,不记 `server.list`),所以这里写 `list` 而不是 `server.list`;
+  // 判定语义是"同名多注册里**任意一个**实现带检查点即可"(见段 B),`list` 同时被
+  // pane/buffer/stack 用到 —— 那些本来就不该受能力检查,靠 server.list 命中即可。
+  process: [
+    "run",
+    "run_async",
+    "spawn",
+    "open_terminal",
+    "search",
+    "install",
+    "update",
+    "remove",
+    "status",
+    "task",
+    "rows",
+    "list",
+  ],
   // fs_read:读文件系统(含元信息、枚举、监听)
   fs_read: [
     "read_file",
@@ -161,7 +185,7 @@ function registrations() {
 }
 
 const SRC = {};
-for (const f of ["commands", "shell", "popup", "watch", "picker", "input", "lsp"])
+for (const f of ["commands", "shell", "popup", "watch", "picker", "input", "lsp", "server_tasks", "server_rows"])
   SRC[f] = stripComments(read(`helix-js/src/${f}.rs`));
 
 /// 取函数体(同名函数只在**限定路径**指向的文件里找;找不到就看所有文件)

@@ -374,12 +374,17 @@ helix.plugin("my-plugin", {
 
 | 能力 | 覆盖的 API | 典型用途 |
 |---|---|---|
-| `process` | `helix.run` / `helix.run_async` / `helix.spawn` / **`helix.open_terminal`** | 调 git / rg / 起 shell 终端 |
+| `process` | `helix.run` / `helix.run_async` / `helix.spawn` / **`helix.open_terminal`** / **`helix.server.*`**(list/search/install/update/remove/status/task/rows) | 调 git / rg / 起 shell 终端;**安装/升级/卸载工具**(下载 + 写盘 + 改写 `languages.toml`,rows 还会探测版本起子进程) |
 | `fs_read` | `helix.read_file` / `helix.read_file_async` / `helix.read_dir` / **`helix.stat_async` / `helix.glob_async` / `helix.read_tree` / `helix.watch`** | 读配置、列目录、读项目文件;监听文件变化 |
 | `fs_write` | `helix.write_file` / `helix.write_file_async` / `helix.write_plugin_file` / **`helix.remove_plugin_file`** | 写缓存/状态文件、插件自更新 |
 
 `helix.write_plugin_file` 是**限域**写作(只能写自己插件目录下的相对路径),但仍属 `fs_write`。
 打开 buffer、读 `doc.text`、`helix.by_path` 读**已打开**的文档都**不需要**声明(不是文件系统访问)。
+
+> **`helix.server.*` 为什么也归 `process`**(2026-10 补):这些 API 会**下载二进制并安装到受管目录**、
+> 改写 `languages.toml`;`rows` 会为探测版本起子进程(`<bin> --version`)。之前它们**完全在能力模型之外**
+> —— 任意插件零声明就能让 helix 装东西。现在与 `helix.run` 同一能力;内置插件(含 arsenal)照旧
+> grandfathered,第三方插件若写了 `permissions` 就必须包含 `process`,否则第一次调用会进入待授权。
 
 #### 3. 三种情形,行为不同
 
