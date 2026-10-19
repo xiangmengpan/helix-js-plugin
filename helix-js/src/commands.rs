@@ -178,6 +178,22 @@ pub(crate) fn js_quit(
     Ok(JsValue::undefined())
 }
 
+/// `helix.reload_plugins()` —— 热重载**入队**（命令边界执行，见 `UiRequest::ReloadPlugins`）。
+/// 语义与 `:plugin-reload` 完全一致（同一实现），返回 undefined。
+pub(crate) fn js_reload_plugins(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::ReloadPlugins);
+    Ok(JsValue::undefined())
+}
+
 /// `helix.cwd()` → 当前工作目录的**绝对路径**（每次调用现取）。
 ///
 /// 为什么需要：此前插件要拿到 cwd **只能** `helix.run("pwd")` —— 那需要 `process`

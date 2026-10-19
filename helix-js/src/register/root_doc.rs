@@ -26,6 +26,11 @@ pub(crate) fn register(builder: &mut ObjectInitializer<'_>) {
         0,
     );
     builder.function(
+        NativeFunction::from_fn_ptr(commands::js_reload_plugins),
+        JsString::from("reload_plugins"),
+        0,
+    );
+    builder.function(
         NativeFunction::from_fn_ptr(commands::js_on),
         JsString::from("on"),
         2,

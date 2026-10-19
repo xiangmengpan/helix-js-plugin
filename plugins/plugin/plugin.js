@@ -315,7 +315,8 @@ function runOp(sub, arg) {
     }
     case "reload":
       // 委派给 Rust 的独立命令(本步不搬它 —— 自举兜底)
-      helix.echo("请用 :plugin-reload(JS 侧插件管理器的 reload 尚未接管)");
+      // 热重载**入队**（核心在命令边界执行），与 `:plugin-reload` 同一实现
+      helix.reload_plugins();
       break;
     default:
       helix.echo(

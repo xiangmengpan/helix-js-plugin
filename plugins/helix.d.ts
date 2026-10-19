@@ -939,6 +939,14 @@ interface Helix {
   picker_state(): string;
   /** 退出编辑器(入队 Quit;关掉最后一个视图即退出) */
   quit(): void;
+  /**
+   * 热重载全部插件(与 `:plugin-reload` 同一实现)。
+   *
+   * **入队执行**：调用点只是在队列里放一条请求，真正重跑脚本发生在**命令边界**
+   * ——因为重载要在 boa 上重跑所有脚本，同步跑会二次借用引擎而 panic。
+   * 所以：调用后立刻读 `helix.loaded_plugins()` / 命令仍可能是旧状态。
+   */
+  reload_plugins(): void;
   watch(path: string, fn: (event: unknown) => void): void;
   unwatch(id: unknown): void;
   diagnostics(): unknown;

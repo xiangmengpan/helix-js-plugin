@@ -286,6 +286,7 @@ helix.watch(path, cb) -> id                     // 文件监听(回调收 [{kind
 helix.unwatch(id)                               // 停止监听
 helix.diagnostics()                             // [{line, message, severity, code, source}] | null(只读快照)
 helix.quit()                                    // 关当前视图(最后一个则退出);`run_command("quit")` 走不通,用这个
+helix.reload_plugins()                          // 热重载全部插件(入队,命令边界执行;同 `:plugin-reload`)
 helix.term_feed(view_id, chunk)                 // 把 PTY 输出喂进该终端视图的网格
 helix.term_save(view_id, path?)                 // 导出 scrollback+屏幕(省略 path → ~/.cache/helix/term-<id>.log)
 helix.term_state(ptyId, key[, value])           // 终端任意状态持久化(读/写,跨会话)

@@ -334,6 +334,11 @@ pub enum UiRequest {
     OpenPanel(OpenPanelReq),
     /// 关闭当前视图(关掉最后一个视图即退出程序 ✓)—— dashboard 的 q 用 ✓
     Quit,
+    /// `helix.reload_plugins()` —— **热重载插件**。为什么走队列而不是直接调:
+    /// 重载会在 boa 引擎上重跑所有脚本,若发生在命令自己的 JS 栈里 ⇒ 二次借用
+    /// `CONTEXT` panic(`commands.rs` 的 lazy 注释记过这个风险)。入队后由
+    /// `apply_ui_requests` 在**命令边界**用 job 回调执行。
+    ReloadPlugins,
     ClosePanel(ClosePanelReq),
     /// `helix.close_popup(id)`
     ClosePopup(ClosePopupReq),

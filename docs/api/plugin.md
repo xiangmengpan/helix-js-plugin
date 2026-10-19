@@ -28,7 +28,7 @@
 | `remove <name>` | 按 manifest 的 `files` 逐个删(限域、尽力而为),再删条目;**不在 manifest 里 → 报错**(不认"孤儿"安装)|
 | `list` | 第一行 = **已加载**的脚本(与核心 `loaded_scripts()` 同源);附加一行 = manifest 里**已安装**的(便于看出"装了但没加载")|
 | `status` | `"{N} plugins loaded from {dir}, {M} installed ({G} git, {P} pinned)"`(集成测试按此文案断言,勿轻易改)|
-| `reload` | ⚠️ **桩**:只 echo `请用 :plugin-reload`(JS 侧尚未接管)|
+| `reload` | ✅ 调 `helix.reload_plugins()`（**入队**，命令边界重跑全部脚本；与 `:plugin-reload` 同一实现）|
 
 另有两个独立命令:
 
@@ -82,9 +82,7 @@ helix.plugin.remove("name");    // 必须已在 manifest 里
 
 ## 已知问题
 
-1. **`:plugin reload` 是桩**(只提示用 `:plugin-reload`),但 `plugin/plugin.js` 的兜底消息仍自称
-   "已实现 …|reload(8/8)" ⇒ 文案过时。
-2. 同一文件里还有两处过时注释:"命令名仍为临时名 `plugin-js`"(实际已注册为 `plugin`)、
+1. 同一文件里还有两处过时注释:"命令名仍为临时名 `plugin-js`"(实际已注册为 `plugin`)、
    "写路径仍须 `await`"(现已用同步的 `write_file` / `write_plugin_file`)。
 
 > **本地安装曾长期不可用**(2026-10-19 修):`helix.read_dir` 对**文件**返回 ENOTDIR ⇒ 单文件装不了;

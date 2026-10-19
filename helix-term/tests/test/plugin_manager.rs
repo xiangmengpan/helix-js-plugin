@@ -270,19 +270,15 @@ async fn plugin_install_single_file_local() -> anyhow::Result<()> {
     std::fs::write(&src, "helix.echo('hi');\n")?;
 
     let proot_path = proot.path().to_path_buf();
-    run_plugin_op(
-        file,
-        &format!("plugin install {}", src.display()),
-        &|app| {
-            let (status, _) = app.editor.get_status().unwrap();
-            assert!(
-                status.as_ref().contains("installed"),
-                "单文件安装应报 installed，got: {status:?}"
-            );
-            let dest = proot_path.join("hello/plugin.js");
-            assert!(dest.exists(), "单文件未落到 {}: {status:?}", dest.display());
-        },
-    )
+    run_plugin_op(file, &format!("plugin install {}", src.display()), &|app| {
+        let (status, _) = app.editor.get_status().unwrap();
+        assert!(
+            status.as_ref().contains("installed"),
+            "单文件安装应报 installed，got: {status:?}"
+        );
+        let dest = proot_path.join("hello/plugin.js");
+        assert!(dest.exists(), "单文件未落到 {}: {status:?}", dest.display());
+    })
     .await?;
     Ok(())
 }
@@ -301,22 +297,18 @@ async fn plugin_install_dir_recursive() -> anyhow::Result<()> {
     std::fs::write(src.join("sub/deep.js"), "helix.echo('d');\n")?;
 
     let proot_path = proot.path().to_path_buf();
-    run_plugin_op(
-        file,
-        &format!("plugin install {}", src.display()),
-        &|app| {
-            let (status, _) = app.editor.get_status().unwrap();
-            assert!(status.as_ref().contains("installed"), "got: {status:?}");
-            assert!(
-                proot_path.join("tree/plugin.js").exists(),
-                "顶层文件未落盘: {status:?}"
-            );
-            assert!(
-                proot_path.join("tree/sub/deep.js").exists(),
-                "嵌套目录未递归: {status:?}"
-            );
-        },
-    )
+    run_plugin_op(file, &format!("plugin install {}", src.display()), &|app| {
+        let (status, _) = app.editor.get_status().unwrap();
+        assert!(status.as_ref().contains("installed"), "got: {status:?}");
+        assert!(
+            proot_path.join("tree/plugin.js").exists(),
+            "顶层文件未落盘: {status:?}"
+        );
+        assert!(
+            proot_path.join("tree/sub/deep.js").exists(),
+            "嵌套目录未递归: {status:?}"
+        );
+    })
     .await?;
     Ok(())
 }
@@ -338,27 +330,23 @@ async fn plugin_install_failure_leaves_no_orphan() -> anyhow::Result<()> {
     std::fs::write(src.join("zz-bad.bin"), [0xff, 0xfe, 0x00, 0x01])?;
 
     let proot_path = proot.path().to_path_buf();
-    run_plugin_op(
-        file,
-        &format!("plugin install {}", src.display()),
-        &|app| {
-            let (status, _) = app.editor.get_status().unwrap();
-            assert!(
-                status.as_ref().contains("install"),
-                "失败应有 install 相关报错，got: {status:?}"
-            );
-            assert!(
-                !proot_path.join("bad/plugin.js").exists(),
-                "失败后残留了孤儿文件: {status:?}"
-            );
-            let manifest = std::fs::read_to_string(proot_path.join("manifest.json"))
-                .unwrap_or_else(|_| String::from("{}"));
-            assert!(
-                !manifest.contains("\"bad\""),
-                "失败后 manifest 不该记录: {manifest}"
-            );
-        },
-    )
+    run_plugin_op(file, &format!("plugin install {}", src.display()), &|app| {
+        let (status, _) = app.editor.get_status().unwrap();
+        assert!(
+            status.as_ref().contains("install"),
+            "失败应有 install 相关报错，got: {status:?}"
+        );
+        assert!(
+            !proot_path.join("bad/plugin.js").exists(),
+            "失败后残留了孤儿文件: {status:?}"
+        );
+        let manifest = std::fs::read_to_string(proot_path.join("manifest.json"))
+            .unwrap_or_else(|_| String::from("{}"));
+        assert!(
+            !manifest.contains("\"bad\""),
+            "失败后 manifest 不该记录: {manifest}"
+        );
+    })
     .await?;
     Ok(())
 }

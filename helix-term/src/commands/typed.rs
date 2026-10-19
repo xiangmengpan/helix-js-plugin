@@ -4947,6 +4947,14 @@ pub(crate) fn apply_ui_requests(
             helix_js::UiRequest::OpenPopup(req) => popup::handle_open_popup(req)?,
             helix_js::UiRequest::OpenPanel(req) => dispatch(pane::handle_open_panel(req)?),
             helix_js::UiRequest::Quit => doc::handle_quit()?,
+            // 热重载排到 job 队列 ⇒ 在**命令边界**跑，不与当前 JS 栈重入（`reload_plugins`
+            // 会在 boa 上重跑全部脚本，同步跑必 panic）。`None` 走的是同一条自由函数
+            // 路径（`JsHost::reload_all` 只是 `pump(reload_all)` 的排他性包装）。
+            helix_js::UiRequest::ReloadPlugins => job::dispatch_blocking(|editor, _compositor| {
+                if let Err(e) = reload_plugins(None, editor) {
+                    editor.set_error(format!("reload_plugins: {e}"));
+                }
+            }),
             helix_js::UiRequest::ClosePanel(req) => dispatch(pane::handle_close_panel(req)?),
             helix_js::UiRequest::ClosePopup(req) => popup::handle_close_popup(req)?,
             helix_js::UiRequest::OpenScratchFile(req) => doc::handle_open_scratch_file(req)?,
