@@ -42,6 +42,8 @@ fn panel_text(app: &mut Application) -> String {
 /// `:cd` → `cwd-change` 处理器拿到新目录,且同一时刻 `helix.cwd()` 已是新值。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_cwd_change_event() -> anyhow::Result<()> {
+    // 会真 chdir ⇒ 与其它 chdir 的用例串行(见 helpers::CWD_LOCK)
+    let _cwd_lock = CWD_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let sub = dir.path().join("sub");
     std::fs::create_dir_all(&sub)?;
@@ -100,6 +102,7 @@ async fn plugin_cwd_change_event() -> anyhow::Result<()> {
 /// 真实 filetree 插件跟 `:cd` 换根 —— 用户报的那个场景的端到端回归。
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_panel_follows_cd() -> anyhow::Result<()> {
+    let _cwd_lock = CWD_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let b = dir.path().join("b");
     std::fs::create_dir_all(&b)?;

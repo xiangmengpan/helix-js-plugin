@@ -573,6 +573,16 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
 /// plugin_layout / plugin_layout2 / plugin_terminal_hooks / plugin_theme /
 /// server_manager / splits / window_mode / window_rail / window_split),语义完全相同
 /// (`parse_macro` 返回 `Vec`,直接迭代与 `.into_iter()` 等价)。
+/// 进程级 cwd 是**全局**状态:任何 `:cd` 都会影响**并行**跑的其它测试。
+///
+/// 实测过的形态:`plugin_cross_buffer` 的相对路径用例在全量并行时会输 —— 它的 `:cd`
+/// 与另一个测试的 `:cd` 交错,cwd 在两条指令之间被换走。这是**测试之间**的竞争,
+/// 不是被测代码的问题,所以在测试层解决:凡是会 chdir 的用例**先拿这把锁**。
+///
+/// 用 tokio 的 `Mutex` 而不是 `std::sync::Mutex`:锁要跨 `await` 持有,
+/// 而 `std::sync::MutexGuard` 不是 `Send`(multi_thread 的测试容器会拒绝编译)。
+pub static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
