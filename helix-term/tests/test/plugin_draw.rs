@@ -244,3 +244,35 @@ async fn scroll_container_reaches_the_surface() -> anyhow::Result<()> {
     pump(&mut app, "<esc>").await?;
     Ok(())
 }
+
+/// **真实插件样板**:`picker-ui` 的 render 全部改用 `helix.draw.*`
+/// (外框 rect / 查询行 text / 分隔 hline / 选中行 fill / 列表 push_scroll / 滚动条 vline)
+#[tokio::test(flavor = "multi_thread")]
+async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let plugin = root.join("plugins/picker-ui/plugin.js");
+    assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
+
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":pick<ret>").await?;
+
+    let text = screen(&mut app);
+    assert!(text.contains("╭ picker · files"), "圆角外框 + 标题: {text}");
+    assert!(text.contains("> _"), "查询行(带光标): {text}");
+    assert!(text.contains('▸'), "选中行标记: {text}");
+    assert!(text.contains("Enter") && text.contains("Esc"), "底部状态行: {text}");
+    assert!(text.contains('█'), "滚动条当前位置: {text}");
+
+    // 按 Down 若干次:选中行仍在框内(滚动窗口跟随),但画面已经变了
+    for _ in 0..12 {
+        pump(&mut app, "<down>").await?;
+    }
+    let text2 = screen(&mut app);
+    assert!(text2.contains('▸'), "滚动后选中行仍可见: {text2}");
+    assert_ne!(text, text2, "按 Down 之后画面应变化(选中+滚动窗口)");
+
+    pump(&mut app, "<esc>").await?;
+    assert!(!screen(&mut app).contains("╭ picker"), "Esc 关闭弹层");
+    Ok(())
+}

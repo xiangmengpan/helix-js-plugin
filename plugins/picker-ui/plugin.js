@@ -10,6 +10,11 @@
 //   open_file(path) / run_command(name)                   ✓
 //   echo(...)                                             ✓
 //
+// ## 绘制方式(本插件的 render 就是 `helix.draw.*` 的完整样板)
+//   外框 rect(圆角 + 标题)、查询行 text(多段样式)、分隔 hline、列表 fill(选中行底色)
+//   + push_scroll(内容坐标系,滚动只改 dy)、滚动条 vline、底部状态 text
+//   ⇒ `return helix.draw.done()`;宽度一律问 `helix.text.*`(不再手抄宽度表)。
+//
 // ## v1 的范围(刻意最小 ✓)
 //   · 数据源:文件(read_tree ✓)
 //   · 过滤:**纯 JS** 子序列匹配 + 打分(零新能力 ✓;列表规模数千时足够快 ✓)
@@ -45,27 +50,13 @@ function guard(fn, fallback) {
 function say(msg) {
   guard(() => helix.echo(msg));
 }
-// 显示宽度:CJK/全角占 2 列 ✓(块元素/制表符是 1 列 —— 真机渲染反证过 ✓)
+// 显示宽度:CJK/全角占 2 列。**直接问核心**(helix.text.*) —— 与渲染器同一张宽度表,
+// 不会出现"插件算 1 列、渲染器占 2 列"的错位(手抄宽度表正是以前那类错位的根源)。
 function dw(s) {
-  let n = 0;
-  for (const ch of String(s)) {
-    const c = ch.codePointAt(0);
-    const wide =
-      (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) ||
-      (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) ||
-      (c >= 0xfe30 && c <= 0xfe6f) || (c >= 0xff00 && c <= 0xff60) ||
-      (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1f64f);
-    n += wide ? 2 : 1;
-  }
-  return n;
+  return helix.text.width(String(s));
 }
 function cut(s, width) {
-  let out = "";
-  for (const ch of String(s)) {
-    if (dw(out + ch) > width) break;
-    out += ch;
-  }
-  return out;
+  return helix.text.truncate(String(s), Math.max(0, width));
 }
 
 // ── 路径:存**绝对**、看**相对** ──────────────────────────────────────
@@ -280,25 +271,52 @@ function sync_fallback() {
 function render(_focus, ctx) {
   const w = ctx && typeof ctx.width === "number" ? ctx.width : 80;
   const h = ctx && typeof ctx.height === "number" ? ctx.height : 20;
-  const rows = [];
-  rows.push(cut("> " + query + "_", w));
-  rows.push("─".repeat(Math.max(0, Math.min(w, 60))));
-  const list_h = Math.max(1, h - 3);
-  // 滚动窗口:让选中项可见 ✓
+  const list_top = 3;                             // 内容第 0 行落在框内第 3 行
+  // 底部留两行:状态行(h-2)+ 下边框(h-1) —— 少留一行会让列表压住状态行(实测踩过)
+  const list_h = Math.max(1, h - list_top - 2);
+  // 滚动窗口:让选中项可见(内容坐标系下只需算 top,不必逐行算屏幕 y)
   let top = 0;
   if (sel >= list_h) top = sel - list_h + 1;
-  const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
-  const tag = "[" + shown.length + "/" + all.length + "]";
-  for (let i = 0; i < list_h; i++) {
-    const idx = top + i;
-    if (idx >= shown.length) break;
-    const mark = idx === sel ? "▸ " : "  ";
-    const item = cut(view(shown[idx]), Math.max(1, w - 4));
-    rows.push(mark + item);
+
+  // 外框 + 标题 + 顶部分隔线
+  helix.draw.rect(0, 0, w, h, { border: "round", title: "picker · " + cur_source, style: "ui.popup" });
+  helix.draw.text(2, 1, [
+    { text: "> ", style: "ui.virtual" },
+    { text: query, style: "ui.text" },
+    { text: "_", style: "ui.text.focus" },
+  ], { maxWidth: Math.max(1, w - 4) });
+  helix.draw.hline(1, 2, Math.max(0, w - 2), { style: "ui.virtual" });
+
+  // 列表:内容坐标 = 行号;滚动只改 offset。只画可见切片(否则上万条会造上万条 op)
+  helix.draw.push_scroll(1, list_top, Math.max(1, w - 2), list_h, { dy: top });
+    const from = Math.max(0, top);
+    const to = Math.min(shown.length, top + list_h);
+    for (let idx = from; idx < to; idx++) {
+      const y = list_top + idx;                    // 内容坐标(与屏幕无关)
+      const is_sel = idx === sel;
+      if (is_sel) helix.draw.fill(1, y, Math.max(1, w - 2), 1, { style: "ui.selection" });
+      helix.draw.text(2, y, [
+        { text: is_sel ? "▸ " : "  ", style: "ui.text" },
+        { text: cut(view(shown[idx]), Math.max(1, w - 6)), style: "ui.text" },
+      ]);
+    }
+  helix.draw.pop();
+
+  // 滚动条:列表装不下时画一条(块 = 当前位置)
+  if (shown.length > list_h) {
+    const pos = Math.min(list_h - 1, Math.round((top / Math.max(1, shown.length - list_h)) * (list_h - 1)));
+    helix.draw.vline(w - 2, list_top, list_h, { ch: "│", style: "ui.virtual" });
+    helix.draw.text(w - 2, list_top + pos, "█", { style: "ui.text" });
   }
-  rows.push("");
-  rows.push(cut("  " + tag + "  ↑↓ 移动 · Enter 打开 · Esc 关闭", w));
-  return rows;
+
+  // 底部状态行
+  const tag = "[" + shown.length + "/" + all.length + "]";
+  helix.draw.text(2, h - 2, tag + "  ↑↓ 移动 · Enter 打开 · Esc 关闭", {
+    style: "ui.text",
+    maxWidth: Math.max(1, w - 4),
+  });
+  // ★ 绘制必须 `return helix.draw.done()`:它把本帧的 op 交给宿主
+  return helix.draw.done();
 }
 
 function open_picker(source_name) {
@@ -390,14 +408,9 @@ helix.register_command("pick", (ctx) => {
 });
 helix.register_command("pick-close", () => close_picker());
 /// 自诊断:把 v1 依赖的事实打出来 ✓
-/// 按**显示宽度**截断(CJK 感知 ✓;复用本文件的 dw() ✓)
+/// 按**显示宽度**截断(核心 picker 的行渲染器仍返回字符串 ⇒ 这里只需截断)
 function clip(s, width) {
-  let out = "";
-  for (const ch of String(s)) {
-    if (dw(out + ch) > Math.max(1, width)) return out;
-    out += ch;
-  }
-  return out;
+  return helix.text.truncate(String(s), Math.max(1, width));
 }
 
 /// **给核心 picker 定义一个源并打开它** —— 用来验证"核心状态是否喂到 JS" ✓
