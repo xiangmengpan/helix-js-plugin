@@ -289,7 +289,8 @@ helix.write_file_async(path, content)           // Promise
 helix.stat_async(path)                          // Promise → {is_dir, size, mtime}
 helix.glob_async(pattern)                       // Promise → paths[]
 helix.read_tree(path, { depth? })               // Promise → [{name, is_dir, path}](递归)
-helix.set_statusline(fn)                        // fn({path, mode, cursor}) -> string|null
+helix.set_statusline(fn, opts?)                 // fn(ctx) -> string | StatuslinePart[] | null
+                                               // opts = { replace?: true, zones?: [左,中,右] }
 helix.set_buffer_icon(fn)                       // fn(path) -> string|null
 helix.set_completion_icon(fn)                   // fn(kindNum) -> 图标字符(kind 列)
 helix.set_completion_render(fn)                 // fn(ctx) -> 行内容数组|组件树(补全菜单行钩子)

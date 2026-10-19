@@ -98,14 +98,34 @@ const id = helix.open_panel({
 
 ## 界面定制
 
-### `helix.set_statusline(fn)`
+### `helix.set_statusline(fn, opts?)`
 
 ```js
+// ① 纯文本（与内置状态栏共存）
 helix.set_statusline(({ mode, path }) => " N " + path);
-// 返回 null → 隐藏状态栏;未注册 → 内置状态栏
+
+// ② 富文本：每段自带主题色 + 分区，整行接管
+helix.set_statusline(
+  () => [
+    { text: " N ", style: "ui.statusline.insert" },
+    { text: "main.rs" },
+    { text: " 2 errors ", style: "error", zone: "right" },
+  ],
+  { replace: true, zones: [1, 0, 1] },
+);
+
+// 返回 null → 隐藏状态栏；未注册 → 内置状态栏
 ```
 
-**优缺点**：优点：整行替换,可返回任意字符串;null 隐藏。局限：纯字符串(无富文本段)。
+`fn(ctx)` 的 `ctx` 是完整的 `StatuslineCtx`（`path`/`mode`/`cursor`/`total_lines`/`modified`/`diagnostics_*`/`window_mode`/`active_leaf_type`/`read_only`/`encoding`/`line_ending`/`register`/`file_type`/`cwd`/`workspace_diagnostics_*`/`spinner` …，字段与 `helix-js/src/types.rs::StatuslineCtx` 一一对应；完整签名见 `plugins/helix.d.ts`）。
+
+- 返回数组 = **富文本**：`{ text, style?, zone? }`，`style` 是主题 scope 名（解析失败/省略 = 跟随状态栏基样式）。
+- 段间**自动插 1 空格** gap（首段前不插）；`zone` 缺省 `"left"`，`"center"`/`"right"` 受 `zones` 比例约束（`replace: true` 时才分区）。
+- `replace: true` 时内置组件（模式/文件名/位置…）不渲染，整行归插件。
+
+**优缺点**：优点：整行接管 + 逐段真主题色（不是 ANSI 拼接），分区比例可调；`null` 隐藏。局限：纯文本形态无富文本段；钩子**每帧**都调（实测 `statusline` 是最热的 JS 入口），里面不要跑重活。
+
+> 回归锁：`plugin_statusline_parts_have_per_part_style`（断言每段 fg 各自等于 `theme.get(scope).fg`）。
 
 ### `helix.set_buffer_icon(fn)`
 

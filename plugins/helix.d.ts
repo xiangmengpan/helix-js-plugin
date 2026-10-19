@@ -242,10 +242,56 @@ interface CompletionCtx {
   deprecated: boolean;
   matchIndices: number[];
 }
+/** `set_statusline` 的入参（与 `helix-js/src/types.rs::StatuslineCtx` 一一对应） */
 interface StatuslineCtx {
   path: string | null;
   mode: string;
   cursor: Pos;
+  total_lines: number;
+  diagnostics_error: number;
+  diagnostics_warning: number;
+  /** true = 平级窗口模式（`C-w` / pane mode），图标用 */
+  window_mode: boolean;
+  /** 活动窗口类型：`"editor"|"buffer"|"terminal"|"panel"` */
+  active_leaf_type: string;
+  active_leaf_path: string | null;
+  modified: boolean;
+  selections: number;
+  /** 主选区序号（从 0 起） */
+  selections_primary: number;
+  read_only: boolean;
+  encoding: string;
+  line_ending: string;
+  register: string | null;
+  primary_selection_length: number;
+  indent_style: string;
+  file_type: string | null;
+  /** 当前工作目录的**末段名**（不是全路径；要全路径用 `helix.cwd()`） */
+  cwd: string;
+  code_action_hint: boolean;
+  workspace_diagnostics_error: number;
+  workspace_diagnostics_warning: number;
+  workspace_diagnostics_info: number;
+  workspace_diagnostics_hint: number;
+  /** LSP 进度帧；无进行中任务时为 null */
+  spinner: string | null;
+}
+
+/** 状态栏的一段（`set_statusline` 返回数组 = 富文本，`replace: true` 时整体接管） */
+interface StatuslinePart {
+  text: string;
+  /** 主题 scope 名（如 `"ui.statusline"` / `"error"`）；解析失败/省略 = 无样式 */
+  style?: string | null;
+  /** 缺省 `"left"`；`"center"` 居中、`"right"` 右对齐（受 `zones` 比例约束） */
+  zone?: "left" | "center" | "right";
+}
+
+/** `set_statusline` 第二参：整体接管状态栏时的分区比例 */
+interface StatuslineOptions {
+  /** true = 整行由插件控制（默认组件不渲染）；false/省略 = 与内置状态栏共存 */
+  replace?: boolean;
+  /** `[左, 中, 右]` 比例，缺省 `[1,1,1]`；`replace: true` 时生效 */
+  zones?: [number, number, number];
 }
 
 // ────────────────────────── LSP(原始协议 JSON) ──────────────────────────
@@ -657,7 +703,15 @@ interface Helix {
   ): void;
 
   // ── 界面定制 ──
-  set_statusline(fn: ((ctx: StatuslineCtx) => string | null) | null): void; // null 隐藏
+  /**
+   * 状态栏钩子。返回 `null` = 隐藏；返回 `string` = 单行纯文本；
+   * 返回 `StatuslinePart[]` = 富文本（每段各自带主题色/分区）。
+   * 段间自动插 1 空格 gap（首段前不插）。
+   */
+  set_statusline(
+    fn: ((ctx: StatuslineCtx) => string | StatuslinePart[] | null) | null,
+    opts?: StatuslineOptions,
+  ): void;
   set_buffer_icon(fn: (path: string) => string | null): void;
   set_completion_icon(fn: (kindNum: number) => string): void;
   set_completion_render(fn: (ctx: CompletionCtx) => (string | StyledText)[] | ElNode): void;

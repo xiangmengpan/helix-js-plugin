@@ -351,3 +351,65 @@ async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// replace 模式下每段可带自己的主题色：两段不同 scope ⇒ 单元格 fg 各自等于 theme.get(scope)。
+///
+/// 回归锁（计划任务 5 / 审查重点）：运行时早已支持 `{text, style, zone}`，但
+/// `plugins/helix.d.ts` 一度只声明 `string`。这条测试钉住"每段样式真的生效"，
+/// 防止文档升级后被当成装饰性字段。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("slp.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slp.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: "L", style: "ui.statusline" },
+            { text: "R", style: "error", zone: "right" },
+        ], { replace: true, zones: [1, 0, 1] });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    // zones 1:0:1，宽 90 ⇒ L 在 x=0，R 右对齐在 x=89
+    let area = helix_view::graphics::Rect::new(0, 0, 90, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            None,
+            "editor",
+            None,
+            None,
+        );
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+
+    let expect_l = app.editor.theme.get("ui.statusline").fg;
+    let expect_r = app.editor.theme.get("error").fg;
+    assert_ne!(
+        expect_l, expect_r,
+        "测试主题里两个 scope 的 fg 相同，无法区分（换 scope 而不是删断言）"
+    );
+    // 单元格是 helix_tui::Color，主题是 Option<Color>：用 Some(..) 对齐
+    assert_eq!(Some(buf.content[0].fg), expect_l, "左段样式未生效");
+    assert_eq!(Some(buf.content[89].fg), expect_r, "右段样式未生效");
+    Ok(())
+}
