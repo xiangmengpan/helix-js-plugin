@@ -819,7 +819,13 @@ interface Helix {
       fixed: boolean;
       pinned: boolean;
       z?: number; // 浮窗层序
-      rect?: { x: number; y: number; w: number; h: number }; // 浮窗比例几何
+      rect?: { x: number; y: number; w: number; h: number }; // 浮窗比例几何(0..1,定位用)
+      /**
+       * **绝对单元格几何**(视口坐标,与鼠标 `component-event` 的 `(x,y)` 同一坐标系)。
+       * 用它能把自己面板内的全局坐标换算成"第几行":`localY = ev.y - area.y`。
+       * 只在该 pane 已经被渲染过之后才有真值(刚 split 出来、还没渲染 → 全 0)。
+       */
+      area?: { x: number; y: number; w: number; h: number };
     }[];
     /** 平铺 → 浮窗 */
     float(id: number): void;

@@ -46,6 +46,8 @@ pub struct LayoutTree {
     minimized: Option<u64>,
     /// 最近一次渲染的叶子区域（鼠标命中查询；每帧渲染更新）
     leaf_rects: std::collections::HashMap<u64, Rect>,
+    /// 同上，但只在几何**变化**时置位（Compositor 用它决定要不要刷新 `pane.list()` 快照）
+    rects_dirty: bool,
     /// 固定叶子 id 集合（fixed：不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
     fixed: std::collections::HashSet<u64>,
     /// rail(侧栏轨道)叶子:恒为 root 的直接子叶(H 分屏边缘侧,占全高)。
@@ -234,6 +236,7 @@ impl Default for LayoutTree {
             fixed: Default::default(),
             rail: None,
             leaf_rects: Default::default(),
+            rects_dirty: false,
         }
     }
 }
@@ -1075,6 +1078,17 @@ impl LayoutTree {
             .map(|(id, _)| *id)
     }
 
+    /// 某叶子的**绝对**屏幕矩形(最近一次渲染的几何;未渲染过 → None)。
+    /// 与 `leaf_id_at` 同一份数据 ⇒ 插件拿到的 `pane.list()[i].area` 与鼠标坐标同系。
+    pub fn leaf_rect(&self, id: u64) -> Option<Rect> {
+        self.leaf_rects.get(&id).copied()
+    }
+
+    /// 几何自上次取走以来是否变过(取走脏标记)
+    pub fn take_rects_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.rects_dirty)
+    }
+
     pub fn reset_plugin_diffs(&mut self) {
         for comp in self.components.values_mut() {
             if let Some(p) = comp
@@ -1352,9 +1366,15 @@ impl LayoutTree {
         } else {
             Some(self.active)
         };
+        // 几何变化 → 置脏（`pane.list()` 快照由此刷新一次，不靠每帧同步）
+        let changed = rects.len() != self.leaf_rects.len()
+            || rects.iter().any(|(id, r)| self.leaf_rects.get(id) != Some(r));
         self.leaf_rects.clear();
         for (id, rect) in &rects {
             self.leaf_rects.insert(*id, *rect);
+        }
+        if changed {
+            self.rects_dirty = true;
         }
         for (id, rect) in rects {
             // 堆叠:占顶部 1 行作 header(成员列表,▶ 标记当前显示的那个),

@@ -54,6 +54,27 @@ helix.pane.resize(id, 0.3);        // 调整分界比例(0~1)
 helix.pane.focus(id);                   // 聚焦叶子
 ```
 
+### `helix.pane.list()` 的几何字段
+
+```js
+const p = helix.pane.list().find((x) => x.focused);
+const local = ev.y - p.area.y;   // 组件级鼠标坐标 → 面板内第几行
+```
+
+| 字段 | 含义 |
+|---|---|
+| `id` / `kind` | 叶子 id；组件类型名末段（`EditorView` / `PluginPanel` / `PluginTerminal` …） |
+| `place` | `"tiled"` / `"float"` / `"rail"` |
+| `focused` / `fixed` / `pinned` | 焦点 / 固定 / 浮窗置顶 |
+| `z` | 浮窗层序 |
+| `rect` | **浮窗**的**比例**几何（`0..1`，用于 `float`/移动定位）；平铺叶没有 |
+| `area` | **绝对单元格**矩形（视口坐标）；**与鼠标事件同一坐标系**，用于行命中 |
+| `stack` | 所在堆叠组的成员 id 数组（不在组里 → `[]`） |
+
+`rect` 与 `area` 是**两个不同问题**的答案：`rect` 是「我想摆在哪」（比例，缩放窗口不变形），`area` 是「它现在在哪」（绝对格，可直接与鼠标坐标相减）。两者不互相替代。
+
+> 回归锁：`pane_list_tiled_has_absolute_area`（字段存在且非零）与 `pane_area_shares_mouse_coordinate_space`（用 `area` 中心点反查 `leaf_id_at` 必须命中自己——多算/少算一个状态栏高度这条就红）。
+
 窗口管理走 compositor 层的 **zellij 式平级模式**(任意叶子焦点可用,详见
 [`../arsenal.md`](../arsenal.md) 同级的 `docs/` 下的模式说明):
 `C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll。

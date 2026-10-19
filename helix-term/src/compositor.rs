@@ -607,6 +607,10 @@ impl Compositor {
         }
         // 主区域布局树：编辑器/终端/面板叶子各自在矩形里渲染
         self.main_tree.render(tree_area, surface, cx);
+        // 首帧/窗口缩放后几何才可知 ⇒ 这里补一次 pane 快照(只在真的变过时写)
+        if self.main_tree.take_rects_dirty() {
+            self.sync_panes_cache();
+        }
         // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上；
         // 底部 UI 层用缩一行的区域（commandline 画在状态栏上一行，不重叠）
         for layer in &mut self.layers {
@@ -1592,13 +1596,16 @@ impl Compositor {
     /// 手里有 `cx`。若把 `&mut JsHost` 当参数透传,就要给 28 个布局原语各加一个参数
     /// —— 那是独立一批的改动(D-2 的“compositor.rs 15 点”本该如此拆),本轮不做,
     /// 因此 `layout-change` 仍走 legacy 隐式解析(语义与泵入口一致,只差排他性证明)。
-    pub(crate) fn sync_layout_cache(&mut self) {
-        let dump = self.main_tree.dump();
-        // pane.list():把树叶子与浮窗统一成"pane"视角(place/focused/pinned)。
-        // ③ 会在此加 kind/rect 等字段;这里先把"看得见浮窗"这个缺口补上。
-        let active = dump.active;
-        let mut panes: Vec<serde_json::Value> = dump
-            .leafs
+    /// `pane.list()` 的快照(`helix.pane.list()` / `helix.stack.list()` 的唯一数据源)。
+    ///
+    /// 与 `sync_layout_cache` 拆开:几何在**渲染后**才知道(`leaf_rects`),而渲染不是
+    /// 布局变更 ⇒ 若只在变更点同步,启动后第一次 `pane.list()` 会是空数组。
+    /// 这里只写快照、**不发事件**,所以可以在渲染后按需调用而不惊动插件。
+    fn sync_panes_cache(&self) {
+        let active = self.main_tree.active();
+        let leafs = self.main_tree.dump().leafs;
+        // 把树叶子与浮窗统一成"pane"视角(place/focused/pinned)。
+        let mut panes: Vec<serde_json::Value> = leafs
             .iter()
             .map(|l| {
                 // 堆叠:列出该叶所在组的成员(不在组里 → 空数组)。
@@ -1610,6 +1617,8 @@ impl Compositor {
                 } else {
                     serde_json::json!([])
                 };
+                // 绝对单元格几何(与鼠标事件同一坐标系);未渲染过 → 全 0
+                let r = self.main_tree.leaf_rect(l.id).unwrap_or_default();
                 serde_json::json!({
                     "id": l.id,
                     "kind": self.main_tree.component_kind_of(l.id).unwrap_or(""),
@@ -1618,10 +1627,13 @@ impl Compositor {
                     "fixed": l.fixed,
                     "pinned": false,
                     "stack": stack,
+                    "area": { "x": r.x, "y": r.y, "w": r.width, "h": r.height },
                 })
             })
             .collect();
-        for f in &dump.floats {
+        for f in &self.main_tree.dump().floats {
+            // `rect` 保持原语义(0..1 比例,定位用);`area` = 换算后的绝对矩形
+            let r = f.rect_of(self.area);
             panes.push(serde_json::json!({
                 "id": f.id,
                 "kind": self.main_tree.component_kind_of(f.id).unwrap_or(""),
@@ -1631,9 +1643,15 @@ impl Compositor {
                 "pinned": f.pinned,
                 "z": f.z,
                 "rect": { "x": f.x, "y": f.y, "w": f.w, "h": f.h },
+                "area": { "x": r.x, "y": r.y, "w": r.width, "h": r.height },
             }));
         }
         helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
+    }
+
+    pub(crate) fn sync_layout_cache(&mut self) {
+        self.sync_panes_cache();
+        let dump = self.main_tree.dump();
         let json = serde_json::to_string(&dump).unwrap_or_default();
         helix_js::cache_layout(&json);
         // `layout-change` 事件:两种投递模式(默认逐点,**可配置**切批量)。
