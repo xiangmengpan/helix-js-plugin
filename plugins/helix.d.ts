@@ -63,10 +63,34 @@ interface StyledText {
   style?: string | null;
 }
 type RenderLine = string | StyledText;
-type RenderContent = RenderLine[] | ElNode;
+type RenderContent = RenderLine[] | ElNode | DrawSentinel;
 type RenderFn = (focus: string | null, ctx: { width: number; height: number }) => RenderContent;
 
 type KeyHandler = (key: PluginKey, doc: Doc) => KeyResult;
+
+// ────────────────────────── 绘制原语(helix.draw) ──────────────────────────
+
+/** `helix.draw.done()` 的返回值：把本帧的 op 交给宿主 */
+type DrawSentinel = { type: "draw" };
+
+type DrawBorder = "plain" | "round" | "double" | "thick" | "none";
+
+interface DrawTextOpts {
+  style?: string | null;
+  /** 最大显示宽度（列） */
+  maxWidth?: number;
+}
+
+interface DrawRectOpts {
+  /** 边框/整块的主题 scope 名 */
+  style?: string | null;
+  /** 边框字符集，缺省 plain */
+  border?: DrawBorder;
+  /** `true` = 用 `style` 填内部；字符串 = 用该 scope 填内部（铺底色） */
+  fill?: boolean | string;
+  /** 上边框上的标题（字符串或富文本段） */
+  title?: string | StyledText[];
+}
 
 // ────────────────────────── el 组件树 ──────────────────────────
 
@@ -83,6 +107,20 @@ type ElNode =
       type: "row" | "col"; // 水平并排 / 垂直堆叠
       children: ElNode[];
       gap?: number;
+    }
+  | {
+      /** 带边框的容器：框是绘制原语，子节点在**框内**按 col 布局（button/input 照旧可聚焦） */
+      type: "box";
+      children: ElNode[];
+      /** 边框字符集（缺省 plain）；none = 只当分组，不占边框格 */
+      border?: "plain" | "round" | "double" | "thick" | "none";
+      /** 标题：画在上边框上（`╭ ti ─╮`） */
+      title?: string | StyledText[];
+      style?: string | null;
+      /** **外框**尺寸（含边框） */
+      width?: number;
+      height?: number;
+      flex?: number;
     }
   | {
       type: "scroll"; // 高度裁剪容器(保留最后 height 行)
@@ -923,6 +961,40 @@ interface Helix {
   picker: {
     define(name: string, opts: PickerOptions): void;
     run(name: string): void;
+  };
+
+  // ── 绘制原语（B 档：显示列表 / immediate mode）──
+  /**
+   * 立即模式绘制：**在 render 里按顺序调几条，最后 `return helix.draw.done()`**。
+   *
+   * 坐标系：`(0,0)` = 组件（弹窗/面板）可视区左上角；越界自动裁剪，不报错。
+   * 样式是主题 scope 名（与 StyledLine/el 同一语义）；要自定义颜色先用 `set_theme` 注册 scope。
+   * 画布**不参与交互**：Tab 焦点/点击仍由 `el("button")` / `el("input")` 承担。
+   * 宽字符（CJK/全角）占 2 列，后续写格落在其第二列时会把该字清成空格（不会切出半个字）。
+   */
+  draw: {
+    /** 矩形：可带边框/标题/内部填充 */
+    rect(x: number, y: number, w: number, h: number, opts?: DrawRectOpts): void;
+    /** 无边框填充块（缺省铺带样式的空格；`opts.ch` 给单字符纹理） */
+    fill(x: number, y: number, w: number, h: number, opts?: { style?: string | null; ch?: string }): void;
+    /** 水平线（缺省字符 `─`） */
+    hline(x: number, y: number, len: number, opts?: { style?: string | null; ch?: string }): void;
+    /** 垂直线（缺省字符 `│`） */
+    vline(x: number, y: number, len: number, opts?: { style?: string | null; ch?: string }): void;
+    /** 文字（字符串或富文本段数组） */
+    text(x: number, y: number, text: string | StyledText[], opts?: DrawTextOpts): void;
+    /** 收尾：把本帧的 op 交给宿主。**render 必须 `return helix.draw.done()`** */
+    done(): DrawSentinel;
+  };
+
+  // ── 显示宽度工具（与渲染器同一张宽度表）──
+  text: {
+    /** 显示列宽（CJK/全角 = 2） */
+    width(s: string): number;
+    /** 按显示宽度截断（不会切出半个宽字符） */
+    truncate(s: string, width: number): string;
+    /** 按显示宽度补空格对齐 */
+    pad(s: string, width: number, opts?: { align?: "left" | "right" | "center" }): string;
   };
 
   // ── 插件管理 ──

@@ -1014,6 +1014,29 @@ pub(crate) fn js_el(
                 }
             }
         }
+        "box" => {
+            // box([children], { border, title, style, width, height, flex })
+            let _: JsArray = arg
+                .try_js_into(ctx)
+                .map_err(|_| crate::js_err(format!("{api}: 'box' expects an array of nodes")))?;
+            props.push(("children".into(), arg.clone()));
+            if let Some(opts) = opts {
+                let obj = opts
+                    .as_object()
+                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
+                for key in ["border", "title", "style"] {
+                    let v = obj.get(JsString::from(key), ctx)?;
+                    if !v.is_null_or_undefined() {
+                        props.push((key.into(), v));
+                    }
+                }
+                for key in ["width", "height", "flex"] {
+                    if let Some(v) = obj_opt_u16(&obj, key, ctx, api)? {
+                        props.push((key.into(), JsValue::from(v)));
+                    }
+                }
+            }
+        }
         "row" | "col" | "scroll" => {
             let _: JsArray = arg.try_js_into(ctx).map_err(|_| {
                 crate::js_err(format!("{api}: '{type_}' expects an array of nodes"))
@@ -1041,7 +1064,7 @@ pub(crate) fn js_el(
         }
         other => {
             return Err(crate::js_err(format!(
-                "{api}: unknown type '{other}' (expected text|row|col|scroll)"
+                "{api}: unknown type '{other}' (expected text|row|col|scroll|box|button|input)"
             )));
         }
     }
@@ -1120,6 +1143,18 @@ fn content_from_value(
             .has_own_property(JsString::from("type"), engine)
             .map_err(|e| anyhow!("{what} type read failed: {e}"))?;
         if has_type {
+            // `helix.draw.done()` 的哨兵:本帧的显示列表在 `crate::draw` 里(见那儿的状态注释)
+            let ty = obj
+                .get(JsString::from("type"), engine)
+                .ok()
+                .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()));
+            if ty.as_deref() == Some("draw") {
+                return crate::draw::take_armed().map(Content::Ops).ok_or_else(|| {
+                    anyhow!(
+                        "{what}: got a draw sentinel but no ops ——                          忘了 `helix.draw.done()`?(绘制必须 `return helix.draw.done()`)"
+                    )
+                });
+            }
             let node = parse_node(value, engine, id, what)
                 .map_err(|e| anyhow!("{what} render failed: {e}"))?;
             Ok(Content::Tree(node))
@@ -1206,6 +1241,8 @@ pub fn has_component_render(id: u64) -> bool {
 
 pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
     crate::init();
+    // 上一次 render 忘调 `done()` / 画完又返回别的内容 ⇒ 脏 op 不能跨帧
+    crate::draw::reset();
     crate::state::with_engine(|engine| {
         let render = with_popups(|p| p.get(&id).map(|cb| cb.render.clone()))
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
@@ -1335,6 +1372,66 @@ fn parse_node(
                     gap,
                     flex,
                 }
+            })
+        }
+        "box" => {
+            let children = parse_children(&obj, ctx, id, what)?;
+            let border = match obj_opt_str(&obj, "border", ctx, &api)? {
+                Some(s) => crate::draw::BorderKind::parse(&s).ok_or_else(|| {
+                    crate::js_err(format!(
+                        "{api}: box 'border' must be plain|round|double|thick|none"
+                    ))
+                })?,
+                None => crate::draw::BorderKind::Plain,
+            };
+            let style = obj_opt_str(&obj, "style", ctx, &api)?;
+            // title:字符串 / 富文本段数组(与 text 节点同一套解析)
+            let title = {
+                let v = obj.get(JsString::from("title"), ctx)?;
+                if v.is_null_or_undefined() {
+                    Vec::new()
+                } else if let Ok(s) = v.try_js_into::<String>(ctx) {
+                    vec![TextSpan {
+                        text: s,
+                        style: style.clone(),
+                    }]
+                } else {
+                    let arr = v
+                        .try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
+                        .map_err(|_| {
+                            crate::js_err(format!(
+                                "{api}: box 'title' must be a string or segment array"
+                            ))
+                        })?;
+                    let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
+                    let mut spans = Vec::new();
+                    for i in 0..len {
+                        let item = arr.get(i, ctx)?;
+                        let o = item.as_object().ok_or_else(|| {
+                            crate::js_err(format!("{api}: box title segments must be objects"))
+                        })?;
+                        let t: String = o
+                            .get(JsString::from("text"), ctx)?
+                            .try_js_into(ctx)
+                            .map_err(|_| {
+                                crate::js_err(format!("{api}: title segment needs 'text'"))
+                            })?;
+                        spans.push(TextSpan {
+                            text: t,
+                            style: obj_opt_str(&o, "style", ctx, &api)?.or_else(|| style.clone()),
+                        });
+                    }
+                    spans
+                }
+            };
+            Ok(CompNode::Box {
+                children,
+                border,
+                title,
+                style,
+                width: obj_opt_u16(&obj, "width", ctx, &api)?,
+                height: obj_opt_u16(&obj, "height", ctx, &api)?,
+                flex: obj_opt_u16(&obj, "flex", ctx, &api)?,
             })
         }
         "scroll" => {

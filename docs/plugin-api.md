@@ -268,6 +268,12 @@ helix.command_args()                            // 当前键入命令的参数�
 helix.loaded_plugins()                          // **已加载**插件名数组(与 `:plugin list` 同源)
 helix.plugins_dir()                             // 插件目录绝对路径(未推入 → null)
 helix.cwd()                                     // **当前**工作目录绝对路径(每次现取;跟随:`helix.on("cwd-change", …)`)
+helix.draw.rect(x,y,w,h,{border,title,fill,style}) // 立即模式绘制:边框盒子/填充(最后必须 `return helix.draw.done()`)
+helix.draw.fill(x,y,w,h,{style,ch})             // 无边框填充块(缺省铺带样式的空格)
+helix.draw.hline(x,y,len,{ch,style})            // 水平线(缺省 ─)
+helix.draw.vline(x,y,len,{ch,style})            // 垂直线(缺省 │)
+helix.draw.text(x,y,"字"|[{text,style}],{style,maxWidth}) // 按坐标写文字(宽字符占 2 列)
+helix.text.width(s) / truncate(s,w) / pad(s,w,{align}) // 显示宽度口径(与渲染器同表;替代插件里的 dw()/cut())
 helix.runtime_path(name)                        // 自带 runtime 内的绝对路径(找不到 → null;内置内容型插件用)
 helix.remove_plugin_file(rel)                   // 删**插件根内**的文件/目录(限域;true=删了,false=本来没有)
 helix.define_config(name, schema)               // 声明配置 schema({key: {type, default, doc}})
@@ -330,6 +336,8 @@ helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
 helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
 helix.server.*   install, list, remove, rows, search, status, task, update
+helix.draw.*   done, fill, hline, rect, text, vline
+helix.text.*   pad, truncate, width
 
 事件(21 个):
   buffer-close, buffer-open, component-event, cursor-move, cwd-change
@@ -464,7 +472,7 @@ doc:{ path, text, cursor, insert(sr,sc,text), replace(sr,sc,er,ec,text), delete(
 按键对象:{ name, shift, ctrl, alt }     // name: 字符 | Enter|Esc|Tab|Backspace|Delete|Insert|方向键|Home|End|PageUp|PageDown|F1..F12
 onKey 返回值:"close" | "handled" | "ignore"
 render 返回值:数组(string|{text,style})或 el 组件树;签名 render(focus, {width, height})
-组件树节点:text|row|col|scroll|button|input(见 api/ui.md)
+组件树节点:text|row|col|box|scroll|button|input(见 api/ui.md)
 picker 行:数组 [c1, c2, ...] 或 { cells: [...], payload: [...] };preview/action 收到 payload 数组(见 api/picker-theme.md)
 终端模式:dock | fullscreen | floating | minimized
 面板方向:right | left | bottom

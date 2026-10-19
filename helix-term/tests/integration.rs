@@ -29,6 +29,7 @@ mod test {
     mod plugin_decorations;
     mod plugin_doc;
     mod plugin_docchange;
+    mod plugin_draw;
     mod plugin_entry;
     mod plugin_fsasync;
     mod plugin_input;

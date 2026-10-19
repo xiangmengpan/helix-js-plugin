@@ -1,6 +1,7 @@
 use boa_engine::JsValue;
 use serde::Serialize;
 
+use crate::draw::{BorderKind, DrawOp};
 use crate::picker::RowSpec;
 
 /// 一次文档变更的 (旧文本坐标, 新文本坐标)，均为 char 索引；doc-change 事件窗口内合并后序列化。
@@ -640,6 +641,18 @@ pub enum CompNode {
         id: String,
         flex: Option<u16>,
     },
+    /// 带边框的容器：框是绘制原语，`children` 在**框内**按 col 布局（可含 button/input ⇒
+    /// 节点焦点照旧工作）。`width`/`height` 是**外框**尺寸（含边框）。
+    Box {
+        children: Vec<CompNode>,
+        border: BorderKind,
+        /// 标题：画在上边框上（`╭ ti ─╮`）
+        title: Vec<TextSpan>,
+        style: Option<String>,
+        width: Option<u16>,
+        height: Option<u16>,
+        flex: Option<u16>,
+    },
     /// 可聚焦输入框：按键路由到 onKey（id 必填，value/cursor 由引擎状态渲染）
     /// multiline：true 时 Enter 换行、Up/Down 行间移动、Home/End 行级、多行渲染（单行不变）
     Input {
@@ -657,6 +670,9 @@ pub enum CompNode {
 pub enum Content {
     Lines(Vec<StyledLine>),
     Tree(CompNode),
+    /// 显示列表(`helix.draw.*`):按绝对坐标发几条 op,由 `draw::rasterize` 光栅化成行。
+    /// 与 `Lines`/`Tree` **并存且互不影响**(既有插件零改动)。
+    Ops(Vec<DrawOp>),
 }
 
 /// 插件命令收到的只读上下文快照（由 helix-term 序列化编辑器状态得到）

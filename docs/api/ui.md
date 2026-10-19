@@ -36,6 +36,54 @@ helix.open_popup({
 
 **优缺点**：优点：模态清晰、onKey 三态返回;同层替换、异层并存(主窗 + 叠层菜单/信息);center 浮层比例尺寸。局限：不传 layer 时同层 open 替换前一个(无多弹窗);百分比仅 center 且须成对;Shift-Tab 不可表示。
 
+## 绘制原语(`helix.draw`)
+
+组件树负责**流式布局**(col/row/flex),但"在 (10,10) 画一个 20×5 的框"这种**绝对坐标**
+画法它做不了。`helix.draw.*` 补这层:一次 render 里按顺序发几条 op,最后
+`return helix.draw.done()` 交给宿主。
+
+```js
+helix.open_popup({
+  width: 40, height: 12,
+  render: () => {
+    helix.draw.rect(0, 0, 20, 5, { border: "round", title: "日志", style: "ui.popup" });
+    helix.draw.text(2, 1, "hi 中文");
+    helix.draw.fill(2, 3, 16, 1, { style: "ui.selection" });   // 铺底色
+    helix.draw.hline(0, 5, 20);                                // 分隔线
+    helix.draw.vline(21, 0, 6);                                // 竖分隔
+    return helix.draw.done();
+  },
+});
+```
+
+| API | 说明 |
+|---|---|
+| `rect(x, y, w, h, opts?)` | 矩形。`opts.border`: `plain`(缺省)/`round`/`double`/`thick`/`none`;`opts.title`: 画在上边框;`opts.fill`: `true`(用 `style` 填)或 scope 名;`opts.style`: 边框/整块的 scope |
+| `fill(x, y, w, h, opts?)` | 无边框填充块。缺省铺带 `opts.style` 的**空格**(TUI 里"上底色"的手段);`opts.ch` 给单字符纹理 |
+| `hline(x, y, len, opts?)` / `vline(...)` | 单字符重复线(缺省 `─` / `│`,可用 `opts.ch` 换) |
+| `text(x, y, s \| [{text,style}], opts?)` | 按坐标写文字,`opts.maxWidth` 限宽(列) |
+| `done()` | **必须 `return`**;它把本帧 op 交给宿主 |
+
+约定(定死,别猜):
+
+- `(0,0)` = 组件(弹窗/面板)可视区左上角;**越界自动裁剪**,不报错。
+- 样式 = 主题 scope 名(与 `el`/状态栏同一语义);自定义颜色先 `set_theme({scope: …})` 注册。
+- 宽字符(CJK/全角)占 **2 列**;后续写格落在它的第二列时,该字会被清成空格(不会出现半个汉字)。
+- **画布不参与交互**:Tab 焦点/点击仍由 `el("button")` / `el("input")` 承担。要"框里有按钮",
+  用 `el("box")`(下面)或在画布旁放节点树。
+- 同一次 render 里"画了但返回行数组" ⇒ 按**返回的值**渲染,op 丢弃(既有契约不变);
+  手写 `{type:"draw"}` 而没调 `done()` ⇒ 明确报错。
+
+## 显示宽度工具(`helix.text`)
+
+与渲染器**同一张宽度表**,替代各插件自己写的 `dw()`/`cut()`:
+
+```js
+helix.text.width("中文")            // 4(CJK 占 2 列)
+helix.text.truncate("中文字", 3)     // "中"(不会切出半个宽字符)
+helix.text.pad("ab", 6, { align: "right" })   // "    ab";align: left(缺省)|right|center
+```
+
 ## 组件树(el)
 
 `render` 可返回嵌套组件树(旧行数组仍兼容)。节点由 `helix.el(type, arg, opts)` 构造:
@@ -48,6 +96,10 @@ helix.el("text", [ { text: "标题 ", style: "error" }, { text: "尾注", style:
 // row / col:水平并排 / 垂直堆叠(gap = 间距)
 helix.el("row", [child, child], { gap: 1 })
 helix.el("col", [child, child], { gap: 0 })
+
+// box:带边框的容器。框是绘制原语,children 在**框内**按 col 布局;
+// width/height 是**外框**尺寸(含边框)。里面的 button/input 照旧可聚焦。
+helix.el("box", [child, ...], { border: "round", title: "标题", width: 30, height: 8, style: "ui.popup" })
 
 // scroll:高度裁剪容器(保留最后 height 行)
 helix.el("scroll", [child, ...], { height: 10 })

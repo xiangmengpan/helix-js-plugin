@@ -22,6 +22,7 @@ mod types;
 pub mod config;
 pub mod cursor;
 pub mod diagnostics;
+pub mod draw;
 pub mod server_rows;
 pub mod server_tasks;
 pub mod watch;
@@ -124,6 +125,8 @@ pub(crate) fn build_engine(engine: &mut Context) {
     let icons_obj = register::icons::register(engine);
     let buffer_obj = register::buffer::register(engine);
     let stack_obj = register::buffer::register_stack(engine);
+    let draw_obj = register::draw::register(engine);
+    let text_obj = register::draw::register_text(engine);
 
     // 根对象成员按能力分族注册(每族一个文件,顺序即属性插入顺序)
     let mut builder = ObjectInitializer::new(engine);
@@ -167,6 +170,16 @@ pub(crate) fn build_engine(engine: &mut Context) {
     builder.property(
         JsString::from("stack"),
         stack_obj,
+        Attribute::READONLY | Attribute::NON_ENUMERABLE,
+    );
+    builder.property(
+        JsString::from("draw"),
+        draw_obj,
+        Attribute::READONLY | Attribute::NON_ENUMERABLE,
+    );
+    builder.property(
+        JsString::from("text"),
+        text_obj,
         Attribute::READONLY | Attribute::NON_ENUMERABLE,
     );
     builder.property(

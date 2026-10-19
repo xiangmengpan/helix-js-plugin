@@ -2234,6 +2234,7 @@ pub fn focusable_node_ids(node: &CompNode, out: &mut Vec<String>) {
         CompNode::Input { id, .. } => out.push(id.clone()),
         CompNode::Row { children, .. }
         | CompNode::Col { children, .. }
+        | CompNode::Box { children, .. }
         | CompNode::Scroll { children, .. } => {
             for c in children {
                 focusable_node_ids(c, out);

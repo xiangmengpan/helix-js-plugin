@@ -920,7 +920,7 @@ fn component_render_registration() {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.text.as_str())
             .collect::<String>(),
-        Content::Tree(_) => String::new(),
+        Content::Tree(_) | Content::Ops(_) => String::new(),
     };
     assert_eq!(joined, "hi-view", "set_component_render 回调内容可读");
     // 未注册 → Err

@@ -3,11 +3,15 @@
 
 use helix_js::{CompNode, Content, StyledLine, TextSpan};
 
-/// 统一入口：Content::Lines 原样返回（旧行 API）；Content::Tree 走布局引擎。
+/// 统一入口：
+/// - `Lines` 原样返回（旧行 API）；
+/// - `Tree` 走布局引擎；
+/// - `Ops` 走光栅化（`helix.draw.*` 的显示列表 → 行，之后与 `Lines` 同一条渲染路径）。
 pub fn render(content: Content, viewport: (u16, u16)) -> Vec<StyledLine> {
     match content {
         Content::Lines(lines) => lines,
         Content::Tree(node) => layout(&node, viewport),
+        Content::Ops(ops) => helix_js::draw::rasterize(&ops, viewport.0, viewport.1),
     }
 }
 
@@ -18,7 +22,8 @@ fn flex_of(node: &CompNode) -> Option<u16> {
         | CompNode::Row { flex, .. }
         | CompNode::Col { flex, .. }
         | CompNode::Button { flex, .. }
-        | CompNode::Input { flex, .. } => *flex,
+        | CompNode::Input { flex, .. }
+        | CompNode::Box { flex, .. } => *flex,
         CompNode::Scroll { .. } => None,
     }
 }
@@ -49,6 +54,56 @@ fn merge_spans(stream: &[(char, Option<String>)]) -> Vec<TextSpan> {
 /// - scroll → 按 col（无 gap）布局后保留最后 height 行（viewport 高度内）
 pub fn layout(node: &CompNode, viewport: (u16, u16)) -> Vec<StyledLine> {
     match node {
+        // 带边框容器:框用绘制原语,子内容在框内按 col 布局后贴进去
+        // (两件事各有现成的实现 ⇒ 不在这里手写一遍边框与宽字符处理)
+        CompNode::Box {
+            children,
+            border,
+            title,
+            style,
+            width,
+            height,
+            ..
+        } => {
+            let pad: u16 = if *border == helix_js::draw::BorderKind::None {
+                0
+            } else {
+                2
+            };
+            let outer_w = width.unwrap_or(viewport.0).min(viewport.0);
+            let inner_w = outer_w.saturating_sub(pad);
+            let inner_h = height.map(|h| h.saturating_sub(pad)).unwrap_or(viewport.1);
+            let inner = layout(
+                &CompNode::Col {
+                    children: children.clone(),
+                    gap: 0,
+                    flex: None,
+                },
+                (inner_w, inner_h),
+            );
+            let outer_h = height
+                .unwrap_or((inner.len() as u16).saturating_add(pad))
+                .min(viewport.1);
+            if outer_w == 0 || outer_h == 0 {
+                return Vec::new();
+            }
+            let ops = vec![helix_js::draw::DrawOp::Rect {
+                x: 0,
+                y: 0,
+                w: outer_w,
+                h: outer_h,
+                style: style.clone(),
+                border: *border,
+                // 有 style 的框连带把内部底色铺上(否则子内容的空隙会露出编辑器背景)
+                fill: style.clone(),
+                title: if title.is_empty() {
+                    None
+                } else {
+                    Some(title.clone())
+                },
+            }];
+            helix_js::draw::rasterize_then_paste(&ops, &inner, (pad / 2, pad / 2), outer_w, outer_h)
+        }
         CompNode::Text {
             spans, width, wrap, ..
         } => {
@@ -405,6 +460,7 @@ fn is_single_line(node: &CompNode) -> bool {
         CompNode::Text { wrap, .. } => !*wrap,
         CompNode::Button { .. } => true,
         CompNode::Input { multiline, .. } => !*multiline,
+        CompNode::Box { .. } => false,
         CompNode::Row { children, .. } => {
             !children.is_empty() && children.iter().all(is_single_line)
         }
@@ -1240,5 +1296,98 @@ mod tests {
             (40, 10),
         );
         assert_eq!(line_text(&out[0]), "ab");
+    }
+}
+
+#[cfg(test)]
+mod box_tests {
+    use super::*;
+    use helix_js::draw::BorderKind;
+    use helix_js::TextSpan;
+
+    fn text(t: &str) -> CompNode {
+        CompNode::Text {
+            spans: vec![TextSpan {
+                text: t.into(),
+                style: None,
+            }],
+            width: None,
+            id: None,
+            flex: None,
+            wrap: false,
+        }
+    }
+
+    fn boxed(children: Vec<CompNode>, w: Option<u16>, h: Option<u16>) -> CompNode {
+        CompNode::Box {
+            children,
+            border: BorderKind::Round,
+            title: vec![TextSpan {
+                text: "hi".into(),
+                style: None,
+            }],
+            style: None,
+            width: w,
+            height: h,
+            flex: None,
+        }
+    }
+
+    fn joined(lines: &[StyledLine], i: usize) -> String {
+        lines[i].spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// 框 + 子内容:子节点在框内(col),宽高各加 2
+    #[test]
+    fn box_wraps_children_in_frame() {
+        let node = boxed(vec![text("ab"), text("cd")], Some(6), None);
+        let lines = layout(&node, (20, 10));
+        assert_eq!(lines.len(), 4, "2 行内容 + 上下边框");
+        assert_eq!(joined(&lines, 0), "╭ hi ╮");
+        assert_eq!(joined(&lines, 1), "│ab  │");
+        assert_eq!(joined(&lines, 2), "│cd  │");
+        assert_eq!(joined(&lines, 3), "╰────╯");
+    }
+
+    /// 显式 height ⇒ 内区多余的行留白(仍被框住)
+    #[test]
+    fn box_explicit_height_pads_inside() {
+        let node = boxed(vec![text("x")], Some(5), Some(4));
+        let lines = layout(&node, (20, 10));
+        assert_eq!(lines.len(), 4);
+        assert_eq!(joined(&lines, 1), "│x  │");
+        assert_eq!(joined(&lines, 2), "│   │");
+    }
+
+    /// 无边框 ⇒ 不占边框格,子内容原样;标题也无处可画(忽略)
+    #[test]
+    fn box_without_border_is_just_a_group() {
+        let mut node = boxed(vec![text("ab")], Some(4), None);
+        if let CompNode::Box { border, .. } = &mut node {
+            *border = BorderKind::None;
+        }
+        let lines = layout(&node, (10, 5));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(joined(&lines, 0), "ab", "无边框 ⇒ 不画框也不补空格");
+    }
+
+    /// 框内的 button 仍然可聚焦(焦点提取与容器无关)
+    #[test]
+    fn box_children_stay_focusable() {
+        let child = CompNode::Button {
+            label: vec![TextSpan {
+                text: "ok".into(),
+                style: None,
+            }],
+            width: None,
+            id: "b1".into(),
+            flex: None,
+        };
+        let node = boxed(vec![child], Some(6), None);
+        let mut ids = Vec::new();
+        helix_js::focusable_node_ids(&node, &mut ids);
+        assert_eq!(ids, vec!["b1".to_string()]);
+        let lines = layout(&node, (20, 10));
+        assert!(joined(&lines, 1).contains("ok"));
     }
 }
