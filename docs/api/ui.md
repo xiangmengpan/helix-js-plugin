@@ -62,6 +62,8 @@ helix.open_popup({
 | `fill(x, y, w, h, opts?)` | 无边框填充块。缺省铺带 `opts.style` 的**空格**(TUI 里"上底色"的手段);`opts.ch` 给单字符纹理 |
 | `hline(x, y, len, opts?)` / `vline(...)` | 单字符重复线(缺省 `─` / `│`,可用 `opts.ch` 换) |
 | `text(x, y, s \| [{text,style}], opts?)` | 按坐标写文字,`opts.maxWidth` 限宽(列) |
+| `braille(pts, opts?)` | **半像素点阵**:`pts` = `[[dx,dy], …]`(1 列 = 2 点、1 行 = 4 点),同格的点 OR 成一个盲文字符;适合曲线/散点/细粒度进度 |
+| `push_clip(x,y,w,h)` / `pop_clip()` | **显式裁剪区**:区间内产生的 op 只在矩形内可见(坐标仍绝对);忘记 pop 时 `done()` 兜底闭合 |
 | `done()` | **必须 `return`**;它把本帧 op 交给宿主 |
 
 约定(定死,别猜):
@@ -73,6 +75,30 @@ helix.open_popup({
   用 `el("box")`(下面)或在画布旁放节点树。
 - 同一次 render 里"画了但返回行数组" ⇒ 按**返回的值**渲染,op 丢弃(既有契约不变);
   手写 `{type:"draw"}` 而没调 `done()` ⇒ 明确报错。
+
+### 半像素(braille)与裁剪区
+
+```js
+render: (focus, { width, height }) => {
+  // 裁剪区:右半边画波形,左半边画文字 —— 两边互不越界
+  helix.draw.push_clip(0, 0, 10, 4);
+    helix.draw.text(0, 0, "left only, clipped at col 10");
+  helix.draw.pop_clip();
+
+  // braille:1 列 = 2 点、1 行 = 4 点 ⇒ 8 倍分辨率
+  const pts = [];
+  for (let dx = 20; dx < 60; dx++) {
+    const dy = 2 * 4 + Math.round(2 * Math.sin(dx / 4));   // 点坐标
+    pts.push([dx, dy]);
+  }
+  helix.draw.braille(pts, { style: "ui.text" });
+  return helix.draw.done();
+}
+```
+
+- 点坐标是**绝对**的(`x` 以**点**为单位:列 `c` 的左边 = `2c`),不是相对裁剪区。
+- 同一格的多条 braille op:**后画的覆盖**先画的(格子只能放一个字符 + 一份样式)。
+  要叠加多个系列,就在 JS 里先把点合并成一个数组再调一次。
 
 ## 显示宽度工具(`helix.text`)
 

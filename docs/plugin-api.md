@@ -273,6 +273,8 @@ helix.draw.fill(x,y,w,h,{style,ch})             // 无边框填充块(缺省铺�
 helix.draw.hline(x,y,len,{ch,style})            // 水平线(缺省 ─)
 helix.draw.vline(x,y,len,{ch,style})            // 垂直线(缺省 │)
 helix.draw.text(x,y,"字"|[{text,style}],{style,maxWidth}) // 按坐标写文字(宽字符占 2 列)
+helix.draw.braille([[dx,dy],…],{style})         // **半像素**点阵(1 列 = 2 点、1 行 = 4 点)
+helix.draw.push_clip(x,y,w,h) / pop_clip()      // 显式裁剪区(坐标仍绝对;done 兜底闭合)
 helix.text.width(s) / truncate(s,w) / pad(s,w,{align}) // 显示宽度口径(与渲染器同表;替代插件里的 dw()/cut())
 helix.runtime_path(name)                        // 自带 runtime 内的绝对路径(找不到 → null;内置内容型插件用)
 helix.remove_plugin_file(rel)                   // 删**插件根内**的文件/目录(限域;true=删了,false=本来没有)
@@ -336,7 +338,7 @@ helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
 helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
 helix.server.*   install, list, remove, rows, search, status, task, update
-helix.draw.*   done, fill, hline, rect, text, vline
+helix.draw.*   braille, done, fill, hline, pop_clip, push_clip, rect, text, vline
 helix.text.*   pad, truncate, width
 
 事件(21 个):

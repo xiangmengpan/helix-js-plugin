@@ -38,6 +38,21 @@ pub(crate) fn register(engine: &mut Context) -> JsObject {
             4,
         )
         .function(
+            NativeFunction::from_fn_ptr(crate::draw::js_draw_braille),
+            JsString::from("braille"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(crate::draw::js_draw_push_clip),
+            JsString::from("push_clip"),
+            4,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(crate::draw::js_draw_pop_clip),
+            JsString::from("pop_clip"),
+            0,
+        )
+        .function(
             NativeFunction::from_fn_ptr(crate::draw::js_draw_done),
             JsString::from("done"),
             0,

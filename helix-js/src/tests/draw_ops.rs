@@ -5,6 +5,8 @@
 
 use super::*;
 
+use crate::draw::DrawOp;
+
 fn ctx() -> CommandContext {
     CommandContext {
         docs: vec![],
@@ -275,4 +277,141 @@ fn el_box_parses_into_comp_node() {
     );
     let err = render_popup(id2, 10, 3, None).unwrap_err().to_string();
     assert!(err.contains("plain|round|double|thick|none"), "{err}");
+}
+
+// ─────────────── 阶段二:braille 半像素 + 显式 clip(JS → Rust 那一段)───────────────
+
+/// `helix.draw.braille([[dx,dy], …])`:点坐标是绝对的(1 列 = 2 点、1 行 = 4 点)
+#[test]
+fn js_braille_plots_half_pixels() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let id = open(
+        r#"
+    helix.open_popup({
+        render: () => {
+            helix.draw.braille([[0,0],[1,0],[2,0],[3,0]], { style: "ui.text" });
+            return helix.draw.done();
+        },
+    });
+    "#,
+    );
+    let content = render_popup(id, 6, 1, None).unwrap();
+    // 前两列点 = 一格 ⠉;后两列点 = 下一格 ⠉
+    assert_eq!(rows(&content, 6, 1), vec!["⠉⠉"]);
+    let Content::Ops(ops) = &content else {
+        panic!("expected Ops")
+    };
+    let DrawOp::Braille { pts, style } = &ops[0] else {
+        panic!("expected Braille op, got {:?}", ops[0]);
+    };
+    assert_eq!(pts.len(), 4);
+    assert_eq!(style.as_deref(), Some("ui.text"));
+    // 形状不对的点(非数字/越界/对象形态)被忽略,不炸整帧
+    let id2 = open(
+        r#"
+    helix.open_popup({
+        render: () => {
+            helix.draw.braille([[0,0], "x", null, [NaN,-1], {x:1,y:1}]);
+            return helix.draw.done();
+        },
+    });
+    "#,
+    );
+    let Content::Ops(ops) = render_popup(id2, 4, 1, None).unwrap() else {
+        panic!("expected Ops")
+    };
+    let DrawOp::Braille { pts, .. } = &ops[0] else {
+        panic!("expected Braille")
+    };
+    assert_eq!(
+        pts,
+        &vec![(0, 0), (0, 0), (1, 1)],
+        "只留下两条有效点(NaN/-1 被 clamp 成 0)"
+    );
+}
+
+/// `push_clip` / `pop_clip`:区间内的 op 收进 `DrawOp::Clip`,区内越界写入被裁掉
+#[test]
+fn js_clip_region_wraps_ops() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let id = open(
+        r#"
+    helix.open_popup({
+        render: () => {
+            helix.draw.text(0, 0, "outside");
+            helix.draw.push_clip(2, 0, 3, 1);
+              helix.draw.text(0, 0, "0123456789");   // 只应该有 2..5 三列留下
+            helix.draw.pop_clip();
+            helix.draw.text(0, 1, "below");
+            return helix.draw.done();
+        },
+    });
+    "#,
+    );
+    let content = render_popup(id, 12, 2, None).unwrap();
+    let Content::Ops(ops) = &content else {
+        panic!("expected Ops")
+    };
+    assert_eq!(ops.len(), 3, "text + clip + text: {ops:?}");
+    assert!(
+        matches!(
+            &ops[1],
+            DrawOp::Clip {
+                x: 2,
+                y: 0,
+                w: 3,
+                h: 1,
+                ..
+            }
+        ),
+        "{:?}",
+        ops[1]
+    );
+    assert_eq!(
+        rows(&content, 12, 2),
+        vec!["ou234de", "below"],
+        "后画的覆盖先画的"
+    );
+}
+
+/// 忘了 `pop_clip`:`done()` 兜底闭合(内容不丢),也不影响下一帧
+#[test]
+fn unclosed_clip_is_closed_at_done() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let id = open(
+        r#"
+    let n = 0;
+    helix.open_popup({
+        render: () => {
+            n++;
+            if (n === 1) {
+                helix.draw.push_clip(0, 0, 4, 1);   // 忘了 pop
+                helix.draw.hline(0, 0, 6);
+            }
+            return helix.draw.done();
+        },
+    });
+    "#,
+    );
+    let content = render_popup(id, 8, 1, None).unwrap();
+    let Content::Ops(ops) = &content else {
+        panic!("expected Ops")
+    };
+    assert!(
+        matches!(&ops[0], DrawOp::Clip { .. }),
+        "done 应兜底闭合: {ops:?}"
+    );
+    assert_eq!(
+        rows(&content, 8, 1),
+        vec!["────"],
+        "裁剪区 4 列 ⇒ 只留 4 个横线"
+    );
+    // 下一帧没画东西:既没有残留 op,也没有残留 clip 栈
+    let Content::Ops(next) = render_popup(id, 8, 1, None).unwrap() else {
+        panic!("expected Ops")
+    };
+    assert!(next.is_empty(), "clip 栈不能跨帧残留: {next:?}");
 }

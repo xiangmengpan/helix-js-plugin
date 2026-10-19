@@ -93,6 +93,20 @@ pub enum DrawOp {
         ch: char,
         style: Option<String>,
     },
+    /// Braille 半像素点阵:点在**绝对点坐标**里(1 列 = 2 点、1 行 = 4 点)。
+    /// 同一格内的点 OR 成 U+2800..U+28FF 的盲文字符(2×4 点);后画的 op 覆盖先画的同格。
+    Braille {
+        pts: Vec<(u16, u16)>,
+        style: Option<String>,
+    },
+    /// 显式裁剪区:内部 op 的写入被限制在矩形内(坐标仍是绝对的,不是相对)
+    Clip {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        ops: Vec<DrawOp>,
+    },
     /// 文字(多段样式);宽字符自动占 2 列
     Text {
         x: u16,
@@ -121,8 +135,9 @@ pub fn rasterize(ops: &[DrawOp], width: u16, height: u16) -> Vec<StyledLine> {
         return Vec::new();
     }
     let mut grid = vec![vec![Cell::Blank; w]; h];
+    let clip = Clip::full(w, h);
     for op in ops {
-        apply(op, &mut grid, w, h);
+        apply(op, &mut grid, clip);
     }
     grid.iter().map(|row| row_to_line(row)).collect()
 }
@@ -143,8 +158,9 @@ pub fn rasterize_then_paste(
         return Vec::new();
     }
     let mut grid = vec![vec![Cell::Blank; w]; h];
+    let clip = Clip::full(w, h);
     for op in ops {
-        apply(op, &mut grid, w, h);
+        apply(op, &mut grid, clip);
     }
     let (px, py) = (at.0 as usize, at.1 as usize);
     for (i, line) in lines.iter().enumerate() {
@@ -159,10 +175,7 @@ pub fn rasterize_then_paste(
                 if gw == 0 {
                     continue;
                 }
-                if cx + gw > w {
-                    break;
-                }
-                if put_grapheme(&mut grid, w, h, cx, row, g, &span.style) == 0 {
+                if put_grapheme(&mut grid, clip, cx, row, g, &span.style) == 0 {
                     break;
                 }
                 cx += gw;
@@ -172,50 +185,78 @@ pub fn rasterize_then_paste(
     grid.iter().map(|row| row_to_line(row)).collect()
 }
 
-/// 写一个**窄**字符(唯一的裁剪点)。落在宽字符 Shadow 上时先清掉左邻的宽字符。
-fn put(
-    grid: &mut [Vec<Cell>],
-    w: usize,
-    h: usize,
-    x: usize,
-    y: usize,
-    ch: char,
-    style: &Option<String>,
-) {
-    if x >= w || y >= h {
+/// 显式裁剪区(半开区间 `[x0,x1) × [y0,y1)`,单位 = 字符格)。
+///
+/// 坐标永远是**绝对**的:裁剪只限制"能不能写",不改变 op 的坐标系 ——
+/// 否则嵌套 clip、`rasterize_then_paste` 与 box 内区三者的换算会互相打架。
+#[derive(Debug, Clone, Copy)]
+struct Clip {
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+}
+
+impl Clip {
+    fn full(w: usize, h: usize) -> Self {
+        Self {
+            x0: 0,
+            y0: 0,
+            x1: w,
+            y1: h,
+        }
+    }
+
+    fn contains(&self, x: usize, y: usize) -> bool {
+        x >= self.x0 && x < self.x1 && y >= self.y0 && y < self.y1
+    }
+
+    /// 与一个矩形求交(嵌套 clip 就是连续求交)
+    fn intersect(self, x: u16, y: u16, w: u16, h: u16) -> Self {
+        Self {
+            x0: self.x0.max(x as usize),
+            y0: self.y0.max(y as usize),
+            x1: self.x1.min((x as usize).saturating_add(w as usize)),
+            y1: self.y1.min((y as usize).saturating_add(h as usize)),
+        }
+    }
+}
+
+/// 写一个**窄**字符(唯一的裁剪点 —— 所有写入都必须过这里,包括 unshadow 的清除)
+fn put(grid: &mut [Vec<Cell>], clip: Clip, x: usize, y: usize, ch: char, style: &Option<String>) {
+    if !clip.contains(x, y) {
         return;
     }
-    unshadow(grid, w, y, x, style);
+    unshadow(grid, clip, y, x, style);
     grid[y][x] = Cell::Ch(ch, style.clone());
 }
 
-/// 若 `x` 是宽字符的 Shadow,把左邻的宽字符清成空格(保持新字符的样式)
-fn unshadow(grid: &mut [Vec<Cell>], _w: usize, y: usize, x: usize, style: &Option<String>) {
-    if grid[y][x] == Cell::Shadow && x > 0 {
+/// 若 `x` 是宽字符的 Shadow,把左邻的宽字符清成空格(保持新字符的样式)。
+/// 左邻不在裁剪区内时**不许**动它 —— 那是别人画的东西。
+fn unshadow(grid: &mut [Vec<Cell>], clip: Clip, y: usize, x: usize, style: &Option<String>) {
+    if grid[y][x] == Cell::Shadow && x > 0 && clip.contains(x - 1, y) {
         grid[y][x - 1] = Cell::Ch(' ', style.clone());
     }
 }
 
 /// 写一个 grapheme(可能是宽字符),返回占用的列数(`0` = 放不下,调用方应停下)。
+/// 宽字符要求**两列都在裁剪区内**,否则整字丢弃(不能画半个汉字)。
 fn put_grapheme(
     grid: &mut [Vec<Cell>],
-    w: usize,
-    h: usize,
+    clip: Clip,
     x: usize,
     y: usize,
     g: &str,
     style: &Option<String>,
 ) -> usize {
     let gw = g.width();
-    if gw == 0 || y >= h || x + gw > w {
+    if gw == 0 || !clip.contains(x, y) || (gw == 2 && !clip.contains(x + 1, y)) {
         return 0;
     }
-    unshadow(grid, w, y, x, style);
-    // 多 char 的 grapheme(组合字符)在第一格放整串符号由 DiffRenderer 负责;
-    // 这里只记首字符(格子模型的既有边界,与 comp_layout 的 merge_spans 一致)
-    let ch = match g.chars().next() {
-        Some(c) => c,
-        None => return 0,
+    unshadow(grid, clip, y, x, style);
+    // 多 char 的 grapheme(组合字符)取首字符(格子模型的既有边界,与 comp_layout 同款)
+    let Some(ch) = g.chars().next() else {
+        return 0;
     };
     grid[y][x] = Cell::Ch(ch, style.clone());
     if gw == 2 {
@@ -224,8 +265,44 @@ fn put_grapheme(
     gw
 }
 
-fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
+/// Braille 点阵上限(防御:病态输入不该把主线程按在 500k 个点上)
+const MAX_BRAILLE_PTS: usize = 65_536;
+
+fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
     match op {
+        DrawOp::Clip { x, y, w, h, ops } => {
+            let inner = clip.intersect(*x, *y, *w, *h);
+            for op in ops {
+                apply(op, grid, inner);
+            }
+        }
+        DrawOp::Braille { pts, style } => {
+            // 同格的点先按位 OR(2×4 点 = 一个盲文字符),再一次性写格
+            let mut cells: std::collections::BTreeMap<(usize, usize), u8> =
+                std::collections::BTreeMap::new();
+            for (dx, dy) in pts.iter().take(MAX_BRAILLE_PTS) {
+                let (cx, cy) = (*dx as usize / 2, *dy as usize / 4);
+                if !clip.contains(cx, cy) {
+                    continue;
+                }
+                let bit = match ((*dx as usize) & 1, (*dy as usize) & 3) {
+                    (0, 0) => 0x01,
+                    (0, 1) => 0x02,
+                    (0, 2) => 0x04,
+                    (0, 3) => 0x40,
+                    (1, 0) => 0x08,
+                    (1, 1) => 0x10,
+                    (1, 2) => 0x20,
+                    (1, 3) => 0x80,
+                    _ => continue,
+                };
+                *cells.entry((cx, cy)).or_insert(0u8) |= bit;
+            }
+            for ((cx, cy), mask) in cells {
+                let ch = char::from_u32(0x2800 + mask as u32).unwrap_or(' ');
+                put(grid, clip, cx, cy, ch, style);
+            }
+        }
         DrawOp::Rect {
             x,
             y,
@@ -248,9 +325,11 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
                 } else {
                     (x + 1, y + 1, rw.saturating_sub(2), rh.saturating_sub(2))
                 };
-                for row in fy..fy + fh {
-                    for col in fx..fx + fw {
-                        put(grid, w, h, col, row, ' ', &fill_style);
+                let (cx0, cx1) = (fx.max(clip.x0), (fx + fw).min(clip.x1));
+                let (cy0, cy1) = (fy.max(clip.y0), (fy + fh).min(clip.y1));
+                for row in cy0..cy1 {
+                    for col in cx0..cx1 {
+                        put(grid, clip, col, row, ' ', &fill_style);
                     }
                 }
             }
@@ -262,36 +341,39 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
             let bottom = y + rh - 1;
             // 退化成一维:只画那一维(否则四角互相覆盖成乱码)
             if rh == 1 {
-                for col in x..x + rw {
-                    put(grid, w, h, col, y, hor, style);
+                for col in x.max(clip.x0)..(x + rw).min(clip.x1) {
+                    put(grid, clip, col, y, hor, style);
                 }
                 return;
             }
             if rw == 1 {
-                for row in y..y + rh {
-                    put(grid, w, h, x, row, ver, style);
+                for row in y.max(clip.y0)..(y + rh).min(clip.y1) {
+                    put(grid, clip, x, row, ver, style);
                 }
                 return;
             }
-            put(grid, w, h, x, y, tl, style);
-            put(grid, w, h, right, y, tr, style);
-            put(grid, w, h, x, bottom, bl, style);
-            put(grid, w, h, right, bottom, br, style);
-            for col in x + 1..right {
-                put(grid, w, h, col, y, hor, style);
+            // 四角 self-clip;四条边先与裁剪区求交再循环(避免 w=10000 的空转)
+            put(grid, clip, x, y, tl, style);
+            put(grid, clip, right, y, tr, style);
+            put(grid, clip, x, bottom, bl, style);
+            put(grid, clip, right, bottom, br, style);
+            let (hx0, hx1) = ((x + 1).max(clip.x0), right.min(clip.x1));
+            for col in hx0..hx1 {
+                put(grid, clip, col, y, hor, style);
                 if rh > 2 {
-                    put(grid, w, h, col, bottom, hor, style);
+                    put(grid, clip, col, bottom, hor, style);
                 }
             }
-            for row in y + 1..bottom {
-                put(grid, w, h, x, row, ver, style);
-                put(grid, w, h, right, row, ver, style);
+            let (vy0, vy1) = ((y + 1).max(clip.y0), bottom.min(clip.y1));
+            for row in vy0..vy1 {
+                put(grid, clip, x, row, ver, style);
+                put(grid, clip, right, row, ver, style);
             }
             // 标题:`┌ title ─┐` —— 角后留一格空白,标题后也留一格(不压右边框)
             if let Some(spans) = title {
                 let mut cx = x + 2;
                 if cx < right {
-                    put(grid, w, h, x + 1, y, ' ', style);
+                    put(grid, clip, x + 1, y, ' ', style);
                 }
                 'outer: for span in spans {
                     let own = span.style.clone().or_else(|| style.clone());
@@ -299,14 +381,14 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
                         if cx + g.width() >= right {
                             break 'outer;
                         }
-                        if put_grapheme(grid, w, h, cx, y, g, &own) == 0 {
+                        if put_grapheme(grid, clip, cx, y, g, &own) == 0 {
                             break 'outer;
                         }
                         cx += g.width();
                     }
                 }
                 if cx < right {
-                    put(grid, w, h, cx, y, ' ', style);
+                    put(grid, clip, cx, y, ' ', style);
                 }
             }
         }
@@ -317,8 +399,9 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
             ch,
             style,
         } => {
-            for i in 0..*len as usize {
-                put(grid, w, h, *x as usize + i, *y as usize, *ch, style);
+            let (x, y, len) = (*x as usize, *y as usize, *len as usize);
+            for col in x.max(clip.x0)..(x + len).min(clip.x1) {
+                put(grid, clip, col, y, *ch, style);
             }
         }
         DrawOp::VLine {
@@ -328,8 +411,9 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
             ch,
             style,
         } => {
-            for i in 0..*len as usize {
-                put(grid, w, h, *x as usize, *y as usize + i, *ch, style);
+            let (x, y, len) = (*x as usize, *y as usize, *len as usize);
+            for row in y.max(clip.y0)..(y + len).min(clip.y1) {
+                put(grid, clip, x, row, *ch, style);
             }
         }
         DrawOp::Text {
@@ -340,8 +424,8 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
         } => {
             let mut cx = *x as usize;
             let limit = match max_width {
-                Some(m) => (cx + *m as usize).min(w),
-                None => w,
+                Some(m) => (cx + *m as usize).min(clip.x1),
+                None => clip.x1,
             };
             for span in spans {
                 for g in span.text.graphemes(true) {
@@ -349,10 +433,16 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], w: usize, h: usize) {
                     if gw == 0 {
                         continue;
                     }
-                    if cx + gw > limit
-                        || put_grapheme(grid, w, h, cx, *y as usize, g, &span.style) == 0
-                    {
-                        return;
+                    if cx + gw > limit {
+                        return; // 右边界装不下 ⇒ 这段文字到此为止
+                    }
+                    // 起笔落在裁剪区**左边** ⇒ 跳过它继续(裁剪只限制"能不能写",不能砍掉可见部分)
+                    if !clip.contains(cx, *y as usize) {
+                        cx += gw;
+                        continue;
+                    }
+                    if put_grapheme(grid, clip, cx, *y as usize, g, &span.style) == 0 {
+                        return; // 宽字符两列不全在区内 ⇒ 整字丢弃,别画半个
                     }
                     cx += gw;
                 }
@@ -667,6 +757,26 @@ mod tests {
                 style: None,
             });
         }
+        // 阶段二的两种 op 也要计入:一条 800 点的 braille 曲线 + 一个裁剪区
+        let curve: Vec<(u16, u16)> = (0..800u16)
+            .map(|dx| {
+                let dy = 26 + (dx % 40) / 5; // 粗糙锯齿,只为压出真实工作量
+                (dx, dy)
+            })
+            .collect();
+        ops.push(DrawOp::Clip {
+            x: 0,
+            y: 10,
+            w: 80,
+            h: 20,
+            ops: vec![
+                DrawOp::Braille {
+                    pts: curve,
+                    style: Some("ui.text".into()),
+                },
+                text(2, 12, "clipped 中文", None),
+            ],
+        });
         let n = 500;
         let started = std::time::Instant::now();
         for _ in 0..n {
@@ -680,6 +790,135 @@ mod tests {
             per,
             started.elapsed()
         );
+    }
+
+    // ─────────────── 阶段二:braille 半像素 + 显式 clip ───────────────
+
+    fn braille(pts: &[(u16, u16)]) -> DrawOp {
+        DrawOp::Braille {
+            pts: pts.to_vec(),
+            style: None,
+        }
+    }
+
+    #[test]
+    fn braille_single_dots_and_full_cell() {
+        // (0,0) = bit0 ⇒ U+2801;(1,3) = bit7 ⇒ U+2880;八点全亮 = U+28FF(⣿)
+        assert_eq!(line_str(&[braille(&[(0, 0)])], 4, 2, 0), "⠁");
+        assert_eq!(line_str(&[braille(&[(1, 3)])], 4, 1, 0), "⢀");
+        let all = braille(&[
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (1, 1),
+            (0, 2),
+            (1, 2),
+            (0, 3),
+            (1, 3),
+        ]);
+        assert_eq!(line_str(&[all], 4, 1, 0), "⣿");
+    }
+
+    #[test]
+    fn braille_merges_within_op_and_maps_to_cells() {
+        // 同格两点 ⇒ 同一个字符;点 (2,4) 属第 2 列第 2 行的格(1 列=2 点、1 行=4 点)
+        let ops = [braille(&[(0, 0), (1, 0)]), braille(&[(2, 4)])];
+        let lines = rasterize(&ops, 4, 2);
+        let row0: String = lines[0].spans.iter().map(|s| s.text.as_str()).collect();
+        let row1: String = lines[1].spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(row0, "⠉", "0x01|0x08 = U+2809");
+        assert_eq!(row1, " ⠁", "第二格第二行 ⇒ (0,0) 位");
+    }
+
+    #[test]
+    fn braille_style_and_later_op_wins() {
+        let first = DrawOp::Braille {
+            pts: vec![(0, 0)],
+            style: Some("error".into()),
+        };
+        let lines = rasterize(&[first], 2, 1);
+        assert_eq!(lines[0].spans[0].style.as_deref(), Some("error"));
+        // 后画的 braille 覆盖同格(格子只能放一个字符 + 一份样式)
+        let second = DrawOp::Braille {
+            pts: vec![(1, 3)],
+            style: Some("ui.text".into()),
+        };
+        let lines = rasterize(&[braille(&[(0, 0)]), second], 2, 1);
+        assert_eq!(lines[0].spans[0].text, "⢀");
+        assert_eq!(lines[0].spans[0].style.as_deref(), Some("ui.text"));
+    }
+
+    #[test]
+    fn braille_is_clipped_like_everything_else() {
+        let ops = [DrawOp::Clip {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+            ops: vec![braille(&[(0, 0), (4, 0)])], // 第二点落在第 3 列,被裁掉
+        }];
+        assert_eq!(line_str(&ops, 6, 1, 0), "⠁");
+    }
+
+    #[test]
+    fn clip_limits_writes_but_keeps_absolute_coords() {
+        let ops = [DrawOp::Clip {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 1,
+            ops: vec![
+                rect(0, 0, 6, 3, BorderKind::Plain),
+                text(0, 1, "abcdef", None),
+            ],
+        }];
+        assert_eq!(line_str(&ops, 8, 3, 0), "", "裁剪区之外(上边框)不画");
+        assert_eq!(
+            line_str(&ops, 8, 3, 1),
+            " bc",
+            "只留裁剪区内的两列,坐标不移位"
+        );
+        assert_eq!(line_str(&ops, 8, 3, 2), "");
+    }
+
+    #[test]
+    fn nested_clips_intersect() {
+        let inner = DrawOp::Clip {
+            x: 2,
+            y: 0,
+            w: 4,
+            h: 1,
+            ops: vec![text(0, 0, "01234567", None)],
+        };
+        let outer = DrawOp::Clip {
+            x: 3,
+            y: 0,
+            w: 2,
+            h: 1,
+            ops: vec![inner],
+        };
+        assert_eq!(line_str(&[outer], 10, 1, 0), "   34");
+    }
+
+    /// 宽字符跨裁剪边界 ⇒ 整字丢弃(不能只画半个)
+    #[test]
+    fn clip_does_not_split_wide_chars() {
+        let ops = [DrawOp::Clip {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+            ops: vec![text(0, 0, "中", None)],
+        }];
+        assert_eq!(line_str(&ops, 4, 1, 0), "", "1 列宽装不下 2 列的汉字");
+        let ops = [DrawOp::Clip {
+            x: 1,
+            y: 0,
+            w: 3,
+            h: 1,
+            ops: vec![text(0, 0, "中", None)],
+        }];
+        assert_eq!(line_str(&ops, 4, 1, 0), "", "起笔在裁剪区外 ⇒ 也不画");
     }
 
     #[test]
@@ -713,6 +952,9 @@ thread_local! {
 struct DrawState {
     ops: Vec<DrawOp>,
     armed: bool,
+    /// 未闭合的裁剪区:`(x, y, w, h, ops 起点)`。
+    /// `pop_clip()` 把起点之后新产生的 op 收进一个 `DrawOp::Clip`;`done()` 会兜底闭合。
+    clips: Vec<(u16, u16, u16, u16, usize)>,
 }
 
 /// 进入一次 render 前重置(渲染入口调用,见 `popup::render_popup`)
@@ -721,6 +963,7 @@ pub fn reset() {
         let mut d = d.borrow_mut();
         d.ops.clear();
         d.armed = false;
+        d.clips.clear();
     });
 }
 
@@ -738,6 +981,26 @@ pub(crate) fn take_armed() -> Option<Vec<DrawOp>> {
 
 fn push_op(op: DrawOp) {
     DRAW.with(|d| d.borrow_mut().ops.push(op));
+}
+
+/// 闭合最内层裁剪区:把 `start..` 期间产生的 op 收进一个 `DrawOp::Clip`。
+/// 返回是否真的闭了一个(栈空 = no-op,便于 `done()` 兜底)。
+fn close_clip() -> bool {
+    DRAW.with(|d| {
+        let mut d = d.borrow_mut();
+        let Some((x, y, w, h, start)) = d.clips.pop() else {
+            return false;
+        };
+        let inner: Vec<DrawOp> = d.ops.drain(start..).collect();
+        d.ops.push(DrawOp::Clip {
+            x,
+            y,
+            w,
+            h,
+            ops: inner,
+        });
+        true
+    })
 }
 
 // ── opts 读取(形状不对一律当"没给",绘制 API 不该因为 ops 里多一个字段就炸整帧)──
@@ -956,12 +1219,95 @@ pub(crate) fn js_draw_text(
     Ok(JsValue::undefined())
 }
 
+/// `helix.draw.braille(pts, opts?)` —— 半像素点阵(`pts` = `[[dx,dy], …]` 或 `[{x,y}, …]`)
+///
+/// 点坐标是**绝对点坐标**:1 列 = 2 点、1 行 = 4 点 ⇒ 分辨率是普通字符格的 8 倍。
+/// 同一格内的点 OR 成一个盲文字符(U+2800..U+28FF);`opts.style` 给样式。
+pub(crate) fn js_draw_braille(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let opts = opt_obj(args, 1);
+    let style = opt_str_prop(&opts, "style", ctx);
+    let mut pts: Vec<(u16, u16)> = Vec::new();
+    if let Some(obj) = args.first().and_then(|v| v.as_object()) {
+        if obj.is_array() {
+            // 按 `length` 迭代(不看元素是否为 null —— 跳过的坏点不该中断整批)
+            let len: u32 = prop(&obj, "length", ctx)
+                .and_then(|v| v.as_number())
+                .unwrap_or(0.0) as u32;
+            if let Ok(arr) = JsArray::from_object(obj.clone()) {
+                for i in 0..len.min(MAX_BRAILLE_PTS as u32) {
+                    let Ok(item) = arr.get(i, ctx) else { continue };
+                    let (dx, dy) = match item.as_object() {
+                        // `[x, y]`
+                        Some(o) if o.is_array() => (
+                            JsArray::from_object(o.clone())
+                                .ok()
+                                .and_then(|p| p.get(0, ctx).ok()),
+                            JsArray::from_object(o)
+                                .ok()
+                                .and_then(|p| p.get(1, ctx).ok()),
+                        ),
+                        // `{x, y}`
+                        Some(o) => (prop(&o, "x", ctx), prop(&o, "y", ctx)),
+                        // 标量/null ⇒ 跳过这一点
+                        None => (None, None),
+                    };
+                    if let (Some(dx), Some(dy)) = (dx, dy) {
+                        if let (Some(dx), Some(dy)) = (dx.as_number(), dy.as_number()) {
+                            // NaN/-1 之类 clamps 成 0(绘制 API 不因坏坐标炸整帧)
+                            let c = |n: f64| n.clamp(0.0, u16::MAX as f64) as u16;
+                            pts.push((c(dx), c(dy)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    push_op(DrawOp::Braille { pts, style });
+    Ok(JsValue::undefined())
+}
+
+/// `helix.draw.push_clip(x, y, w, h)` —— 开始一个裁剪区(与 `pop_clip` 配对)
+pub(crate) fn js_draw_push_clip(
+    _this: &JsValue,
+    args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    DRAW.with(|d| {
+        let mut d = d.borrow_mut();
+        let start = d.ops.len();
+        d.clips.push((
+            num(args, 0),
+            num(args, 1),
+            num(args, 2),
+            num(args, 3),
+            start,
+        ));
+    });
+    Ok(JsValue::undefined())
+}
+
+/// `helix.draw.pop_clip()` —— 闭合最近一个裁剪区(栈空 = 无害 no-op)
+pub(crate) fn js_draw_pop_clip(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    close_clip();
+    Ok(JsValue::undefined())
+}
+
 /// `helix.draw.done()` —— 把本帧的 op 交给宿主(`render` 的返回值)
 pub(crate) fn js_draw_done(
     _this: &JsValue,
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
+    // 忘了 pop_clip 也不该让内容整个丢掉(未闭合的区按"到 done 为止"闭)
+    while close_clip() {}
     DRAW.with(|d| d.borrow_mut().armed = true);
     let obj = boa_engine::object::ObjectInitializer::new(ctx)
         .property(

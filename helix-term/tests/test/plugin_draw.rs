@@ -158,3 +158,40 @@ async fn mixing_ops_and_lines_prefers_the_returned_value() -> anyhow::Result<()>
     pump(&mut app, "<esc>").await?;
     Ok(())
 }
+
+/// 阶段二:braille 半像素 + 显式裁剪区,一路到真实 surface
+#[tokio::test(flavor = "multi_thread")]
+async fn braille_and_clip_reach_the_surface() -> anyhow::Result<()> {
+    let (_dir, mut app) = setup(
+        r#"
+    helix.register_command("chart", () => {
+        helix.open_popup({
+            width: 30, height: 8, position: "center",
+            render: () => {
+                // 裁剪区:只留前 3 列 ⇒ 后面的文字看不见(放在第 3 行,别被 braille 盖掉)
+                helix.draw.push_clip(0, 2, 3, 1);
+                  helix.draw.text(0, 2, "CLIPPED-AWAY");
+                helix.draw.pop_clip();
+                // braille:一条水平线(点 y=1,即第一格的第二行点)
+                const pts = [];
+                for (let dx = 0; dx < 8; dx++) pts.push([dx, 1]);
+                helix.draw.braille(pts, { style: "ui.text" });
+                return helix.draw.done();
+            },
+            onKey: (k) => k.name === "Esc" ? "close" : "handled",
+        });
+    });
+    "#,
+    )
+    .await?;
+
+    pump(&mut app, ":chart<ret>").await?;
+    let text = screen(&mut app);
+    // "CLIPPED-AWAY" 只留前三列 "CLI"
+    assert!(text.contains("CLI"), "裁剪区内可见部分: {text}");
+    assert!(!text.contains("CLIPPED-AWAY"), "裁剪区外应被裁掉: {text}");
+    // 8 个点、每格 2 点(左右两列都亮)= U+2812 ⠒ ⇒ 一行 4 格
+    assert!(text.contains("⠒⠒⠒⠒"), "braille 一行 4 格: {text}");
+    pump(&mut app, "<esc>").await?;
+    Ok(())
+}

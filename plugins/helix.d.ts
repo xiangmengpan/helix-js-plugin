@@ -989,6 +989,21 @@ interface Helix {
     vline(x: number, y: number, len: number, opts?: { style?: string | null; ch?: string }): void;
     /** 文字（字符串或富文本段数组） */
     text(x: number, y: number, text: string | StyledText[], opts?: DrawTextOpts): void;
+    /**
+     * **半像素点阵**(braille):`pts` = `[[dx,dy], …]` 或 `[{x,y}, …]`。
+     *
+     * 点坐标是**绝对点坐标**:1 列 = 2 点、1 行 = 4 点 ⇒ 分辨率是字符格的 8 倍
+     * (曲线/散点/进度条的细粒度就靠它)。同格的点 OR 成一个盲文字符(U+2800..U+28FF);
+     * 后画的 braille op 会覆盖同格(一个格子只能放一个字符 + 一份样式)。
+     */
+    braille(pts: [number, number][] | { x: number; y: number }[], opts?: { style?: string | null }): void;
+    /**
+     * 开始一个**裁剪区**:之后产生的 op 只在这个矩形内可见(坐标仍是绝对的)。
+     * 必须与 `pop_clip()` 配对;忘了 pop 时 `done()` 会兜底闭合。
+     */
+    push_clip(x: number, y: number, w: number, h: number): void;
+    /** 闭合最近一个裁剪区(栈空 = 无害 no-op) */
+    pop_clip(): void;
     /** 收尾：把本帧的 op 交给宿主。**render 必须 `return helix.draw.done()`** */
     done(): DrawSentinel;
   };
