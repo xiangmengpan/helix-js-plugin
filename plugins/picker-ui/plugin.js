@@ -68,6 +68,38 @@ function cut(s, width) {
   return out;
 }
 
+// ── 路径:存**绝对**、看**相对** ──────────────────────────────────────
+// 为什么不能存相对:条目会活到进程结束(picker 可能被长期持有、被别的插件取用),
+// 而 cwd 是**可变**的(`:cd` / `:lcd` 会真 chdir)⇒ 相对路径就是“把 cwd 钉进列表”,
+// `:cd` 之后就指错文件。所以:load 时一次拼成绝对路径**存下来**,
+// `view()` 只在显示/匹配时把当前 cwd 前缀削掉(纯外观,打开永远用存的那个绝对路径)。
+
+/// 当前 cwd(去掉尾 `/`);拿不到就空串
+function cwd_now() {
+  return guard(() => String(helix.cwd() || "").replace(/\/$/, ""), "");
+}
+
+/// 相对/`./x`/绝对 → 绝对(以 `/` 开头的原样返回)
+function to_abs(p, prefix) {
+  const s = String(p).replace(/^\.\//, "");
+  if (s.startsWith("/")) return s;
+  if (!prefix) return s;
+  return prefix + "/" + s;
+}
+
+/// 展示用 cwd 前缀(每次 refilter 刷新;仅影响外观与匹配,不影响打开的目标)
+let cwd_view = "";
+function refresh_cwd_view() {
+  cwd_view = cwd_now();
+}
+
+/// 绝对路径 → 展示/匹配用的相对形式(cwd 之外的条目仍显示绝对)
+function view(p) {
+  const s = String(p);
+  if (cwd_view && s.startsWith(cwd_view + "/")) return s.slice(cwd_view.length + 1);
+  return s.replace(/^\.\//, "");
+}
+
 // ── 纯 JS 模糊匹配(子序列 + 打分;零新能力 ✓)────────────────────────────
 // 规则:全部查询字符按序出现即成;奖励连续、词首、以及"短目标"
 // (与 nucleo 比差在细节与速度,但 v1 形态验证足够 ✓)
@@ -138,6 +170,7 @@ let onkey_hits = 0; // S6 onKey 被调用的次数 ✓
 let onkey_last = ""; // S6 最后一次认领时读到的选中行 ✓
 
 function refilter() {
+  refresh_cwd_view();
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
   const maxn = typeof cfg.max_items === "number" && cfg.max_items > 0 ? cfg.max_items : 200;
   if (!query) {
@@ -145,7 +178,8 @@ function refilter() {
   } else {
     const scored = [];
     for (const it of all) {
-      const m = fuzzy(query, it);
+      // 匹配对象是**看得见的**那个串,不是存下来的绝对路径
+      const m = fuzzy(query, view(it));
       if (m) scored.push({ it, s: m.score });
     }
     scored.sort((a, b) => b.s - a.s);
@@ -167,11 +201,14 @@ function accept() {
 }
 
 /// 归一化:接受 `["a","b"]` 或 `[{path|name}, …]` ✓(形状不确定 ⇒ 两种都收 ✓)
+/// **出口一律是绝对路径** —— 见上面“存绝对、看相对”的说明
 function normalize(entries) {
+  const prefix = cwd_now();
   const list = Array.isArray(entries) ? entries : [];
   return list
     .map((x) => (typeof x === "string" ? x : x && (x.path || x.name) ? x.path || x.name : null))
-    .filter((x) => typeof x === "string" && x.length > 0);
+    .filter((x) => typeof x === "string" && x.length > 0)
+    .map((x) => to_abs(x, prefix));
 }
 
 /// 取文件列表:**先照先例用 read_tree 的 Promise** ✓;失败/不可用则**同步兜底** `helix.run` ✓
@@ -220,11 +257,17 @@ function buffer_open(label) {
 let buffer_items = [];
 
 /// 同步兜底:rg --files(gitignore 友好 ✓)→ git ls-files → find ✓;全部失败则空表 ✓
+/// 输出全是**相对路径** ⇒ 按 load 时的 cwd 拼成绝对(=同一个道理:存绝对)
 function sync_fallback() {
+  const prefix = cwd_now();
   for (const cmd of ["rg --files", "git ls-files", "find . -type f -not -path './.git/*'"]) {
     const out = guard(() => helix.run(cmd), null);
     if (typeof out === "string" && out.length > 0) {
-      all = out.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
+      all = out
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => to_abs(s, prefix));
       refilter();
       say("pick: 数据源 = " + JSON.stringify(cmd) + "(" + all.length + " 条)");
       return;
@@ -250,7 +293,7 @@ function render(_focus, ctx) {
     const idx = top + i;
     if (idx >= shown.length) break;
     const mark = idx === sel ? "▸ " : "  ";
-    const item = cut(String(shown[idx]), Math.max(1, w - 4));
+    const item = cut(view(shown[idx]), Math.max(1, w - 4));
     rows.push(mark + item);
   }
   rows.push("");
@@ -367,10 +410,14 @@ helix.register_command("pick-core", () => {
         helix.read_tree(".").then((entries) =>
           (entries || [])
             .filter((e) => e && !e.is_dir)
-            .map((e) => [e.name, String(e.path || "").replace(/^\.\//, "")])
+            // cells 显示相对;payload 用**绝对** —— 核心的 preview/action 拿到的是 payload
+            .map((e) => ({
+              cells: [e.name, String(e.path || "").replace(/^\.\//, "")],
+              payload: [to_abs(e.path || "", cwd_now())],
+            }))
         ),
-      preview: (row) => ({ path: row[1], line: 0 }),
-      action: (row) => helix.open_file(row[1]),
+      preview: (row) => ({ path: row[0], line: 0 }),
+      action: (row) => helix.open_file(row[0]),
       // S6 演示:插件决定「**核心不认识的**键」做什么 ✓
       //   核心的 Esc / Enter / Tab / 翻页**走不到**这里(它们在核心前面的 match 臂里 ✓)
       //   ⇒ 所以这不会、也不可能破坏"Esc 能关 / Enter 能接受" ✓
@@ -483,3 +530,10 @@ helix.register_command("pick-diag", () => {
       " core=" + JSON.stringify(guard(() => helix.picker_state(), "n/a"))
   );
 });
+
+// ============================ node 自检导出 ============================
+// 只导出**纯逻辑**(路径存绝对/看相对、归一化)。engine 加载时 `module` 未定义 ⇒ 自动跳过。
+// 运行:node --test plugins/picker-ui/tests/picker-ui.test.js
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { to_abs, view, normalize, refresh_cwd_view, dw, cut };
+}

@@ -6,18 +6,30 @@ helix.plugin("picker", { deps: [] });
 //   helix.map("normal", "space-g", () => helix.picker.run("grep"));
 // 复制本文件即可自定义源（改 items/preview/action；行格式见 plugin-api §10）。
 
-// files:当前目录文件树(cwd = 当前工作目录,:cd 后立即变;行 = [name, path])
+// 路径一律**存绝对**：`read_tree(".")` / `rg` 给的是相对路径，若直接当 payload 存下来，
+// 就等于把当前 cwd 钉进条目里 —— `:cd` 之后 action/preview 会指错文件。
+// 显示想短就自己削前缀（本例直接展示相对形式，但 payload 存绝对）。
+const toAbs = (p) => {
+  const s = String(p).replace(/^\.\//, "");
+  return s.startsWith("/") ? s : helix.cwd() + "/" + s;
+};
+
+// files：当前目录文件树（cwd = 当前工作目录，:cd 后立即变）
+// cells 只负责好看；**payload 才是 preview/action 收到的** ⇒ 存绝对路径
 helix.picker.define("files", {
   columns: ["name", "path"],
   items: () => helix.read_tree(".").then((entries) =>
     entries
       .filter((e) => !e.is_dir)
-      .map((e) => [e.name, e.path.replace(/^\.\//, "")])),
-  preview: (row) => ({ path: row[1], line: 0 }),
-  action: (row) => helix.open_file(row[1]),
+      .map((e) => ({
+        cells: [e.name, e.path.replace(/^\.\//, "")],
+        payload: [toAbs(e.path)],
+      }))),
+  preview: (row) => ({ path: row[0], line: 0 }),
+  action: (row) => helix.open_file(row[0]),
 });
 
-// grep：rg 全文搜索（排除 target/.git；payload = [path, 行号 0-based]）
+// grep：rg 全文搜索（排除 target/.git；payload = [绝对 path, 行号 0-based]）
 // rg 无匹配 = exit 1（常规退出，非错误）→ 返回空列表；未安装/参数错等真实错误仍抛
 helix.picker.define("grep", {
   columns: ["file:line", "text"],
@@ -26,8 +38,11 @@ helix.picker.define("grep", {
       .then((out) =>
         out.split("\n").filter(Boolean).map((line) => {
           const [path, ln, ...text] = line.split(":");
-          const p = path.replace(/^\.\//, "");
-          return { cells: [p + ":" + ln, text.join(":")], payload: [p, String(Number(ln) - 1)] };
+          const display = path.replace(/^\.\//, "");
+          return {
+            cells: [display + ":" + ln, text.join(":")],
+            payload: [toAbs(path), String(Number(ln) - 1)],
+          };
         }))
       .catch((e) => {
         if (e && /^exit 1/.test(e.message)) return [];

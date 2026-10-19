@@ -9,14 +9,21 @@
 ```js
 helix.picker.define("files", {
   columns: ["name", "path"],                  // 列名(第一列参与过滤)
-  items: () => [["main.rs", "src/main.rs"]],  // 行数组(同步或 Promise/async)
-  preview: (row) => ({ path: row[1], line: 0 }),  // 可选;文件预览(FileLocation)
-  action: (row) => helix.open_file(row[1]),       // 可选;Enter 回调
+  // cells = 看的,payload = preview/action 收的(数组时二者相同)
+  items: () => [
+    { cells: ["main.rs", "src/main.rs"], payload: [helix.cwd() + "/src/main.rs"] },
+  ],
+  preview: (row) => ({ path: row[0], line: 0 }),  // 可选;文件预览(FileLocation)
+  action: (row) => helix.open_file(row[0]),       // 可选;Enter 回调
 });
 helix.picker.run("files");
 ```
 
 - **行格式**:数组 `[c1, c2]`(cells = payload)或 `{ cells: [...], payload: [...] }`(cells 展示,payload 传给 preview/action——如 buffers 源藏 buffer id)。
+- **路径 payload 一律存绝对路径**:`read_tree(".")` / `rg` 给的是相对路径,直接当 payload 存
+  就等于把 cwd 钉进条目里 —— `:cd` 之后 `preview`/`action` 会指错文件。用
+  `helix.cwd() + "/" + p` 现拼(见 `plugins/examples/picker.js` 的 `toAbs`);
+  想显示成短的就把相对形式放 `cells`、绝对路径放 `payload`(见上面 files 源)。
 - `items` 支持 Promise:`helix.read_tree(".")` / `helix.run_async("rg ...")` 直接返回。
 - 回退语义:源未定义/行宽不匹配 → 状态栏报错;items 空 → 打开空列表;action/preview 抛错 → 忽略;preview null → 无预览。
 - 四个常用源(files/grep/buffers/symbols)是**JS 侧**用 `helix.picker.define` 定义的,示例在 `plugins/examples/picker.js`;
@@ -30,7 +37,10 @@ helix.picker.define("grep", {
     helix.run_async("rg -n --no-heading -g '!target' -g '!.git' .")
       .then((out) => out.split("\n").filter(Boolean).map((line) => {
         const [p, ln, ...rest] = line.split(":");
-        return { cells: [p + ":" + ln, rest.join(":")], payload: [p, String(Number(ln) - 1)] };
+        return {
+          cells: [p.replace(/^\.\//, "") + ":" + ln, rest.join(":")],
+          payload: [p.startsWith("/") ? p : helix.cwd() + "/" + p.replace(/^\.\//, ""), String(Number(ln) - 1)],
+        };
       }))
       .catch((e) => { if (e && /^exit 1/.test(e.message)) return []; throw e; }),
   preview: (row) => ({ path: row[0], line: Number(row[1]) }),
