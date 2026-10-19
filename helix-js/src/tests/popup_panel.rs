@@ -179,6 +179,25 @@ fn popup_exists_reports_live_layers() {
     );
 }
 
+/// `helix.close_popup(id)` 的 JS 侧:**入队一条 ClosePopup 请求**(宿主侧移除由集成测试覆盖)。
+#[test]
+fn close_popup_enqueues_request() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let _ = crate::state::take_ui_requests();
+    load_script(r#"helix.close_popup(42);"#).unwrap();
+    let reqs = crate::state::take_ui_requests();
+    assert!(
+        reqs.iter().any(|r| matches!(
+            r,
+            crate::types::UiRequest::ClosePopup(crate::types::ClosePopupReq { id: 42 })
+        )),
+        "应入队 ClosePopup{{id:42}};reqs={reqs:?}"
+    );
+    // 参数非法 ⇒ 报错(不静默)
+    assert!(load_script(r#"helix.close_popup("x");"#).is_err());
+}
+
 #[test]
 fn popup_lifecycle() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

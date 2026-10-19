@@ -92,6 +92,66 @@ async fn plugin_popup_open_and_close() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `helix.close_popup(id)`:**主动关闭**与 onKey 返回 "close" 等价(B2 后半)。
+///
+/// 断言点:①打开后层存在;②JS 命令关它 → 层消失且 `onClose` 被调用;
+/// ③**重复关闭幂等**(不 panic、不误关别的层)。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_close_popup_by_id() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("closepopup.js");
+    std::fs::write(
+        &path,
+        r#"
+        let box_id = null;
+        helix.register_command("show-box2", () => {
+            box_id = helix.open_popup({
+                render: () => ["box2"],
+                onClose: () => helix.echo("box2 closed"),
+            });
+        });
+        helix.register_command("close-box2", () => helix.close_popup(box_id));
+        helix.register_command("close-box2-again", () => helix.close_popup(box_id));
+        "#,
+    )?;
+
+    let popup_type = std::any::type_name::<ui::Popup<ui::PluginPopup>>();
+    test_key_sequences(
+        &mut AppBuilder::new().build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", path.display())), None),
+            (
+                Some(":show-box2<ret>"),
+                Some(&|app| {
+                    assert!(app.compositor.has_component(popup_type), "层应已打开");
+                }),
+            ),
+            (
+                Some(":close-box2<ret>"),
+                Some(&|app| {
+                    assert!(
+                        !app.compositor.has_component(popup_type),
+                        "helix.close_popup 必须移除层"
+                    );
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "box2 closed", "onClose 必须被调用");
+                }),
+            ),
+            (
+                Some(":close-box2-again<ret>"),
+                Some(&|app| {
+                    assert!(!app.compositor.has_component(popup_type), "重复关闭应幂等");
+                    assert!(!app.editor.is_err(), "重复关闭不应报错");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_popup_size_smoke() -> anyhow::Result<()> {
     // 冒烟：open_popup 的 width/height/position 选项不能使弹窗打开失败

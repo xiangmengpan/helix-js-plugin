@@ -40,6 +40,11 @@ impl PluginPopup {
         self
     }
 
+    /// 弹层实例 id(`open_popup` 返回的那个)—— compositor 按它移除层。
+    pub(crate) fn id(&self) -> u64 {
+        self.surface.id
+    }
+
     /// 清空脏格 diff 状态(测试向不同 surface 渲染时需要重置)
     pub fn reset_render_state(&mut self) {
         self.surface.reset_render_state();

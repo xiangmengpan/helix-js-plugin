@@ -234,7 +234,7 @@ helix.set_cursor(row, col)
 helix.set_selection(ar, ac, hr, hc)
 helix.set_input_value(popup_id, node_id, value)   // 强制改 input 值(光标置末尾)
 helix.open_popup({ render, onKey?, onClose?, width?, height?, position? }) -> id
-helix.popup_exists(id) -> boolean   // 弹层是否还在(JS 侧没有主动关闭入口,用它自查自愈)
+helix.popup_exists(id) -> boolean / helix.close_popup(id)   // 自查 + 主动关闭(等价于 onKey 返回 "close")
 helix.open_panel({ side, size, render, onKey?, onClose?, focusable? }) -> id
 helix.close_panel(id)
 helix.move_panel(id, side)

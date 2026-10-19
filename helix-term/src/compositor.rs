@@ -374,6 +374,24 @@ impl Compositor {
     /// 按插件面板实例 id 关闭面板(布局树路径)。
     /// 面板住在树里(rail 叶子或普通叶子),所以先找叶子再关 ——
     /// `close_panel` / 面板状态自愈 / Esc 关闭三条路径共用这一处。
+    /// 按弹层实例 id 移除 JS 弹层(`helix.close_popup` 的宿主侧)。
+    ///
+    /// 为什么不能 `pop()`:弹层可能不在栈顶(异层并存/被别的层压住),`pop` 会误伤。
+    /// 为什么不能按 layer 名:`Compositor::remove` 收 `&'static str`,而 JS 传来的
+    /// 层名是运行期字符串 —— 按组件内的实例 id 找更稳。
+    pub fn close_popup_by_id(&mut self, id: u64) -> bool {
+        use crate::ui::plugin_popup::PluginPopup;
+        let Some(pos) = self.layers.iter().position(|l| {
+            l.as_any()
+                .downcast_ref::<crate::ui::popup::Popup<PluginPopup>>()
+                .is_some_and(|p| p.contents().id() == id)
+        }) else {
+            return false;
+        };
+        self.layers.remove(pos);
+        true
+    }
+
     pub fn close_panel_by_id(&mut self, id: u64) -> bool {
         use crate::ui::plugin_panel::PluginPanel;
         let Some(leaf) = self.main_tree.find_leaf_id::<PluginPanel>(|p| p.id() == id) else {

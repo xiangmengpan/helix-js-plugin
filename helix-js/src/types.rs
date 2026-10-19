@@ -48,6 +48,12 @@ pub struct ClosePanelReq {
     pub id: u64,
 }
 
+/// `helix.close_popup(id)` —— 关掉一个 JS 弹层(触发 onClose 并移除宿主层)。
+#[derive(Debug)]
+pub struct ClosePopupReq {
+    pub id: u64,
+}
+
 #[derive(Debug)]
 pub struct OpenFileReq {
     pub path: String,
@@ -328,6 +334,8 @@ pub enum UiRequest {
     /// 关闭当前视图(关掉最后一个视图即退出程序 ✓)—— dashboard 的 q 用 ✓
     Quit,
     ClosePanel(ClosePanelReq),
+    /// `helix.close_popup(id)`
+    ClosePopup(ClosePopupReq),
     OpenFile(OpenFileReq),
     /// 打开文件但**不绑定路径**(`helix.open_file(p, { scratch: true })`)。
     /// 用途:内置"内容型插件"打开随软件分发的内容(如 `runtime/tutor`)——

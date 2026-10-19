@@ -206,17 +206,20 @@ function close_dashboard() {
   const id = popup_id;
   popup_id = null;
   if (id === null) return;
-  // 关弹窗:顶层没有统一的 close ✗ ⇒ 逐个探测(照实测:close_panel 存在 ✓)
-  for (const fn of ["close_panel", "close_popup"]) {
-    if (typeof helix[fn] !== "function") continue;
+  // ⚠ 只关**弹层**:dashboard 开的是 popup 不是 panel。
+  // 曾按 ["close_panel", "close_popup"] 逐个探测 —— 而 id 是 **popup id**,
+  // `close_panel` 找不到同名面板时**静默返回 false**,这里就 return 了,
+  // 结果 `:dashboard-close` 什么也没关(2026-10 随 close_popup 落地一起修)。
+  if (typeof helix.close_popup === "function") {
     try {
-      helix[fn](id);
+      helix.close_popup(id);
       return;
     } catch (e) {
-      say("dashboard: " + fn + " 失败 —— " + (e && e.message ? e.message : e));
+      say("dashboard: close_popup 失败 —— " + (e && e.message ? e.message : e));
     }
   }
-  say("dashboard: 未找到可用的关闭接口(Esc 亦可关闭)");
+  // 老版本兜底:没有 close_popup 时只能靠按键路径
+  say("dashboard: 该版本没有 close_popup,请按 Esc 关闭");
 }
 
 // ── 命令(永远可用,不依赖 startup ✓)──────────────────────────────────────

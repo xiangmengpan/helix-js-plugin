@@ -611,6 +611,12 @@ interface Helix {
    * 层可能被 onKey 的 "close"、reload 或别的插件移除,本地句柄会失效。
    */
   popup_exists(id: number): boolean;
+
+  /**
+   * 主动关闭一个弹层:触发该层的 `onClose`,并从合成器移除(可能不在栈顶)。
+   * 与 onKey 返回 `"close"` 完全等价。id 不存在时静默(幂等)。
+   */
+  close_popup(id: number): void;
   // 注:`helix.close_popup(id)` **不存在**(核心未注册;2026-10 对账核实)。
   //     关面板用 `close_panel(id)` / `pane.close(id)`;弹窗目前只能由自身键位(如 Esc)关。
   open_panel(opts: PanelOptions): number;

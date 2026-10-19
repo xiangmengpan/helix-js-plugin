@@ -15,13 +15,13 @@ use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
 use helix_js::CommandContext;
 use helix_js::{
-    CacheLayoutReq, CloseLeafReq, ClosePanelReq, EqualizeLeafReq, FocusBufferReq, FocusLeafDirReq,
-    FocusLeafReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq, MovePanelReq, OpenBufferLeafReq,
-    OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq, OpenScratchFileReq, OpenTerminalReq,
-    PaneEmbedReq, PaneFloatReq, PanePinReq, PaneRaiseReq, ResizeLeafDirReq, ResizeLeafReq,
-    ServerListRowsReq, ServerOpReq, ServerTaskReq, SetThemeReq, SplitLeafReq, StackActivateReq,
-    StackCreateReq, StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq,
-    TermFeedReq, TermModeReq, TermResizeReq, TermSaveReq, ZoomLeafReq,
+    CacheLayoutReq, CloseLeafReq, ClosePanelReq, ClosePopupReq, EqualizeLeafReq, FocusBufferReq,
+    FocusLeafDirReq, FocusLeafReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq, MovePanelReq,
+    OpenBufferLeafReq, OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq, OpenScratchFileReq,
+    OpenTerminalReq, PaneEmbedReq, PaneFloatReq, PanePinReq, PaneRaiseReq, ResizeLeafDirReq,
+    ResizeLeafReq, ServerListRowsReq, ServerOpReq, ServerTaskReq, SetThemeReq, SplitLeafReq,
+    StackActivateReq, StackCreateReq, StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq,
+    TermCloseReq, TermFeedReq, TermModeReq, TermResizeReq, TermSaveReq, ZoomLeafReq,
 };
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
@@ -4915,6 +4915,7 @@ pub(crate) fn apply_ui_requests(
             helix_js::UiRequest::OpenPanel(req) => dispatch(pane::handle_open_panel(req)?),
             helix_js::UiRequest::Quit => doc::handle_quit()?,
             helix_js::UiRequest::ClosePanel(req) => dispatch(pane::handle_close_panel(req)?),
+            helix_js::UiRequest::ClosePopup(req) => popup::handle_close_popup(req)?,
             helix_js::UiRequest::OpenScratchFile(req) => doc::handle_open_scratch_file(req)?,
             helix_js::UiRequest::OpenFile(req) => doc::handle_open_file(req)?,
             helix_js::UiRequest::MovePanel(req) => dispatch(pane::handle_move_panel(req)?),

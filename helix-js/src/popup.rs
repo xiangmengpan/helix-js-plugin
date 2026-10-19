@@ -108,6 +108,32 @@ fn opt_dim(v: &JsValue, ctx: &mut Context, name: &str) -> boa_engine::JsResult<O
 /// 关闭只能靠 onKey 返回 "close"),于是插件自己记的 `popup` 句柄会在"层被外部移除"
 /// (reload / 别的插件 / Esc)之后**永远**指着已死的层 —— 典型症状:`:arsenal` 一直回
 /// "already open"。有了这条查询,插件能自查自愈;也不再有"只能靠猜"的探测代码。
+/// `helix.close_popup(id)` —— 关掉一个弹层(**主动关闭**的唯一入口)。
+///
+/// 语义与 onKey 返回 "close" 完全一致:先 `close_popup(id)`(触发 `onClose`、
+/// 从注册表移除),再由宿主移除对应的 compositor 层。
+///
+/// 为什么需要它:在此之前 JS 侧无法主动关层,插件只能靠按键路径;一旦层被外部移除
+/// (reload/别的插件),本地句柄只能靠 `helix.popup_exists` 自愈,却关不掉别人的层。
+pub(crate) fn js_close_popup(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err("helix.close_popup: id must be a number"))?;
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::ClosePopup(crate::types::ClosePopupReq { id }));
+    Ok(JsValue::undefined())
+}
+
 pub(crate) fn js_popup_exists(
     _this: &JsValue,
     args: &[JsValue],

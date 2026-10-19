@@ -36,3 +36,16 @@ pub(crate) fn handle_open_popup(
     });
     Ok(())
 }
+
+/// `helix.close_popup(id)`:主动关闭一个 JS 弹层。
+///
+/// 顺序与 onKey 的 "close" 路径**完全一致**:先 `helix_js::close_popup`(触发
+/// `onClose` 并从注册表移除;幂等),再由宿主按实例 id 找到并移除对应层
+/// (弹层可能不在栈顶,所以不能 `pop()`)。
+pub(crate) fn handle_close_popup(ClosePopupReq { id }: ClosePopupReq) -> anyhow::Result<()> {
+    let _ = helix_js::close_popup(id);
+    job::dispatch_blocking(move |_editor, compositor| {
+        compositor.close_popup_by_id(id);
+    });
+    Ok(())
+}

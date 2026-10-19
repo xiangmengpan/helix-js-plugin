@@ -21,6 +21,11 @@ pub(crate) fn register(builder: &mut ObjectInitializer<'_>) {
         2,
     );
     builder.function(
+        NativeFunction::from_fn_ptr(popup::js_close_popup),
+        JsString::from("close_popup"),
+        1,
+    );
+    builder.function(
         NativeFunction::from_fn_ptr(popup::js_popup_exists),
         JsString::from("popup_exists"),
         1,
