@@ -1001,11 +1001,21 @@ interface Helix {
     braille(pts: [number, number][] | { x: number; y: number }[], opts?: { style?: string | null }): void;
     /**
      * 开始一个**裁剪区**:之后产生的 op 只在这个矩形内可见(坐标仍是绝对的)。
-     * 必须与 `pop_clip()` 配对;忘了 pop 时 `done()` 会兜底闭合。
+     * 必须与 `pop()` 配对;忘了 pop 时 `done()` 会兜底闭合。
      */
     push_clip(x: number, y: number, w: number, h: number): void;
-    /** 闭合最近一个裁剪区(栈空 = 无害 no-op) */
-    pop_clip(): void;
+    /**
+     * 开始一个**滚动容器**:矩形**同时**是裁剪区,内部 op 的坐标与父空间同一套,
+     * 显示时统一减去 `(dx, dy)`(屏幕位置 = 内容 - offset)。
+     *
+     * `dy = 10` 意味着"已滚过 10 行" ⇒ 内容第 10 行顶到容器上沿。于是长列表只需按
+     * 内容坐标画一次,滚动时只改 `dy`,不必每帧重算屏幕坐标,也画不到容器外。
+     *
+     * ⚠️ 容器位置**不**平移坐标系:容器在 `(2,1)` 时,里面的内容要写 `(2,1)`。
+     */
+    push_scroll(x: number, y: number, w: number, h: number, opts?: { dx?: number; dy?: number }): void;
+    /** 闭合**最内层**区域(clip 或 scroll 都行;栈空 = 无害 no-op) */
+    pop(): void;
     /** 收尾：把本帧的 op 交给宿主。**render 必须 `return helix.draw.done()`** */
     done(): DrawSentinel;
   };

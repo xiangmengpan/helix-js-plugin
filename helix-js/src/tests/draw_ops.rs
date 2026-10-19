@@ -343,7 +343,7 @@ fn js_clip_region_wraps_ops() {
             helix.draw.text(0, 0, "outside");
             helix.draw.push_clip(2, 0, 3, 1);
               helix.draw.text(0, 0, "0123456789");   // 只应该有 2..5 三列留下
-            helix.draw.pop_clip();
+            helix.draw.pop();
             helix.draw.text(0, 1, "below");
             return helix.draw.done();
         },
@@ -414,4 +414,94 @@ fn unclosed_clip_is_closed_at_done() {
         panic!("expected Ops")
     };
     assert!(next.is_empty(), "clip 栈不能跨帧残留: {next:?}");
+}
+
+// ─────────────── 阶段三:滚动容器(内容坐标系 + 偏移)───────────────
+
+/// `push_scroll(x,y,w,h,{dy})`:内容按坐标画一次,滚动只改 dy
+#[test]
+fn js_scroll_container_translates_and_clips() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let id = open(
+        r#"
+    let dy = 0;
+    helix.register_command("scroll-down", () => { dy = 2; });
+    helix.open_popup({
+        render: () => {
+            helix.draw.push_scroll(0, 0, 6, 2, { dy: dy });
+              // 10 行内容只画一次(内容坐标),可见窗口由容器决定
+              for (let i = 0; i < 6; i++) helix.draw.text(0, i, "line" + i);
+            helix.draw.pop();
+            return helix.draw.done();
+        },
+    });
+    "#,
+    );
+    let content = render_popup(id, 8, 2, None).unwrap();
+    assert_eq!(rows(&content, 8, 2), vec!["line0", "line1"]);
+    let Content::Ops(ops) = &content else {
+        panic!("expected Ops")
+    };
+    assert!(
+        matches!(
+            &ops[0],
+            DrawOp::Scroll {
+                dy: 0,
+                w: 6,
+                h: 2,
+                ..
+            }
+        ),
+        "{:?}",
+        ops[0]
+    );
+
+    // 滚动 = 只改 dy(内容 op 一条都不用改)
+    run_command("scroll-down", &ctx()).unwrap();
+    let content = render_popup(id, 8, 2, None).unwrap();
+    assert_eq!(rows(&content, 8, 2), vec!["line2", "line3"]);
+}
+
+/// clip 与 scroll 可以任意嵌套,`pop()` 只闭最内层(混用不会错配)
+#[test]
+fn js_mixed_clip_and_scroll_nesting() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let id = open(
+        r#"
+    helix.open_popup({
+        render: () => {
+            helix.draw.push_clip(0, 0, 4, 1);        // 外:只留 4 列
+              helix.draw.push_scroll(0, 0, 4, 1, { dx: 1, dy: 1 });
+                helix.draw.text(0, 1, "012345");     // 内容第 1 行(= 屏幕 0 行)、x 从 1 起
+              helix.draw.pop();                      // 闭 scroll
+              helix.draw.text(2, 0, "ZZ");           // 已回到 clip 层(仍受 4 列裁剪)
+            helix.draw.pop();                        // 闭 clip
+            return helix.draw.done();
+        },
+    });
+    "#,
+    );
+    let content = render_popup(id, 8, 1, None).unwrap();
+    // 期望:scroll 里的内容 = 内容 x=1..5 的 "1234" 落在屏幕 0..4;然后 "ZZ" 盖到 x=2..4
+    assert_eq!(rows(&content, 8, 1), vec!["12ZZ"]);
+    let Content::Ops(ops) = &content else {
+        panic!("expected Ops")
+    };
+    assert!(
+        matches!(&ops[0], DrawOp::Clip { w: 4, .. }),
+        "外层是 clip: {:?}",
+        ops[0]
+    );
+    let inner = match &ops[0] {
+        DrawOp::Clip { ops, .. } => ops,
+        _ => unreachable!(),
+    };
+    assert!(
+        matches!(&inner[0], DrawOp::Scroll { dx: 1, dy: 1, .. }),
+        "{:?}",
+        inner[0]
+    );
+    assert_eq!(inner.len(), 2, "clip 里是 scroll + 后画的 text");
 }

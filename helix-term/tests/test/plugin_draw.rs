@@ -171,7 +171,7 @@ async fn braille_and_clip_reach_the_surface() -> anyhow::Result<()> {
                 // 裁剪区:只留前 3 列 ⇒ 后面的文字看不见(放在第 3 行,别被 braille 盖掉)
                 helix.draw.push_clip(0, 2, 3, 1);
                   helix.draw.text(0, 2, "CLIPPED-AWAY");
-                helix.draw.pop_clip();
+                helix.draw.pop();
                 // braille:一条水平线(点 y=1,即第一格的第二行点)
                 const pts = [];
                 for (let dx = 0; dx < 8; dx++) pts.push([dx, 1]);
@@ -192,6 +192,55 @@ async fn braille_and_clip_reach_the_surface() -> anyhow::Result<()> {
     assert!(!text.contains("CLIPPED-AWAY"), "裁剪区外应被裁掉: {text}");
     // 8 个点、每格 2 点(左右两列都亮)= U+2812 ⠒ ⇒ 一行 4 格
     assert!(text.contains("⠒⠒⠒⠒"), "braille 一行 4 格: {text}");
+    pump(&mut app, "<esc>").await?;
+    Ok(())
+}
+
+/// 阶段三:滚动容器 —— 内容按内容坐标画一次,滚动只改 dy,容器外自动裁掉
+#[tokio::test(flavor = "multi_thread")]
+async fn scroll_container_reaches_the_surface() -> anyhow::Result<()> {
+    let (_dir, mut app) = setup(
+        r#"
+    let names = ["alpha", "bravo", "charlie", "delta", "echo"];
+    let top = 0;
+    helix.register_command("list-ui", () => {
+        helix.open_popup({
+            width: 24, height: 7, position: "center",
+            render: () => {
+                helix.draw.rect(0, 0, 16, 4, { border: "plain" });
+                helix.draw.push_scroll(1, 1, 14, 2, { dy: top });
+                  names.forEach((n, i) => helix.draw.text(1, i + 1, i + " " + n));
+                helix.draw.pop();
+                return helix.draw.done();
+            },
+            // 滚动走**键位**(弹层是模态的,`:命令` 会被它吞掉 —— 这正是真实用法)
+            onKey: (k) => {
+                if (k.name === "Down") top = Math.min(top + 1, names.length - 2);
+                else if (k.name === "Up") top = Math.max(top - 1, 0);
+                else if (k.name === "Esc") return "close";
+                return "handled";
+            },
+        });
+    });
+    "#,
+    )
+    .await?;
+
+    pump(&mut app, ":list-ui<ret>").await?;
+    let text = screen(&mut app);
+    assert!(text.contains("0 alpha"), "未滚动时应看到第 0 行: {text}");
+    assert!(text.contains("1 bravo"), "未滚动时应看到第 1 行: {text}");
+    assert!(
+        !text.contains("2 charlie"),
+        "容器只 2 行高,第 3 行应在框下看不到: {text}"
+    );
+
+    // 按两次 Down ⇒ dy=2:同一条 render 里的内容 op **一字未改**,只有 dy 变了
+    pump(&mut app, "<down><down>").await?;
+    let text = screen(&mut app);
+    assert!(text.contains("2 charlie"), "滚动后第 2 行顶上来: {text}");
+    assert!(text.contains("3 delta"), "滚动后第 3 行: {text}");
+    assert!(!text.contains("0 alpha"), "第 0 行已被滚出容器: {text}");
     pump(&mut app, "<esc>").await?;
     Ok(())
 }

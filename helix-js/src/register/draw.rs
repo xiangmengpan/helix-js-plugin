@@ -48,8 +48,13 @@ pub(crate) fn register(engine: &mut Context) -> JsObject {
             4,
         )
         .function(
-            NativeFunction::from_fn_ptr(crate::draw::js_draw_pop_clip),
-            JsString::from("pop_clip"),
+            NativeFunction::from_fn_ptr(crate::draw::js_draw_push_scroll),
+            JsString::from("push_scroll"),
+            5,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(crate::draw::js_draw_pop),
+            JsString::from("pop"),
             0,
         )
         .function(

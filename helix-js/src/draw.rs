@@ -107,6 +107,23 @@ pub enum DrawOp {
         h: u16,
         ops: Vec<DrawOp>,
     },
+    /// 滚动容器:矩形**同时**是裁剪区;内部 op 的坐标与父空间**同一套**,只是显示时
+    /// 统一减去 `(dx, dy)`(屏幕位置 = 内容 - offset)。
+    ///
+    /// 于是"1000 行的列表"只需按内容坐标画一次,滚动时只改 `dy` —— 不必每帧重算屏幕坐标,
+    /// 也画不到容器外面。`dx`/`dy` 是**已滚过的量**(dy=10 ⇒ 内容第 10 行顶到容器上沿)。
+    ///
+    /// ⚠️ 容器位置**不**平移坐标系(与 `Clip` 同一条纪律:坐标永远绝对)——
+    /// 容器在 `(2,1)` 时,贴在它里面的内容要写 `(2,1)` 而不是 `(0,0)`。
+    Scroll {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        dx: u16,
+        dy: u16,
+        ops: Vec<DrawOp>,
+    },
     /// 文字(多段样式);宽字符自动占 2 列
     Text {
         x: u16,
@@ -137,7 +154,7 @@ pub fn rasterize(ops: &[DrawOp], width: u16, height: u16) -> Vec<StyledLine> {
     let mut grid = vec![vec![Cell::Blank; w]; h];
     let clip = Clip::full(w, h);
     for op in ops {
-        apply(op, &mut grid, clip);
+        apply(op, &mut grid, clip, Xf::ID);
     }
     grid.iter().map(|row| row_to_line(row)).collect()
 }
@@ -160,7 +177,7 @@ pub fn rasterize_then_paste(
     let mut grid = vec![vec![Cell::Blank; w]; h];
     let clip = Clip::full(w, h);
     for op in ops {
-        apply(op, &mut grid, clip);
+        apply(op, &mut grid, clip, Xf::ID);
     }
     let (px, py) = (at.0 as usize, at.1 as usize);
     for (i, line) in lines.iter().enumerate() {
@@ -175,7 +192,16 @@ pub fn rasterize_then_paste(
                 if gw == 0 {
                     continue;
                 }
-                if put_grapheme(&mut grid, clip, cx, row, g, &span.style) == 0 {
+                if put_grapheme(
+                    &mut grid,
+                    clip,
+                    Xf::ID,
+                    cx as i32,
+                    row as i32,
+                    g,
+                    &span.style,
+                ) == 0
+                {
                     break;
                 }
                 cx += gw;
@@ -185,10 +211,11 @@ pub fn rasterize_then_paste(
     grid.iter().map(|row| row_to_line(row)).collect()
 }
 
-/// 显式裁剪区(半开区间 `[x0,x1) × [y0,y1)`,单位 = 字符格)。
+/// 显式裁剪区(半开区间 `[x0,x1) × [y0,y1)`,单位 = **屏幕**字符格)。
 ///
-/// 坐标永远是**绝对**的:裁剪只限制"能不能写",不改变 op 的坐标系 ——
-/// 否则嵌套 clip、`rasterize_then_paste` 与 box 内区三者的换算会互相打架。
+/// 坐标语义分两层:op 的坐标是**内容坐标**(可能被滚动容器平移过),`Clip` 存的是
+/// **屏幕坐标** —— 每次写入都由 [`Xf`] 换算,再问 clip 能不能写。
+/// 这样嵌套 clip、滚动容器、`rasterize_then_paste`、box 内区四者的换算不会互相打架。
 #[derive(Debug, Clone, Copy)]
 struct Clip {
     x0: usize,
@@ -211,24 +238,65 @@ impl Clip {
         x >= self.x0 && x < self.x1 && y >= self.y0 && y < self.y1
     }
 
-    /// 与一个矩形求交(嵌套 clip 就是连续求交)
-    fn intersect(self, x: u16, y: u16, w: u16, h: u16) -> Self {
+    /// 与一个屏幕矩形求交(允许负起点:起笔在屏幕外的部分自然被切掉)
+    fn intersect(self, x: i32, y: i32, w: u16, h: u16) -> Self {
+        let x1 = (x.max(0) as usize).saturating_add(w as usize);
+        let y1 = (y.max(0) as usize).saturating_add(h as usize);
         Self {
-            x0: self.x0.max(x as usize),
-            y0: self.y0.max(y as usize),
-            x1: self.x1.min((x as usize).saturating_add(w as usize)),
-            y1: self.y1.min((y as usize).saturating_add(h as usize)),
+            x0: self.x0.max(x.max(0) as usize),
+            y0: self.y0.max(y.max(0) as usize),
+            x1: self.x1.min(x1),
+            y1: self.y1.min(y1),
         }
     }
 }
 
-/// 写一个**窄**字符(唯一的裁剪点 —— 所有写入都必须过这里,包括 unshadow 的清除)
-fn put(grid: &mut [Vec<Cell>], clip: Clip, x: usize, y: usize, ch: char, style: &Option<String>) {
-    if !clip.contains(x, y) {
+/// 内容坐标 → 屏幕坐标的平移量(滚动容器把内容往上/往左推,所以是**负**的)
+#[derive(Debug, Clone, Copy)]
+struct Xf {
+    tx: i32,
+    ty: i32,
+}
+
+impl Xf {
+    const ID: Self = Self { tx: 0, ty: 0 };
+
+    fn shifted(self, dx: u16, dy: u16) -> Self {
+        Self {
+            tx: self.tx - dx as i32,
+            ty: self.ty - dy as i32,
+        }
+    }
+}
+
+/// 内容坐标区间 `[c0, c1)` 与裁剪区求交 → 内容坐标区间(给循环用,避免 `w=10000` 空转)
+fn cspan(xf: Xf, c0: i32, c1: i32, clip_lo: usize, clip_hi: usize, vertical: bool) -> (i32, i32) {
+    let t = if vertical { xf.ty } else { xf.tx };
+    let lo = (clip_lo as i32 - t).max(c0);
+    let hi = (clip_hi as i32 - t).min(c1);
+    (lo, hi.max(lo))
+}
+
+/// 写一个**窄**字符(唯一的写入点 —— 所有绘制、含 unshadow 的清除都过这里)
+fn put(
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+    cx: i32,
+    cy: i32,
+    ch: char,
+    style: &Option<String>,
+) {
+    let (sx, sy) = (cx + xf.tx, cy + xf.ty);
+    if sx < 0 || sy < 0 {
         return;
     }
-    unshadow(grid, clip, y, x, style);
-    grid[y][x] = Cell::Ch(ch, style.clone());
+    let (sx, sy) = (sx as usize, sy as usize);
+    if !clip.contains(sx, sy) {
+        return;
+    }
+    unshadow(grid, clip, sy, sx, style);
+    grid[sy][sx] = Cell::Ch(ch, style.clone());
 }
 
 /// 若 `x` 是宽字符的 Shadow,把左邻的宽字符清成空格(保持新字符的样式)。
@@ -240,27 +308,36 @@ fn unshadow(grid: &mut [Vec<Cell>], clip: Clip, y: usize, x: usize, style: &Opti
 }
 
 /// 写一个 grapheme(可能是宽字符),返回占用的列数(`0` = 放不下,调用方应停下)。
-/// 宽字符要求**两列都在裁剪区内**,否则整字丢弃(不能画半个汉字)。
+/// 宽字符要求**两列都在裁剪区内**,否则整字丢弃(不能画半个汉字 —— 滚动容器也一样)。
 fn put_grapheme(
     grid: &mut [Vec<Cell>],
     clip: Clip,
-    x: usize,
-    y: usize,
+    xf: Xf,
+    cx: i32,
+    cy: i32,
     g: &str,
     style: &Option<String>,
 ) -> usize {
     let gw = g.width();
-    if gw == 0 || !clip.contains(x, y) || (gw == 2 && !clip.contains(x + 1, y)) {
+    if gw == 0 {
         return 0;
     }
-    unshadow(grid, clip, y, x, style);
+    let (sx, sy) = (cx + xf.tx, cy + xf.ty);
+    if sx < 0 || sy < 0 {
+        return 0;
+    }
+    let (sx, sy) = (sx as usize, sy as usize);
+    if !clip.contains(sx, sy) || (gw == 2 && !clip.contains(sx + 1, sy)) {
+        return 0;
+    }
+    unshadow(grid, clip, sy, sx, style);
     // 多 char 的 grapheme(组合字符)取首字符(格子模型的既有边界,与 comp_layout 同款)
     let Some(ch) = g.chars().next() else {
         return 0;
     };
-    grid[y][x] = Cell::Ch(ch, style.clone());
+    grid[sy][sx] = Cell::Ch(ch, style.clone());
     if gw == 2 {
-        grid[y][x + 1] = Cell::Shadow;
+        grid[sy][sx + 1] = Cell::Shadow;
     }
     gw
 }
@@ -268,21 +345,38 @@ fn put_grapheme(
 /// Braille 点阵上限(防御:病态输入不该把主线程按在 500k 个点上)
 const MAX_BRAILLE_PTS: usize = 65_536;
 
-fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
+fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip, xf: Xf) {
     match op {
         DrawOp::Clip { x, y, w, h, ops } => {
-            let inner = clip.intersect(*x, *y, *w, *h);
+            let inner = clip.intersect(*x as i32 + xf.tx, *y as i32 + xf.ty, *w, *h);
             for op in ops {
-                apply(op, grid, inner);
+                apply(op, grid, inner, xf);
+            }
+        }
+        // 滚动容器:矩形**同时**是裁剪区;内部坐标再平移一层(嵌套时平移量相加)
+        DrawOp::Scroll {
+            x,
+            y,
+            w,
+            h,
+            dx,
+            dy,
+            ops,
+        } => {
+            let inner = clip.intersect(*x as i32 + xf.tx, *y as i32 + xf.ty, *w, *h);
+            let inner_xf = xf.shifted(*dx, *dy);
+            for op in ops {
+                apply(op, grid, inner, inner_xf);
             }
         }
         DrawOp::Braille { pts, style } => {
             // 同格的点先按位 OR(2×4 点 = 一个盲文字符),再一次性写格
-            let mut cells: std::collections::BTreeMap<(usize, usize), u8> =
+            let mut cells: std::collections::BTreeMap<(i32, i32), u8> =
                 std::collections::BTreeMap::new();
             for (dx, dy) in pts.iter().take(MAX_BRAILLE_PTS) {
-                let (cx, cy) = (*dx as usize / 2, *dy as usize / 4);
-                if !clip.contains(cx, cy) {
+                let (cx, cy) = (*dx as i32 / 2, *dy as i32 / 4);
+                let (sx, sy) = (cx + xf.tx, cy + xf.ty);
+                if sx < 0 || sy < 0 || !clip.contains(sx as usize, sy as usize) {
                     continue;
                 }
                 let bit = match ((*dx as usize) & 1, (*dy as usize) & 3) {
@@ -300,7 +394,7 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
             }
             for ((cx, cy), mask) in cells {
                 let ch = char::from_u32(0x2800 + mask as u32).unwrap_or(' ');
-                put(grid, clip, cx, cy, ch, style);
+                put(grid, clip, xf, cx, cy, ch, style);
             }
         }
         DrawOp::Rect {
@@ -313,7 +407,7 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
             fill,
             title,
         } => {
-            let (x, y, rw, rh) = (*x as usize, *y as usize, *rw as usize, *rh as usize);
+            let (x, y, rw, rh) = (*x as i32, *y as i32, *rw as i32, *rh as i32);
             if rw == 0 || rh == 0 {
                 return;
             }
@@ -323,13 +417,13 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
                 let (fx, fy, fw, fh) = if *border == BorderKind::None {
                     (x, y, rw, rh)
                 } else {
-                    (x + 1, y + 1, rw.saturating_sub(2), rh.saturating_sub(2))
+                    (x + 1, y + 1, (rw - 2).max(0), (rh - 2).max(0))
                 };
-                let (cx0, cx1) = (fx.max(clip.x0), (fx + fw).min(clip.x1));
-                let (cy0, cy1) = (fy.max(clip.y0), (fy + fh).min(clip.y1));
+                let (cx0, cx1) = cspan(xf, fx, fx + fw, clip.x0, clip.x1, false);
+                let (cy0, cy1) = cspan(xf, fy, fy + fh, clip.y0, clip.y1, true);
                 for row in cy0..cy1 {
                     for col in cx0..cx1 {
-                        put(grid, clip, col, row, ' ', &fill_style);
+                        put(grid, clip, xf, col, row, ' ', &fill_style);
                     }
                 }
             }
@@ -341,54 +435,56 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
             let bottom = y + rh - 1;
             // 退化成一维:只画那一维(否则四角互相覆盖成乱码)
             if rh == 1 {
-                for col in x.max(clip.x0)..(x + rw).min(clip.x1) {
-                    put(grid, clip, col, y, hor, style);
+                let (lo, hi) = cspan(xf, x, x + rw, clip.x0, clip.x1, false);
+                for col in lo..hi {
+                    put(grid, clip, xf, col, y, hor, style);
                 }
                 return;
             }
             if rw == 1 {
-                for row in y.max(clip.y0)..(y + rh).min(clip.y1) {
-                    put(grid, clip, x, row, ver, style);
+                let (lo, hi) = cspan(xf, y, y + rh, clip.y0, clip.y1, true);
+                for row in lo..hi {
+                    put(grid, clip, xf, x, row, ver, style);
                 }
                 return;
             }
-            // 四角 self-clip;四条边先与裁剪区求交再循环(避免 w=10000 的空转)
-            put(grid, clip, x, y, tl, style);
-            put(grid, clip, right, y, tr, style);
-            put(grid, clip, x, bottom, bl, style);
-            put(grid, clip, right, bottom, br, style);
-            let (hx0, hx1) = ((x + 1).max(clip.x0), right.min(clip.x1));
+            // 四角 self-clip(cput 会自己判断);四条边先与裁剪区求交再循环
+            put(grid, clip, xf, x, y, tl, style);
+            put(grid, clip, xf, right, y, tr, style);
+            put(grid, clip, xf, x, bottom, bl, style);
+            put(grid, clip, xf, right, bottom, br, style);
+            let (hx0, hx1) = cspan(xf, x + 1, right, clip.x0, clip.x1, false);
             for col in hx0..hx1 {
-                put(grid, clip, col, y, hor, style);
+                put(grid, clip, xf, col, y, hor, style);
                 if rh > 2 {
-                    put(grid, clip, col, bottom, hor, style);
+                    put(grid, clip, xf, col, bottom, hor, style);
                 }
             }
-            let (vy0, vy1) = ((y + 1).max(clip.y0), bottom.min(clip.y1));
+            let (vy0, vy1) = cspan(xf, y + 1, bottom, clip.y0, clip.y1, true);
             for row in vy0..vy1 {
-                put(grid, clip, x, row, ver, style);
-                put(grid, clip, right, row, ver, style);
+                put(grid, clip, xf, x, row, ver, style);
+                put(grid, clip, xf, right, row, ver, style);
             }
             // 标题:`┌ title ─┐` —— 角后留一格空白,标题后也留一格(不压右边框)
             if let Some(spans) = title {
                 let mut cx = x + 2;
                 if cx < right {
-                    put(grid, clip, x + 1, y, ' ', style);
+                    put(grid, clip, xf, x + 1, y, ' ', style);
                 }
                 'outer: for span in spans {
                     let own = span.style.clone().or_else(|| style.clone());
                     for g in span.text.graphemes(true) {
-                        if cx + g.width() >= right {
+                        if cx + g.width() as i32 >= right {
                             break 'outer;
                         }
-                        if put_grapheme(grid, clip, cx, y, g, &own) == 0 {
+                        if put_grapheme(grid, clip, xf, cx, y, g, &own) == 0 {
                             break 'outer;
                         }
-                        cx += g.width();
+                        cx += g.width() as i32;
                     }
                 }
                 if cx < right {
-                    put(grid, clip, cx, y, ' ', style);
+                    put(grid, clip, xf, cx, y, ' ', style);
                 }
             }
         }
@@ -399,9 +495,10 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
             ch,
             style,
         } => {
-            let (x, y, len) = (*x as usize, *y as usize, *len as usize);
-            for col in x.max(clip.x0)..(x + len).min(clip.x1) {
-                put(grid, clip, col, y, *ch, style);
+            let (y, len) = (*y as i32, *len as i32);
+            let (lo, hi) = cspan(xf, *x as i32, *x as i32 + len, clip.x0, clip.x1, false);
+            for col in lo..hi {
+                put(grid, clip, xf, col, y, *ch, style);
             }
         }
         DrawOp::VLine {
@@ -411,9 +508,10 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
             ch,
             style,
         } => {
-            let (x, y, len) = (*x as usize, *y as usize, *len as usize);
-            for row in y.max(clip.y0)..(y + len).min(clip.y1) {
-                put(grid, clip, x, row, *ch, style);
+            let (x, len) = (*x as i32, *len as i32);
+            let (lo, hi) = cspan(xf, *y as i32, *y as i32 + len, clip.y0, clip.y1, true);
+            for row in lo..hi {
+                put(grid, clip, xf, x, row, *ch, style);
             }
         }
         DrawOp::Text {
@@ -422,27 +520,33 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip) {
             spans,
             max_width,
         } => {
-            let mut cx = *x as usize;
+            let mut cx = *x as i32;
+            let y = *y as i32;
+            // 整行都不可见(上下)⇒ 直接返回,别逐字空转
+            let sy = y + xf.ty;
+            if sy < clip.y0 as i32 || sy >= clip.y1 as i32 {
+                return;
+            }
             let limit = match max_width {
-                Some(m) => (cx + *m as usize).min(clip.x1),
-                None => clip.x1,
+                Some(m) => cx + *m as i32,
+                None => i32::MAX,
             };
             for span in spans {
                 for g in span.text.graphemes(true) {
-                    let gw = g.width();
+                    let gw = g.width() as i32;
                     if gw == 0 {
                         continue;
                     }
-                    if cx + gw > limit {
-                        return; // 右边界装不下 ⇒ 这段文字到此为止
+                    if cx + gw > limit || cx + gw + xf.tx > clip.x1 as i32 {
+                        return; // 右边界(或 maxWidth)装不下 ⇒ 这段文字到此为止
                     }
-                    // 起笔落在裁剪区**左边** ⇒ 跳过它继续(裁剪只限制"能不能写",不能砍掉可见部分)
-                    if !clip.contains(cx, *y as usize) {
+                    // 起笔落在裁剪区**左边** ⇒ 跳过它继续(裁剪不砍可见部分)
+                    if cx + xf.tx < clip.x0 as i32 {
                         cx += gw;
                         continue;
                     }
-                    if put_grapheme(grid, clip, cx, *y as usize, g, &span.style) == 0 {
-                        return; // 宽字符两列不全在区内 ⇒ 整字丢弃,别画半个
+                    if put_grapheme(grid, clip, xf, cx, y, g, &span.style) == 0 {
+                        return; // 宽字符两列不全在区内 ⇒ 整字丢弃
                     }
                     cx += gw;
                 }
@@ -764,18 +868,27 @@ mod tests {
                 (dx, dy)
             })
             .collect();
-        ops.push(DrawOp::Clip {
+        // 刻意把 braille + clip 放进**滚动容器**:平移 + 裁剪的那条路径也计入
+        ops.push(DrawOp::Scroll {
             x: 0,
             y: 10,
             w: 80,
             h: 20,
-            ops: vec![
-                DrawOp::Braille {
-                    pts: curve,
-                    style: Some("ui.text".into()),
-                },
-                text(2, 12, "clipped 中文", None),
-            ],
+            dx: 0,
+            dy: 3,
+            ops: vec![DrawOp::Clip {
+                x: 0,
+                y: 10,
+                w: 80,
+                h: 20,
+                ops: vec![
+                    DrawOp::Braille {
+                        pts: curve,
+                        style: Some("ui.text".into()),
+                    },
+                    text(2, 12, "clipped 中文", None),
+                ],
+            }],
         });
         let n = 500;
         let started = std::time::Instant::now();
@@ -921,6 +1034,91 @@ mod tests {
         assert_eq!(line_str(&ops, 4, 1, 0), "", "起笔在裁剪区外 ⇒ 也不画");
     }
 
+    // ─────────────── 阶段三:滚动容器(内容坐标系 + 偏移 + 裁剪)───────────────
+
+    fn scroll(x: u16, y: u16, w: u16, h: u16, dx: u16, dy: u16, ops: Vec<DrawOp>) -> DrawOp {
+        DrawOp::Scroll {
+            x,
+            y,
+            w,
+            h,
+            dx,
+            dy,
+            ops,
+        }
+    }
+
+    /// 内容坐标 → 屏幕:第 `dy` 行顶到容器上沿;容器外的内容不可见
+    #[test]
+    fn scroll_translates_content_coordinates() {
+        let ops = [scroll(
+            0,
+            0,
+            6,
+            2,
+            0,
+            1,
+            vec![
+                text(0, 0, "row0", None), // 被滚到容器上方 ⇒ 不见
+                text(0, 1, "row1", None), // 屏幕第 0 行
+                text(0, 2, "row2", None), // 屏幕第 1 行
+                text(0, 3, "row3", None), // 超出容器高 ⇒ 不见
+            ],
+        )];
+        assert_eq!(line_str(&ops, 8, 3, 0), "row1");
+        assert_eq!(line_str(&ops, 8, 3, 1), "row2");
+        assert_eq!(line_str(&ops, 8, 3, 2), "", "容器外的行不画");
+    }
+
+    /// 水平偏移;容器位置只决定可见窗口,**不平移坐标系**(与 clip 同一纪律)
+    #[test]
+    fn scroll_horizontal_offset_and_rect_position() {
+        // 容器在 (0,0) 宽 4,水平滚 1 ⇒ 可见内容 x=1..5
+        let ops = [scroll(0, 0, 4, 1, 1, 0, vec![text(0, 0, "abcdefg", None)])];
+        assert_eq!(line_str(&ops, 8, 1, 0), "bcde");
+        // 容器挪到 (2,1):内容坐标**不变**(仍写 x=2 起),可见窗口跟着挪
+        let ops = [scroll(2, 1, 4, 1, 0, 0, vec![text(2, 1, "abcdefg", None)])];
+        assert_eq!(line_str(&ops, 8, 2, 1), "  abcd");
+        // 容器在 (2,1) 但内容仍写 (0,0) ⇒ 落在窗口外,不可见
+        let ops = [scroll(2, 1, 4, 1, 0, 0, vec![text(0, 0, "abcdefg", None)])];
+        assert_eq!(line_str(&ops, 8, 2, 1), "");
+    }
+
+    /// 嵌套滚动:偏移**相加**,裁剪取交集
+    #[test]
+    fn nested_scroll_offsets_compose() {
+        // 内容第 3 行(竖直已滚 3)里的文字,再被外层水平滚 2、宽度只剩 3
+        let inner = scroll(0, 0, 6, 1, 0, 3, vec![text(0, 3, "0123456789", None)]);
+        let outer = scroll(0, 0, 3, 1, 2, 0, vec![inner]);
+        assert_eq!(line_str(&[outer], 8, 1, 0), "234");
+        // 外层不滚 ⇒ 同样的内容应显示 "012"
+        let inner2 = scroll(0, 0, 6, 1, 0, 3, vec![text(0, 3, "0123456789", None)]);
+        let outer2 = scroll(0, 0, 3, 1, 0, 0, vec![inner2]);
+        assert_eq!(line_str(&[outer2], 8, 1, 0), "012");
+    }
+
+    /// 滚动容器套在裁剪区里:可见范围 = 两者交集
+    #[test]
+    fn scroll_inside_clip_intersects() {
+        let clipped = DrawOp::Clip {
+            x: 1,
+            y: 0,
+            w: 2,
+            h: 1,
+            ops: vec![scroll(0, 0, 6, 1, 0, 0, vec![text(0, 0, "abcdef", None)])],
+        };
+        assert_eq!(line_str(&[clipped], 8, 1, 0), " bc");
+    }
+
+    /// 宽字符跨滚动容器边界 ⇒ 整字丢弃(平移之后仍然不允许半个字)
+    #[test]
+    fn scroll_never_splits_wide_chars() {
+        let ops = [scroll(0, 0, 1, 1, 0, 0, vec![text(0, 0, "中", None)])];
+        assert_eq!(line_str(&ops, 4, 1, 0), "", "1 列宽装不下 2 列汉字");
+        let ops = [scroll(0, 0, 2, 1, 1, 0, vec![text(0, 0, "中", None)])];
+        assert_eq!(line_str(&ops, 4, 1, 0), "", "平移后右半被裁 ⇒ 整字不画");
+    }
+
     #[test]
     fn border_kind_parse() {
         assert_eq!(BorderKind::parse("plain"), Some(BorderKind::Plain));
@@ -948,13 +1146,34 @@ thread_local! {
     static DRAW: std::cell::RefCell<DrawState> = std::cell::RefCell::new(DrawState::default());
 }
 
+/// 未闭合的"区域"(`push_clip` / `push_scroll` 开的),`start` = 开区时的 ops 长度。
+///
+/// `pop()` 把 `start..` 这段 op 收进对应的 `DrawOp::Clip` / `DrawOp::Scroll`;
+/// `done()` 兜底按栈序闭合。**只有一种 pop**(闭最内层),所以混合嵌套也不会错配。
+enum Region {
+    Clip {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        start: usize,
+    },
+    Scroll {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        dx: u16,
+        dy: u16,
+        start: usize,
+    },
+}
+
 #[derive(Default)]
 struct DrawState {
     ops: Vec<DrawOp>,
     armed: bool,
-    /// 未闭合的裁剪区:`(x, y, w, h, ops 起点)`。
-    /// `pop_clip()` 把起点之后新产生的 op 收进一个 `DrawOp::Clip`;`done()` 会兜底闭合。
-    clips: Vec<(u16, u16, u16, u16, usize)>,
+    regions: Vec<Region>,
 }
 
 /// 进入一次 render 前重置(渲染入口调用,见 `popup::render_popup`)
@@ -963,7 +1182,7 @@ pub fn reset() {
         let mut d = d.borrow_mut();
         d.ops.clear();
         d.armed = false;
-        d.clips.clear();
+        d.regions.clear();
     });
 }
 
@@ -983,22 +1202,39 @@ fn push_op(op: DrawOp) {
     DRAW.with(|d| d.borrow_mut().ops.push(op));
 }
 
-/// 闭合最内层裁剪区:把 `start..` 期间产生的 op 收进一个 `DrawOp::Clip`。
+/// 闭合最内层区域:把 `start..` 期间产生的 op 收进对应的 `Clip`/`Scroll`。
 /// 返回是否真的闭了一个(栈空 = no-op,便于 `done()` 兜底)。
-fn close_clip() -> bool {
+fn close_region() -> bool {
     DRAW.with(|d| {
         let mut d = d.borrow_mut();
-        let Some((x, y, w, h, start)) = d.clips.pop() else {
+        let Some(region) = d.regions.pop() else {
             return false;
         };
+        let start = match &region {
+            Region::Clip { start, .. } | Region::Scroll { start, .. } => *start,
+        };
         let inner: Vec<DrawOp> = d.ops.drain(start..).collect();
-        d.ops.push(DrawOp::Clip {
-            x,
-            y,
-            w,
-            h,
-            ops: inner,
-        });
+        let op = match region {
+            Region::Clip { x, y, w, h, .. } => DrawOp::Clip {
+                x,
+                y,
+                w,
+                h,
+                ops: inner,
+            },
+            Region::Scroll {
+                x, y, w, h, dx, dy, ..
+            } => DrawOp::Scroll {
+                x,
+                y,
+                w,
+                h,
+                dx,
+                dy,
+                ops: inner,
+            },
+        };
+        d.ops.push(op);
         true
     })
 }
@@ -1270,7 +1506,7 @@ pub(crate) fn js_draw_braille(
     Ok(JsValue::undefined())
 }
 
-/// `helix.draw.push_clip(x, y, w, h)` —— 开始一个裁剪区(与 `pop_clip` 配对)
+/// `helix.draw.push_clip(x, y, w, h)` —— 开始一个裁剪区(与 `pop` 配对)
 pub(crate) fn js_draw_push_clip(
     _this: &JsValue,
     args: &[JsValue],
@@ -1279,24 +1515,50 @@ pub(crate) fn js_draw_push_clip(
     DRAW.with(|d| {
         let mut d = d.borrow_mut();
         let start = d.ops.len();
-        d.clips.push((
-            num(args, 0),
-            num(args, 1),
-            num(args, 2),
-            num(args, 3),
+        d.regions.push(Region::Clip {
+            x: num(args, 0),
+            y: num(args, 1),
+            w: num(args, 2),
+            h: num(args, 3),
             start,
-        ));
+        });
     });
     Ok(JsValue::undefined())
 }
 
-/// `helix.draw.pop_clip()` —— 闭合最近一个裁剪区(栈空 = 无害 no-op)
-pub(crate) fn js_draw_pop_clip(
+/// `helix.draw.push_scroll(x, y, w, h, opts?)` —— 滚动容器:`opts.dx` / `opts.dy` 是
+/// **已滚过的量**(dy=10 ⇒ 内容第 10 行顶到容器上沿)。矩形**同时**是裁剪区。
+pub(crate) fn js_draw_push_scroll(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let opts = opt_obj(args, 4);
+    let dx = num_prop(&opts, "dx", ctx).unwrap_or(0);
+    let dy = num_prop(&opts, "dy", ctx).unwrap_or(0);
+    DRAW.with(|d| {
+        let mut d = d.borrow_mut();
+        let start = d.ops.len();
+        d.regions.push(Region::Scroll {
+            x: num(args, 0),
+            y: num(args, 1),
+            w: num(args, 2),
+            h: num(args, 3),
+            dx,
+            dy,
+            start,
+        });
+    });
+    Ok(JsValue::undefined())
+}
+
+/// `helix.draw.pop()` —— 闭合**最内层**区域(clip 或 scroll 都行;栈空 = 无害 no-op)
+pub(crate) fn js_draw_pop(
     _this: &JsValue,
     _args: &[JsValue],
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    close_clip();
+    close_region();
     Ok(JsValue::undefined())
 }
 
@@ -1306,8 +1568,8 @@ pub(crate) fn js_draw_done(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    // 忘了 pop_clip 也不该让内容整个丢掉(未闭合的区按"到 done 为止"闭)
-    while close_clip() {}
+    // 忘了 pop 也不该让内容整个丢掉(未闭合的区按"到 done 为止"闭)
+    while close_region() {}
     DRAW.with(|d| d.borrow_mut().armed = true);
     let obj = boa_engine::object::ObjectInitializer::new(ctx)
         .property(
