@@ -689,7 +689,8 @@ interface Helix {
   run(cmd: string): string; // 同步,阻塞主线程
   run_async(cmd: string): Promise<string>; // 失败 reject Error
   spawn(opts: SpawnOptions): number; // 返回 id
-  read_dir(path: string): DirEntry[]; // 同步
+  /** 同步列目录（不递归、按名排序）。**传文件 → `[]`**（没有子项）；路径非法才 throw */
+  read_dir(path: string): DirEntry[];
   /** 同步读整个文件(UTF-8);读不到 **throw**(不返回 null)。同族异步:`read_file_async` */
   read_file(path: string): string;
   /** 同步写文件(父目录按需创建);失败 **throw** */

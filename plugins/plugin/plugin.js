@@ -79,6 +79,24 @@ function readManifest() {
   }
 }
 
+/// 递归拷贝目录树到插件根（`<stem>/<rel>`），边写边把相对路径记进 `files`。
+///
+/// 为什么在 JS 侧：它是**决策**（拷哪些、叫什么），不是能力；核心只提供
+/// `read_dir`/`read_file`/`write_plugin_file` 三个原语。
+/// 空子目录不会建（没有文件要写）—— 对它没意义，也不影响加载（入口固定是 `plugin.js`）。
+function copyTree(dir, stem, rel, files) {
+  for (const e of helix.read_dir(dir)) {
+    const name = e.name;
+    const r = rel ? rel + "/" + name : name;
+    if (e.is_dir) {
+      copyTree(dir + "/" + name, stem, r, files);
+    } else {
+      helix.write_plugin_file(stem + "/" + r, helix.read_file(dir + "/" + name));
+      files.push(stem + "/" + r);
+    }
+  }
+}
+
 /// 命令体抽成**独立函数** —— 命令与 `helix.plugin.*` **兼容层**共用同一实现(§13)。
 /// `args = [sub, arg]` 让下方 switch 里既有的 `args[1]` 用法**一行都不用改** ✓
 function runOp(sub, arg) {
@@ -193,34 +211,36 @@ function runOp(sub, arg) {
         const stem = base.replace(/\.[^.]+$/, "");
         let entries;
         try {
-          entries = helix.read_dir(arg); // 同步;目录或文件都能列
+          entries = helix.read_dir(arg); // 同步;**文件 → []**、目录 → 子项、非法路径 → throw
         } catch (e) {
           // **逐字对齐 Rust**:`plugin install: invalid path or git url '{arg}'`
           // (集成测试断言状态里含 "invalid")
           helix.echo("plugin install: invalid path or git url '" + arg + "'");
           break;
         }
-        const isDir = entries.some((e) => e && (e.is_dir === true || e.isDir === true));
+        // 单文件 → `<stem>/plugin.js`；目录 → **递归**整棵树。
+        // `files` 同时是 manifest 的卸载清单与**失败回滚**的依据 ⇒ 写一个记一个。
         const files = [];
-        if (isDir) {
-          for (const e of entries) {
-            const nm = e.name || e.path;
-            const txt = helix.read_file(arg + "/" + nm);
-            helix.write_plugin_file(stem + "/" + nm, txt);
-            files.push(stem + "/" + nm);
+        try {
+          if (entries.length === 0) {
+            const txt = helix.read_file(arg);
+            helix.write_plugin_file(stem + "/plugin.js", txt);
+            files.push(stem + "/plugin.js");
+          } else {
+            copyTree(arg, stem, "", files);
           }
-        } else {
-          const txt = helix.read_file(arg);
-          helix.write_plugin_file(stem + "/plugin.js", txt);
-          files.push(stem + "/plugin.js");
+          m[stem] = { source: arg, kind: "local", installed_at: now, pinned: false, files: files };
+          helix.write_file(manifestPath(), JSON.stringify(m, null, 2));
+        } catch (e) {
+          // 回滚：删掉已写入的文件（`remove_plugin_file` 幂等），不留孤儿目录
+          for (const f of files) {
+            try { helix.remove_plugin_file(f); } catch (_) {}
+          }
+          try { helix.remove_plugin_file(stem); } catch (_) {}
+          const msg = e && e.message ? e.message : String(e);
+          helix.echo("plugin install: 拷贝失败，已回滚: " + msg);
+          break;
         }
-        m[stem] = { source: arg, kind: "local", installed_at: now, pinned: false, files: files };
-      }
-      try {
-        helix.write_file(manifestPath(), JSON.stringify(m, null, 2));
-      } catch (e) {
-        helix.echo("plugin install: manifest 写入失败: " + e);
-        break;
       }
       const installed = Object.keys(m).pop();
       helix.echo("installed '" + installed + "', 请 :plugin-reload 生效");

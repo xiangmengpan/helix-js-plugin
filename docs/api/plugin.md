@@ -22,7 +22,7 @@
 | op | 行为 |
 |---|---|
 | `install <git-url>` | `git clone --depth 1 <url> <插件根>/<name>`(名字取 URL 末段去 `.git`),写 manifest。**装完不加载**,提示 `:plugin-reload` |
-| `install <本地路径>` | ⚠️ **当前不可用**(见下"已知问题")|
+| `install <本地路径>` | **文件** → `<插件根>/<stem>/plugin.js`；**目录** → **递归**整棵树到 `<插件根>/<dirname>/`。写到一半失败会**回滚**（删掉已写入的文件，不留孤儿），manifest 不记 |
 | `update [name\|all]` | 只对 `kind == "git"` 且**未 pinned** 的做 `git fetch` + `git merge --ff-only FETCH_HEAD`;成功后把 `git rev-parse HEAD` 记进 manifest 的 `commit`;失败保留旧版 |
 | `pin <name>` / `unpin <name>` | 锁定/解锁(`update` 会跳过);**仅 git 源**,且必须已安装 |
 | `remove <name>` | 按 manifest 的 `files` 逐个删(限域、尽力而为),再删条目;**不在 manifest 里 → 报错**(不认"孤儿"安装)|
@@ -80,19 +80,18 @@ helix.plugin.remove("name");    // 必须已在 manifest 里
 - 结果**经状态栏**显示(fire-and-forget,**无 Promise**);缺参数 → echo `usage: …`(不抛错);
   真正的失败(如 `remove` 一个没装的)才抛错
 
-## 已知问题(读实现得出,未跑集成测试)
+## 已知问题
 
-1. **本地路径安装走不通**。三个输入都会失败:
-   - 传**文件** → `helix.read_dir` 用 `std::fs::read_dir`,对文件直接报错 ⇒ 落到
-     `plugin install: invalid path or git url '<arg>'`
-   - 传**只含文件的目录** → 因为目录里没有子目录,代码判成"文件"分支 ⇒ `helix.read_file(目录)` 抛错
-   - 传**含子目录的目录** → 循环里对子目录 `read_file` 抛错(且此前已写入的文件**留在盘上**)
-   ⇒ 目前**只有 git-url 装得成**。集成测试只覆盖了"参数非法"那一条分支
-   (`helix-term/tests/test/plugin_manager.rs:111`),所以这条一直没被抓住。
-2. **`:plugin reload` 是桩**(只提示用 `:plugin-reload`),但 `plugin/plugin.js` 的兜底消息仍自称
+1. **`:plugin reload` 是桩**(只提示用 `:plugin-reload`),但 `plugin/plugin.js` 的兜底消息仍自称
    "已实现 …|reload(8/8)" ⇒ 文案过时。
-3. 同一文件里还有两处过时注释:"命令名仍为临时名 `plugin-js`"(实际已注册为 `plugin`)、
+2. 同一文件里还有两处过时注释:"命令名仍为临时名 `plugin-js`"(实际已注册为 `plugin`)、
    "写路径仍须 `await`"(现已用同步的 `write_file` / `write_plugin_file`)。
+
+> **本地安装曾长期不可用**(2026-10-19 修):`helix.read_dir` 对**文件**返回 ENOTDIR ⇒ 单文件装不了;
+> 目录分支只拷一层、遇到子目录 `read_file` 抛错且**已写入的文件留在盘上**。
+> 现在 `read_dir(文件) → []`(见 [`process-fs.md`](process-fs.md)),JS 侧据此区分"文件/目录/非法路径",
+> 目录递归拷贝、失败回滚。回归:`plugin_install_single_file_local` /
+> `plugin_install_dir_recursive` / `plugin_install_failure_leaves_no_orphan`。
 
 ## 优缺点
 
@@ -108,7 +107,7 @@ helix.plugin.remove("name");    // 必须已在 manifest 里
 - **git 操作同步阻塞**:`helix.run("git clone …")` 在主线程跑 ⇒ 大仓库 clone 期间界面冻结
 - 无 Promise 返回值,结果只能看状态栏
 - **装完不自动加载**,必须再 `:plugin-reload`
-- **本地路径安装不可用**(见"已知问题"1)
+- 本地安装**不建空子目录**(没有文件要写);入口固定是 `plugin.js`,不影响加载
 - `./x.git` 这类本地路径会被**误判成 git 源**(`arg.endsWith(".git")`)
 - `pin` 只做"锁定不更新",**不记录期望版本**
 - 同名安装直接**覆盖** manifest 条目与文件(不做"先 remove 再装");git 源若目标目录已存在,

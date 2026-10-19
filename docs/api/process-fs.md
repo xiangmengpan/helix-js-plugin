@@ -61,6 +61,7 @@ worker 线程执行,不阻塞编辑器。均返回 Promise:成功 resolve 值,�
 
 ```js
 helix.read_dir(path)                              // 同步!返回 [{name, is_dir, path}](不递归,按名排序)
+                                                  // **传文件 → []**(没有子项);非法路径才 throw
 helix.read_file_async(path)                       // Promise → 文件内容(UTF-8 lossy)
 helix.write_file_async(path, content)             // Promise → undefined
 helix.stat_async(path)                            // Promise → {is_dir, size, mtime}(mtime 为 Unix 秒)

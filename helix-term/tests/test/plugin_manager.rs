@@ -229,3 +229,136 @@ async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// ── 本地安装（计划任务 3）：单文件 / 递归目录 / 失败不留孤儿 ──
+
+/// 本机 loader 的 mgr 路径（三条用例共用）
+fn mgr_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js")
+}
+
+/// 自本机 `plugins/plugin/plugin.js` 载入管理器，并执行一条 `:plugin …`。
+async fn run_plugin_op(
+    file: std::path::PathBuf,
+    op: &str,
+    assert: &dyn Fn(&helix_term::application::Application),
+) -> anyhow::Result<()> {
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", mgr_path().display())),
+                None,
+            ),
+            (Some(&format!(":{op}<ret>")), Some(assert)),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// 单文件安装：`<src>/hello.js` → `<plugroot>/hello/plugin.js`，manifest kind=local。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_install_single_file_local() -> anyhow::Result<()> {
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let src = dir.path().join("hello.js");
+    std::fs::write(&src, "helix.echo('hi');\n")?;
+
+    let proot_path = proot.path().to_path_buf();
+    run_plugin_op(
+        file,
+        &format!("plugin install {}", src.display()),
+        &|app| {
+            let (status, _) = app.editor.get_status().unwrap();
+            assert!(
+                status.as_ref().contains("installed"),
+                "单文件安装应报 installed，got: {status:?}"
+            );
+            let dest = proot_path.join("hello/plugin.js");
+            assert!(dest.exists(), "单文件未落到 {}: {status:?}", dest.display());
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// 递归目录安装：`<src>/sub/deep.js` 也要落盘（此前只拷一层）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_install_dir_recursive() -> anyhow::Result<()> {
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let src = dir.path().join("tree");
+    std::fs::create_dir_all(src.join("sub"))?;
+    std::fs::write(src.join("plugin.js"), "helix.echo('t');\n")?;
+    std::fs::write(src.join("sub/deep.js"), "helix.echo('d');\n")?;
+
+    let proot_path = proot.path().to_path_buf();
+    run_plugin_op(
+        file,
+        &format!("plugin install {}", src.display()),
+        &|app| {
+            let (status, _) = app.editor.get_status().unwrap();
+            assert!(status.as_ref().contains("installed"), "got: {status:?}");
+            assert!(
+                proot_path.join("tree/plugin.js").exists(),
+                "顶层文件未落盘: {status:?}"
+            );
+            assert!(
+                proot_path.join("tree/sub/deep.js").exists(),
+                "嵌套目录未递归: {status:?}"
+            );
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// 审查重点 #3：中途失败**不留孤儿**（已写入的文件要回滚，manifest 不记）。
+///
+/// 造法：目录里放 `plugin.js`（会先被拷）与 `zz-bad.bin`（非法 UTF-8 ⇒ read_file 抛错）；
+/// 排序后 plugin.js 先写成功，随后失败 ⇒ 若没有回滚，`<plugroot>/<name>/plugin.js` 会残留。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_install_failure_leaves_no_orphan() -> anyhow::Result<()> {
+    let proot = tempfile::tempdir()?;
+    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let src = dir.path().join("bad");
+    std::fs::create_dir_all(&src)?;
+    std::fs::write(src.join("plugin.js"), "helix.echo('ok');\n")?;
+    std::fs::write(src.join("zz-bad.bin"), [0xff, 0xfe, 0x00, 0x01])?;
+
+    let proot_path = proot.path().to_path_buf();
+    run_plugin_op(
+        file,
+        &format!("plugin install {}", src.display()),
+        &|app| {
+            let (status, _) = app.editor.get_status().unwrap();
+            assert!(
+                status.as_ref().contains("install"),
+                "失败应有 install 相关报错，got: {status:?}"
+            );
+            assert!(
+                !proot_path.join("bad/plugin.js").exists(),
+                "失败后残留了孤儿文件: {status:?}"
+            );
+            let manifest = std::fs::read_to_string(proot_path.join("manifest.json"))
+                .unwrap_or_else(|_| String::from("{}"));
+            assert!(
+                !manifest.contains("\"bad\""),
+                "失败后 manifest 不该记录: {manifest}"
+            );
+        },
+    )
+    .await?;
+    Ok(())
+}

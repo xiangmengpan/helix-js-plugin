@@ -732,16 +732,23 @@ pub(crate) fn js_read_dir(
         .map_err(|_| crate::js_err("read_dir: path must be a string"))?;
     // C-2 检查点:列目录需要 `fs_read`
     crate::permissions::check_js("helix.read_dir", crate::permissions::CAP_FS_READ)?;
-    let mut entries: Vec<(String, bool, String)> = std::fs::read_dir(&path)
-        .map_err(|e| crate::js_err(format!("read_dir('{path}'): {e}")))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let full = entry.path().to_string_lossy().into_owned();
-            Some((name, is_dir, full))
-        })
-        .collect();
+    // 文件 → **空数组**（"没有子项"），而不是 ENOTDIR 报错：
+    // 插件安装要用它区分「这是个文件（单文件安装）」与「路径非法」。
+    // 目录不存在 / 权限不足 仍然报错（那才是真的非法路径）。
+    let read = std::fs::read_dir(&path);
+    let mut entries: Vec<(String, bool, String)> = match read {
+        Ok(rd) => rd
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let full = entry.path().to_string_lossy().into_owned();
+                Some((name, is_dir, full))
+            })
+            .collect(),
+        Err(_) if std::path::Path::new(&path).is_file() => Vec::new(),
+        Err(e) => return Err(crate::js_err(format!("read_dir('{path}'): {e}"))),
+    };
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let arr = JsArray::new(ctx)?;
     for (name, is_dir, path) in entries {
