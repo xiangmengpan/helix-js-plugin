@@ -120,7 +120,7 @@ helix.export({ helper: () => {} });                        // 可选:供别的�
 纯逻辑测试的做法:插件把纯函数放在文件底部 `module.exports`(engine 加载时 `module` 未定义会自动跳过),
 node 侧注入最小 `global.helix` 桩即可直接 require —— 例子见 `plugins/arsenal/tests/arsenal.test.js`。
 
-## 8. 改这个目录时的四个坑(都踩过)
+## 8. 改这个目录时的五个坑(都踩过)
 
 1. **镜像漂移**:`plugins/` 是源,`<runtime>/plugins` 与 `~/.config/helix/plugins` 是**副本** ⇒
    改了源没同步 = "改了却不生效"。真实事故:`picker-ui` 的一处改动就是这么一直没生效的。
@@ -130,6 +130,13 @@ node 侧注入最小 `global.helix` 桩即可直接 require —— 例子见 `pl
 3. **每帧路径别引 JS**:实测 JS 自绘 picker ≈ **3.2 ms/帧/个可见 picker** = 60fps 预算的 **19.2%**
    ⇒ 核心渲染仍是默认路径;判定清单见 [`docs/plugin-vs-core.md`](../docs/plugin-vs-core.md)。
 4. **改了 API 忘了改 `helix.d.ts`**:d.ts 是**手工维护**的 ⇒ 加/改/删 API 后跑 §6 的对账脚本。
+5. **在加载时缓存 cwd**:cwd 是**可变**的(`:cd` / `:lcd` / `:pop-directory` 会真 chdir),
+   而插件的模块状态活到进程结束。旧写法 `helix.run("pwd")` 只能在加载时问一次 —— 之后
+   永远陈旧;它还需要 `process` 能力,只读插件根本拿不到自己的 cwd。
+   → 用 `helix.cwd()`(**每次现取**,不收能力),需要**跟随**变更时监听 `cwd-change`
+   (`ev.cwd` / `ev.prev_cwd`,发在 chdir **之后**)。
+   真实事故:`filetree` 的 `S.root` 在 `:cd` 后永远停在启动目录(2026-10 `ed636875e` 修)。
+   同理:任何**基于相对路径算好的值**(展开状态、监听目标、列表缓存)在加载时钉住都会慢慢说谎。
 
 ## 9. 已知不一致(待收)
 
