@@ -913,6 +913,21 @@ pub struct ModeChangePayload {
     pub selection: EvSelection,
 }
 
+/// `cwd-change` —— 工作目录真的变了(`:cd` / `:lcd` / `:pop-directory` 成功后发)。
+///
+/// 为什么需要这个事件:插件此前**只能**在加载时 `helix.run("pwd")` 问一次并缓存
+/// (内建 filetree 就是 `S.root === null` 时取一次)⇒ `:cd` 之后面板永远停在启动目录。
+/// `prev_cwd` 让插件能区分"同一个项目里换目录"与"整个 workspace 换了"。
+#[derive(Debug, Clone, Serialize)]
+pub struct CwdChangePayload {
+    #[serde(flatten)]
+    pub hdr: BusHeader,
+    /// 变更后的工作目录(绝对路径,已 canonicalize)
+    pub cwd: String,
+    /// 变更前的工作目录;未知时为 null
+    pub prev_cwd: Option<String>,
+}
+
 /// `doc-change` —— 防抖窗口内合并后的变更范围(`changes` 与 `doc.changes` 同源)
 #[derive(Debug, Clone, Serialize)]
 pub struct DocChangePayload {
@@ -1053,6 +1068,7 @@ pub enum EventPayload {
     BufferClose(DocEventPayload),
     ThemeChange(DocEventPayload),
     ModeChange(ModeChangePayload),
+    CwdChange(CwdChangePayload),
     DocChange(DocChangePayload),
     PaneModeChange(PaneModeChangePayload),
     CursorMove(CursorMovePayload),
@@ -1083,6 +1099,7 @@ impl EventPayload {
             | EventPayload::BufferClose(p)
             | EventPayload::ThemeChange(p) => &p.hdr.event_type,
             EventPayload::ModeChange(p) => &p.hdr.event_type,
+            EventPayload::CwdChange(p) => &p.hdr.event_type,
             EventPayload::DocChange(p) => &p.hdr.event_type,
             EventPayload::PaneModeChange(p) => &p.hdr.event_type,
             EventPayload::CursorMove(p) => &p.hdr.event_type,

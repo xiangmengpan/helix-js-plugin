@@ -1513,17 +1513,23 @@ fn parse_first_arg_as_dir(args: &Args, last_cwd: Option<PathBuf>) -> anyhow::Res
 /// Helper function to apply a directory change for an already-parsed Path ref
 #[inline]
 fn apply_directory_change(cx: &mut compositor::Context, dir: &Path) -> anyhow::Result<()> {
+    // 旧值只能在这里取：`set_cwd` 只回结果，不回上一个 cwd
+    let prev = helix_stdx::env::current_working_dir();
     cx.editor.set_cwd(dir).map_err(|err| {
         anyhow!(
             "Could not change working directory to '{}': {err}",
             dir.display()
         )
     })?;
+    let cwd = helix_stdx::env::current_working_dir();
 
     cx.editor.set_status(format!(
         "Current working directory is now {}",
-        helix_stdx::env::current_working_dir().display()
+        cwd.display()
     ));
+
+    // 必须在**真 chdir 之后**发：处理器里会立刻 `helix.cwd()` / 用相对路径读目录
+    emit_plugin_cwd_change(cx.js.as_deref_mut(), cx.editor, &prev, &cwd);
 
     Ok(())
 }
@@ -4553,7 +4559,7 @@ pub(super) fn execute_command(
 /// 参数用 `&mut Editor` 而非 compositor::Context：commands.rs 的模式命令
 /// 拿到的是 keymap Context（只有 editor 字段），此签名两个调用方都兼容。
 pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&str>) {
-    emit_plugin_event_impl(None, editor, name, extra, None)
+    emit_plugin_event_impl(None, editor, name, extra, None, None)
 }
 
 /// doc-change 专用入口：防抖窗口内合并的变更范围随事件序列化（doc.changes）。
@@ -4563,7 +4569,25 @@ pub(crate) fn emit_plugin_doc_change(
     editor: &mut Editor,
     changes: &[helix_js::DocChange],
 ) {
-    emit_plugin_event_impl(js, editor, "doc-change", None, Some(changes))
+    emit_plugin_event_impl(js, editor, "doc-change", None, Some(changes), None)
+}
+
+/// `cwd-change` 专用入口：**只在真 chdir 成功后**调（见 `apply_directory_change`）。
+/// 与 `emit_plugin_event_with` 同一形状（`js` 为宿主，无宿主时传 `None`）。
+pub(crate) fn emit_plugin_cwd_change(
+    js: Option<&mut helix_js::host::JsHost>,
+    editor: &mut Editor,
+    prev: &Path,
+    cwd: &Path,
+) {
+    emit_plugin_event_impl(
+        js,
+        editor,
+        "cwd-change",
+        None,
+        None,
+        Some((cwd, Some(prev))),
+    )
 }
 
 /// D-2：**有宿主**的入口 —— 事件发射走 `&mut JsHost`（泵方法，独占借用 ⇒ 重入是编译错）。
@@ -4574,7 +4598,7 @@ pub(crate) fn emit_plugin_event_with(
     name: &str,
     extra: Option<&str>,
 ) {
-    emit_plugin_event_impl(js, editor, name, extra, None)
+    emit_plugin_event_impl(js, editor, name, extra, None, None)
 }
 
 /// 由当前 editor 状态构造 `CommandContext`(事件/命令入口共用一份换算逻辑)。
@@ -4620,17 +4644,26 @@ fn emit_plugin_event_impl(
     name: &str,
     extra: Option<&str>,
     changes: Option<&[helix_js::DocChange]>,
+    // 只有 `cwd-change` 用:(新 cwd, 旧 cwd);两值都在发射点成立，不在 ctx 里
+    cwd: Option<(&Path, Option<&Path>)>,
 ) {
     if !helix_js::has_handlers(name) {
         return;
     }
     let ctx = command_context(editor);
 
-    let emitted = match (js, changes) {
-        (Some(host), Some(changes)) => host.emit_doc_change(&ctx, changes),
-        (Some(host), None) => host.emit_event(name, &ctx, extra),
-        (None, Some(changes)) => helix_js::emit_doc_change(&ctx, changes),
-        (None, None) => helix_js::emit_event(name, &ctx, extra),
+    let emitted = if let Some((cwd, prev)) = cwd {
+        match js {
+            Some(host) => host.emit_cwd_change(&ctx, prev, cwd),
+            None => helix_js::emit_cwd_change(&ctx, prev, cwd),
+        }
+    } else {
+        match (js, changes) {
+            (Some(host), Some(changes)) => host.emit_doc_change(&ctx, changes),
+            (Some(host), None) => host.emit_event(name, &ctx, extra),
+            (None, Some(changes)) => helix_js::emit_doc_change(&ctx, changes),
+            (None, None) => helix_js::emit_event(name, &ctx, extra),
+        }
     };
     if let Err(err) = emitted {
         editor.set_error(format!("plugin event '{name}' failed: {err}"));

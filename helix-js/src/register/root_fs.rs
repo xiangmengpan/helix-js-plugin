@@ -31,6 +31,11 @@ pub(crate) fn register(builder: &mut ObjectInitializer<'_>) {
         0,
     );
     builder.function(
+        NativeFunction::from_fn_ptr(commands::js_cwd),
+        JsString::from("cwd"),
+        0,
+    );
+    builder.function(
         NativeFunction::from_fn_ptr(commands::js_plugins_dir),
         JsString::from("plugins_dir"),
         0,

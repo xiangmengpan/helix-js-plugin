@@ -2,6 +2,19 @@
 
 > 详细参考。总览见 [`docs/plugin-api.md`](../plugin-api.md)。
 
+## 工作目录
+
+### `helix.cwd()` — 当前工作目录（绝对路径，每次现取）
+
+```js
+const cwd = helix.cwd();   // 不缓存：:cd 之后立即变
+```
+
+- **不要**用 `helix.run("pwd")` 取 cwd：那需要 `process` 能力，而且旧习惯把它在加载时缓存一次 ⇒ `:cd` 之后永远陈旧。
+- 需要**跟随**变更时监听 `cwd-change`（见 [`events.md`](events.md)）。
+- 不要求任何能力（纯元信息，与 `helix.plugins_dir()` 同级）。
+- 相对路径（`read_dir(".")` / `read_tree(".")` / `run("rg …")` / `open_file("a.txt")`）一律基于**当前** cwd。
+
 ## 进程执行
 
 ### `helix.run(cmd)` — 同步（慎用）
@@ -9,7 +22,7 @@
 同步执行 shell 命令并返回 stdout。**阻塞编辑器主线程**——只用于短命令。
 
 ```js
-const cwd = helix.run("pwd").trim();
+const out = helix.run("git status --short");
 ```
 
 **优缺点**：优点：结果即用,简单。局限：**阻塞主线程**,重命令卡 UI;stdout 截断 64KB;Unix-only。

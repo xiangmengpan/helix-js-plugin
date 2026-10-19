@@ -126,6 +126,7 @@ pub(crate) fn statusline_ctx() -> crate::types::StatuslineCtx {
 }
 
 mod doc_edit;
+mod events_cwd;
 mod events_lsp;
 mod fs_async;
 mod pane_stack;

@@ -69,7 +69,7 @@
 
 ### 事件钩子
 
-`helix.on(event, fn)`:文档系(`save` 前/mode-change/buffer-open/close/doc-change 带合并范围/theme-change)、诊断/光标(`lsp-diagnostics`/`cursor-move`/`selection-change`)、终端系(`term-open/mode-change/exit/close/resize/title/key`)、`component-event`。
+`helix.on(event, fn)`:文档系(`save` 前/mode-change/buffer-open/close/doc-change 带合并范围/theme-change)、**工作目录(`cwd-change`)**、诊断/光标(`lsp-diagnostics`/`cursor-move`/`selection-change`)、终端系(`term-open/mode-change/exit/close/resize/title/key`)、`component-event`。
 
 - 布局系:`layout-change` —— 回调形状**恒定** `(kind, doc)`,`kind` 缺省时为 `null`;详见 [`api/events.md`](api/events.md)。
 
@@ -148,7 +148,7 @@
 
 ```js
 // filetree.js
-let cwd = helix.run("pwd").trim();      // 起始目录(同步 run 仅此一次,可接受)
+let cwd = helix.cwd();                  // 起始目录(每次现取;跟随变更监听 cwd-change)
 let entries = [];
 let expanded = {};                      // 目录展开状态(JS 侧自己维护)
 
@@ -267,6 +267,7 @@ helix.picker_state()                            // picker 状态摘要(query/命
 helix.command_args()                            // 当前键入命令的参数数组(`:layout save dev` → ["save","dev"])
 helix.loaded_plugins()                          // **已加载**插件名数组(与 `:plugin list` 同源)
 helix.plugins_dir()                             // 插件目录绝对路径(未推入 → null)
+helix.cwd()                                     // **当前**工作目录绝对路径(每次现取;跟随:`helix.on("cwd-change", …)`)
 helix.runtime_path(name)                        // 自带 runtime 内的绝对路径(找不到 → null;内置内容型插件用)
 helix.remove_plugin_file(rel)                   // 删**插件根内**的文件/目录(限域;true=删了,false=本来没有)
 helix.define_config(name, schema)               // 声明配置 schema({key: {type, default, doc}})
@@ -329,8 +330,8 @@ helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
 helix.server.*   install, list, remove, rows, search, status, task, update
 
-事件(20 个):
-  buffer-close, buffer-open, component-event, cursor-move
+事件(21 个):
+  buffer-close, buffer-open, component-event, cursor-move, cwd-change
   doc-change, layout-change, lsp-diagnostics, mode-change
   pane-mode-change, save, selection-change, startup
   term-close, term-exit, term-key, term-mode-change
@@ -467,7 +468,7 @@ picker 行:数组 [c1, c2, ...] 或 { cells: [...], payload: [...] };preview/act
 终端模式:dock | fullscreen | floating | minimized
 面板方向:right | left | bottom
 split 方向:right | left | top | bottom
-事件:save | mode-change | buffer-open | buffer-close | doc-change | theme-change | lsp-diagnostics | cursor-move | selection-change | term-* | component-event
+事件:save | mode-change | cwd-change | buffer-open | buffer-close | doc-change | theme-change | lsp-diagnostics | cursor-move | selection-change | term-* | component-event
 事件 payload(每个事件**位置参数之后**追加一个具名对象):
   { api_version, type, ...具名字段 }   // 形状见 helix.d.ts 的 EventPayload;doc 对象上也带 api_version/type
 layout-change 的投递时机有两种模式(`[editor] js-layout-change-batch`,默认 `false`):

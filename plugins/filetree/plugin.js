@@ -1,6 +1,7 @@
 // filetree.js — 类 lazyvim/neo-tree 的侧边文件树面板
 // 依赖清单：icons（共享图标表，helix.load 自动先加载）
-// 图标已收进核心,不再需要 deps;`pwd` 起进程、列目录读文件 ⇒ 声明两项能力
+// 图标已收进核心，不再需要 deps；列目录 ⇒ fs_read，文件操作走 shell(`run_async`) ⇒ process。
+// 根目录用 `helix.cwd()`（现取；旧写法 `helix.run("pwd")` 只能取一次且会陈旧）
 helix.plugin("filetree", {
   deps: [],
   schema_version: 1,
@@ -256,6 +257,7 @@ function context_dir() {
 
 // 刷新：重读所有已展开目录，尽量恢复光标位置
 function reload_tree() {
+  if (S.root === null) return; // 还没开过 / cwd 变了但面板关着 ⇒ 没有树可刷（下次 open_panel 重建）
   const expanded = collect_expanded(S.tree, []);
   const prev = (node_at(S.cursor) || {}).node && node_at(S.cursor).node.path;
   S.tree = make_tree(S.root, sort_entries(read_dir_sync(S.root)));
@@ -346,9 +348,9 @@ function render(focus, ctx) {
 
 function open_panel() {
   if (S.root === null) {
-    // 首次打开：以启动目录为根（同步 run 仅此一次）
+    // 首次打开：取**当前**工作目录（现取；`:cd` 后由 cwd-change 处理器重设）
     try {
-      set_root(helix.run("pwd").trim() || "/");
+      set_root(helix.cwd() || "/");
     } catch (e) {
       set_root("/");
     }
@@ -557,6 +559,19 @@ if (typeof helix !== "undefined") {
     }
   }, "文件树定位当前文件");
   helix.on("buffer-open", on_buffer_open);
+  // `:cd` / `:lcd` 之后跟着换根（事件发在真 chdir 之后 ⇒ `helix.cwd()` 已是新目录）。
+  // 面板没开时只丢根、不动状态：下次 open_panel 会自己取新目录。
+  helix.on("cwd-change", (doc, ev) => {
+    if (S.panel_id === null) {
+      S.root = null;
+      return;
+    }
+    try {
+      set_root((ev && ev.cwd) || helix.cwd() || "/");
+    } catch (e) {
+      helix.echo("filetree: 切换目录失败 " + (e && e.message ? e.message : e));
+    }
+  });
   helix.export({ toggle: toggle_panel, open: open_panel, reveal, set_root });
 }
 

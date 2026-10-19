@@ -36,7 +36,7 @@ helix.end_edit();           // 期间所有编辑合并为一个事务 = 一次�
 
 ## `helix.by_path(path)`(跨 buffer 访问)
 
-按路径查**已打开**的 buffer,返回与 `ctx.doc` 同构的只读快照对象(路径已规范化,相对路径基于启动时 cwd):
+按路径查**已打开**的 buffer,返回与 `ctx.doc` 同构的只读快照对象(路径已规范化,**相对路径基于当前 cwd**,`:cd` 后跟着变):
 
 ```js
 const other = helix.by_path("src/main.rs");

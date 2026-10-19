@@ -360,6 +360,16 @@ impl JsHost {
         self.pump(|| crate::commands::emit_event(name, ctx, extra))
     }
 
+    /// 泵入口·`cwd-change`（工作目录**真的**变了；见 `apply_directory_change`）
+    pub fn emit_cwd_change(
+        &mut self,
+        ctx: &crate::types::CommandContext,
+        prev: Option<&std::path::Path>,
+        cwd: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_cwd_change(ctx, prev, cwd))
+    }
+
     /// 泵入口·`doc-change`(带防抖窗口内合并的范围)
     pub fn emit_doc_change(
         &mut self,

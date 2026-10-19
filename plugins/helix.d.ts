@@ -324,6 +324,11 @@ interface EventDoc extends EventHeader {
 interface EventModeChange extends EventDoc {
   mode: string;
 }
+/** `cwd-change`:工作目录真的变了(`:cd` / `:lcd` / `:pop-directory`);`prev_cwd` 未知时是 null */
+interface EventCwdChange extends EventHeader {
+  cwd: string;
+  prev_cwd: string | null;
+}
 interface EventDocChange extends EventDoc {
   changes: EvChange[];
 }
@@ -389,6 +394,7 @@ type EventPayload =
   | EventLayoutChange
   | EventDoc
   | EventModeChange
+  | EventCwdChange
   | EventDocChange
   | EventPaneModeChange
   | EventCursorMove
@@ -408,6 +414,7 @@ type EventName =
   | "layout-change"
   | "save"
   | "mode-change"
+  | "cwd-change"
   | "buffer-open"
   | "buffer-close"
   | "doc-change"
@@ -536,6 +543,12 @@ interface Helix {
   on(event: "save", fn: (doc: Doc, payload: EventDoc) => void): void;
   /** `mode-change`:`mode` = normal | insert | select */
   on(event: "mode-change", fn: (mode: string, doc: Doc, payload: EventModeChange) => void): void;
+  /**
+   * `cwd-change`:工作目录真的变了(`:cd` / `:lcd` / `:pop-directory`)。
+   * 发在**chdir 之后** ⇒ 处理器里 `helix.cwd()` 已经是新值。
+   * 想跟随的用户态(文件树根、grep 基目录…)在这里重取,别在加载时缓存一次。
+   */
+  on(event: "cwd-change", fn: (doc: Doc, payload: EventCwdChange) => void): void;
   /** `buffer-open`:新 buffer 打开 */
   on(event: "buffer-open", fn: (doc: Doc, payload: EventDoc) => void): void;
   /** `buffer-close`:buffer 关闭 */
@@ -859,6 +872,9 @@ interface Helix {
   };
 
   // ── 插件管理 ──
+  /** 当前工作目录的**绝对路径**,每次调用**现取**(不缓存;`:cd` 后立即变)。
+   *  不要求任何能力(纯元信息)。 */
+  cwd(): string;
   /** 用户层插件根目录;未推入根时 null。注意写入**只落最后一个根**(用户层) */
   plugins_dir(): string | null;
   /** 已加载脚本名(按加载顺序;与 `:plugin list` 同一数据源) */

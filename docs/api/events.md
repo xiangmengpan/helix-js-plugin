@@ -8,6 +8,7 @@
 |------|---------|---------|
 | `save` | 保存**前**(编辑先应用再保存 → format-on-save) | `(doc)` |
 | `mode-change` | 模式切换后 | `(mode, doc)`，mode: `"normal"\|"insert"\|"select"` |
+| `cwd-change` | 工作目录**真的**变了(`:cd` / `:lcd` / `:pop-directory`，发在 chdir **之后**) | `(doc, payload)`，见下方「cwd-change」 |
 | `buffer-open` | `:open` 打开文件后 | `(doc)` |
 | `buffer-close` | 关闭(quit/force_quit 路径)前 | `(doc)` |
 | `doc-change` | 文档文本变化,编辑停顿 250ms 后(idle 防抖) | `(doc)` |
@@ -19,6 +20,21 @@
 | `term-open/term-mode-change/term-exit/term-close/term-resize/term-title/term-key` | 终端系 | `(ptyId, ...)`(term-key 返回 normal/pass/consume/minimize/close) |
 | `layout-change` | 布局变更后(分屏/关闭/浮窗/堆叠/raise/pin/embed;唯一汇聚点是 `Compositor::sync_layout_cache`) | `(kind, doc)`,`kind` 缺省时为 **`null`**(形状**恒定**,见文末) |
 | `startup` | 初始文件处理之后(启动完成) | `(doc, payload)`,见下方「startup 的 payload」 |
+
+### `cwd-change`：别在加载时缓存 cwd
+
+```js
+helix.on("cwd-change", (doc, ev) => {
+  // ev.cwd      新目录（绝对路径）
+  // ev.prev_cwd 旧目录；未知时为 null
+  // 想跟随的用户态在这里重取：
+  tree_root = ev.cwd;          // 别用加载时缓存的 helix.cwd()
+});
+```
+
+- 事件发在 **chdir 之后** ⇒ 处理器里 `helix.cwd()` 已经返回新目录，两者应当相等。
+- 只在**真的换成功**时发；`:cd` 到不存在的目录 → 报错、不发事件。
+- 面板没开时也可以监听：这是插件刷新"自己缓存的 cwd"的唯一时机（核心里 cwd 一直是现读的）。
 
 ### `startup` 的 payload
 

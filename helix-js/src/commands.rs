@@ -10,9 +10,10 @@ use boa_engine::{Context, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-const EVENT_WHITELIST: [&str; 20] = [
+const EVENT_WHITELIST: [&str; 21] = [
     "save",
     "mode-change",
+    "cwd-change", // 工作目录真的变了（:cd / :lcd / :pop-directory）——插件据此重取根目录
     "buffer-open",
     "buffer-close",
     "doc-change",
@@ -175,6 +176,24 @@ pub(crate) fn js_quit(
         .unwrap()
         .push(UiRequest::Quit);
     Ok(JsValue::undefined())
+}
+
+/// `helix.cwd()` → 当前工作目录的**绝对路径**（每次调用现取）。
+///
+/// 为什么需要：此前插件要拿到 cwd **只能** `helix.run("pwd")` —— 那需要 `process`
+/// 能力，而"只想读文件"的插件为了一条 `pwd` 被迫申请起进程权限；且它只能缓存
+/// 一次（见 `cwd-change` 事件）。签名照抄同文件的 `js_plugins_dir`。
+/// 不检查任何能力：这是纯元信息（与 `helix.plugins_dir()` 同级），不是文件内容。
+pub(crate) fn js_cwd(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    Ok(JsValue::from(JsString::from(
+        helix_stdx::env::current_working_dir()
+            .to_string_lossy()
+            .to_string(),
+    )))
 }
 
 pub(crate) fn js_plugins_dir(
@@ -1029,7 +1048,24 @@ pub fn has_handlers(name: &str) -> bool {
 /// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。
 /// extra 用于 mode-change 的 mode 字符串参数。
 pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Result<()> {
-    emit_event_impl(name, ctx, extra, None, 0)
+    emit_event_impl(name, ctx, extra, None, 0, None)
+}
+
+/// `cwd-change` 事件入口：**只有真正 chdir 成功的地方**可以调（`helix-term` 的
+/// `apply_directory_change`，`:cd` / `:lcd` / `:pop-directory` 三条命令的公共出口）。
+///
+/// 为什么不用现成的 `extra`：本事件要同时给**新/旧**两个路径，而 `extra` 只能带一个
+/// 字符串；"再多一个隐式参数" 的替代方案（宿主字段暂存）本项目已明确废弃
+/// （见 `emit_layout_change_kind` 上方的注释）⇒ 和 `emit_startup` 同款：走显式参数。
+pub fn emit_cwd_change(ctx: &CommandContext, prev: Option<&Path>, cwd: &Path) -> Result<()> {
+    match emit_event_impl("cwd-change", ctx, None, None, 0, Some((cwd, prev))) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 与 layout-change/startup 同款：**让失败可见**（静默 log 曾让人误判多轮 ✗）
+            crate::host::with_messages(|v| v.push(format!("cwd-change emit failed: {e}")));
+            Err(e)
+        }
+    }
 }
 
 /// `layout-change` 事件入口(**无需命令上下文**)。
@@ -1048,7 +1084,7 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
 /// 而内建 dashboard 正是靠这个判断"要不要显示启动屏"的(实测 bug:带路径打开文件时
 /// dashboard 照样弹出,和文件选择器叠在一起)。
 pub fn emit_startup(ctx: &CommandContext, open_paths: usize) -> Result<()> {
-    match emit_event_impl("startup", ctx, None, None, open_paths) {
+    match emit_event_impl("startup", ctx, None, None, open_paths, None) {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）
@@ -1075,7 +1111,7 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
         selection: ((0, 0), (0, 0)),
         docs: Vec::new(),
     };
-    match emit_event_impl("layout-change", &ctx, kind, None, 0) {
+    match emit_event_impl("layout-change", &ctx, kind, None, 0, None) {
         Ok(()) => Ok(()),
         Err(e) => {
             // **让失败可见**：只 log::warn 会静默（我曾因此误判多轮 ✗）
@@ -1087,7 +1123,7 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
 
 /// doc-change 事件入口：参数附带防抖窗口内合并的变更范围（doc.changes）。
 pub fn emit_doc_change(ctx: &CommandContext, changes: &[DocChange]) -> Result<()> {
-    emit_event_impl("doc-change", ctx, None, Some(changes), 0)
+    emit_event_impl("doc-change", ctx, None, Some(changes), 0, None)
 }
 
 /// 事件触发公共实现；changes 为 Some 时序列化合并范围到 doc.changes。
@@ -1098,6 +1134,8 @@ fn emit_event_impl(
     changes: Option<&[DocChange]>,
     // 只有 `startup` 用:命令行传入的"要打开的东西"数量(见 `StartupPayload::open_paths`)
     startup_open_paths: usize,
+    // 只有 `cwd-change` 用:(新 cwd, 旧 cwd) —— 两个值都在**发射点**成立,别处拿不到
+    cwd: Option<(&Path, Option<&Path>)>,
 ) -> Result<()> {
     crate::init();
     crate::state::with_edits(|c| c.clear());
@@ -1151,7 +1189,7 @@ fn emit_event_impl(
         let ev_changes = changes.map(|c| changes_to_ev(c, ctx)).unwrap_or_default();
         let payload = payload_js(
             engine,
-            &build_event_payload(name, ctx, extra, &ev_changes, startup_open_paths),
+            &build_event_payload(name, ctx, extra, &ev_changes, startup_open_paths, cwd),
         )
         .map_err(|e| anyhow!("failed to build event payload: {e}"))?;
         let undefined = JsValue::undefined();
@@ -1291,6 +1329,7 @@ fn build_event_payload(
     extra: Option<&str>,
     changes: &[EvChange],
     startup_open_paths: usize,
+    cwd: Option<(&Path, Option<&Path>)>,
 ) -> EventPayload {
     let hdr = BusHeader::new(name);
     let cursor = ctx.cursor.into();
@@ -1311,6 +1350,16 @@ fn build_event_payload(
             path: path(),
             cursor,
             selection,
+        }),
+        "cwd-change" => EventPayload::CwdChange(CwdChangePayload {
+            hdr,
+            // 缺 cwd 参数 = 发射点写错了；空串比 panic 好（插件能看到"没拿到"）
+            cwd: cwd
+                .map(|(cwd, _)| cwd.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            prev_cwd: cwd
+                .and_then(|(_, prev)| prev)
+                .map(|p| p.to_string_lossy().to_string()),
         }),
         "doc-change" => EventPayload::DocChange(DocChangePayload {
             hdr,

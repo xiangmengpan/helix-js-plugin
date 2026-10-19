@@ -6,7 +6,7 @@ helix.plugin("picker", { deps: [] });
 //   helix.map("normal", "space-g", () => helix.picker.run("grep"));
 // 复制本文件即可自定义源（改 items/preview/action；行格式见 plugin-api §10）。
 
-// files：当前目录文件树（cwd = hx 启动目录；行 = [name, path]）
+// files:当前目录文件树(cwd = 当前工作目录,:cd 后立即变;行 = [name, path])
 helix.picker.define("files", {
   columns: ["name", "path"],
   items: () => helix.read_tree(".").then((entries) =>
