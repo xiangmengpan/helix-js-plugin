@@ -83,7 +83,7 @@
 `helix.open_popup`(模态层,onKey 三态)、`helix.el` 组件树(text/row/col/scroll/button/input,焦点系统 + 引擎权威 input)、`helix.open_panel`(布局叶子)/`close_panel`/`move_panel`;`helix.set_statusline`、`set_buffer_icon`、`set_completion_icon`(kind 列图标)、`set_completion_render`(候选行 JS 渲染,回退原生两列)、`set_diagnostic_icons`、`set_component_render`(组件外观)、`get_component_state`、`set_keymap_hint`(which-key)。
 
 - 优点:声明式树 + 焦点;input 引擎权威;渲染脏格 diff;补全/组件外观全可定制且回退安全。
-- 局限:scroll O(内容);无树内点击命中;面板无节点焦点;completion 行钩子每帧每行(勿跑重逻辑);无 Shift-Tab。
+- 局限:scroll O(内容);无树内点击命中;面板无节点焦点;completion 行钩子每帧每行(勿跑重逻辑)。
 
 → 详细见 [`api/ui.md`](api/ui.md)
 
@@ -195,7 +195,7 @@ helix.register_command("filetree", () => {
 | **无异步语言特性** | boa 无 `setTimeout`/网络/事件循环;异步只来自 `run_async`/`spawn`/`*_async` 的 Promise(await/.then) |
 | **同步阻塞** | `helix.run` 阻塞主线程;`spawn` 无超时(挂死命令一直占着 worker) |
 | **终端视图非完整仿真器** | 引擎已给 reflow/鼠标上报/括号粘贴/CJK/组合字符;**仍缺**:OSC 4/10/11 查颜色、OSC52 读剪贴板、DECKPAM 应用小键盘、Kitty 键盘协议 |
-| **Shift-Tab 不可用** | `KeyCode` 无 BackTab,焦点只能 Tab 正向循环 |
+| **Shift-Tab 的表示** | `Shift-Tab` 在 JS 侧**不是**独立键名:键码层无 `BackTab`(`input.rs` 把 termina 的它归一化成 `Tab+SHIFT`)⇒ 插件看到的是 `{name:"Tab", shift:true}`。焦点环已支持反向(`S-tab`),但**判断方向必须看 `shift`**,别找 `"BackTab"` |
 | **面板节点焦点需显式开启** | 缺省 `focusable: false` ⇒ 面板 render 收到 `focus = null`;`open_panel({focusable: true})` 后启用节点焦点路由:Tab 移动焦点、Esc 取消、焦点在节点时按键直达(实测 2026-10-10) |
 | **`move_panel` 只支持 rail** | 面板住在布局树里(`open_panel` → rail 叶子或普通叶子);`move_panel` 走树后已可用,但**只有 rail 面板**能换边(普通叶分裂换边会牵动布局树结构),非 rail 会明确拒绝 |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |

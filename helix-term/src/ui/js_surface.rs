@@ -124,16 +124,27 @@ impl JsSurface {
         self.diff.render(&self.lines, area, surface, theme);
     }
 
-    /// Tab:焦点在可聚焦节点间循环。返回是否真的移动了(`false` = 没有可聚焦节点)。
-    pub fn tab_focus(&mut self) -> bool {
+    /// Tab/Shift-Tab:焦点在可聚焦节点间循环(`back` = 反向)。
+    /// 返回是否真的移动了(`false` = 没有可聚焦节点,调用方应把键让给 onKey)。
+    ///
+    /// 说明:`Shift-Tab` 在键码层**没有**独立变体 —— `helix-view/src/input.rs`
+    /// 把 `termina::KeyCode::BackTab` 归一化成 `Tab + SHIFT`,所以方向只能靠
+    /// `PluginKey.shift` 传进来。
+    pub fn tab_focus(&mut self, back: bool) -> bool {
         if self.focusables.is_empty() {
             return false;
         }
+        let n = self.focusables.len();
         let idx = self
             .focusables
             .iter()
             .position(|f| Some(f) == self.focus.as_ref());
-        let next = idx.map(|i| (i + 1) % self.focusables.len()).unwrap_or(0);
+        let next = match (idx, back) {
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+            (None, false) => 0,
+            (None, true) => n - 1,
+        };
         self.focus = Some(self.focusables[next].clone());
         true
     }

@@ -108,7 +108,7 @@ impl Component for PluginPanel {
             let Some(key) = &key else {
                 return EventResult::Ignored(None);
             };
-            if key.name == "Tab" && self.surface.tab_focus() {
+            if key.name == "Tab" && self.surface.tab_focus(key.shift) {
                 return EventResult::Consumed(None);
             }
             if let Some(result) = self.surface.node_key(key, cx, self.opts()) {

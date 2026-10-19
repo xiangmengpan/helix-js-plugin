@@ -31,6 +31,7 @@ interface Pos {
 
 /** onKey 收到的按键对象 */
 interface PluginKey {
+  /** 键名。**没有 BackTab**：Shift-Tab 归一化成 `{name:"Tab", shift:true}` */
   name: string; // 字符 | Enter|Esc|Tab|Backspace|Delete|Insert|方向键|Home|End|PageUp|PageDown|F1..F12
   shift: boolean;
   ctrl: boolean;

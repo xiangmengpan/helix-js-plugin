@@ -1368,7 +1368,9 @@ impl LayoutTree {
         };
         // 几何变化 → 置脏（`pane.list()` 快照由此刷新一次，不靠每帧同步）
         let changed = rects.len() != self.leaf_rects.len()
-            || rects.iter().any(|(id, r)| self.leaf_rects.get(id) != Some(r));
+            || rects
+                .iter()
+                .any(|(id, r)| self.leaf_rects.get(id) != Some(r));
         self.leaf_rects.clear();
         for (id, rect) in &rects {
             self.leaf_rects.insert(*id, *rect);

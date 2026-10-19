@@ -314,3 +314,91 @@ async fn focusable_panel_focus_reset_on_node_change() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// 焦点环反向：`S-tab` 从 i1 退回 b1（计划任务 2）。
+/// 修的是 `plugin_popup.rs` 的焦点分支忽略 `key.shift`（永远正向）。
+#[tokio::test(flavor = "multi_thread")]
+async fn focusable_panel_shift_tab_moves_focus_backwards() -> anyhow::Result<()> {
+    let (_dir, plugin_path) = focus_panel_app(FOCUS_JS).await?;
+
+    test_key_sequences(
+        &mut AppBuilder::new()
+            .with_file(plugin_path.parent().unwrap().join("a.txt"), None)
+            .build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (Some(":fp-open<ret>"), None),
+            // Tab → b1；Tab → i1（input 在焦点上时字符键被 input 吃掉，不回显 focus）
+            (Some("<tab><tab>"), None),
+            // S-tab 必须**反向**回到 b1；若忽略 shift 会继续正向走到 b2
+            (Some("<S-tab>"), None),
+            (
+                Some("x"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    // count 仍是 0：焦点在节点时按键直达节点 onKey，不经过面板级 onKey
+                    assert_eq!(
+                        status.as_ref(),
+                        "focus:b1 count:0",
+                        "S-tab 应反向退到 b1（正向会落在 b2）: {status:?}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// 审查重点 #2：**没有**可聚焦节点时 `S-tab` 不得被焦点引擎吞掉 ——
+/// 必须穿透给面板 `onKey`，且 `shift` 标记保留（回归锁：本用例在修复前就应绿）。
+///
+/// 注意：这里用**计数**观测，不用"最后一个键"——`:` 开命令行时面板同样会收到该键，
+/// 会把"最后值"覆盖掉（探针阶段踩过这个坑）。
+#[tokio::test(flavor = "multi_thread")]
+async fn shift_tab_passes_through_when_no_focusables() -> anyhow::Result<()> {
+    const PASSTHRU_JS: &str = r#"
+let tab = 0;
+let stab = 0;
+helix.register_command("pt-open", () => helix.open_panel({
+    side: "right", size: 30, focusable: false,
+    render: () => helix.el("col", [helix.el("text", "x")]),
+    onKey: (k) => { if (k.name === "Tab") { if (k.shift) stab++; else tab++; } return "ignore"; },
+}));
+helix.register_command("pt-report", () => helix.echo("tab:" + tab + " stab:" + stab));
+"#;
+    let (_dir, plugin_path) = focus_panel_app(PASSTHRU_JS).await?;
+
+    test_key_sequences(
+        &mut AppBuilder::new()
+            .with_file(plugin_path.parent().unwrap().join("a.txt"), None)
+            .build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
+                None,
+            ),
+            (Some(":pt-open<ret>"), None),
+            (
+                Some("<S-tab>:pt-report<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(
+                        status.as_ref(),
+                        "tab:0 stab:1",
+                        "无可聚焦节点时 S-tab 必须穿透给 onKey（且 shift 标记保留）: {status:?}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}

@@ -70,10 +70,17 @@ fn parse_area(s: &str) -> (u64, u16, u16, u16, u16) {
         .map(|v| v.parse().expect("area 字段必须是整数"))
         .collect();
     assert_eq!(n.len(), 5, "area 字段数不对: {s}");
-    (n[0] as u64, n[1] as u16, n[2] as u16, n[3] as u16, n[4] as u16)
+    (
+        n[0] as u64,
+        n[1] as u16,
+        n[2] as u16,
+        n[3] as u16,
+        n[4] as u16,
+    )
 }
 
-async fn pane_area_app() -> anyhow::Result<(tempfile::TempDir, helix_term::application::Application)> {
+async fn pane_area_app() -> anyhow::Result<(tempfile::TempDir, helix_term::application::Application)>
+{
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("area.txt");
     std::fs::write(&file, "x\n")?;

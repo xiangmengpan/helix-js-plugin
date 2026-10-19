@@ -77,7 +77,7 @@ impl Component for PluginPopup {
             return EventResult::Ignored(None);
         };
         // 节点焦点路由:Tab 移动焦点;焦点在 button/input 时按键直接路由,不经过弹窗级 onKey。
-        if key.name == "Tab" && self.surface.tab_focus() {
+        if key.name == "Tab" && self.surface.tab_focus(key.shift) {
             return EventResult::Consumed(None);
         }
         if !self.surface.focusables.is_empty() {
@@ -156,7 +156,8 @@ impl Component for PluginPopup {
 /// 把编辑器按键转成 JS onKey 可见的快照；无法表示的键返回 None（不转交 JS）。
 /// 本树 KeyEvent 只有 code+modifiers（无 kind，termina 已过滤 Release），
 // ponytail: 若 KeyEvent 将来增加 kind 字段，需在此过滤 KeyEventKind::Press。
-/// KeyCode 无 BackTab，故与简报实现相比删去这两处分支。
+// 注：不存在 `KeyCode::BackTab` —— `input.rs` 把 termina 的 BackTab 归一化成
+// `Tab + SHIFT`，所以 Shift-Tab 在 JS 侧就是 `{name:"Tab", shift:true}`。
 pub(crate) fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
     let name = match key.code {
         KeyCode::Char(c) => c.to_string(),
