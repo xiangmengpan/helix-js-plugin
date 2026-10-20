@@ -109,7 +109,7 @@
 `helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`pane.close`/`pane.zoom`/`pane.unzoom`/`pane.resize`/`layout.*`/`pane.focus`/`layout.get`/`layout.restore`;窗口管理走 compositor 层的**zellij 式平级模式**(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll;旧 `C-w` 已删),模式与键位表对插件可见:`helix.pane_mode.current()/keymap()` + `pane-mode-change` 事件;`helix.pane.list()` 给出统一 pane 清单(含浮窗)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;filetree 即此模式;`layout.get` 叶子带 `rail` 标记)。
 
 - 优点:原生 pty(引擎为 `alacritty_terminal`:真实 reflow、鼠标上报、括号粘贴、CJK/组合字符);四种显示模式;滚动缓冲;zellij 式平级模式 + 多浮窗;layout_fix;布局可还原。
-- 局限:堆叠组未进 dump(重启不保留);OSC 4/10/11 查颜色与 OSC52 **读**剪贴板未接;PTY 仅 Unix。
+- 局限:OSC 4/10/11 查颜色与 OSC52 **读**剪贴板未接;PTY 仅 Unix。堆叠组**已**进 `layout.get()`(重启可还原)。
 
 → 详细见 [`api/terminal-layout.md`](api/terminal-layout.md)
 
@@ -199,16 +199,26 @@ helix.register_command("filetree", () => {
 | **面板节点焦点需显式开启** | 缺省 `focusable: false` ⇒ 面板 render 收到 `focus = null`;`open_panel({focusable: true})` 后启用节点焦点路由:Tab 移动焦点、Esc 取消、焦点在节点时按键直达(实测 2026-10-10) |
 | **`move_panel` 只支持 rail** | 面板住在布局树里(`open_panel` → rail 叶子或普通叶子);`move_panel` 走树后已可用,但**只有 rail 面板**能换边(普通叶分裂换边会牵动布局树结构),非 rail 会明确拒绝 |
 | **无树内命中** | 组件树节点不响应点击/悬停;命中检测(哪一行被选中)由 JS 自己维护 |
-| **堆叠未持久化** | `C-p s` 建的堆叠组未进 `layout.get`/`layout.restore`(浮窗已进),重启后不保留;也无 header 行 |
+| ~~堆叠未持久化~~ **（已支持）** | `layout.get()` 已含 `stacks`（`LayoutDump.stacks`），`restore` 按锚重建；堆叠组也有 header 行（`▶类型名` 标记当前显示的那个）。回归：`restore_roundtrip_keeps_stacks`（`helix-term/src/ui/layout.rs`） |
 | **picker 键位只可「加」不可「改」** | 源可选的 `onKey` 只能认领**核心不认识的键**(`Esc`/`Enter`/`Tab`/翻页等核心先处理,插件拿不到)=> 无法重绑核心键;纯字符输入也永不交给插件(防吞打字)。详见 [`api/picker-theme.md`](api/picker-theme.md) |
 | **Scroll 全量布局** | scroll 是 O(内容) 而非 O(视口),几千行内容每帧全量布局 |
 | **事件 ctx 范围** | 事件只带当前文档(其他分屏文档不触发) |
-| **`layout-change` 的 `kind` 常为 `null`** | 形状**恒定** `(kind, doc)`(2026-10-13 统一;此前缺种类时只传 `(doc)` ⇒ `(kind) => …` 静默拿到事件对象)。`sync_layout_cache()` 40 处调用点仅 10 处设种类 ⇒ 判 `kind === null` 即可 |
+| **`layout-change` 的 `kind` 常为 `null`** | 形状**恒定** `(kind, doc)`(2026-10-13 统一;此前缺种类时只传 `(doc)` ⇒ `(kind) => …` 静默拿到事件对象)。`sync_layout_cache()` 37 处调用点仅 10 处设种类（实测 `grep`） ⇒ 判 `kind === null` 即可 |
 | **无多光标编辑** | `helix.set_selection` **支持多选区数组形态**(`[{anchor, head}, …]`;按 range 起点排序,主光标 = 排序后末位,与原生多光标一致)。缺的是**逐光标各自的编辑** —— 编辑队列只有一份快照坐标(实测 2026-10-10) |
 | **Unix-only** | `helix.run`/`spawn`/PTY 依赖 `sh` 与 libc openpty(Windows 不可用) |
 | **键位不持久** | `helix.map` 绑定重启失效(插件启动时重新注册) |
 | **插件间无共享状态** | 每个插件独立 IIFE 作用域;共享需通过 `helix.*` API 或外部文件 |
 | **嵌套 load 污染风险(已修复)** | boa 0.21 的嵌套 eval 破坏外层闭包绑定(`typeof` 变 object、函数不可调用,实测 2026-08-26;DefInitVar 越界 panic)。**boa 0.22 升级后验证修复**(2026-08-31 复现测试通过);防御(icons.js 工具函数 `|| {}` 兜底)保留作双保险。旧建议(依赖用 `helix.plugin` deps 声明、回调不放嵌套 load 后)仍是最佳实践 |
+
+### 判定为「不做」（不是待办）
+
+这两条曾经以"缺 API"的形式挂在限制表里，读者无法区分"没人做"与"决定不做"。判定本身就是交付物。
+
+| 项 | 判定 | 理由 |
+|---|---|---|
+| **安装期依赖**（git 仓库根 `plugin.json` 的 `deps`） | ❌ 不做 | 加载期 `deps` 已覆盖真实需求（拓扑加载 + 按 key 缓存 + 循环依赖报错）。安装期求解需要版本约束求解器，而 git 源实际只有一个可装版本（HEAD）⇒ 代价远大于收益。第三方插件的依赖请在它的 README 里让用户手动装。 |
+| **插件间共享状态**（新增一个全局 `shared` 命名空间之类） | ❌ 不做 | 跨插件共享会让"谁能改谁的状态"变成隐式耦合，且无法在插件重载后定义清理时机。现有两条出路——`helix.*` API（核心承担生命周期）与插件根下的文件（用户可见）——都显式、可测。真需要共享就建一个被 `deps` 依赖的中间插件。 |
+
 
 ---
 

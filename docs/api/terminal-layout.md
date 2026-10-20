@@ -35,7 +35,8 @@ helix.set_terminal_mode(id, "floating");  // dock|fullscreen|floating|minimized
 
 **优缺点**
 - 优点：原生 pty 面板(非模拟器套壳);四种显示模式;滚动缓冲;状态持久化;键位钩子可编程管理。
-- 局限：组合字符/鼠标/选择复制不支持;滚回只存不显示(上限 1000 行);PTY 仅 Unix;spawn 无超时。
+- 局限：**OSC 4/10/11 颜色查询**与 **OSC52 读剪贴板**没有答复（`ColorRequest`/`ClipboardLoad` 事件被忽略 ⇒ 先问终端再决定的 TUI 会等不到回包）；无 DECKPAM 应用小键盘、无 Kitty 键盘协议；滚回上限 1000 行；PTY 仅 Unix；spawn 无超时。
+- 已支持（此前文档写"不支持"，已过时）：**鼠标上报**（SGR + X10，拖拽/滚轮）、**组合字符**（零宽字符跟随基字符写格）、**可视区复制**（终端 Normal 模式下复制到 `"`/`+` 寄存器）、OSC52 **写**剪贴板。
 
 ## 布局树
 
@@ -98,4 +99,5 @@ helix.layout.restore(layout);       // 真重建:按 dump 重塑布局树 + 浮�
 **优缺点**
 - 优点：zellij 式平级模式(任意叶子焦点);split 可挂终端/面板;layout_fix 免疫操作;
   布局可读可还原(`get_layout`/`restore_layout` 已接线);浮窗也在 dump 里。
-- 局限：**堆叠组(`C-p s`)未进 dump**,重启后不保留;无拖拽调整;无 `:layout save/load` 文件命令。
+- 局限：无拖拽调整分界比例（只能 `pane.resize(id, ratio)`）。
+- ~~堆叠组未进 dump~~ **已支持**：`stacks` 在 `layout.get()` 里，`restore` 按锚重建（回归 `restore_roundtrip_keeps_stacks`）。命名会话命令 `:layout save|load|list|delete` 由内置插件 `layout` 提供（需加载该插件）。

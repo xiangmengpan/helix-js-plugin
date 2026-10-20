@@ -109,7 +109,7 @@ helix.on("layout-change", (kind, doc) => {
 
 - **种类取值**(`helix-term/src/commands/typed.rs` 里 10 处 `set_layout_change_kind`):
   `split` / `close` / `float` / `embed` / `raise` / `pin` / `stack-create` / `stack-activate` / `stack-remove`。
-- **`kind === null` 是常见情形,不是 bug**:`sync_layout_cache()` 有 40 处调用点,设种类的只有 10 处
+- **`kind === null` 是常见情形,不是 bug**:`sync_layout_cache()` 有 37 处调用点,设种类的只有 10 处（实测 `grep`）
   ⇒ 多数路径不带种类。
 - **历史坑(2026-10-13 已修)**:此前缺种类时只传 `[doc]`(没有占位参数)⇒ 写 `(kind) => …` 的插件会
   **静默**把事件 doc 对象当成 kind;而 `(doc) => …` 又会在带种类的路径上把 kind 当 doc。现在两条

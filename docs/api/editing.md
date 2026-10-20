@@ -50,7 +50,7 @@ const other = helix.by_path("src/main.rs");
 - 快照是命令开始时的文本;坐标基于该快照,跨 await 的过期坐标风险与 `ctx.doc` 相同
 - scratch(无路径)buffer 不可查
 - 目标 buffer 在命令期间被关闭 → 编辑应用时报错入状态栏(不崩)
-- 同一命令内同时用 `ctx.doc` 与 `by_path(当前文件路径)` 改同一 buffer → 视为两个目标,撤销两次
+- 同一命令内同时用 `ctx.doc` 与 `by_path(当前文件路径)` 改同一 buffer → **一次撤销**（两条路由在 history 里合成一步；回归 `plugin_edit_same_doc_two_routes_one_undo`）
 
 **优缺点**：优点：跨 buffer 批量编辑(重构类插件)。局限：只查已打开 buffer(不自动打开)；快照坐标跨 await 会过期。
 
