@@ -56,6 +56,15 @@
 
 → 详细见 [`api/loading-commands.md`](api/loading-commands.md)
 
+### 插件配置
+
+`helix.define_config(name, {key: {type, default, doc}})`(脚本加载时声明)、`helix.get_config(name)`(默认值 + 用户 `[plugins.<name>]` 覆盖,只读)、`helix.get_config_docs(name)`(键/类型/默认值/说明,自建设置面板用)。类型只有 `boolean`/`number`/`string`/`enum`;写错回退默认值并报错,**拼错的键也报错**(不静默)。
+
+- 优点:声明式 + 类型校验;插件 load / reload / 懒加载后自动重建(装完插件不会读到 null);用户覆盖只走 `config.toml`,不用改插件。
+- 局限:只支持标量(无嵌套对象/数组);只读、无写入 API(改了走 `:config-reload`);`[plugins]` 顶层键暂无读取入口;filetree/tabbar 声明的键插件侧尚未接线。
+
+→ 详细见 [`api/config.md`](api/config.md)
+
 ### 文档编辑与选区
 
 命令 `ctx` = 只读快照 + 编辑队列(`ctx.doc.insert/replace/delete`,0-based,越界 clamp,一次命令一次撤销);`helix.begin_edit()/end_edit()`(批量事务,async 跨 await 用);`helix.by_path(path)`(跨 buffer 编辑);`helix.set_virtual_text/set_highlight`(装饰/标记);`helix.set_cursor/set_selection`(光标/选区,多选区数组)。

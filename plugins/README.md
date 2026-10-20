@@ -151,7 +151,7 @@ node 侧注入最小 `global.helix` 桩即可直接 require —— 例子见 `pl
 | 文档 | 内容 |
 |---|---|
 | [`docs/plugin-api.md`](../docs/plugin-api.md) | 插件 API 总览与索引(**从这里进**) |
-| [`docs/api/`](../docs/api/) | 按域详细:plugin · events · loading-commands · ui · editing · lsp · terminal-layout · picker-theme · process-fs |
+| [`docs/api/`](../docs/api/) | 按域详细:plugin · events · loading-commands · config · ui · editing · lsp · terminal-layout · picker-theme · process-fs |
 | [`docs/plugin-layout.md`](../docs/plugin-layout.md) | 本目录的约定与迁移史(§3 约定 / §8 分发) |
 | [`docs/plugin-vs-core.md`](../docs/plugin-vs-core.md) | 什么该插件化、什么该留核心(三闸门 + 四条红线) |
 | [`docs/guide/`](../docs/guide/) | 教程 01–10(概览 → 启动/按键/编辑/渲染 → 深入 core/view/term/lsp) |
