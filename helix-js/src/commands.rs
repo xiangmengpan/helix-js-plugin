@@ -352,8 +352,17 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         crate::state::with_last_plugin_deps(|d| d.clear());
         // C-1/C-2:同一时刻清空"本次 eval 声明过 manifest 吗"的标记
         crate::permissions::begin_manifest();
-        eval_wrapped(ctx, &src)
-            .map_err(|e| crate::js_err(format!("helix.load('{key}') failed: {e}")))?;
+        // C-3 加载期属主:<name>/plugin.js ⇒ name;其它脚本(init.js / deps 的 lib)
+        // 继承父属主 —— 库是引用它的那个插件的一部分,不该自成一个插件。
+        // 脚本内 `helix.plugin("x")` 会再把属主升级成 x(见 js_plugin)。
+        let prev_owner = crate::permissions::plugin_name_from_key(&key)
+            .map(|name| crate::permissions::set_current_owner(Some(&name)));
+        let eval_result = eval_wrapped(ctx, &src)
+            .map_err(|e| crate::js_err(format!("helix.load('{key}') failed: {e}")));
+        if let Some(prev) = prev_owner {
+            crate::permissions::restore_owner(prev);
+        }
+        eval_result?;
         // C-2 的"内置"判据 = **提供根**是不是用户插件目录(用户层 = 最后一个根)。
         // 内置 17 个插件随软件分发(runtime/plugins)⇒ 永不询问;用户同名覆盖
         // (config/plugins 里那份)则按第三方对待。
@@ -403,6 +412,9 @@ pub(crate) fn js_plugin(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("helix.plugin: name must be a string"))?;
+    // C-3:manifest 里声明名字 = 宣称"本脚本就是它" ⇒ 属主就地升级成它。
+    // 这是加载期归属的权威来源(脚本名只是兜底:裸脚本 / `:plugin-load /abs/x.js`)。
+    crate::permissions::set_current_owner(Some(&name));
     let mut manifest = crate::types::PluginManifest {
         name: name.clone(),
         ..Default::default()
@@ -2334,13 +2346,27 @@ pub fn load_script_named(name: &str, src: &str) -> Result<()> {
             kind: DecorationKind::Clear,
         })
     });
-    crate::state::with_engine(|engine| {
+    // C-3 加载期属主:由文件名兜底(`:plugin-load /abs/x.js` ⇒ "x")。
+    // 脚本内 `helix.plugin("y")` 会再升级成 y。
+    let owner = crate::permissions::plugin_name_from_key(name).or_else(|| {
+        std::path::Path::new(name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+    });
+    let prev_owner = owner
+        .as_deref()
+        .map(|o| crate::permissions::set_current_owner(Some(o)));
+    let result = crate::state::with_engine(|engine| {
         eval_wrapped(engine, src)
             .map(|_| ())
             .map_err(|e| anyhow!("plugin script '{name}' error: {e}"))?;
         crate::state::with_loaded_scripts(|s| s.push((name.to_string(), src.to_string())));
         Ok(())
-    })
+    });
+    if let Some(prev) = prev_owner {
+        crate::permissions::restore_owner(prev);
+    }
+    result
 }
 
 /// 脚本(重)执行后重建插件配置:define_config 只在脚本执行时才注册 schema,而 CONFIGS
@@ -2436,12 +2462,24 @@ pub fn reload_all() -> Result<()> {
                 .and_then(|p| std::fs::read_to_string(p).ok())
         };
         let src = disk_src.as_deref().unwrap_or(src);
+        // C-3:重跑也要有加载期属主(与首次加载同一条规则)
+        let owner = crate::permissions::plugin_name_from_key(name).or_else(|| {
+            std::path::Path::new(name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+        });
+        let prev_owner = owner
+            .as_deref()
+            .map(|o| crate::permissions::set_current_owner(Some(o)));
         let result = crate::state::with_engine(|engine| -> Result<()> {
             eval_wrapped(engine, src)
                 .map(|_| ())
                 .map_err(|e| anyhow!("plugin reload '{name}' failed: {e}"))?;
             Ok(())
         });
+        if let Some(prev) = prev_owner {
+            crate::permissions::restore_owner(prev);
+        }
         if let Err(e) = result {
             errors.push(format!("{e}"));
         }

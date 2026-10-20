@@ -351,7 +351,29 @@ impl PermissionState {
 
 /// 当前归属插件(运行时优先,其次加载期)
 fn current_plugin() -> Option<String> {
-    with_state(|s| s.current.clone().or_else(|| s.last_declared.clone()))
+    // C-3:**只看执行期属主**。早先这里回退 `last_declared`（加载期最后一次
+    // `helix.plugin()` 的名字）—— 于是所有"没设属主"的入口（render/onPress/preview/
+    // promise 续体）都被按那个插件判定：最后加载的是内置插件时 = 直接放行。
+    // 加载期归属现在由 `load_script_checked` 按**脚本名**显式设置（见 `plugin_name_from_key`）。
+    with_state(|s| s.current.clone())
+}
+
+/// 脚本 key → 插件名（加载期属主）。
+///
+/// 规则（与 `docs/plugin-layout.md` §3.3 的布局约定一致）：
+/// * `<name>/plugin.js` ⇒ `name`；
+/// * 绝对路径且末段是 `plugin.js` ⇒ 其目录名；
+/// * 其它（`init.js`、被 `deps` 加载的 `lib/x.js`、单文件脚本）⇒ `None`，
+///   调用方**继承父属主**（库是引用它的那个插件的一部分，不该自成一个插件）。
+pub(crate) fn plugin_name_from_key(key: &str) -> Option<String> {
+    let p = std::path::Path::new(key);
+    let is_plugin_entry = p.file_name().map(|f| f == "plugin.js").unwrap_or(false);
+    if !is_plugin_entry {
+        return None;
+    }
+    p.parent()
+        .and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
 }
 
 /// 放行/拒绝一次的判定(纯函数,便于单测直接打表)
