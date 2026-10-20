@@ -2244,7 +2244,7 @@ pub(crate) fn js_end_edit(
 /// 触发节点事件（焦点路由）：onPress → 无参调用；onKey → 传键名
 pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Result<()> {
     crate::init();
-    crate::state::with_engine(|engine| {
+    let result = crate::state::with_engine(|engine| {
         let handlers = crate::state::with_node_handlers(|h| {
             h.get(&(view_id, node_id.to_string()))
                 .cloned()
@@ -2297,7 +2297,14 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
             }
         }
         Ok(())
-    })
+    });
+    // 失败可见:helix-term 的调用点用的是 `.is_ok()`(失败 = 不消费按键),错误若只
+    // 往上传就会被**静默吞掉** —— 权限拒绝、插件抛错都会表现成"按键没反应"。
+    // 这里统一投到消息队列(下一帧/命令边界上状态栏可见),返回值保持原样。
+    if let Err(err) = &result {
+        crate::host::with_messages(|m| m.push(format!("node '{node_id}' 事件失败: {err}")));
+    }
+    result
 }
 
 /// 收集组件树中的可聚焦节点 id（button/input，树序）

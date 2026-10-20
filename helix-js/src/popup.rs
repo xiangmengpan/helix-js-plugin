@@ -1591,9 +1591,17 @@ fn register_node_handlers(
     {
         return Ok(());
     }
-    // 注册期绑定属主:onPress/onKey/onChange 的属主 = **这次 render 的属主**
-    // (render 本身在 `render_popup` 的 `with_callback_owner` 作用域里 ⇒ 拿到的就是弹窗的注册者)
-    crate::permissions::bind_callback(crate::permissions::CbKey::node(view_id, &node_id));
+    // 注册期绑定属主:节点属于**这个视图的注册者**。
+    // 取 popup 的绑定而不是 `current_owner()`:节点树是在 render 回调**返回之后**才解析的
+    // (`content_from_value`),那时 `with_callback_owner` 的作用域已经退出 ⇒ current 是 None。
+    if let Some(owner) =
+        crate::permissions::callback_owner(&crate::permissions::CbKey::popup(view_id))
+    {
+        crate::permissions::bind_callback_to(
+            crate::permissions::CbKey::node(view_id, node_id),
+            &owner,
+        );
+    }
     crate::state::with_node_handlers(|map| {
         map.insert(
             (view_id, node_id.to_string()),

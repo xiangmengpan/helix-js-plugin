@@ -206,9 +206,18 @@ impl JsSurface {
                 } else {
                     None
                 };
-                if cx.js_dispatch_node_event(self.id, fid, event).is_ok() {
-                    drain_light(cx);
-                    return Some(EventResult::Consumed(None));
+                match cx.js_dispatch_node_event(self.id, fid, event) {
+                    Ok(()) => {
+                        drain_light(cx);
+                        return Some(EventResult::Consumed(None));
+                    }
+                    Err(err) => {
+                        // 失败可见:dispatch 的调用点用的是 is_ok()(失败 = 不消费按键),
+                        // 错误若只往上传就会被**静默吞掉** —— 权限拒绝/插件抛错的表现
+                        // 会变成"按了没反应"。这里上屏(Error)后继续冒泡。
+                        drain_light(cx);
+                        cx.editor.set_error(format!("{err}"));
+                    }
                 }
             }
             // 水平方向键/Home/End:input 光标移动(input_edit 对这些键返回 None,不触发 onChange)
@@ -236,6 +245,9 @@ impl JsSurface {
                 {
                     drain_light(cx);
                     return Some(EventResult::Consumed(None));
+                } else if !helix_js::input_has_state(self.id, fid) {
+                    // 失败可见(同上):非 input 节点的 onKey 抛错/被权限拒绝时也要上屏
+                    drain_light(cx);
                 }
             }
             // 编辑键:input → dispatch_input_key(改值 + onChange);否则(button)→ onKey
@@ -255,6 +267,8 @@ impl JsSurface {
                 {
                     drain_light(cx);
                     return Some(EventResult::Consumed(None));
+                } else {
+                    drain_light(cx);
                 }
             }
             _ => {}

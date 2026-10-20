@@ -298,7 +298,8 @@ pub(crate) fn with_callback_owner<T>(key: &CbKey, f: impl FnOnce() -> T) -> T {
             restore_owner(self.0.take());
         }
     }
-    let prev = set_current_owner(callback_owner(key).as_deref());
+    let found = callback_owner(key);
+    let prev = set_current_owner(found.as_deref());
     let _guard = Restore(prev);
     f()
 }

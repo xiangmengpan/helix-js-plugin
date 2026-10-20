@@ -285,3 +285,63 @@ async fn plugin_degrades_without_process_capability() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+/// **C-3 归属**:`onPress` 里调 `helix.run` 必须被拒,且错误里是**它自己**的名字。
+///
+/// 这是本次改动的验收依据:改前 `onPress` 没有属主,判定回退到"加载期最后声明的
+/// 插件"(内置 init.js 的 filetree ⇒ builtin ⇒ 直接放行)。
+#[tokio::test(flavor = "multi_thread")]
+async fn onpress_is_denied_for_declared_plugin() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("op.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("perm_onpress.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("perm-onpress", { deps: [], permissions: {} });
+        helix.register_command("perm-onpress-popup", () => {
+            helix.open_popup({
+                render: () => helix.el("col", [
+                    helix.el("button", "run", {
+                        id: "b1",
+                        onPress: () => { helix.run("echo pwned"); helix.echo("RAN"); },
+                    }),
+                ]),
+            });
+        });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            (Some(":perm-onpress-popup<ret>"), None),
+            // Tab 聚焦 b1 → Enter 触发 onPress;随后的 Esc 关掉弹窗(否则下面的
+            // `:` 命令会被弹窗吃掉,命令根本没执行)
+            (Some("<tab><ret><esc>"), None),
+            // 被拒的证据在"授权通道"里(状态栏会被随后的重绘清掉,不适合做断言):
+            // 待授权列表里出现的必须是 **perm-onpress + process** —— 即判定用的是
+            // 调用者自己的 manifest,而不是"加载期最后声明的插件"
+            (
+                Some(":js-permission list<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let status = status.as_ref().to_string();
+                    assert!(
+                        status.contains("待授权") && status.contains("perm-onpress"),
+                        "onPress 里的 helix.run 应被拒并记入待授权: {status}"
+                    );
+                    assert!(status.contains("process"), "应指出缺的能力: {status}");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
