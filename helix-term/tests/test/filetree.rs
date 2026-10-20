@@ -127,3 +127,60 @@ async fn filetree_close_panel() -> anyhow::Result<()> {
     assert!(!app.compositor.has_component(panel_type), "q 关闭面板");
     Ok(())
 }
+
+/// 面板聚焦时 `C-*` 必须**穿透**给编辑器 —— 面板是非模态的（`open_panel`，不是 popup）。
+///
+/// 回归：filetree 的 `onKey` 曾对 ctrl/alt 返回 `"handled"`（注释却写着"穿透"）⇒
+/// 用户在 `[keys]` / `helix.map` 里显式绑的 C-* 在面板聚焦时**静默失效**。
+/// 这里用 `helix.map` 绑一个 C-e 探针，断言它确实触发。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_panel_passes_ctrl_keys_through() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    // 编辑器侧的 C-e 绑定（走插件命令回退，与用户 `helix.map` 同一条路）
+    let probe = dir.path().join("probe.js");
+    std::fs::write(
+        &probe,
+        r#"
+helix.register_command("probe-ctrl", () => helix.echo("ctrl-through"));
+helix.map("normal", "C-e", "probe-ctrl");
+"#,
+    )?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", probe.display())).await?;
+    // 先打开 `dir` 里的文件再 reveal ⇒ 面板 root 由**文件路径**决定，
+    // 而不是进程 cwd（cwd 是全局的，并行跑别的 `:cd` 会把 root 换走 —— 见 D3 spec §9.3）。
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    assert_ne!(
+        app.compositor.layout_tree().active(),
+        0,
+        "前置不成立：filetree 打开后焦点应在面板"
+    );
+
+    // 面板聚焦时按 C-e：必须穿透到编辑器侧的绑定（改前被面板吞掉 ⇒ 状态栏为空）
+    pump(&mut app, "<C-e>").await?;
+    let st = app
+        .editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        st, "ctrl-through",
+        "面板聚焦时 C-e 应穿透给编辑器绑定（被吞 ⇒ 空）: {st:?}"
+    );
+
+    // C-\ 不受本次改动影响：保留面板、焦点回编辑器
+    pump(&mut app, "<C-\\>").await?;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "C-\\ 应把焦点还给编辑器"
+    );
+    let text = panel_text(&mut app);
+    assert!(
+        text.contains("readme.md"),
+        "C-\\ 只是移焦点，面板应仍在（且 root 不该被别人换走）: {text:?}"
+    );
+    Ok(())
+}

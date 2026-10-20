@@ -17,6 +17,8 @@ const CFG = helix.get_config("filetree") || {};
 // 用法:init.js 里 helix.load("filetree")(裸名 → filetree/plugin.js),:filetree 开关面板。
 // 键位：Enter/o 打开或展开，h/l 折叠/进入，Up/Down 导航，H 隐藏文件，
 //       R 刷新，a/A 新建文件/目录，m 重命名，d 删除，P 上级目录，F 跟随当前文件，q/Esc 关闭。
+//       **C-\ 保留面板、焦点回编辑器**；其余 C-*/M-* **穿透给编辑器**（面板非模态，
+//       用户在 `[keys]` / `helix.map` 里绑的修饰键组合必须照常生效）。
 // 说明：面板无节点点击命中（helix 限制），选中行由 JS 维护行号；纯键盘操作。
 
 // ============================ 纯逻辑（不依赖 helix，node 可测） ============================
@@ -542,8 +544,11 @@ function handle_key(key) {
     helix.pane.focus(0);
     return "handled";
   }
-  // 修饰键组合（C-x / M-x）不处理，穿透
-  if (key.ctrl || key.alt) return "handled";
+  // 修饰键组合（C-x / M-x）**穿透给编辑器** —— 面板是非模态的（`open_panel`，不是 popup），
+  // 用户在 `[keys]` / `helix.map` 里绑的 C-* 必须照常生效；被吞掉会变成"静默失效"。
+  // 上面 C-\ 已单独处理（保留面板、焦点回编辑器），所以这里不需要再留特例。
+  // 对照：`arsenal` / `dashboard` 是 popup（模态），它们在 onKey 里 `return "handled"` 是对的。
+  if (key.ctrl || key.alt) return "ignore";
   switch (key.name) {
     case "Esc":
     case "q": close_panel(); return "handled";
