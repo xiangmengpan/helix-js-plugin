@@ -43,10 +43,11 @@ pub use shell::*;
 // 现在新增导出必须在这里加一行 —— 边界是可见的。
 pub use state::{
     cache_buffers, cache_configs, cache_diagnostics, cache_layout, cache_pane_mode, cache_panes,
-    cache_plugin_overrides, clear_command_args, config_schemas, register_component_state,
-    seed_config_schema, set_command_args, set_layouts_dir, set_picker_state, set_plugin_roots,
-    set_runtime_dirs, set_term_wake, set_viewport, statusline_replaces, statusline_zones,
-    take_messages, take_ui_requests, unregister_component_state,
+    cache_plugin_overrides, clear_command_args, config_schemas, configs_populated,
+    register_component_state, seed_config_schema, set_command_args, set_layouts_dir,
+    set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake, set_viewport,
+    statusline_replaces, statusline_zones, take_messages, take_ui_requests,
+    unregister_component_state,
 };
 // 插件配置合并(纯函数):schema 注册表 + 已缓存用户覆盖 → 合并 JSON。
 // 插件 load/reload 之后必须重建一次(见 helix-term `refresh_plugin_configs`)。

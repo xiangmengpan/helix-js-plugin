@@ -147,6 +147,15 @@ pub(crate) fn plugin_overrides() -> String {
         .clone()
 }
 
+/// 合并缓存是否已被填过（启动路径用它判断"这次重建是不是多余的":没有 `[plugins]` 段时
+/// 再重建只会把同样的默认值重写一遍，却会冲掉同进程里另一份 app 的用户覆盖）。
+pub fn configs_populated() -> bool {
+    CONFIGS
+        .get()
+        .map(|m| !m.lock().unwrap().is_empty())
+        .unwrap_or(false)
+}
+
 /// 写入插件配置合并缓存（helix-term config load/reload 后调用）
 pub fn cache_configs(json: &str) {
     let _ = CONFIGS.get_or_init(Default::default);
