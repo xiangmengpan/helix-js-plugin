@@ -1,5 +1,6 @@
 #[cfg(feature = "integration")]
 mod test {
+    mod harness_util;
     mod helpers;
 
     use helix_core::{syntax::config::AutoPairConfig, Selection};

@@ -2,7 +2,7 @@ use std::{
     io::{Read, Write},
     mem::replace,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::bail;
@@ -613,6 +613,97 @@ pub async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
     }
     app.event_loop_until_idle(&mut rx_stream).await;
     Ok(())
+}
+
+/// 状态栏文本；没有状态时返回**空串**。
+///
+/// 断言异步结果时**不要**再写 `get_status().unwrap()` —— 那个 `unwrap` 正是
+/// `plugin_async` / `plugin_lsp_mock` 在高并发下偶发 panic 的地方（结果还没回来）。
+pub fn status_text(app: &Application) -> String {
+    app.editor
+        .get_status()
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_default()
+}
+
+/// 发一次键，然后**等到条件成立**（有界）。条件成立的那一轮立即返回。
+///
+/// # 什么时候必须用它
+///
+/// 断言的值若来自 `helix.run_async` / `spawn` / `read_*_async` / `stat_async` /
+/// `glob_async` / `read_tree` / `helix.lsp.*` / `helix.server.rows|task` 的**回调**，
+/// 就必须用本函数。原因：`event_loop_until_idle` 的"idle" 是**250ms 内没有事件**
+/// （integration 循环在每个事件后 `reset_idle_timer`，`IdleTimer` 一到就返回），
+/// 不等于"worker 都干完了" —— 负载高时结果会晚于 idle 回来。
+/// 用 `pump` + `get_status().unwrap()` 就是在赌"250ms 内一定到"。
+///
+/// 超时返回 Err，信息里带**预算 / 条件描述 / 最后一次状态栏**，比 `Option::unwrap`
+/// 的 panic 能定位得多。
+pub async fn pump_until(
+    app: &mut Application,
+    keys: &str,
+    budget: Duration,
+    what: &str,
+    mut cond: impl FnMut(&mut Application) -> bool,
+) -> anyhow::Result<()> {
+    pump_until_inner(app, keys, budget, what, false, &mut cond).await
+}
+
+/// 同 [`pump_until`]，但**每轮重发 `keys`**（仅用于**幂等只读探针**，如 `:pick-diag<ret>`）。
+///
+/// 把有副作用的命令（`:async-demo` 之类）接进来会重复执行 —— 那属于误用。
+pub async fn pump_until_probe(
+    app: &mut Application,
+    keys: &str,
+    budget: Duration,
+    what: &str,
+    mut cond: impl FnMut(&mut Application) -> bool,
+) -> anyhow::Result<()> {
+    pump_until_inner(app, keys, budget, what, true, &mut cond).await
+}
+
+async fn pump_until_inner(
+    app: &mut Application,
+    keys: &str,
+    budget: Duration,
+    what: &str,
+    repeat_keys: bool,
+    cond: &mut impl FnMut(&mut Application) -> bool,
+) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    let send = |keys: &str| -> anyhow::Result<()> {
+        for key_event in parse_macro(keys)? {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+        Ok(())
+    };
+    if !repeat_keys {
+        send(keys)?;
+    }
+
+    let t0 = Instant::now();
+    let deadline = t0 + budget;
+    let mut last_status = String::new();
+    loop {
+        // 先判：条件已成立就**不空转**（通过路径的耗时由这一行保证）
+        if cond(app) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "pump_until 超时：预算 {budget:?}，实际等待 {:?}，条件：{what}；最后一次状态栏: {last_status:?}",
+                t0.elapsed()
+            );
+        }
+        if repeat_keys {
+            send(keys)?;
+        }
+        if !app.event_loop_until_idle(&mut rx_stream).await {
+            bail!("pump_until 等待期间应用退出（条件：{what}）");
+        }
+        last_status = status_text(app);
+    }
 }
 
 /// 把 `area` 整块渲染成"每行一个字符串",供断言按行比对。
