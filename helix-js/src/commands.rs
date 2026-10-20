@@ -378,6 +378,11 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         s.pop();
     });
     crate::state::pop_load_root();
+    // 加载树结束(最外层)⇒ 脚本里的 define_config 已注册 schema,重建配置缓存。
+    // 嵌套依赖不重复重建:外层结束前它们的 define_config 都跑完了。
+    if result.is_ok() && crate::state::with_load_stack(|s| s.is_empty()) {
+        refresh_configs_after_load();
+    }
     result
 }
 
@@ -2315,6 +2320,19 @@ pub fn load_script_named(name: &str, src: &str) -> Result<()> {
         crate::state::with_loaded_scripts(|s| s.push((name.to_string(), src.to_string())));
         Ok(())
     })
+}
+
+/// 脚本(重)执行后重建插件配置:define_config 只在脚本执行时才注册 schema,而 CONFIGS
+/// 由启动 / `:config-reload` 构建 ⇒ `helix.load` 懒加载的插件本来一直拿到 null(默认值全丢)。
+///
+/// 为什么在 helix-js 侧:懒加载走 `load_script_checked`,不经过 helix-term 的 `:plugin-load`,
+/// 那边没有可挂的边界。校验错误进 echo 队列(下个命令/事件边界上状态栏可见,不静默丢)。
+pub(crate) fn refresh_configs_after_load() {
+    let (json, errors) = crate::config::rebuild_configs();
+    crate::state::cache_configs(&json);
+    for e in errors {
+        crate::host::push_message(format!("plugin config: {e}"));
+    }
 }
 
 /// 已加载脚本名（按加载顺序；供 :plugin list / status）

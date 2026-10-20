@@ -253,3 +253,53 @@ helix.register_command("cfg-demo-dump", () => { helix.echo(JSON.stringify(helix.
     .await?;
     Ok(())
 }
+
+// ── 插件配置:运行时懒加载(`helix.load`)后也要重建 ──
+//
+// `helix.load` 走 helix-js 内部的 load_script_checked(不经过 helix-term 的 :plugin-load),
+// 所以重建必须发生在 helix-js 侧,否则懒加载插件的 get_config() 一直是 null。
+// 用**绝对路径**加载:不依赖插件根(`set_plugin_roots` 是首设生效,并行测试下不可靠)。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_config_rebuilt_after_lazy_load() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("lazy.txt");
+    std::fs::write(&file, "x\n")?;
+    let lazy = dir.path().join("lazy-cfg.js");
+    std::fs::write(
+        &lazy,
+        r#"helix.define_config("lazy-cfg", { flag: { type: "boolean", default: true } });
+helix.register_command("lazy-cfg-dump", () => { helix.echo(JSON.stringify(helix.get_config("lazy-cfg"))); });"#,
+    )?;
+    let loader = dir.path().join("loader.js");
+    std::fs::write(
+        &loader,
+        format!(
+            "helix.register_command('load-lazy', () => {{ helix.load({:?}); }});",
+            lazy.display().to_string()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", loader.display())),
+                None,
+            ),
+            // 懒加载:命令回调里才 helix.load
+            (Some(":load-lazy<ret>"), None),
+            (
+                Some(":lazy-cfg-dump<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let v: serde_json::Value = serde_json::from_str(status.as_ref())
+                        .unwrap_or_else(|e| panic!("get_config 不是 JSON({e}): {status}"));
+                    assert_eq!(v["flag"], true, "helix.load 懒加载后 get_config 应立即可用");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
