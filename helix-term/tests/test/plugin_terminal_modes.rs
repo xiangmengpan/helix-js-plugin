@@ -1075,3 +1075,96 @@ async fn plugin_statusline_global() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// `[plugins.terminal]` 的四个键真的生效（计划：terminal 可配化）。
+///
+/// 只钉 `hterm_size`：它是"配置 → 布局叶子高度"这条链最短的观测点
+/// （`:hterm` 直接 `open_terminal({size})`，叶子高度就等于它）。
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_plugin_config_hterm_size_applies() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x\n")?;
+
+    // 插件配置缓存是进程级的 ⇒ 与其它写 `[plugins.*]` 的用例串行（见 helpers::PLUGIN_CONFIG_LOCK）
+    let _cfg = plugin_config_lock().await;
+    // 插件配置来自 config.toml 的 `[plugins.<name>]`（Rust 侧 Config.plugins 是原始 TOML 表）
+    let mut cfg = test_config();
+    cfg.plugins =
+        Some(toml::from_str("[terminal]\nhterm_size = 20\n").expect("插件配置 TOML 应可解析"));
+
+    let terminal_plugin = repo_plugin("terminal/plugin.js");
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(cfg)
+        .build()?;
+    // `size` 是**绝对行数**，`split_leaf_with_ratio` 会按 `compositor.area` 换算成比例
+    // （再 clamp 到 0.1–0.9）。测试里必须先 resize 到真实视口，否则按未初始化的
+    // 默认视口换算 —— 实测 20 行会变成 4 行。
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
+    app.compositor.resize(area);
+    // **分两次 pump**：`:plugin-load` 之后 schema 要等 `refresh_plugin_configs` 进 CONFIGS；
+    // 把它和 `:hterm` 塞进同一个按键批次会与 job 通道竞争（实测同批次时
+    // `get_config("terminal")` 仍是 null ⇒ 用默认尺寸）。
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", terminal_plugin.display()),
+    )
+    .await?;
+    pump(&mut app, ":hterm<ret>").await?;
+
+    // 叶子矩形由渲染填入（leaf_rects 在 LayoutTree::render 里更新）⇒ 先画一帧
+    let _ = render_rows(&mut app, area);
+    let id = app.compositor.layout_tree().active();
+    let rect = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(id)
+        .expect("终端叶子应有矩形（渲染过一帧）");
+    assert_eq!(
+        rect.height, 20,
+        "hterm_size=20 应让底部分屏高 20 行，实得 {}",
+        rect.height
+    );
+    Ok(())
+}
+
+/// 尺寸兜底：配成 0/负数时回落到默认 15（`:hterm` 的默认），不要 0 行终端。
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_plugin_config_bad_size_falls_back() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x\n")?;
+    let _cfg = plugin_config_lock().await;
+    let mut cfg = test_config();
+    cfg.plugins = Some(toml::from_str("[terminal]\nhterm_size = 0\n").expect("TOML"));
+
+    let terminal_plugin = repo_plugin("terminal/plugin.js");
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(cfg)
+        .build()?;
+    // 同 `..._hterm_size_applies`：先定视口，再**分两次 pump**（load 与用它的命令分开）
+    let area = helix_view::graphics::Rect::new(0, 0, 120, 30);
+    app.compositor.resize(area);
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", terminal_plugin.display()),
+    )
+    .await?;
+    pump(&mut app, ":hterm<ret>").await?;
+
+    let _ = render_rows(&mut app, area);
+    let id = app.compositor.layout_tree().active();
+    let rect = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(id)
+        .expect("终端叶子应有矩形");
+    assert_eq!(
+        rect.height, 15,
+        "size=0 应回落到默认 15，实得 {}",
+        rect.height
+    );
+    Ok(())
+}

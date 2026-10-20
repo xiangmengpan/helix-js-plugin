@@ -17,6 +17,21 @@ helix.term_clear(id);                // 清屏
 helix.set_terminal_mode(id, "floating");  // dock|fullscreen|floating|minimized
 ```
 
+### 可配置项（`config.toml` 的 `[plugins.terminal]`）
+
+需要内置 `terminal` 插件被加载；改完 `:config-reload` 即可（不必重启）。
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `shell` | string | `""` | 终端用的 shell 可执行名；**留空** ⇒ 读 `$SHELL`，再回退 `bash`。注意与核心 `[editor] shell`（`:sh`/管道的**数组**）不是一回事 |
+| `float_size` | number | `10` | `:term` 浮动终端的初始高度（行） |
+| `vterm_size` | number | `40` | `:vterm` 右侧分屏宽度（列） |
+| `hterm_size` | number | `15` | `:hterm` 底部分屏高度（行） |
+
+- 尺寸是**绝对行/列数**，核心按视口换算成比例再 `clamp(0.1, 0.9)`（所以窗口太小时会偏）。
+- `0` / 负数 / 非数字 ⇒ 回落默认（不会有 0 行的终端）。
+- 自查某插件认哪些键：`helix.get_config_docs("terminal")`。
+
 ### 四种显示模式
 
 | 模式 | 行为 |

@@ -584,6 +584,21 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
 /// `std::sync::MutexGuard` 不是 `Send`,multi_thread 的测试容器会拒绝编译。
 static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// 插件配置缓存是**进程级**的（`helix-js/src/state.rs` 的 `CONFIG_SCHEMAS` /
+/// `PLUGIN_OVERRIDES` / `CONFIGS` 全是 `OnceLock`）⇒ 两个并行用例写不同的
+/// `[plugins.<name>]` 会互相覆盖（实测：两个 terminal 尺寸用例同跑时，一方读到对方的值）。
+/// 凡是给 `Config.plugins` 塞值的用例，先拿这把锁。
+///
+/// ```ignore
+/// let _cfg = plugin_config_lock().await;
+/// ```
+pub static PLUGIN_CONFIG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 拿插件配置锁（见 [`PLUGIN_CONFIG_LOCK`]）
+pub async fn plugin_config_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    PLUGIN_CONFIG_LOCK.lock().await
+}
+
 /// 只**读** cwd 的用例(不改它)拿这把锁,防止别的用例在此期间 `chdir` 走。
 ///
 /// ```ignore
