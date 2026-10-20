@@ -4564,12 +4564,26 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
 
 /// doc-change 专用入口：防抖窗口内合并的变更范围随事件序列化（doc.changes）。
 /// `js` 为**宿主**(D-2 泵入口的第一参);调用点没有宿主时传 `None`(legacy 隐式解析)。
-pub(crate) fn emit_plugin_doc_change(
+/// `doc-change` 的**逐文档**入口：`doc_id` 进 payload，`path`/`text` 是该文档自身的快照
+/// （不是当前 view 的）。后台 buffer 被 `by_path` 改写时用这个。
+pub(crate) fn emit_plugin_doc_change_for(
     js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
+    doc_id: u64,
+    path: Option<String>,
+    text: String,
     changes: &[helix_js::DocChange],
 ) {
-    emit_plugin_event_impl(js, editor, "doc-change", None, Some(changes), None)
+    emit_plugin_event_impl_ctx(
+        js,
+        editor,
+        "doc-change",
+        None,
+        Some(changes),
+        None,
+        Some(doc_id),
+        Some((path, text)),
+    )
 }
 
 /// `cwd-change` 专用入口：**只在真 chdir 成功后**调（见 `apply_directory_change`）。
@@ -4647,10 +4661,35 @@ fn emit_plugin_event_impl(
     // 只有 `cwd-change` 用:(新 cwd, 旧 cwd);两值都在发射点成立，不在 ctx 里
     cwd: Option<(&Path, Option<&Path>)>,
 ) {
+    emit_plugin_event_impl_ctx(js, editor, name, extra, changes, cwd, None, None);
+}
+
+/// 同 [`emit_plugin_event_impl`]，但允许**显式指定事件的文档快照**与 doc id。
+///
+/// 为什么需要：`doc-change` 要**逐文档**派发（后台 buffer 的变更也要发），而
+/// `command_context(editor)` 只能拿到当前 view 的文档。`doc_id` 进 payload 让监听方
+/// 能分辨；`doc_override` 提供该文档的 path/text（后台文档没有光标 ⇒ cursor/selection 记 0）。
+#[allow(clippy::too_many_arguments)]
+fn emit_plugin_event_impl_ctx(
+    js: Option<&mut helix_js::host::JsHost>,
+    editor: &mut Editor,
+    name: &str,
+    extra: Option<&str>,
+    changes: Option<&[helix_js::DocChange]>,
+    cwd: Option<(&Path, Option<&Path>)>,
+    doc_id: Option<u64>,
+    doc_override: Option<(Option<String>, String)>,
+) {
     if !helix_js::has_handlers(name) {
         return;
     }
-    let ctx = command_context(editor);
+    let mut ctx = command_context(editor);
+    if let Some((path, text)) = doc_override {
+        ctx.path = path;
+        ctx.text = text;
+        ctx.cursor = (0, 0);
+        ctx.selection = ((0, 0), (0, 0));
+    }
 
     let emitted = if let Some((cwd, prev)) = cwd {
         match js {
@@ -4659,9 +4698,15 @@ fn emit_plugin_event_impl(
         }
     } else {
         match (js, changes) {
-            (Some(host), Some(changes)) => host.emit_doc_change(&ctx, changes),
+            (Some(host), Some(changes)) => match doc_id {
+                Some(id) => host.emit_doc_change_for(&ctx, id, changes),
+                None => host.emit_doc_change(&ctx, changes),
+            },
             (Some(host), None) => host.emit_event(name, &ctx, extra),
-            (None, Some(changes)) => helix_js::emit_doc_change(&ctx, changes),
+            (None, Some(changes)) => match doc_id {
+                Some(id) => helix_js::emit_doc_change_for(&ctx, id, changes),
+                None => helix_js::emit_doc_change(&ctx, changes),
+            },
             (None, None) => helix_js::emit_event(name, &ctx, extra),
         }
     };

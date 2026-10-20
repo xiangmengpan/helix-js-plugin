@@ -1021,40 +1021,54 @@ impl Application {
     pub async fn handle_idle_timeout(&mut self) {
         // JS 插件 doc-change 钩子：idle 间隔 = 防抖；revision 前进才触发
         if helix_js::has_handlers("doc-change") {
-            use std::cell::Cell;
+            use std::cell::RefCell;
+            use std::collections::HashMap;
             thread_local! {
-                // 按 (doc 地址, revision) 记录：revision 是每文档计数,全局单值会让不同文档
-                // 同 revision 互相吞事件。DocumentId 每 Editor 从 1 起(测试各 app 会撞),
-                // 用地址作会话内身份。
-                // ponytail: 同地址复用且同 revision 才会误吞,现实不可达
-                static LAST_REVISION: Cell<Option<(*const helix_view::document::Document, usize)>> =
-                    const { Cell::new(None) };
+                // 按 (doc 地址 → revision) 记录：revision 是**每文档**计数，单个槽位会让
+                // 不同文档互相吞事件（切文档后旧 revision 与新文档同值就漏发）。
+                // 用地址而不是 DocumentId 作会话内身份：DocumentId 每 Editor 从 1 起，
+                // 同进程内的多个 Application（集成测试）会撞号。
+                static LAST_REVISION: RefCell<HashMap<*const helix_view::document::Document, usize>> =
+                    RefCell::new(HashMap::new());
             }
-            let (doc, rev) = {
-                let (_, doc) = helix_view::current_ref!(self.editor);
-                // History 非 Copy，Cell::get 不可用；沿用 document.rs 的 take/set 模式读 revision
+            // 阶段①：逐文档比对 revision，把**前进的**文档的 pending changes 取走。
+            // 首次见到某文档只登记、不发事件（否则启动后第一轮 idle 会给每个打开的文件发一条）。
+            let mut changed: Vec<(u64, Option<String>, String, Vec<helix_js::DocChange>)> =
+                Vec::new();
+            let mut alive: Vec<*const helix_view::document::Document> = Vec::new();
+            for (id, doc) in self.editor.documents.iter_mut() {
+                let ptr = doc as *const helix_view::document::Document;
+                alive.push(ptr);
+                // History 非 Copy；沿用 document.rs 的 take/set 模式读 revision
                 let history = doc.history.take();
                 let rev = history.current_revision();
                 doc.history.set(history);
-                (doc as *const helix_view::document::Document, rev)
-            };
-            let changed = LAST_REVISION.with(|c| {
-                let prev = c.get();
-                if prev != Some((doc, rev)) {
-                    c.set(Some((doc, rev)));
-                    true
-                } else {
-                    false
+                let advanced = LAST_REVISION
+                    .with(|m| m.borrow_mut().insert(ptr, rev))
+                    .is_some_and(|prev| prev != rev);
+                // 两条判据缺一不可：
+                // - revision 前进（命令路径：undo/redo 等只动 history 的写）
+                // - pending 非空（**插件编辑**这类不 append 到命令历史的写；by_path 改后台
+                //   buffer 就落在这里 —— 只看 revision 会漏发）
+                if advanced || doc.has_pending_changes() {
+                    let changes = doc.take_pending_changes();
+                    let path = doc.path().map(|p| p.to_string_lossy().into_owned());
+                    let text = doc.text().to_string();
+                    changed.push((id.as_u64(), path, text, changes));
                 }
-            });
-            if changed {
-                let changes = {
-                    let (_, doc) = helix_view::current!(self.editor);
-                    doc.take_pending_changes()
-                };
-                crate::commands::typed::emit_plugin_doc_change(
+            }
+            // 关掉的文档不留条目（地址可能被复用）
+            LAST_REVISION.with(|m| m.borrow_mut().retain(|k, _| alive.contains(k)));
+            // 当前文档排最后：监听方若只处理最后一条，看到的仍是"用户正在看的那个"
+            let current_id = helix_view::current_ref!(self.editor).1.id().as_u64();
+            changed.sort_by_key(|(id, ..)| *id == current_id);
+            for (doc_id, path, text, changes) in changed {
+                crate::commands::typed::emit_plugin_doc_change_for(
                     self.js_host.as_deref_mut(),
                     &mut self.editor,
+                    doc_id,
+                    path,
+                    text,
                     &changes,
                 );
             }

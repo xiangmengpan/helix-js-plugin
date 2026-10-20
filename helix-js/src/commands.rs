@@ -1064,7 +1064,7 @@ pub fn has_handlers(name: &str) -> bool {
 /// 触发事件：按注册顺序调用处理器；开始时清空编辑队列（防残留）。
 /// extra 用于 mode-change 的 mode 字符串参数。
 pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Result<()> {
-    emit_event_impl(name, ctx, extra, None, 0, None)
+    emit_event_impl(name, ctx, extra, None, 0, None, None)
 }
 
 /// `cwd-change` 事件入口：**只有真正 chdir 成功的地方**可以调（`helix-term` 的
@@ -1074,7 +1074,7 @@ pub fn emit_event(name: &str, ctx: &CommandContext, extra: Option<&str>) -> Resu
 /// 字符串；"再多一个隐式参数" 的替代方案（宿主字段暂存）本项目已明确废弃
 /// （见 `emit_layout_change_kind` 上方的注释）⇒ 和 `emit_startup` 同款：走显式参数。
 pub fn emit_cwd_change(ctx: &CommandContext, prev: Option<&Path>, cwd: &Path) -> Result<()> {
-    match emit_event_impl("cwd-change", ctx, None, None, 0, Some((cwd, prev))) {
+    match emit_event_impl("cwd-change", ctx, None, None, 0, Some((cwd, prev)), None) {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change/startup 同款：**让失败可见**（静默 log 曾让人误判多轮 ✗）
@@ -1100,7 +1100,7 @@ pub fn emit_cwd_change(ctx: &CommandContext, prev: Option<&Path>, cwd: &Path) ->
 /// 而内建 dashboard 正是靠这个判断"要不要显示启动屏"的(实测 bug:带路径打开文件时
 /// dashboard 照样弹出,和文件选择器叠在一起)。
 pub fn emit_startup(ctx: &CommandContext, open_paths: usize) -> Result<()> {
-    match emit_event_impl("startup", ctx, None, None, open_paths, None) {
+    match emit_event_impl("startup", ctx, None, None, open_paths, None, None) {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）
@@ -1127,7 +1127,7 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
         selection: ((0, 0), (0, 0)),
         docs: Vec::new(),
     };
-    match emit_event_impl("layout-change", &ctx, kind, None, 0, None) {
+    match emit_event_impl("layout-change", &ctx, kind, None, 0, None, None) {
         Ok(()) => Ok(()),
         Err(e) => {
             // **让失败可见**：只 log::warn 会静默（我曾因此误判多轮 ✗）
@@ -1138,8 +1138,15 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
 }
 
 /// doc-change 事件入口：参数附带防抖窗口内合并的变更范围（doc.changes）。
+///
+/// `doc_id` 记 0 = "不知道/当前文档"（老调用点保持原形状）。
 pub fn emit_doc_change(ctx: &CommandContext, changes: &[DocChange]) -> Result<()> {
-    emit_event_impl("doc-change", ctx, None, Some(changes), 0, None)
+    emit_doc_change_for(ctx, 0, changes)
+}
+
+/// 同 [`emit_doc_change`]，但**显式带文档 id**（后台 buffer 的变更靠它分辨）。
+pub fn emit_doc_change_for(ctx: &CommandContext, doc_id: u64, changes: &[DocChange]) -> Result<()> {
+    emit_event_impl("doc-change", ctx, None, Some(changes), 0, None, Some(doc_id))
 }
 
 /// 事件触发公共实现；changes 为 Some 时序列化合并范围到 doc.changes。
@@ -1152,6 +1159,8 @@ fn emit_event_impl(
     startup_open_paths: usize,
     // 只有 `cwd-change` 用:(新 cwd, 旧 cwd) —— 两个值都在**发射点**成立,别处拿不到
     cwd: Option<(&Path, Option<&Path>)>,
+    // 只有 `doc-change` 用:被改文档的 id(逐文档派发时区分;None = 调用点没给 ⇒ 记 0)
+    doc_id: Option<u64>,
 ) -> Result<()> {
     crate::init();
     crate::state::with_edits(|c| c.clear());
@@ -1205,7 +1214,15 @@ fn emit_event_impl(
         let ev_changes = changes.map(|c| changes_to_ev(c, ctx)).unwrap_or_default();
         let payload = payload_js(
             engine,
-            &build_event_payload(name, ctx, extra, &ev_changes, startup_open_paths, cwd),
+            &build_event_payload(
+                name,
+                ctx,
+                extra,
+                &ev_changes,
+                startup_open_paths,
+                cwd,
+                doc_id,
+            ),
         )
         .map_err(|e| anyhow!("failed to build event payload: {e}"))?;
         let undefined = JsValue::undefined();
@@ -1346,6 +1363,7 @@ fn build_event_payload(
     changes: &[EvChange],
     startup_open_paths: usize,
     cwd: Option<(&Path, Option<&Path>)>,
+    doc_id: Option<u64>,
 ) -> EventPayload {
     let hdr = BusHeader::new(name);
     let cursor = ctx.cursor.into();
@@ -1379,6 +1397,7 @@ fn build_event_payload(
         }),
         "doc-change" => EventPayload::DocChange(DocChangePayload {
             hdr,
+            doc_id: doc_id.unwrap_or(0),
             path: path(),
             cursor,
             selection,

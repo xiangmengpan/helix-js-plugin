@@ -180,3 +180,64 @@ async fn plugin_doc_change_replace_range() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// 计划任务 6：**后台 buffer** 被改写时也要发 `doc-change`，并带 `doc_id`/`path`
+/// （此前只看当前文档 ⇒ 插件改其它 buffer 时监听方永远收不到通知，缓存会陈旧）。
+#[tokio::test(flavor = "multi_thread")]
+async fn doc_change_fires_for_background_doc() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "aaa\n")?;
+    let b = dir.path().join("b.txt");
+    std::fs::write(&b, "bbb\n")?;
+    let plugin = dir.path().join("bg.js");
+    std::fs::write(
+        &plugin,
+        format!(
+            r#"
+let seen = [];
+helix.on("doc-change", (doc, ev) => {{
+    seen.push(ev.doc_id + ":" + (doc.path ?? "none"));
+    helix.echo("chg:" + seen.join("|"));
+}});
+helix.register_command("touch-bg", () => {{
+    const d = helix.by_path("{}");
+    if (!d) {{ helix.echo("no-bg"); return; }}
+    d.insert(0, 0, "X");
+}});
+"#,
+            b.display()
+        ),
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(&a, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            // 把 b 打开再切回 a ⇒ b 成为**后台** buffer
+            (Some(&format!(":open {}<ret>", b.display())), None),
+            (Some(&format!(":open {}<ret>", a.display())), None),
+            (
+                Some(":touch-bg<ret>"),
+                Some(&|app| {
+                    let st = app
+                        .editor
+                        .get_status()
+                        .map(|(s, _)| s.to_string())
+                        .unwrap_or_default();
+                    assert!(!st.contains("no-bg"), "by_path 没找到后台 buffer: {st}");
+                    assert!(
+                        st.contains("b.txt"),
+                        "后台 doc 的 doc-change 没发出来（应带 path=b.txt）: {st}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

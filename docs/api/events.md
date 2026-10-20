@@ -11,7 +11,7 @@
 | `cwd-change` | 工作目录**真的**变了(`:cd` / `:lcd` / `:pop-directory`，发在 chdir **之后**) | `(doc, payload)`，见下方「cwd-change」 |
 | `buffer-open` | `:open` 打开文件后 | `(doc)` |
 | `buffer-close` | 关闭(quit/force_quit 路径)前 | `(doc)` |
-| `doc-change` | 文档文本变化,编辑停顿 250ms 后(idle 防抖) | `(doc)` |
+| `doc-change` | 文档文本变化,编辑停顿 250ms 后(idle 防抖);**逐文档**派发(后台 buffer 的变更也发) | `(doc)` |
 | `theme-change` | 主题变化后 | `(doc)`(同 buffer-open 签名) |
 | `lsp-diagnostics` | 诊断更新 | `(docId, diags)` |
 | `cursor-move` | 光标移动(帧级节流) | `(docId, {row, col, mode})` |
@@ -62,10 +62,19 @@ helix.on("startup", (doc, ev) => {
 
 ```js
 helix.on("doc-change", (doc) => {
+  doc.type     // "doc-change"
+  doc.path     // 被改的文档（后台 buffer 也在内）
+  doc.doc_id   // 逐文档派发时靠它分辨（同一轮 idle 可能来多条）
   doc.changes  // [{ oldRange: {start:{row,col}, end:{row,col}},
                 //    newRange: {start:{row,col}, end:{row,col}} }]
 });
 ```
+
+**逐文档**：所有有变更的已打开文档各发一条（当前文档**最后**发）。后台文档的 `doc` 是它自己的
+快照（`path`/`text`/`changes` 都是它的），但**没有光标** ⇒ `cursor` 恒为 `{row:0,col:0}`、
+`selection` 为零长。想据此刷新缓存的监听方只该看 `path`/`doc_id`/`changes`。
+
+**首次见到某文档不发事件**（只登记 revision）：否则启动后第一轮 idle 会给每个打开的文件发一条。
 
 - 合并语义:窗口内多次变更合并为包围范围(old = 各 old 起点最小..终点最大,new 同理);单次变更即其本身。
 - 坐标是各变更发生时刻的坐标(非当前文本),窗口语义由插件自行处理。
@@ -86,7 +95,7 @@ helix.on("save", (doc) => {
 
 **优缺点**
 - 优点：事件丰富(文档/模式/终端/光标/诊断);多处理器按序;抛错不阻断;doc-change 带合并范围(自动格式化/补全联动基础)。
-- 局限：事件只带当前文档(其他分屏不触发);doc 是只读快照 + 编辑队列;`save` 前触发语义需注意(编辑在保存前应用);doc-change 250ms 防抖(快速连续输入会合并)。
+- 局限：除 `doc-change` 外的事件只带**当前**文档(其他分屏不触发);doc 是只读快照 + 编辑队列;`save` 前触发语义需注意(编辑在保存前应用);doc-change 250ms 防抖(快速连续输入会合并)。
 
 ### `layout-change`:形状**恒定** `(kind, doc)`
 

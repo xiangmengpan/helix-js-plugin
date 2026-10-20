@@ -379,6 +379,16 @@ impl JsHost {
         self.pump(|| crate::commands::emit_doc_change(ctx, changes))
     }
 
+    /// 泵入口·`doc-change` 的**逐文档**版(显式带 doc id;后台 buffer 变更用)
+    pub fn emit_doc_change_for(
+        &mut self,
+        ctx: &crate::types::CommandContext,
+        doc_id: u64,
+        changes: &[crate::types::DocChange],
+    ) -> anyhow::Result<()> {
+        self.pump(|| crate::commands::emit_doc_change_for(ctx, doc_id, changes))
+    }
+
     /// 泵入口·`startup`;`ctx` 是**启动后的当前 buffer**(处理器据此判断"有没有打开文件")
     pub fn emit_startup(
         &mut self,

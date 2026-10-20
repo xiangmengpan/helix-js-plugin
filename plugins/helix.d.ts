@@ -415,6 +415,9 @@ interface EventCwdChange extends EventHeader {
   prev_cwd: string | null;
 }
 interface EventDocChange extends EventDoc {
+  /** 被改的文档 id。**逐文档派发**：同一轮 idle 可能发多条（每个有变更的文档一条），
+   *  靠它分辨；`doc` 是该文档自己的快照（后台文档没有光标 ⇒ `cursor` 恒 `{row:0,col:0}`）。 */
+  doc_id: number;
   changes: EvChange[];
 }
 interface EventPaneModeChange extends EventHeader {

@@ -1726,6 +1726,12 @@ impl Document {
         std::mem::take(&mut self.pending_doc_changes)
     }
 
+    /// 是否有尚未被 `doc-change` 事件取走的变更
+    /// （`helix.reload`/插件编辑等**不经过命令历史**的写入也记在这里）。
+    pub fn has_pending_changes(&self) -> bool {
+        !self.pending_doc_changes.is_empty()
+    }
+
     fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
         if undo {
             self.append_changes_to_history(view);

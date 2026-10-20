@@ -954,6 +954,8 @@ pub struct CwdChangePayload {
 pub struct DocChangePayload {
     #[serde(flatten)]
     pub hdr: BusHeader,
+    /// 被改的文档 id（**逐文档派发**：同一轮 idle 可能发多条，靠它分辨）
+    pub doc_id: u64,
     pub path: Option<String>,
     pub cursor: EvPos,
     pub selection: EvSelection,
