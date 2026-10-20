@@ -88,6 +88,21 @@ pub(crate) fn pick_asset(assets: &[ArchiveAsset]) -> Option<&ArchiveAsset> {
         .find_map(|t| assets.iter().find(|a| a.target == t))
 }
 
+/// 动态版本校验:任一 url 模板(单模板或逐平台资产)含 `{version}` 时,
+/// 必须给 `version` 或显式 `needs-version = true`。
+fn version_gate_ok(
+    url: &Option<String>,
+    assets: &[ArchiveAsset],
+    version: Option<&str>,
+    needs_version: bool,
+) -> bool {
+    if version.is_some() || needs_version {
+        return true;
+    }
+    let single = url.as_deref().unwrap_or("");
+    !single.contains("{version}") && !assets.iter().any(|a| a.url.contains("{version}"))
+}
+
 /// 安装方式(owned;config 扩展配方经 TOML 构造)
 #[derive(Debug, Clone)]
 pub enum Install {
@@ -323,9 +338,21 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         .and_then(Value::as_str)
         .unwrap_or(name)
         .to_string();
-    let install = match (cmd, url.as_deref().filter(|u| !u.is_empty())) {
-        (Some(_), Some(_)) => return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一")),
-        (Some(cmd), None) => {
+    // **有下载源** = 单模板 url 非空 **或** 给了逐平台 asset[](Mason 形状)。
+    // 早先只看 url ⇒ "只写 asset[]" 的配方会掉进占位分支:strip 被强制成 1、bin 被忽略
+    // (用 bin-name),单文件归档被 strip 掉 ⇒ 报"找不到可执行"(实测踩到)。
+    let has_url = url.as_deref().is_some_and(|u| !u.is_empty());
+    let has_source = has_url || !assets.is_empty();
+    // {version} 校验要**同时**看单模板与逐平台资产:否则只有 asset[] 的动态版本配方
+    // 会绕过 needs-version 检查,装的时候才报"未支持占位"。
+    if !version_gate_ok(&url, &assets, version.as_deref(), needs_version_flag) {
+        return Err(anyhow!(
+            "registry '{name}': url 含 {{version}} 占位则必填 version(或设 needs-version = true)"
+        ));
+    }
+    let install = match (cmd, has_source) {
+        (Some(_), true) => return Err(anyhow!("registry '{name}': url 与 cmd 只能二选一")),
+        (Some(cmd), false) => {
             let args: Vec<String> = match tbl.get("args") {
                 Some(Value::Array(a)) => a
                     .iter()
@@ -335,12 +362,8 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
             };
             Install::Tool { cmd, args }
         }
-        (None, Some(url)) => {
-            if url.contains("{version}") && version.is_none() && !needs_version_flag {
-                return Err(anyhow!(
-                    "registry '{name}': url 含 {{version}} 占位则必填 version(或设 needs-version = true)"
-                ));
-            }
+        (None, true) => {
+            let url = url.unwrap_or_default();
             let sha256 = tbl
                 .get("sha256")
                 .and_then(Value::as_str)
@@ -359,7 +382,7 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
                 bin_rel: need("bin")?,
             }
         }
-        (None, None) => {
+        (None, false) => {
             // 显式 url = "" → 占位(列表 no source;description 写安装引导)
             if url.as_deref() == Some("") {
                 Install::Archive {

@@ -135,6 +135,7 @@ url = "file://{}"
             description = "d"
             homepage = "h"
             bin = "ra"
+            needs-version = true   # asset url 也含 {version} ⇒ 与单模板同一条闸门
             [[ra.asset]]
             target = "linux_x64_musl"
             url = "https://e/{version}/ra-x86_64-unknown-linux-musl.tar.gz"
@@ -204,6 +205,20 @@ url = "file://{}"
     }
 
     /// 写一个含 bin 的 tar.gz 到 path(供 file:// 假源)
+    /// 单文件 zip(无 wrapper 目录 ⇒ strip=0)。store 模式下 zip **不带** unix mode,
+    /// 正好模拟 terraform-ls / clojure-lsp 那类"只有 zip 产物"的配方。
+    fn make_zip(path: &Path, bin_name: &str) -> Result<String> {
+        use std::io::Write as _;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let script = format!("#!/bin/sh\necho '{bin_name} 1.0.0'\n");
+        let f = std::fs::File::create(path)?;
+        let mut zw = zip::ZipWriter::new(f);
+        zw.start_file::<_, ()>(bin_name, zip::write::SimpleFileOptions::default())?;
+        zw.write_all(script.as_bytes())?;
+        zw.finish()?;
+        sha256_hex(path)
+    }
+
     fn make_tar_gz(path: &Path, bin_name: &str) -> Result<String> {
         std::fs::create_dir_all(path.parent().unwrap())?;
         let file = std::fs::File::create(path)?;
@@ -287,6 +302,170 @@ url = "file://{}"
         let out = root.join("x");
         extract_archive(&arc, &out, 1).unwrap();
         assert!(out.join("demo-bin").is_file(), "strip 顶层后 bin 在位");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **zip 产物必须可执行**。回归:解包只 `File::create` 写字节,不带 unix mode ⇒
+    /// 装出来的 bin 是 0644,软链过去 `--version` 直接 permission denied。
+    /// 现实影响:terraform-ls / clojure-lsp / elixir-ls **只有 zip** ⇒ 这些配方此前装不了。
+    /// **联网**下载单文件(默认 `#[ignore]`):隔离验证 ureq+代理这一层。
+    ///
+    /// ```bash
+    /// SM_URL=<url> cargo test -p helix-term --lib live_download -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn live_download_smoke() {
+        let Ok(url) = std::env::var("SM_URL") else {
+            eprintln!("跳过:未设 SM_URL");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("sm-dl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("out.bin");
+        let started = std::time::Instant::now();
+        download_to(&url, &dest, |_, _| {}).expect("download");
+        let n = std::fs::metadata(&dest).unwrap().len();
+        println!("✓ {n} bytes in {:?}", started.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **只有 `[[…asset]]` 而没有 `url`** 的配方必须按"有下载源"处理,
+    /// 并且 `strip`/`bin` 取配方自己的值。
+    ///
+    /// 回归(实测踩到):归一化只把 `url` 补成空串,分支判断又用
+    /// `url.as_deref().filter(|u| !u.is_empty())` ⇒ 落到**占位**分支,`strip` 被强制成 1、
+    /// `bin` 被忽略(用 `bin-name`)⇒ 单文件归档被 strip 掉,报"找不到可执行"。
+    #[test]
+    fn asset_only_recipe_uses_its_own_strip_and_bin() {
+        let _m = sm_lock();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let arc = root.join("src/rel.zip");
+        let _sha = make_zip(&arc, "asset-only").unwrap();
+        let target = *registry::platform_targets()
+            .last()
+            .expect("本平台应有 target");
+        let doc = format!(
+            r#"
+[server-manager.registry.asset-only]
+kind = "lsp"
+languages = ["x"]
+strip = 0
+bin = "asset-only"
+
+[[server-manager.registry.asset-only.asset]]
+target = "{target}"
+url = "file://{}"
+"#,
+            arc.display()
+        );
+        let parsed: toml::Table = toml::from_str(&doc).unwrap();
+        let sm = parsed.get("server-manager").unwrap().as_table().unwrap();
+        apply_server_config(Some(sm)).unwrap();
+
+        let spec = registry::get("asset-only").expect("asset-only 应在注册表里");
+        install_spec(&spec, "").unwrap_or_else(|e| panic!("只有 asset[] 的配方应可装: {e:#}"));
+        assert!(managed_bin("asset-only").exists(), "managed/bin 软链已建");
+        assert_eq!(
+            detect_version(&managed_bin("asset-only")).unwrap(),
+            "asset-only 1.0.0",
+            "装出来的应该是脚本本体(strip=0),不是被 strip 成空目录"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 代理环境变量解析(纯逻辑,不联网):小写优先、空串视为未设。
+    ///
+    /// 回归背景:`ureq` 2.x 不读 `*_PROXY`(curl 会)⇒ 有代理的机器上 `:server install`
+    /// 直接挂在直连、UI 冻住且无报错("能 curl 下、hx 下不了")。
+    #[test]
+    fn proxy_env_is_read_lowercase_first() {
+        let _m = sm_lock();
+        // 四个键全清,避免宿主环境干扰
+        let _g1 = EnvGuard::new("https_proxy", String::new());
+        let _g2 = EnvGuard::new("HTTPS_PROXY", String::new());
+        let _g3 = EnvGuard::new("http_proxy", String::new());
+        let _g4 = EnvGuard::new("HTTP_PROXY", String::new());
+        let _g5 = EnvGuard::new("all_proxy", String::new());
+        let _g6 = EnvGuard::new("ALL_PROXY", String::new());
+        assert!(proxy_from_env().is_none(), "全空 ⇒ 不走代理(直连)");
+        std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:7890");
+        assert!(proxy_from_env().is_some(), "大写也能读到");
+        std::env::set_var("https_proxy", "http://127.0.0.1:7891");
+        assert!(proxy_from_env().is_some(), "小写优先(不 panic 即可,");
+        std::env::remove_var("https_proxy");
+        std::env::remove_var("HTTPS_PROXY");
+        assert!(proxy_from_env().is_none(), "清掉后回到直连");
+    }
+
+    /// **联网**验证某条配方真能装(默认 `#[ignore]`,不进 CI)。
+    ///
+    /// 用途:录/改配方后证明"URL + strip + bin + 执行位"四件事同时对 —— 光看 HEAD 200
+    /// 不够(归档内布局、`.exe` 后缀、zip 执行位都只有真装一遍才暴露)。
+    ///
+    /// ```bash
+    /// SM_RECIPE=terraform-ls SM_RECIPE_VERSION=0.39.0 \
+    ///   cargo test -p helix-term --lib live_recipe -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn live_recipe_install_smoke() {
+        let Ok(name) = std::env::var("SM_RECIPE") else {
+            eprintln!("跳过:未设 SM_RECIPE(见本测试注释的跑法)");
+            return;
+        };
+        let version = std::env::var("SM_RECIPE_VERSION").unwrap_or_default();
+        let root = std::env::temp_dir().join(format!("sm-live-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("managed")).unwrap();
+        let _managed = EnvGuard::new(
+            "SM_MANAGED_DIR",
+            root.join("managed").to_string_lossy().into_owned(),
+        );
+        let _langs = EnvGuard::new(
+            "SM_LANGS_TOML",
+            root.join("languages.toml").to_string_lossy().into_owned(),
+        );
+        // 用**仓库**那份配方文件(不带用户的 ~/.config 覆盖),保证验的是要提交的内容
+        let recipes =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../contrib/server-manager-recipes.toml");
+        let _rec = EnvGuard::new("SM_SERVER_RECIPES", recipes.to_string_lossy().into_owned());
+
+        apply_server_config(None).expect("读配方");
+        install(&name, &version).unwrap_or_else(|e| panic!("装 {name} {version} 失败: {e:#}"));
+
+        let link = managed_bin(&name);
+        assert!(link.exists(), "managed/bin/{name} 应存在");
+        let v = detect_version(&link).unwrap_or_else(|| panic!("{name} 装出来了但跑不起来"));
+        println!("✓ {name} -> {v}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn zip_payload_bin_is_executable() {
+        let _m = sm_lock();
+        let root = tmp_root();
+        let _guard = EnvGuard::new("SM_MANAGED_DIR", root.to_string_lossy().into_owned());
+        let arc = root.join("src/rel.zip");
+        let sha = make_zip(&arc, "demo-zip").unwrap();
+        let src = format!("file://{}", arc.display());
+        install_adhoc("demo-zip", "demo-zip", "demo-zip", 0, &src, &sha).unwrap();
+
+        let link = managed_bin("demo-zip");
+        assert!(link.exists(), "bin 软链已建");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&link).unwrap().permissions().mode();
+            assert!(
+                mode & 0o111 != 0,
+                "zip 装出来的 bin 必须可执行,实际 {mode:o}"
+            );
+        }
+        // 功能证明:能真的跑起来(exec 位不对这里会拿不到版本)
+        assert_eq!(detect_version(&link).unwrap(), "demo-zip 1.0.0");
         let _ = std::fs::remove_dir_all(&root);
     }
 

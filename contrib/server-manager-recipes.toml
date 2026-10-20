@@ -272,17 +272,45 @@ homepage = "https://github.com/erlang-ls/erlang_ls"
 
 [server-manager.registry.elixir-ls]
 kind = "lsp"
-url = ""
 languages = ["elixir"]
-description = "Elixir LSP (elixir-ls) — install: needs Erlang/Elixir; download the release zip or use asdf/mise"
+description = "Elixir LSP(通用 zip;需本机有 elixir/erlang 运行时);版本填 0.x(不带 v)"
 homepage = "https://github.com/elixir-lsp/elixir-ls"
+strip = 0
+bin = "language_server.sh"
+bin-name = "elixir-ls"
+needs-version = true
+# 单资产(全平台同一个 zip):根目录就是 language_server.sh + lib/ ⇒ strip=0
+url = "https://github.com/elixir-lsp/elixir-ls/releases/download/v{version}/elixir-ls-v{version}.zip"
 
 [server-manager.registry.lua-language-server]
 kind = "lsp"
-url = ""
 languages = ["lua"]
-description = "Lua LSP (sumneko) — download the platform asset from LuaLS/lua-language-server releases (no windows patch)"
+description = "Lua LSP (LuaLS) — 官方 release 资产;版本填 3.x(不带 v)。已验证 3.19.2"
 homepage = "https://github.com/LuaLS/lua-language-server"
+strip = 0
+bin = "bin/lua-language-server"
+needs-version = true
+# 归档无顶层 wrapper(bin/ 直接在根)⇒ strip=0;各平台文件名不同 ⇒ 逐平台资产
+[[server-manager.registry.lua-language-server.asset]]
+target = "linux_x64"
+url = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-linux-x64.tar.gz"
+
+[[server-manager.registry.lua-language-server.asset]]
+target = "linux_arm64"
+url = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-linux-arm64.tar.gz"
+
+[[server-manager.registry.lua-language-server.asset]]
+target = "darwin_x64"
+url = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-darwin-x64.tar.gz"
+
+[[server-manager.registry.lua-language-server.asset]]
+target = "darwin_arm64"
+url = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-darwin-arm64.tar.gz"
+
+[[server-manager.registry.lua-language-server.asset]]
+target = "win_x64"
+url = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-win32-x64.zip"
+bin = "bin/lua-language-server.exe"
 
 [server-manager.registry.languageserver-r]
 kind = "lsp"
@@ -307,17 +335,68 @@ homepage = "https://github.com/PMunch/nimlsp"
 
 [server-manager.registry.clojure-lsp]
 kind = "lsp"
-url = ""
 languages = ["clojure"]
-description = "Clojure LSP (clojure-lsp) — install: official script/brew/mise, platform asset"
+description = "Clojure LSP(native 单文件,无需 JVM);版本形如 2026.10.15-11.42.38(不带 v)"
 homepage = "https://clojure-lsp.io"
+strip = 0
+bin = "clojure-lsp"
+needs-version = true
+# native 产物:zip 内单文件 clojure-lsp(每版带 .sha256,如需固定版本可另配 sha256)
+[[server-manager.registry.clojure-lsp.asset]]
+target = "linux_x64"
+url = "https://github.com/clojure-lsp/clojure-lsp/releases/download/{version}/clojure-lsp-native-linux-amd64.zip"
+
+[[server-manager.registry.clojure-lsp.asset]]
+target = "linux_arm64"
+url = "https://github.com/clojure-lsp/clojure-lsp/releases/download/{version}/clojure-lsp-native-linux-aarch64.zip"
+
+[[server-manager.registry.clojure-lsp.asset]]
+target = "darwin_x64"
+url = "https://github.com/clojure-lsp/clojure-lsp/releases/download/{version}/clojure-lsp-native-macos-amd64.zip"
+
+[[server-manager.registry.clojure-lsp.asset]]
+target = "darwin_arm64"
+url = "https://github.com/clojure-lsp/clojure-lsp/releases/download/{version}/clojure-lsp-native-macos-aarch64.zip"
+
+[[server-manager.registry.clojure-lsp.asset]]
+target = "win_x64"
+url = "https://github.com/clojure-lsp/clojure-lsp/releases/download/{version}/clojure-lsp-native-windows-amd64.zip"
+bin = "clojure-lsp.exe"
 
 [server-manager.registry.texlab]
 kind = "lsp"
-url = ""
 languages = ["latex"]
-description = "LaTeX LSP (texlab) — download the platform asset from latex-lsp/texlab releases"
+description = "LaTeX LSP (texlab);版本填 5.x(不带 v,URL 里是 v{version})。已验证 5.26.0"
 homepage = "https://github.com/latex-lsp/texlab"
+strip = 0
+bin = "texlab"
+needs-version = true
+# tar.gz 内是单文件 texlab;windows 侧是 zip
+[[server-manager.registry.texlab.asset]]
+target = "linux_x64"
+url = "https://github.com/latex-lsp/texlab/releases/download/v{version}/texlab-x86_64-linux.tar.gz"
+
+[[server-manager.registry.texlab.asset]]
+target = "linux_arm64"
+url = "https://github.com/latex-lsp/texlab/releases/download/v{version}/texlab-aarch64-linux.tar.gz"
+
+[[server-manager.registry.texlab.asset]]
+target = "darwin_x64"
+url = "https://github.com/latex-lsp/texlab/releases/download/v{version}/texlab-x86_64-macos.tar.gz"
+
+[[server-manager.registry.texlab.asset]]
+target = "darwin_arm64"
+url = "https://github.com/latex-lsp/texlab/releases/download/v{version}/texlab-aarch64-macos.tar.gz"
+
+[[server-manager.registry.texlab.asset]]
+target = "win_x64"
+url = "https://github.com/latex-lsp/texlab/releases/download/v{version}/texlab-x86_64-windows.zip"
+bin = "texlab.exe"
+
+[[server-manager.registry.texlab.asset]]
+target = "win_arm64"
+url = "https://github.com/latex-lsp/texlab/releases/download/v{version}/texlab-aarch64-windows.zip"
+bin = "texlab.exe"
 
 [server-manager.registry.powershell-editor-services]
 kind = "lsp"
@@ -328,10 +407,33 @@ homepage = "https://github.com/PowerShell/PowerShellEditorServices"
 
 [server-manager.registry.terraform-ls]
 kind = "lsp"
-url = ""
 languages = ["hcl"]
-description = "Terraform/HCL LSP (terraform-ls) — download the platform asset from hashicorp/terraform-ls releases"
+description = "Terraform/HCL LSP (HashiCorp 官方 CDN);版本填 0.x(不带 v)。已验证 0.39.0"
 homepage = "https://github.com/hashicorp/terraform-ls"
+strip = 0
+bin = "terraform-ls"
+needs-version = true
+# zip 内是单文件 terraform-ls(31MB Go 二进制);签名/校验和见 releases.hashicorp.com
+[[server-manager.registry.terraform-ls.asset]]
+target = "linux_x64"
+url = "https://releases.hashicorp.com/terraform-ls/{version}/terraform-ls_{version}_linux_amd64.zip"
+
+[[server-manager.registry.terraform-ls.asset]]
+target = "linux_arm64"
+url = "https://releases.hashicorp.com/terraform-ls/{version}/terraform-ls_{version}_linux_arm64.zip"
+
+[[server-manager.registry.terraform-ls.asset]]
+target = "darwin_x64"
+url = "https://releases.hashicorp.com/terraform-ls/{version}/terraform-ls_{version}_darwin_amd64.zip"
+
+[[server-manager.registry.terraform-ls.asset]]
+target = "darwin_arm64"
+url = "https://releases.hashicorp.com/terraform-ls/{version}/terraform-ls_{version}_darwin_arm64.zip"
+
+[[server-manager.registry.terraform-ls.asset]]
+target = "win_x64"
+url = "https://releases.hashicorp.com/terraform-ls/{version}/terraform-ls_{version}_windows_amd64.zip"
+bin = "terraform-ls.exe"
 
 [server-manager.registry.marksman]
 kind = "lsp"

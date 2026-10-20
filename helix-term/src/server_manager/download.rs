@@ -152,6 +152,45 @@ pub(crate) fn download_progress_hook_set() -> bool {
     DL_PROGRESS.with(|c| c.borrow().is_some())
 }
 
+/// 环境里的 HTTP 代理(按 curl 的惯例:`HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`,小写优先)。
+///
+/// 为什么必须自己读:**ureq 2.x 不会读这些环境变量**(curl / reqwest 会)。实测后果:
+/// 同一台机器上 `curl` 下 GitHub release 正常,而 `:server install` 直接挂死在直连上
+/// —— 主线程同步下载,表现为整个 UI 冻住(文档里"锁防坏不防等"说的就是这个场景)。
+///
+/// 已知边界:不实现 `NO_PROXY`(ureq 无此能力)。需要的场合请改配 `[server-manager] mirror`
+/// 或直连;内网/本机地址也会走代理。
+pub(crate) fn proxy_from_env() -> Option<ureq::Proxy> {
+    // 小写优先(与 curl 一致:小写覆盖大写)
+    // 空串要**跳过并继续找**(不是"找到空串就当没有"):小写设成 "" 而大写有值时,
+    // 后者仍应生效(测试 proxy_env_is_read_lowercase_first 钉住这条)
+    let raw = [
+        "https_proxy",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "HTTP_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ]
+    .iter()
+    .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))?;
+    ureq::Proxy::new(raw.trim()).ok()
+}
+
+/// 下载用 agent:带代理(若有)+ **明确的超时**。
+///
+/// 超时的意义:网络不通时旧实现会一直等内核 TCP 超时(分钟级),期间主线程同步下载
+/// ⇒ UI 冻死且没有任何反馈。连接 10s、整体 10 分钟(几十 MB 的大包留足余量)。
+fn download_agent() -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(600));
+    if let Some(proxy) = proxy_from_env() {
+        builder = builder.proxy(proxy);
+    }
+    builder.build()
+}
+
 /// 下载 URL 到 dest(file:// 本地复制;https 经 ureq;遵循 mirror)。
 /// progress(bytes, total) 节流回调;total 未知为 None;file:// 复制完成后回调一次(总大小)。
 pub(crate) fn download_to(
@@ -166,7 +205,8 @@ pub(crate) fn download_to(
         return Ok(());
     }
     use std::io::{Read as _, Write as _};
-    let resp = ureq::get(url)
+    let resp = download_agent()
+        .get(url)
         .call()
         .with_context(|| format!("download {url}"))?;
     let total = resp

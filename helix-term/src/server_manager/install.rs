@@ -202,6 +202,16 @@ pub fn install_adhoc(
             "release 中找不到可执行 '{bin_rel}'({name} 安装失败)"
         ));
     }
+    // **统一补执行位**:tar 解包会带上 mode、单文件 gzip 分支已 chmod,但 **zip 解包不带
+    // unix mode**(archive.rs 只 `File::create` 写字节)⇒ 之前 zip 类配方(terraform-ls /
+    // clojure-lsp / elixir-ls)装出来的 bin 是 0644,软链过去 `--version` 直接 permission denied。
+    // 放在这里而不是 archive 里:三路(result 格式)共用一处,漏一路也不会重演。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&bin_in_tmp, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod +x '{bin_rel}'({name})"))?;
+    }
     // 清旧目录 → rename(先落位再软链,避免链接指向临时目录)
     let dest = managed_dir(name);
     let _ = std::fs::remove_dir_all(&dest);
