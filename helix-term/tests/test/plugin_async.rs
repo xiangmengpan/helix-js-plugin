@@ -38,19 +38,31 @@ async fn plugin_async_run() -> anyhow::Result<()> {
     // run_async 的结果经 worker 线程 → 主线程才 resolve。用 pump_until 等到**结果真的到了**。
     // （踩过的坑：空按键步 `(None, Some(fn))` 没有事件可等，会挂到超时，实测 887s。）
     let mut app = AppBuilder::new().with_file(file, None).build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
-    pump_until(&mut app, ":async-demo<ret>", D5, "run_async 的 .then 回包", |a| {
-        status_text(a).starts_with("async:")
-    })
+    pump_until(
+        &mut app,
+        ":async-demo<ret>",
+        D5,
+        "run_async 的 .then 回包",
+        |a| status_text(a).starts_with("async:"),
+    )
     .await?;
     // 原断言一字不改
     let (status, _) = app.editor.get_status().unwrap();
     assert_eq!(status.as_ref(), "async:async-ok");
 
-    pump_until(&mut app, ":async-err<ret>", D5, "run_async 失败的 .catch 回包", |a| {
-        status_text(a).contains("err:")
-    })
+    pump_until(
+        &mut app,
+        ":async-err<ret>",
+        D5,
+        "run_async 失败的 .catch 回包",
+        |a| status_text(a).contains("err:"),
+    )
     .await?;
     // 非零退出 → reject → .catch → e.message 形如 "exit 3: <输出>"
     let (status, _) = app.editor.get_status().unwrap();

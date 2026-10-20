@@ -58,7 +58,11 @@ async fn plugin_lsp_mock_format_applies() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("format_basic", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-fmt", "fmt:").await?;
     assert_eq!(status, r#"fmt:{"applied":true}"#);
@@ -93,7 +97,11 @@ async fn plugin_lsp_mock_rename_cross_file() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("rename_cross_file", &[&b_path]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-ren", "ren:").await?;
     // files = workspace_edit_file_count(Edits 按条目)= 2
@@ -127,7 +135,11 @@ async fn plugin_lsp_mock_rename_stale_version() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("rename_stale", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-ren-stale", "stale:").await?;
     assert_eq!(status, "stale:null", "过期版本 → null");
@@ -159,7 +171,11 @@ async fn plugin_lsp_mock_no_capability_resolves_null() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("initialize_only", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-nocap", "nocap:").await?;
     assert_eq!(status, "nocap:null");
@@ -328,7 +344,11 @@ async fn plugin_lsp_mock_query_real_hover() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("hover_basic", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-hover", "hover:").await?;
     assert_eq!(status, "hover:mock hover");
@@ -356,7 +376,11 @@ async fn plugin_lsp_mock_query_real_completion() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("completion_basic", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-comp", "comp:").await?;
     assert_eq!(status, "comp:mock-item");
@@ -384,7 +408,11 @@ async fn plugin_lsp_mock_query_real_goto() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("goto_definition_basic", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-def", "def:").await?;
     assert_eq!(status, "def:0");
@@ -412,7 +440,11 @@ async fn plugin_lsp_mock_query_real_symbols() -> anyhow::Result<()> {
         .with_config(test_config_with_lsp())
         .with_lang_loader(mock_lsp_loader("symbols_basic", &[]))
         .build()?;
-    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
 
     let status = run_and_wait(&mut app, ":mock-syms", "syms:").await?;
     assert_eq!(status, "syms:MockSymbol");
@@ -456,13 +488,12 @@ async fn plugin_lsp_mock_timeout_rejects() -> anyhow::Result<()> {
     }
     // 等 server 初始化完成(否则 hover 被 is_initialized 短路 resolve null,测不到超时)。
     // 空 keys 只推进事件循环；条件与原来的手写 deadline 循环等价(5s 预算)。
-    pump_until(
-        &mut app,
-        "",
-        D5,
-        "mock server 完成 initialize",
-        |a| a.editor.language_servers.iter_clients().any(|c| c.is_initialized()),
-    )
+    pump_until(&mut app, "", D5, "mock server 完成 initialize", |a| {
+        a.editor
+            .language_servers
+            .iter_clients()
+            .any(|c| c.is_initialized())
+    })
     .await?;
     for keys in [":mock-timeout<ret>".to_string()] {
         for key_event in parse_macro(&keys)? {
