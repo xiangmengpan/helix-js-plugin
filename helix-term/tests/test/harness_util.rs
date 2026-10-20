@@ -98,3 +98,60 @@ fn status_text_is_empty_when_no_status() {
     // 保留本用例是为了在有人把它改成 `unwrap` 时**立刻断链**（编译期即可发现）。
     let _f: fn(&helix_term::application::Application) -> String = status_text;
 }
+
+// ── cwd 独占(scoped chdir):与 `pump_until` 同一类"harness 自身的正确性" ──
+//
+// 为什么值得测:`CwdScope` 的两件事都会**静默**错 ——
+// 忘了还原 ⇒ 后面所有用例读到别人的临时目录;没拿锁 ⇒ 并行下与别的 `:cd` 交错。
+// 两种都能让一整批用例随机红,而且红在**别人**的文件里(极难定位)。
+
+use helix_stdx::env::current_working_dir;
+
+/// Drop 时还原到进入前的 cwd(而且是绕过 `std::env` 直改 —— 必须走 helix-stdx 缓存)
+#[tokio::test(flavor = "multi_thread")]
+async fn cwd_scope_restores_previous_cwd() -> anyhow::Result<()> {
+    let before = current_working_dir();
+    let dir = tempfile::tempdir()?;
+    {
+        let _scope = CwdScope::enter(dir.path()).await;
+        assert_eq!(
+            current_working_dir(),
+            helix_stdx::path::canonicalize(dir.path())
+        );
+    }
+    assert_eq!(
+        current_working_dir(),
+        before,
+        "Drop 之后必须回到进入前的 cwd"
+    );
+    Ok(())
+}
+
+/// `pinned()` 不改 cwd(只拿锁 + 记还原点),适合"用例自己发 `:cd`"的场景
+#[tokio::test(flavor = "multi_thread")]
+async fn cwd_scope_pinned_does_not_change_cwd() -> anyhow::Result<()> {
+    let before = current_working_dir();
+    {
+        let _scope = CwdScope::pinned().await;
+        assert_eq!(current_working_dir(), before, "pinned 不该动 cwd");
+    }
+    assert_eq!(current_working_dir(), before);
+    Ok(())
+}
+
+/// 锁是**真**互斥:第二个 scope 必须等第一个放掉才拿得到(用超时把"没锁上"变成失败而不是挂死)
+#[tokio::test(flavor = "multi_thread")]
+async fn cwd_scope_serialises_other_takers() -> anyhow::Result<()> {
+    let first = CwdScope::pinned().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), CwdScope::pinned())
+            .await
+            .is_err(),
+        "第二个 scope 不该在第一个还活着时拿到锁"
+    );
+    drop(first);
+    tokio::time::timeout(Duration::from_secs(2), CwdScope::pinned())
+        .await
+        .expect("放锁后应能立刻拿到");
+    Ok(())
+}

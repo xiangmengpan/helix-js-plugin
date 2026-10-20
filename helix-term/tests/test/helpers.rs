@@ -573,35 +573,64 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
 /// plugin_layout / plugin_layout2 / plugin_terminal_hooks / plugin_theme /
 /// server_manager / splits / window_mode / window_rail / window_split),语义完全相同
 /// (`parse_macro` 返回 `Vec`,直接迭代与 `.into_iter()` 等价)。
-/// 进程级 cwd 是**全局**状态:任何 `:cd` 都会影响**并行**跑的其它测试。
+/// 进程级 cwd 是**全局**状态:任何 `chdir` 都会打到**并行**跑的其它用例上。
 ///
-/// 实测过的形态:`plugin_cross_buffer` 的相对路径用例在全量并行时会输 —— 它的 `:cd`
-/// 与另一个测试的 `:cd` 交错,cwd 在两条指令之间被换走。这是**测试之间**的竞争,
-/// 不是被测代码的问题,所以在测试层解决:凡是会 chdir 的用例**先拿这把锁**。
+/// 实测形态:`plugin_cross_buffer` 的相对路径用例在全量并行时会输 —— 它的 `:cd` 与另一个
+/// 用例的 `:cd` 交错,cwd 在两条指令之间被换走;反过来,依赖"跑测试时的 cwd"的用例
+/// (如 `:pick` 的文件列表)会读到别人临时目录里。这是**用例之间**的竞争,不是被测代码
+/// 的问题 ⇒ 在 harness 层解决:凡是碰 cwd 的用例都必须先拿到这把锁。
 ///
-/// 用 tokio 的 `Mutex` 而不是 `std::sync::Mutex`:锁要跨 `await` 持有,
-/// 而 `std::sync::MutexGuard` 不是 `Send`(multi_thread 的测试容器会拒绝编译)。
-pub static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// 用 tokio 的 `Mutex`(不是 `std::sync`):锁要跨 `await` 持有,而
+/// `std::sync::MutexGuard` 不是 `Send`,multi_thread 的测试容器会拒绝编译。
+static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 把进程 cwd 换成 `dir`,Drop 时还原 —— 与 [`CWD_LOCK`] 配套用:
-/// `let _lock = CWD_LOCK.lock().await; let _cwd = CwdGuard::enter(dir.path());`
+/// 只**读** cwd 的用例(不改它)拿这把锁,防止别的用例在此期间 `chdir` 走。
 ///
-/// Drop 而非手工恢复:断言失败/`?` 早退也要还原,否则污染同进程的其它测试。
-/// **必须**走 `helix_stdx::env::set_current_working_dir`(它同时更新 CWD 缓存),
-/// 裸 `std::env::set_current_dir` 会让 `helix.cwd()` 读到缓存里的旧值。
-pub struct CwdGuard(std::path::PathBuf);
+/// ```ignore
+/// let _cwd = cwd_lock().await;   // 之后随便读 cwd / 起依赖 cwd 的插件
+/// ```
+///
+/// ⚠️ 与 [`CwdScope`] 共用同一把锁:同一个用例里**不要**同时拿两者(会自锁)。
+pub async fn cwd_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    CWD_LOCK.lock().await
+}
 
-impl CwdGuard {
-    pub fn enter(dir: &std::path::Path) -> Self {
+/// cwd 独占权 + 还原点:构造时拿锁并(可选地)切到 `dir`,Drop 时**先还原 cwd 再放锁**。
+///
+/// 为什么合成一个入口:两步写法
+/// `let _l = cwd_lock().await; let _c = CwdGuard::enter(dir)` 能被忘掉其中一步 ——
+/// 忘了锁 ⇒ 并行下与别人的 `chdir` 交错;忘了 guard ⇒ cwd 永久被污染(连累后面所有用例)。
+/// 一个返回值同时管两件事,忘不掉。
+///
+/// Drop 顺序是安全的:`Drop::drop` 的函数体先跑(此时锁还在手上),字段随后才释放。
+pub struct CwdScope {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    prev: std::path::PathBuf,
+}
+
+impl CwdScope {
+    /// 拿锁 + 切到 `dir`(Drop 时还原到进入前的 cwd)
+    pub async fn enter(dir: &std::path::Path) -> Self {
+        let lock = cwd_lock().await;
         let prev = helix_stdx::env::current_working_dir();
+        // 必须走 helix-stdx(它同时更新 CWD 缓存):裸 `std::env::set_current_dir`
+        // 会让 `helix.cwd()` 读到缓存里的旧值 —— 测试会假绿/假红。
         helix_stdx::env::set_current_working_dir(dir).expect("chdir 到测试目录");
-        Self(prev)
+        Self { _lock: lock, prev }
+    }
+
+    /// 只拿锁 + 记还原点,**不改** cwd(用例自己用 `:cd` 改,例如验证 `cwd-change` 事件)
+    pub async fn pinned() -> Self {
+        let lock = cwd_lock().await;
+        let prev = helix_stdx::env::current_working_dir();
+        Self { _lock: lock, prev }
     }
 }
 
-impl Drop for CwdGuard {
+impl Drop for CwdScope {
     fn drop(&mut self) {
-        let _ = helix_stdx::env::set_current_working_dir(&self.0);
+        // 函数体先于字段释放 ⇒ 还原时锁仍在手上,还原与解锁之间没有窗口
+        let _ = helix_stdx::env::set_current_working_dir(&self.prev);
     }
 }
 

@@ -250,12 +250,11 @@ async fn scroll_container_reaches_the_surface() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
     // 列表内容**自己造**:否则依赖跑测试时的 cwd,会被别处的 `:cd` 干扰(踩过)
-    let _cwd_lock = CWD_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     for i in 0..30 {
         std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x\n")?;
     }
-    let _cwd = CwdGuard::enter(dir.path());
+    let _cwd = CwdScope::enter(dir.path()).await;
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let plugin = root.join("plugins/picker-ui/plugin.js");
@@ -299,7 +298,6 @@ async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
 /// **真实插件样板 ②**:`filetree` 的面板骨架（头 + 分隔线 + 滚动树）全部用 `helix.draw.*`
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_draws_panel_skeleton() -> anyhow::Result<()> {
-    let _cwd_lock = CWD_LOCK.lock().await;
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "x\n")?;
@@ -312,7 +310,7 @@ async fn filetree_draws_panel_skeleton() -> anyhow::Result<()> {
         .to_string_lossy()
         .to_string();
 
-    let _cwd = CwdGuard::enter(dir.path());
+    let _cwd = CwdScope::enter(dir.path()).await;
     let mut app = AppBuilder::new().with_file(&a, None).build()?;
     pump(
         &mut app,
