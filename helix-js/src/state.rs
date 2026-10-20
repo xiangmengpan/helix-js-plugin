@@ -103,9 +103,16 @@ pub(crate) fn with_last_plugin_deps<T>(f: impl FnOnce(&mut Vec<String>) -> T) ->
     })
 }
 
-/// 访问 CONFIG_SCHEMAS：同上
+/// 插件配置 schema 注册表(进程级,与 `CONFIGS` 同域)。
+/// 为什么不是 host/thread_local:合并缓存 `CONFIGS` 是进程全局的,注册表若按线程存,
+/// 另一个线程重建时看不到 schema ⇒ 全局缓存被写成 `{}`(集成测试多 app 并行时实测踩到;
+/// 多线程重建 + 全局缓存的组合本身就是错的)。
+static CONFIG_SCHEMAS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+/// 访问 CONFIG_SCHEMAS
 pub(crate) fn with_config_schemas<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.config_schemas.borrow_mut()))
+    let m = CONFIG_SCHEMAS.get_or_init(|| Mutex::new(HashMap::new()));
+    f(&mut m.lock().unwrap())
 }
 
 /// 写入 schema(helix-term 测试/插件预置用;插件正常走 define_config)
@@ -118,6 +125,26 @@ pub fn seed_config_schema(name: &str, json: &str) {
 /// 读取全部插件配置 schema(helix-term build_plugin_configs 用)name → schema JSON
 pub fn config_schemas() -> Vec<(String, String)> {
     with_config_schemas(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// 用户 config.toml `[plugins]` 原始覆盖（JSON: `{"<name>": {...}}`）。
+/// config load / :config-reload 时由 helix-term 写入 ⇒ 插件 load/reload 后重建配置不必再碰
+/// helix-term 的 Config（`Editor::config()` 只含 editor 段，拿不到 plugins 表）。
+pub(crate) static PLUGIN_OVERRIDES: OnceLock<Mutex<String>> = OnceLock::new();
+
+/// 写入用户覆盖（helix-term `build_plugin_configs` 调）
+pub fn cache_plugin_overrides(json: &str) {
+    let m = PLUGIN_OVERRIDES.get_or_init(|| Mutex::new("{}".to_string()));
+    *m.lock().unwrap() = json.to_string();
+}
+
+/// 读取用户覆盖（未写入过 ⇒ `{}`）
+pub(crate) fn plugin_overrides() -> String {
+    PLUGIN_OVERRIDES
+        .get_or_init(|| Mutex::new("{}".to_string()))
+        .lock()
+        .unwrap()
+        .clone()
 }
 
 /// 写入插件配置合并缓存（helix-term config load/reload 后调用）

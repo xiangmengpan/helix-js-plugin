@@ -191,3 +191,65 @@ helix.register_command("self-reload", () => helix.reload_plugins());"#,
     .await?;
     Ok(())
 }
+
+// ── 插件配置:load / reload 后必须重建合并缓存 ──
+//
+// `define_config` 的 schema 只在脚本**执行时**才注册,而 `CONFIGS` 原先只在启动与
+// `:config-reload` 构建 ⇒ 运行时 `:plugin-load` 的插件 `get_config()` 拿到 null(默认值全丢),
+// `:plugin-reload` 后新增的 schema 键也没有默认值。两个入口都必须在脚本跑完后重建。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_config_rebuilt_after_load_and_reload() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("cfg.txt");
+    std::fs::write(&file, "x\n")?;
+    let script = dir.path().join("cfg-demo.js");
+
+    let v1 = r#"helix.define_config("cfg-demo", { flag: { type: "boolean", default: false } });
+helix.register_command("cfg-demo-dump", () => { helix.echo(JSON.stringify(helix.get_config("cfg-demo"))); });"#;
+    // reload 会按名重读磁盘 ⇒ v2 多一个 schema 键(旧缓存里没有它)
+    let v2 = r#"helix.define_config("cfg-demo", {
+  flag:  { type: "boolean", default: false },
+  limit: { type: "number",  default: 7 },
+});
+helix.register_command("cfg-demo-dump", () => { helix.echo(JSON.stringify(helix.get_config("cfg-demo"))); });"#;
+    std::fs::write(&script, v1)?;
+
+    let script_for_edit = script.clone();
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", script.display())),
+                None,
+            ),
+            // 断言 load 后即可读配置,顺手把盘上内容改成 v2(空按键步会挂住事件循环)
+            (
+                Some(":cfg-demo-dump<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let v: serde_json::Value = serde_json::from_str(status.as_ref())
+                        .unwrap_or_else(|e| panic!("get_config 不是 JSON({e}): {status}"));
+                    assert_eq!(
+                        v["flag"], false,
+                        "plugin-load 后 get_config 应立即可用(含默认值)"
+                    );
+                    std::fs::write(&script_for_edit, v2).expect("改写脚本");
+                }),
+            ),
+            (Some(":plugin-reload<ret>"), None),
+            (
+                Some(":cfg-demo-dump<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let v: serde_json::Value = serde_json::from_str(status.as_ref())
+                        .unwrap_or_else(|e| panic!("get_config 不是 JSON({e}): {status}"));
+                    assert_eq!(v["flag"], false, "reload 后旧键仍在");
+                    assert_eq!(v["limit"], 7, "reload 后新增的 schema 键应带默认值");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

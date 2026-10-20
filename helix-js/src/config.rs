@@ -3,10 +3,117 @@
 //! Rust 侧 build_plugin_configs 合并用户 config.toml 覆盖并校验,结果经 cache_configs 写入。
 //! 设计:docs/superpowers/specs/2026-08-15-plugin-config-design.md
 
-use crate::state::{with_config_schemas, CONFIGS};
+use crate::state::{config_schemas, plugin_overrides, with_config_schemas, CONFIGS};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsString, JsValue};
+
+/// 按 schema 注册表 + 已缓存的用户覆盖重建合并结果:
+/// `(合并 JSON, 校验错误)`。**纯函数**（不写缓存），helix-term 拿到后 `cache_configs`。
+///
+/// 为什么要它：schema 是**插件脚本执行时**才注册的，而缓存只在启动与 `:config-reload` 构建。
+/// 插件 load/reload 之后不重建 ⇒ 新注册的 schema 不在 CONFIGS 里，`get_config` 拿到 null
+/// （默认值全丢），reload 后新增的键也没有默认值。
+pub fn rebuild_configs() -> (String, Vec<String>) {
+    let user_all: serde_json::Value =
+        serde_json::from_str(&plugin_overrides()).unwrap_or(serde_json::Value::Null);
+    let user_all = user_all.as_object().cloned().unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (name, schema_json) in config_schemas() {
+        let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_json) else {
+            continue;
+        };
+        let Some(schema_obj) = schema.as_object() else {
+            continue;
+        };
+        // 用户覆盖 [plugins.<name>]（非表 ⇒ 忽略）
+        let user = user_all
+            .get(&name)
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let mut merged = serde_json::Map::new();
+        for (key, field) in schema_obj {
+            let Some(fo) = field.as_object() else {
+                continue;
+            };
+            let ftype = fo.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+            let default = fo
+                .get("default")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let val = match user.get(key) {
+                Some(v) => match validate_field(ftype, fo, v) {
+                    Ok(()) => v.clone(),
+                    Err(e) => {
+                        errors.push(format!("{name}.{key}: {e}（用默认值）"));
+                        default
+                    }
+                },
+                None => default,
+            };
+            merged.insert(key.clone(), val);
+        }
+        out.insert(name, serde_json::Value::Object(merged));
+    }
+    (serde_json::Value::Object(out).to_string(), errors)
+}
+
+/// 字段类型校验：boolean/number/string/enum
+pub(crate) fn validate_field(
+    ftype: &str,
+    field: &serde_json::Map<String, serde_json::Value>,
+    v: &serde_json::Value,
+) -> Result<(), String> {
+    match ftype {
+        "boolean" => {
+            if v.is_boolean() {
+                Ok(())
+            } else {
+                Err(format!("期望 boolean，得到 {}", v_type(v)))
+            }
+        }
+        "number" => {
+            if v.is_number() {
+                Ok(())
+            } else {
+                Err(format!("期望 number，得到 {}", v_type(v)))
+            }
+        }
+        "string" => {
+            if v.is_string() {
+                Ok(())
+            } else {
+                Err(format!("期望 string，得到 {}", v_type(v)))
+            }
+        }
+        "enum" => {
+            let options: Vec<&str> = field
+                .get("options")
+                .and_then(|o| o.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let s = v.as_str().unwrap_or_default();
+            if options.contains(&s) {
+                Ok(())
+            } else {
+                Err(format!("期望 enum {options:?}，得到 {s:?}"))
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn v_type(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Null => "null",
+        _ => "other",
+    }
+}
 
 /// 声明插件配置 schema:helix.define_config("filetree", {key: {type, default, doc}})
 pub(crate) fn js_define_config(
@@ -133,6 +240,36 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         })
         .unwrap();
+    }
+
+    /// rebuild_configs:覆盖只作用于已声明 schema;未声明的段忽略;类型非法 → 报错 + 默认值
+    #[test]
+    fn rebuild_merges_overrides_over_defaults() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        load_script(
+            r#"helix.define_config("rb", {n: {type: "number", default: 1}, s: {type: "string", default: "a"}});"#,
+        );
+        crate::cache_plugin_overrides(r#"{"rb":{"n":3},"ghost":{"x":1}}"#);
+        let (json, errors) = rebuild_configs();
+        assert!(errors.is_empty(), "无错误: {errors:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["rb"]["n"], 3, "用户覆盖生效");
+        assert_eq!(v["rb"]["s"], "a", "未覆盖用默认值");
+        assert!(v.get("ghost").is_none(), "未声明 schema 的段忽略");
+
+        // 非法类型 → 报错 + 回退默认(不崩)
+        crate::cache_plugin_overrides(r#"{"rb":{"n":"oops"}}"#);
+        let (json, errors) = rebuild_configs();
+        assert_eq!(errors.len(), 1, "类型错误报一条: {errors:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["rb"]["n"], 1, "非法值回退默认");
+
+        // 覆盖源被替换后不再残留旧键
+        crate::cache_plugin_overrides("{}");
+        let (json, _) = rebuild_configs();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["rb"]["n"], 1, "覆盖清空后只剩默认值");
     }
 
     #[test]

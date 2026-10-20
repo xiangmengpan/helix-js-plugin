@@ -110,8 +110,6 @@ pub struct JsHost {
     pub(crate) term_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
     /// 最近一次 helix.export(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
     pub(crate) last_export: RefCell<Option<JsValue>>,
-    /// 插件配置 schema(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) config_schemas: RefCell<HashMap<String, String>>,
     /// 异步 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
     pub(crate) async_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
     /// LSP Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
@@ -189,7 +187,6 @@ impl JsHost {
             terms: RefCell::new(HashMap::new()),
             term_promises: RefCell::new(HashMap::new()),
             last_export: RefCell::new(None),
-            config_schemas: RefCell::new(HashMap::new()),
             async_promises: RefCell::new(HashMap::new()),
             lsp_promises: RefCell::new(HashMap::new()),
             server_rows_callbacks: RefCell::new(HashMap::new()),

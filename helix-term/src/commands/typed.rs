@@ -5129,6 +5129,9 @@ fn reload_plugins(
                 apply_theme_overrides(editor, Some(&overrides));
             }
             apply_ui_requests(js, helix_js::take_ui_requests())?;
+            // 脚本已重跑 ⇒ define_config 的 schema 是最新的,重建合并缓存(:plugin-reload /
+            // `helix.reload_plugins()` / `:plugin reload` 都走这里)
+            refresh_plugin_configs(editor);
             Ok(())
         }
         Err(err) => {
@@ -5375,6 +5378,9 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     }
     // 脚本里的 helix.map 入队 MapKey；OpenPopup 推层也经 job 通道
     apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
+    // 运行时加载的插件可能刚用 define_config 注册了 schema ⇒ 重建配置缓存
+    // (放在最后:校验错误不能被前面的 echo 状态盖掉)
+    refresh_plugin_configs(cx.editor);
     Ok(())
 }
 
@@ -5395,99 +5401,31 @@ fn panel_close(
 
 /// 打开文档序列化:{current, buffers:[{id, path, name, dirty, language}]}。
 /// 每帧由 application.render 写入 helix-js 缓存(buffers/current_buffer 读取)。
-/// 构建插件配置合并缓存:对每个 define_config 的 schema,取 config.plugins 的
-/// `[plugins.<name>]` 表覆盖,逐字段校验类型/enum,错误记入返回的 Vec(显示用)。
-/// 输出 JSON: {"`<name>`": {字段...}} → helix_js::cache_configs。
+/// 构建插件配置合并缓存:把 config.toml 的 `[plugins]` 覆盖交给 helix-js,按 schema
+/// 重建合并结果(默认值 + 类型/enum 校验)。返回 (合并 JSON, 校验错误) → 调用方 cache_configs。
 pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<String>) {
-    let schemas = helix_js::config_schemas();
     let plugins = config.plugins.clone().unwrap_or_default();
-    let mut out = serde_json::Map::new();
-    let mut errors: Vec<String> = Vec::new();
-    for (name, schema_json) in schemas {
-        let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_json) else {
-            continue;
-        };
-        let Some(schema_obj) = schema.as_object() else {
-            continue;
-        };
-        // 用户覆盖 [plugins.<name>]
-        let user = plugins
-            .get(&name)
-            .and_then(|v| v.as_table())
-            .cloned()
-            .unwrap_or_default();
-        let mut merged = serde_json::Map::new();
-        for (key, field) in schema_obj {
-            let Some(fo) = field.as_object() else {
-                continue;
-            };
-            let ftype = fo.get("type").and_then(|t| t.as_str()).unwrap_or("string");
-            let default = fo
-                .get("default")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            // 校验用户值
-            let user_val = user.get(key).map(toml_to_json);
-            let val = match user_val {
-                Some(v) => match validate_field(ftype, fo, &v) {
-                    Ok(()) => v.clone(),
-                    Err(e) => {
-                        errors.push(format!("{name}.{key}: {e}(用默认值)"));
-                        default.clone()
-                    }
-                },
-                None => default.clone(),
-            };
-            merged.insert(key.clone(), val);
-        }
-        out.insert(name, serde_json::Value::Object(merged));
-    }
-    let json = serde_json::Value::Object(out).to_string();
-    (json, errors)
+    let overrides = serde_json::Value::Object(
+        plugins
+            .iter()
+            .map(|(k, v)| (k.clone(), toml_to_json(v)))
+            .collect(),
+    );
+    helix_js::cache_plugin_overrides(&overrides.to_string());
+    helix_js::rebuild_configs()
 }
 
-/// 字段类型校验:boolean/number/string/enum
-fn validate_field(
-    ftype: &str,
-    field: &serde_json::Map<String, serde_json::Value>,
-    v: &serde_json::Value,
-) -> Result<(), String> {
-    match ftype {
-        "boolean" => {
-            if v.is_boolean() {
-                Ok(())
-            } else {
-                Err(format!("期望 boolean,得到 {}", v_type(v)))
-            }
-        }
-        "number" => {
-            if v.is_number() {
-                Ok(())
-            } else {
-                Err(format!("期望 number,得到 {}", v_type(v)))
-            }
-        }
-        "string" => {
-            if v.is_string() {
-                Ok(())
-            } else {
-                Err(format!("期望 string,得到 {}", v_type(v)))
-            }
-        }
-        "enum" => {
-            let options = field
-                .get("options")
-                .and_then(|o| o.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
-                .unwrap_or_default();
-            let s = v.as_str().unwrap_or_default();
-            if options.contains(&s) {
-                Ok(())
-            } else {
-                Err(format!("期望 enum {:?},得到 {s:?}", options))
-            }
-        }
-        _ => Ok(()),
+/// 插件脚本(重)执行后重建配置缓存。
+///
+/// `define_config` 只在脚本执行时才注册 schema,而配置缓存只在启动与 `:config-reload` 构建。
+/// 不在 load/reload 之后补这一步:运行时新加载的插件 `get_config()` 返回 null(默认值全丢),
+/// reload 后新增的 schema 键也没有默认值。
+/// 用户覆盖已由 `build_plugin_configs` 缓存在 helix-js 侧,这里不需要 Config。
+fn refresh_plugin_configs(editor: &mut helix_view::Editor) {
+    let (json, errors) = helix_js::rebuild_configs();
+    helix_js::cache_configs(&json);
+    if let Some(first) = errors.first().cloned() {
+        editor.set_error(first);
     }
 }
 
@@ -5507,16 +5445,6 @@ fn toml_to_json(v: &toml::Value) -> serde_json::Value {
                 .collect(),
         ),
         _ => serde_json::Value::Null,
-    }
-}
-
-fn v_type(v: &serde_json::Value) -> &'static str {
-    match v {
-        serde_json::Value::Bool(_) => "boolean",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Null => "null",
-        _ => "other",
     }
 }
 
@@ -6076,9 +6004,14 @@ fn exclude_workspace(
 #[cfg(test)]
 mod plugin_config_tests {
     use super::build_plugin_configs;
+    use std::sync::Mutex;
+
+    /// schema 注册表 / 用户覆盖 / 合并缓存都是进程级 ⇒ 两个用例并行会互相污染,串行化
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn merges_defaults_and_user_override() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         helix_js::seed_config_schema(
             "ft",
             r#"{"show_hidden":{"type":"boolean","default":false},"refresh_ms":{"type":"number","default":500}}"#,
@@ -6100,6 +6033,7 @@ mod plugin_config_tests {
 
     #[test]
     fn rejects_wrong_type_with_default_fallback() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         helix_js::seed_config_schema(
             "wk",
             r#"{"position":{"type":"enum","default":"bottom-right","options":["bottom-right","bottom-left"]}}"#,
