@@ -331,13 +331,7 @@ pub(crate) fn js_run_async(
     crate::state::with_term_workers(|m| m.insert(id, tx.clone()));
     let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
     crate::state::js_dbg(format_args!("spawn term id={id} (run_async)"));
-    spawn_worker(
-        id,
-        &cmd,
-        true,
-        term_tx,
-        rx,
-    );
+    spawn_worker(id, &cmd, true, term_tx, rx);
     Ok(promise.into())
 }
 
