@@ -16,6 +16,71 @@ const TERM_CHUNK_SIZE: usize = 4096;
 
 use crate::types::*;
 
+/// 一路管道（stdout 或 stderr）的 UTF-8 尾部状态。
+///
+/// 为什么按流各存一份:两条流是**独立字节流**,把它们的半截 UTF-8 拼在一起会造出假字符。
+#[derive(Default)]
+struct EmitState {
+    /// 跨块的不完整 UTF-8 尾部（最长序列 3 字节）
+    tail: Vec<u8>,
+}
+
+impl EmitState {
+    /// 把刚读到的一块字节交给事件层（聚合模式只拼缓冲，不发事件）
+    fn push(
+        &mut self,
+        bytes: &[u8],
+        aggregate: bool,
+        output: &mut Vec<u8>,
+        id: u64,
+        tx: &WakeSender<TermEvent>,
+    ) -> bool {
+        if aggregate {
+            output.extend_from_slice(bytes);
+            return true;
+        }
+        self.tail.extend_from_slice(bytes);
+        match std::str::from_utf8(&self.tail) {
+            Ok(s) => {
+                if tx.send(TermEvent::Chunk(id, s.to_string())).is_err() {
+                    return false;
+                }
+                self.tail.clear();
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if e.error_len().is_some() {
+                    // 硬性非法字节（非不完整尾部）：整段 lossy 输出，不留尾部
+                    let chunk = String::from_utf8_lossy(&self.tail).into_owned();
+                    if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
+                        return false;
+                    }
+                    self.tail.clear();
+                } else if valid > 0 {
+                    // 尾部是不完整序列：发出有效前缀，残留字节留到下一块
+                    let chunk = String::from_utf8_lossy(&self.tail[..valid]).into_owned();
+                    if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
+                        return false;
+                    }
+                    self.tail.drain(..valid);
+                }
+            }
+        }
+        true
+    }
+
+    /// EOF：残留的不完整尾部 lossy 输出（无后续字节可拼）
+    fn finish(&mut self, aggregate: bool, id: u64, tx: &WakeSender<TermEvent>) {
+        if !aggregate && !self.tail.is_empty() {
+            let chunk = String::from_utf8_lossy(&self.tail).into_owned();
+            let _ = tx.send(TermEvent::Chunk(id, chunk));
+            self.tail.clear();
+        }
+    }
+}
+
+/// 阻塞读干一条流（PTY worker 用:master 是单 fd,不需要 poll）。
+/// 与 [`EmitState`] 共用同一套 UTF-8 尾部语义，避免两份实现漂移。
 fn read_stream<R: std::io::Read>(
     mut stream: R,
     id: u64,
@@ -24,48 +89,81 @@ fn read_stream<R: std::io::Read>(
     tx: &WakeSender<TermEvent>,
 ) {
     let mut buf = [0u8; TERM_CHUNK_SIZE];
-    let mut tail: Vec<u8> = Vec::with_capacity(3); // 跨块的不完整 UTF-8 尾部（最长序列 3 字节）
+    let mut emit = EmitState::default();
     loop {
         let n = match stream.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
-        if aggregate {
-            output.lock().unwrap().extend_from_slice(&buf[..n]);
-            continue;
-        }
-        tail.extend_from_slice(&buf[..n]);
-        match std::str::from_utf8(&tail) {
-            Ok(s) => {
-                if tx.send(TermEvent::Chunk(id, s.to_string())).is_err() {
-                    return;
-                }
-                tail.clear();
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if e.error_len().is_some() {
-                    // 硬性非法字节（非不完整尾部）：整段 lossy 输出，不留尾部
-                    let chunk = String::from_utf8_lossy(&tail).into_owned();
-                    if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
-                        return;
-                    }
-                    tail.clear();
-                } else if valid > 0 {
-                    // 尾部是不完整序列：发出有效前缀，残留字节留到下一块
-                    let chunk = String::from_utf8_lossy(&tail[..valid]).into_owned();
-                    if tx.send(TermEvent::Chunk(id, chunk)).is_err() {
-                        return;
-                    }
-                    tail.drain(..valid);
-                }
-            }
+        let ok = emit.push(&buf[..n], aggregate, &mut output.lock().unwrap(), id, tx);
+        if !ok {
+            return;
         }
     }
-    if !aggregate && !tail.is_empty() {
-        // EOF：残留的不完整尾部 lossy 输出（无后续字节可拼）
-        let chunk = String::from_utf8_lossy(&tail).into_owned();
-        let _ = tx.send(TermEvent::Chunk(id, chunk));
+    emit.finish(aggregate, id, tx);
+}
+
+/// 一条管道的最小状态:fd + 对应的 Reader（EOF 后置 None）
+struct Pipe<R: std::io::Read + std::os::fd::AsRawFd> {
+    stream: Option<R>,
+    fd: libc::c_int,
+    emit: EmitState,
+}
+
+impl<R: std::io::Read + std::os::fd::AsRawFd> Pipe<R> {
+    fn new(stream: R) -> Self {
+        let fd = stream.as_raw_fd();
+        set_nonblocking(fd);
+        Self {
+            stream: Some(stream),
+            fd,
+            emit: EmitState::default(),
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    /// 非阻塞地把本管道读干:返回 `Ok(true)` = 已 EOF,`Ok(false)` = 暂时没数据
+    fn drain(
+        &mut self,
+        aggregate: bool,
+        output: &mut Vec<u8>,
+        id: u64,
+        tx: &WakeSender<TermEvent>,
+    ) -> bool {
+        let mut buf = [0u8; TERM_CHUNK_SIZE];
+        loop {
+            let Some(stream) = self.stream.as_mut() else {
+                return false;
+            };
+            match stream.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    if !self.emit.push(&buf[..n], aggregate, output, id, tx) {
+                        // 事件通道已断（应用退出）⇒ 当成 EOF，收尾
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return false,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        self.emit.finish(aggregate, id, tx);
+        self.stream = None; // 关 fd（EOF）
+        true
+    }
+}
+
+/// 设 O_NONBLOCK（只为单线程 poll 服务；失败时退化成本线程阻塞读，行为不变）
+fn set_nonblocking(fd: std::os::fd::RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
     }
 }
 
@@ -100,37 +198,17 @@ fn spawn_worker(
                 return;
             }
         };
-        let stream_out = child.stdout.take();
-        let stream_err = child.stderr.take();
+        let mut out = child.stdout.take().map(Pipe::new);
+        let mut err = child.stderr.take().map(Pipe::new);
         let mut stdin = child.stdin.take();
-
-        // 读线程：stdout/stderr 各一个，逐块发 Chunk（非聚合）或拼进共享缓冲（聚合）；完成后发 done 信号
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         // 聚合缓冲存原始字节，EOF 后统一 lossy 解码：跨块多字节字符不损坏
-        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let mut readers = Vec::new();
-        {
-            let tx = tx.clone();
-            let done_tx = done_tx.clone();
-            let output = output.clone();
-            readers.push(std::thread::spawn(move || {
-                read_stream(stream_out.unwrap(), id, aggregate, &output, &tx);
-                let _ = done_tx.send(());
-            }));
-        }
-        {
-            let tx = tx.clone();
-            let done_tx = done_tx.clone();
-            let output = output.clone();
-            readers.push(std::thread::spawn(move || {
-                read_stream(stream_err.unwrap(), id, aggregate, &output, &tx);
-                let _ = done_tx.send(());
-            }));
-        }
-        drop(done_tx);
+        let mut output: Vec<u8> = Vec::new();
 
-        // 主循环：处理控制消息；两个读线程都 EOF 后收尾
+        // 单线程主循环：一次 `poll` 同时盯 stdout/stderr（外加 5ms 超时轮询控制通道）。
+        // 为什么不再起读线程：每次 spawn 曾要 1 主 + 2 读共 **3 个线程**，在并行测试里
+        // 直接把机器压到线程饥饿（worker 起得来却跑不完，实测见 T7 spec §9）。现在 1 个。
         loop {
+            // ① 控制通道：写 stdin / kill
             while let Ok(msg) = stdin_rx.try_recv() {
                 match msg {
                     TermCtrl::Write(text) => {
@@ -145,24 +223,60 @@ fn spawn_worker(
                     }
                 }
             }
-            let mut finished = 0;
-            while done_rx.try_recv().is_ok() {
-                finished += 1;
+
+            let mut fds: Vec<libc::pollfd> = Vec::with_capacity(2);
+            let mut slots: Vec<u8> = Vec::with_capacity(2); // 0 = stdout, 1 = stderr
+            if let Some(p) = out.as_ref().filter(|p| p.is_open()) {
+                fds.push(libc::pollfd {
+                    fd: p.fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+                slots.push(0);
             }
-            if finished >= readers.len() {
-                break;
+            if let Some(p) = err.as_ref().filter(|p| p.is_open()) {
+                fds.push(libc::pollfd {
+                    fd: p.fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+                slots.push(1);
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if fds.is_empty() {
+                break; // 两条流都 EOF
+            }
+
+            let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 5) };
+            if rc <= 0 {
+                continue; // 超时（顺便轮询控制通道）或 EINTR
+            }
+            for (i, pfd) in fds.iter().enumerate() {
+                if pfd.revents == 0 {
+                    continue;
+                }
+                let ready = pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0;
+                if !ready {
+                    continue;
+                }
+                match slots[i] {
+                    0 => {
+                        if let Some(p) = out.as_mut() {
+                            p.drain(aggregate, &mut output, id, &tx);
+                        }
+                    }
+                    _ => {
+                        if let Some(p) = err.as_mut() {
+                            p.drain(aggregate, &mut output, id, &tx);
+                        }
+                    }
+                }
+            }
         }
         drop(stdin); // 关 stdin → 仍等输入的子进程读到 EOF 后退出
-        for h in readers {
-            let _ = h.join();
-        }
         let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-        let bytes = std::mem::take(&mut *output.lock().unwrap());
         let stdout = if aggregate {
             // 全部原始字节统一 lossy 解码（跨块字符在整流上解码，不产生 U+FFFD）
-            Some(String::from_utf8_lossy(&bytes).into_owned())
+            Some(String::from_utf8_lossy(&output).into_owned())
         } else {
             None
         };
@@ -170,6 +284,18 @@ fn spawn_worker(
         let _ = tx.send(TermEvent::Exit(id, code, stdout));
         crate::state::js_dbg(format_args!("worker end id={id}"));
     });
+}
+
+/// 仅供线程数探针使用（单线程化前后对比）：转调私有 [`spawn_worker`]。
+#[cfg(test)]
+pub(crate) fn spawn_worker_for_test(
+    id: u64,
+    cmd: &str,
+    aggregate: bool,
+    tx: WakeSender<TermEvent>,
+    stdin_rx: std::sync::mpsc::Receiver<TermCtrl>,
+) {
+    spawn_worker(id, cmd, aggregate, tx, stdin_rx);
 }
 
 /// PTY worker：子进程 stdin/stdout/stderr 接 slave；父线程读 master 发 Chunk（流式），

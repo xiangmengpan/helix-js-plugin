@@ -134,3 +134,4 @@ mod pane_stack;
 mod plugin;
 mod popup_panel;
 mod term_pty;
+mod worker_threads;
