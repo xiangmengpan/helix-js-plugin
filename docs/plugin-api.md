@@ -40,6 +40,13 @@
 
 ## 2. API 索引(按域)
 
+### 与 `config.toml` 的分工(先看这条)
+
+同一件事可能两处都能配(键位、主题),规则是**后发生者生效**:JS 运行期 > TOML 启动期;
+但 `editor.*`(无 JS 写入口)、`[plugins.<name>]`(唯一数据通道)、`[theme]` 初值(首帧要用)
+是"只有一条路"。表格、`:config-reload` 与 `:plugin-reload` 各自管什么、以及"改键位要重启"
+这类坑,见 [`config-precedence.md`](config-precedence.md)。
+
 ### 加载 / 命令 / 消息 / 键位
 
 `helix.load(name)`(缓存加载)、`helix.export(obj)`(导出)、`helix.lazy(name, ...commands)`(懒加载桩)、`helix.run_command(name, ctx?)`、`helix.register_command(name, fn, doc?)`(一个命令 = 一次撤销)、`helix.echo(text)`、`helix.map(mode, key, command|fn)`。
