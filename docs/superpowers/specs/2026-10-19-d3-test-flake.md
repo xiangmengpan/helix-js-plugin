@@ -152,3 +152,62 @@ pub async fn pump_until(
 | Q1 | 异步等待预算取 5s 够吗？（CI 上最慢的 fs 用例当前耗时 ~1.2s） | 取 5s；超时只影响失败诊断，不影响通过路径耗时 |
 | Q2 | B 类修法选"读侧加锁"还是"读侧改绝对路径"？ | **绝对路径**优先（不动锁），只有改不动的地方才加锁 |
 | Q3 | 是否顺手把 64 线程加压跑加进 CI？ | **不加**（CI 是 16 线程口径，加了只会让 CI 慢且偶发红）；改为在本文记录命令，供本地排查 |
+
+---
+
+## 9. 执行结果与订正（2026-10-19，T1–T3 已落地）
+
+### 9.1 做了什么
+
+| 任务 | commit | 结果 |
+|---|---|---|
+| T1 | `72d993a92` | `helpers.rs` 新增 `pump_until` / `pump_until_probe` / `status_text`；自测 4 条（通过路径耗时、超时诊断、探针重发、空串语义） |
+| T2 | `b26db17f3` | `plugin_async` 两条命令改 `pump_until`（断言字符串未改） |
+| T3 | `94a529701` | `plugin_lsp_mock` 9 条用例改 `pump_until`；顺带收掉同文件两处手写重试 |
+
+### 9.2 复现命令 5 次结果（`--test-threads=64`，`plugin` 过滤）
+
+```
+run1 ok  170 passed / 0 failed / 180s
+run2 ok  170 passed / 0 failed / 145s
+run3 ok  170 passed / 0 failed / 140s
+run4 ok  170 passed / 0 failed / 149s
+run5 FAILED  169 passed / 1 failed / 150s   ← plugin_async::plugin_async_run
+```
+
+基线（改动前）：`165 passed / 4 failed`（另一次默认线程：`162 / 7 / 899s`）。
+
+### 9.3 两个订正（原判断有误）
+
+1. **两条 picker 用例属 B 类（cwd），不是 A 类（异步）。**
+   `picker_ui_opens` 的 `all=0` 与 `picker_ui_draws_with_draw_api` 的空表，根因是
+   picker 的 `files` 源读**进程 cwd**：并行时别的用例 `chdir` 走了（甚至删了临时目录），
+   枚举自然为空。**证据**：另一会话的 `CwdScope`（scoped chdir + 只读锁）落地后，
+   T1–T3 未碰这两条用例，它们也不再失败（5 次全绿）。
+   ⇒ **T4 取消**：给它们加 `pump_until` 只会把 cwd 竞争藏进 5s 等待里（更坏）。
+
+2. **`plugin_async_run` 的残留失败不是"等得不够"，是事件丢了。**
+   该文件头部早有记录：multi_thread 下测试主任务会迁移 OS 线程，而
+   `ASYNC_EVENTS` / `LSP_RESULTS`（`helix-js/src/state.rs:808-816`）是 **thread-local**，
+   drain 发生在新线程上 ⇒ 事件留在旧线程的通道里，5s 也等不到。
+   `pump_until` 修的是"晚到"，修不了"丢失"。⇒ 单列为 **T7（未做）**。
+
+### 9.4 T7（新增，待决策）
+
+| 选项 | 代价 / 风险 |
+|---|---|
+| a. 把 `ASYNC_EVENTS`/`LSP_RESULTS` 由 thread-local 改进程级 | 修根因；但同进程多 App（集成测试）会串台，需要配合现有的 `TEST_LOCK` 语义重新设计所有权 |
+| b. 测试侧把 `App` 钉在固定线程（专用 runtime + `spawn_blocking` 驱动） | 不动产品代码；但 harness 大改，且 `close()` 依赖 `block_in_place` |
+| c. 接受 1/5 级别残留，改成"失败信息明确指向 T7" | 成本最低；但验收标准"5 次全绿"达不到 |
+
+**建议**：先做 c（`pump_until` 的超时信息已能指向这一节），把 a 作为独立 spec 再评估——
+它是产品侧的线程模型问题，不属于"测试 flake"这个题目。
+
+### 9.5 验收对照
+
+- [x] `harness_util` 4 passed（含超时诊断）
+- [x] `plugin_async` / `plugin_lsp_mock` 单独跑全绿
+- [x] `--test-threads=64` 5 次中 **4 次**全绿（原 4 条已知 flake 中 3 条消失）
+- [ ] 5 次全绿 —— 被 T7 阻塞（见 9.4）
+- [x] `git diff` 无任何 `assert_eq!` 期望字符串改动
+- [x] 无新增 `#[ignore]`，用例总数 397 → 401
