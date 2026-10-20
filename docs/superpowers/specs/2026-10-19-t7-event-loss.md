@@ -226,3 +226,43 @@ pub struct JsHost {
 - [x] 拿到"谁在第二线程上跑了什么"：**进程 worker 在另一线程跑**（正常），失败时它**没跑完**
 - [x] 结论写回本文并订正 `plugin_async.rs` 的旧注释
 - [ ] ~~10 次加压全绿~~ → 改为：**单套 64 线程** 4/5（记录在 D3 spec §9.2）；两套并发会红，属环境限制
+
+---
+
+## 10. 可选项已落地：进程 worker 3 线程 → 1 线程（2026-10-20）
+
+§9.4 表里那条"可选、属性能重构"的项做了。既然根因是**线程饥饿**，减少每 spawn 的线程数
+就是从源头降低触发概率——且不影响任何产品行为。
+
+### 10.1 改法
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 每个进程 worker 的线程 | 1 主 + 2 读（stdout/stderr 各一）= **3** | **1**（主循环 `libc::poll` 同时盯两条流，超时 5ms 顺便轮询控制通道） |
+| 管道读取 | 阻塞 `read` in 读线程 | `O_NONBLOCK` + `poll` + 读到 `EAGAIN` 为止 |
+| UTF-8 尾部 / 聚合缓冲 | 在 `read_stream` 里，两条流共用一个 `Arc<Mutex<Vec<u8>>>` | `EmitState`（**每条流一份尾部**，聚合缓冲归 worker 独有，不再需要 Mutex） |
+| 控制通道 | 主循环 `try_recv` + 5ms `sleep` | 同左，但 `sleep` 被 `poll(timeout=5ms)` 吸收 |
+| PTY worker | 自己的单读线程 | 不变（本来就是一个线程），但改成复用 `EmitState`，语义只有一份实现 |
+
+### 10.2 实测
+
+```
+/proc/self/status Threads:  5 个 spawn 的增量
+改前: delta=15  per_spawn = 3.0
+改后: delta=5   per_spawn = 1.0
+```
+
+回归锁：`helix-js/src/tests/worker_threads.rs`（`per_spawn <= 2.0`，改前必红）；
+另有 `fs_async::async_run_and_spawn` 新增"流式 stderr"断言，钉住两条流都被读。
+
+### 10.3 影响面
+
+- `helix-js` 218 passed / 7 ignored（含 `--ignored` 7 条全绿）
+- 集成：`plugin_run` / `plugin_async` / `plugin_permissions` / `plugin_terminal_hooks`(27) 全绿
+- `--test-threads=64` 单套连跑 2 次：170 passed / 0 failed（160s / 159s）
+- `clippy --all-targets -D warnings` 干净；`cargo fmt --all --check` 干净
+
+### 10.4 仍不做
+
+- 不为它改 CI、不动 `idle_timeout`、不动 `--test-threads`；
+- 两套全量**并发**跑仍属超载（不是被修的目标）：需要时降线程数，而不是调预算。
