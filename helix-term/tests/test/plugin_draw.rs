@@ -245,10 +245,18 @@ async fn scroll_container_reaches_the_surface() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// **真实插件样板**:`picker-ui` 的 render 全部改用 `helix.draw.*`
+/// **真实插件样板 ②**:`picker-ui` 的 render 全部改用 `helix.draw.*`
 /// (外框 rect / 查询行 text / 分隔 hline / 选中行 fill / 列表 push_scroll / 滚动条 vline)
 #[tokio::test(flavor = "multi_thread")]
 async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
+    // 列表内容**自己造**:否则依赖跑测试时的 cwd,会被别处的 `:cd` 干扰(踩过)
+    let _cwd_lock = CWD_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    for i in 0..30 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x\n")?;
+    }
+    let _cwd = CwdGuard::enter(dir.path());
+
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let plugin = root.join("plugins/picker-ui/plugin.js");
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
@@ -261,8 +269,14 @@ async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
     assert!(text.contains("╭ picker · files"), "圆角外框 + 标题: {text}");
     assert!(text.contains("> _"), "查询行(带光标): {text}");
     assert!(text.contains('▸'), "选中行标记: {text}");
-    assert!(text.contains("Enter") && text.contains("Esc"), "底部状态行: {text}");
-    assert!(text.contains('█'), "滚动条当前位置: {text}");
+    assert!(
+        text.contains("Enter") && text.contains("Esc"),
+        "底部状态行: {text}"
+    );
+    assert!(
+        text.contains('█'),
+        "30 个文件装不下 ⇒ 应有滚动条当前位置: {text}"
+    );
 
     // 按 Down 若干次:选中行仍在框内(滚动窗口跟随),但画面已经变了
     for _ in 0..12 {
@@ -271,8 +285,64 @@ async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
     let text2 = screen(&mut app);
     assert!(text2.contains('▸'), "滚动后选中行仍可见: {text2}");
     assert_ne!(text, text2, "按 Down 之后画面应变化(选中+滚动窗口)");
+    // 滚到中途:第一行不再是 f00(内容坐标 + offset 真的生效了)
+    assert!(
+        !text2.contains("f00.txt"),
+        "多次 Down 后 f00 应已滚出窗口: {text2}"
+    );
 
     pump(&mut app, "<esc>").await?;
     assert!(!screen(&mut app).contains("╭ picker"), "Esc 关闭弹层");
+    Ok(())
+}
+
+/// **真实插件样板 ②**:`filetree` 的面板骨架（头 + 分隔线 + 滚动树）全部用 `helix.draw.*`
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_draws_panel_skeleton() -> anyhow::Result<()> {
+    let _cwd_lock = CWD_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "x\n")?;
+    std::fs::create_dir_all(dir.path().join("sub"))?;
+    std::fs::write(dir.path().join("sub/b.txt"), "y\n")?;
+    let root_name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let _cwd = CwdGuard::enter(dir.path());
+    let mut app = AppBuilder::new().with_file(&a, None).build()?;
+    pump(
+        &mut app,
+        &format!(
+            ":plugin-load {}<ret>",
+            repo_plugin("filetree/plugin.js").display()
+        ),
+    )
+    .await?;
+    pump(&mut app, &format!(":cd {}<ret>", dir.path().display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+
+    let text = screen(&mut app);
+    assert!(text.contains(&root_name), "头行应显示根目录名: {text}");
+    // 开关状态标记(默认跟随开)
+    assert!(text.contains('F'), "头行应有跟随标记: {text}");
+    // 树内容(目录在前)
+    assert!(text.contains("sub"), "应列出子目录: {text}");
+    assert!(text.contains("a.txt"), "应列出文件: {text}");
+
+    // 打开树里的文件 ⇒ buffer-open ⇒ 当前文件标记(右缘圆点)
+    pump(&mut app, &format!(":open {}<ret>", a.display())).await?;
+    let text2 = screen(&mut app);
+    assert!(text2.contains('●'), "当前文件应有圆点标记: {text2}");
+
+    pump(&mut app, ":filetree<ret>").await?;
+    let text3 = screen(&mut app);
+    assert!(
+        !text3.contains("a.txt") || !text3.contains(&root_name),
+        "再按一次应关面板: {text3}"
+    );
     Ok(())
 }

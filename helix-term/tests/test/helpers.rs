@@ -583,6 +583,28 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
 /// 而 `std::sync::MutexGuard` 不是 `Send`(multi_thread 的测试容器会拒绝编译)。
 pub static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// 把进程 cwd 换成 `dir`,Drop 时还原 —— 与 [`CWD_LOCK`] 配套用:
+/// `let _lock = CWD_LOCK.lock().await; let _cwd = CwdGuard::enter(dir.path());`
+///
+/// Drop 而非手工恢复:断言失败/`?` 早退也要还原,否则污染同进程的其它测试。
+/// **必须**走 `helix_stdx::env::set_current_working_dir`(它同时更新 CWD 缓存),
+/// 裸 `std::env::set_current_dir` 会让 `helix.cwd()` 读到缓存里的旧值。
+pub struct CwdGuard(std::path::PathBuf);
+
+impl CwdGuard {
+    pub fn enter(dir: &std::path::Path) -> Self {
+        let prev = helix_stdx::env::current_working_dir();
+        helix_stdx::env::set_current_working_dir(dir).expect("chdir 到测试目录");
+        Self(prev)
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = helix_stdx::env::set_current_working_dir(&self.0);
+    }
+}
+
 pub async fn pump(app: &mut Application, keys: &str) -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);

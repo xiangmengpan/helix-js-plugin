@@ -752,6 +752,14 @@ async fn quit_request_survives_last_view_close() -> anyhow::Result<()> {
 /// 注:弹窗打开时**会吞掉按键**(A′ 既有性质 ✓)⇒ 命令只能在关闭后敲 ✓
 #[tokio::test(flavor = "multi_thread")]
 async fn picker_ui_opens() -> anyhow::Result<()> {
+    // `:pick` 的文件列表来自**当前 cwd** ⇒ 自己造目录并拿 cwd 锁,
+    // 否则并行时会被别的 `:cd` 换走,断言 `all=0` 随机红(实测过)。
+    let _cwd_lock = CWD_LOCK.lock().await;
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("a.txt"), "x\n")?;
+    std::fs::write(dir.path().join("b.txt"), "y\n")?;
+    let _cwd = CwdGuard::enter(dir.path());
+
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let plugin = root.join("plugins/picker-ui/plugin.js");
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());

@@ -13,23 +13,6 @@ use super::*;
 
 use helix_term::application::Application;
 
-/// 把进程 cwd 换成 `dir`,Drop 时还原(早退/panic 也要还原)。
-struct CwdGuard(std::path::PathBuf);
-
-impl CwdGuard {
-    fn enter(dir: &std::path::Path) -> Self {
-        let prev = helix_stdx::env::current_working_dir();
-        helix_stdx::env::set_current_working_dir(dir).expect("chdir 到测试目录");
-        Self(prev)
-    }
-}
-
-impl Drop for CwdGuard {
-    fn drop(&mut self) {
-        let _ = helix_stdx::env::set_current_working_dir(&self.0);
-    }
-}
-
 /// 左 32 列(filetree 面板区)内容拼接
 fn panel_text(app: &mut Application) -> String {
     render_rows(app, helix_view::graphics::Rect::new(0, 0, 120, 30))

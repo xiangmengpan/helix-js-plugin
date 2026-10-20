@@ -312,35 +312,87 @@ function reveal(file_path) {
   if (idx >= 0) S.cursor = idx;
 }
 
-// ============================ 渲染 ============================
+// ============================ 渲染(helix.draw 样板)============================
+//
+// 面板骨架:头(根名 + 状态标记)→ 分隔线 → **滚动树**。
+// 核心已经画了面板边框 ⇒ 这里的 `(0,0)` 就是边框内区的左上角。
+//
+// 树的写法是关键:用 `push_scroll` 的**内容坐标系** —— 内容第 i 行就写在 y = list_top + i,
+// 滚动时只改 `dy`,屏幕 y 由光栅化统一算。旧实现是每帧在 JS 里 `idx - start` 手动折算,
+// 折错一次就是整棵树错位。
 
-// 一行：缩进 + 箭头 + 名字；样式：选中 > 当前文件 > 目录
-function row_el(row, selected, is_current) {
-  const { node, depth } = row;
-  const indent = "  ".repeat(depth);
-  // 图标:直接用核心 API(单一来源)。关掉图标时:目录回退 ▸/▾、文件留空格 ——
-  // `|| " "` 是为了保持与旧回退同样的**两格对齐**
-  const glyph = node.is_dir
-    ? helix.icons.dir(node.expanded) + " "
-    : (helix.icons.file(node.name) || " ") + " ";
-  const style = selected ? "ui.selection" : is_current ? "ui.popup" : node.is_dir ? "ui.virtual" : null;
-  return helix.el("text", indent + glyph + node.name, { style });
+/// 纯逻辑:可见窗口。返回 `[{ row, idx }]`,`idx` = **内容行号**(与屏幕无关)
+function window_rows(rows, top, list_h) {
+  const out = [];
+  const end = Math.min(rows.length, top + list_h);
+  for (let idx = Math.max(0, top); idx < end; idx++) out.push({ row: rows[idx], idx });
+  return out;
 }
 
-function render(focus, ctx) {
+/// 纯逻辑:让光标可见的滚动位置(= 内容第 top 行顶到窗口上沿)。
+/// 以光标为中心,再夹到 `[0, total - list_h]`;列表装得下时恒为 0。
+function scroll_top(cursor, total, list_h) {
+  if (list_h <= 0 || total <= list_h) return 0;
+  const centered = cursor - Math.floor(list_h / 2);
+  return Math.max(0, Math.min(centered, total - list_h));
+}
+
+const HEADER_H = 2; // 头 + 分隔线
+
+function render(_focus, ctx) {
+  const w = Math.max(1, (ctx && ctx.width) || 32);
+  const h = Math.max(1, (ctx && ctx.height) || 20);
   try {
     const rows = visible_rows(S.tree, S.show_hidden, 0, []);
-    const h = Math.max(1, (ctx ? ctx.height : 30) - 1);
-    // 手动窗口化：以 cursor 为中心截取 h 行（scroll 组件只会保留末行，需自行裁剪）
-    const start = Math.max(0, Math.min(S.cursor - Math.floor(h / 2), rows.length - h));
-    const window = rows.slice(start, start + h);
-    const lines = window.map((r, i) => row_el(r, start + i === S.cursor, r.node.path === S.current));
+    const list_top = HEADER_H;
+    const list_h = Math.max(1, h - list_top);
+    const top = scroll_top(S.cursor, rows.length, list_h);
+
+    // ── 头:根目录名 + 开关状态(H 隐藏 / F 跟随)──
+    helix.draw.text(1, 0, [
+      { text: basename(S.root || "/"), style: "ui.text" },
+      { text: (S.show_hidden ? "  H" : "") + (S.follow ? "  F" : ""), style: "ui.virtual" },
+      // 头从 x=1 起 ⇒ 可用宽度是 w-1(用 w-2 会把尾巴上的状态标记截掉,实测踩过)
+    ], { maxWidth: Math.max(1, w - 1) });
+    helix.draw.hline(0, 1, w, { style: "ui.virtual" });
+
+    // ── 树:内容坐标 + 滚动偏移 ──
+    helix.draw.push_scroll(0, list_top, w, list_h, { dy: top });
+      for (const { row, idx } of window_rows(rows, top, list_h)) {
+        const y = list_top + idx;             // 内容坐标(与屏幕无关)
+        const { node, depth } = row;
+        const is_sel = idx === S.cursor;
+        const is_cur = node.path === S.current;
+        if (is_sel) helix.draw.fill(0, y, w, 1, { style: "ui.selection" });
+        // 图标:直接用核心 API(单一来源);关图标时目录回退 ▸/▾、文件留空格(保持两格对齐)
+        const glyph = node.is_dir
+          ? helix.icons.dir(node.expanded) + " "
+          : (helix.icons.file(node.name) || " ") + " ";
+        const style = is_sel ? "ui.selection" : is_cur ? "ui.popup" : node.is_dir ? "ui.virtual" : "ui.text";
+        helix.draw.text(1, y, [
+          { text: "  ".repeat(depth) + glyph, style },
+          { text: node.name, style },
+        ], { maxWidth: Math.max(1, w - 2) });
+        // 当前文件:右缘圆点(选中底色之上仍可见)
+        if (is_cur && w > 3) helix.draw.text(w - 2, y, "●", { style: "ui.text.focus" });
+      }
+    helix.draw.pop();
+
+    // ── 超大目录:末尾提示(与旧行为一致)──
     if (rows.length > 20000) {
-      lines.push(helix.el("text", "... " + (rows.length - start - h) + " 行未显示（内容过多）", { style: "ui.virtual" }));
+      helix.draw.text(1, h - 1, "... " + (rows.length - top - list_h) + " 行未显示", {
+        style: "ui.virtual",
+        maxWidth: Math.max(1, w - 2),
+      });
     }
-    return helix.el("scroll", lines, { height: h });
+    return helix.draw.done();
   } catch (e) {
-    return helix.el("col", [helix.el("text", "filetree 渲染错误: " + (e && e.message || e), { style: "ui.popup" })]);
+    // 绘制出错也要给出**可见**内容(否则面板一片空白,连报错都看不到)
+    helix.draw.text(0, 0, "filetree 渲染错误: " + (e && e.message ? e.message : e), {
+      style: "ui.popup",
+      maxWidth: w,
+    });
+    return helix.draw.done();
   }
 }
 
@@ -578,6 +630,9 @@ if (typeof helix !== "undefined") {
 // ============================ node 自检导出 ============================
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { sort_entries, visible_rows, make_tree, rel_parts, find_node, find_parent, collect_expanded, shq, S, render, reveal, open_panel };
+  module.exports = {
+    sort_entries, visible_rows, make_tree, rel_parts, find_node, find_parent,
+    collect_expanded, shq, S, render, reveal, open_panel, window_rows, scroll_top,
+  };
 // render/open_panel 依赖 helix，node 测试需先 stub global.helix
 }

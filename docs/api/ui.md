@@ -67,9 +67,12 @@ helix.open_popup({
 | `push_scroll(x,y,w,h,{dx,dy})` / `pop()` | **滚动容器**:矩形同时是裁剪区,内部坐标减去 `(dx,dy)` 后显示(**内容坐标系**)⇒ 长列表画一次、滚动只改 `dy` |
 | `done()` | **必须 `return`**;它把本帧 op 交给宿主 |
 
-> **完整样板**:`plugins/picker-ui/plugin.js` 的 `render` 就是这套 API 的实战用法 ——
-> 圆角外框 + 标题、多段样式的查询行、`hline` 分隔、`fill` 打选中行底色、
-> `push_scroll` 装列表(滚动只改 `dy`)、`vline` 画滚动条、底部状态行。
+> **完整样板**(两个真实插件,照着抄):
+> - `plugins/picker-ui/plugin.js` —— **弹窗**:圆角外框 + 标题、多段样式的查询行、`hline`
+>   分隔、`fill` 打选中行底色、`push_scroll` 装列表(滚动只改 `dy`)、`vline` 画滚动条、状态行;
+> - `plugins/filetree/plugin.js` —— **侧边面板骨架**:头(根名 + 开关标记)+ 分隔线 +
+>   `push_scroll` 装的滚动树(缩进/图标/选中底色/当前文件标记),窗口与滚动位置由两个
+>   纯函数 `window_rows` / `scroll_top` 算(node 单测钉住)。
 
 约定(定死,别猜):
 
