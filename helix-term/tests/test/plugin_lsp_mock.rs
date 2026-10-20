@@ -9,15 +9,10 @@ use helix_view::input::parse_macro;
 /// 异步等待预算：mock server 本地往返正常 <100ms；5s 只影响失败路径的诊断时长。
 const D5: Duration = Duration::from_secs(5);
 
-/// 状态栏含 `needle`（谓词用前缀，见计划 T3 表格的说明）
-fn status_has(app: &mut Application, needle: &str) -> bool {
-    status_text(app).contains(needle)
-}
-
 /// 跑一次 `:<cmd>` 并**等到**状态栏出现 `prefix`，返回状态栏全文。
 ///
 /// LSP 响应不是同步的：`helix.lsp.*` 走 promise，回包要等 `capabilities` 初始化
-/// + 一次往返。"跑完一轮事件循环就查状态栏"在高并发下会拿到 None（本文件 9 条用例
+/// 再加一次往返。"跑完一轮事件循环就查状态栏"在高并发下会拿到 None（本文件 9 条用例
 /// 此前都这么写，加压下必红）。
 async fn run_and_wait(app: &mut Application, cmd: &str, prefix: &str) -> anyhow::Result<String> {
     pump_until(

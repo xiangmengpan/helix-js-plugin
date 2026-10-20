@@ -17,16 +17,20 @@ async fn pump_until_returns_as_soon_as_cond_holds() -> anyhow::Result<()> {
     let mut app = AppBuilder::new().with_file(file, None).build()?;
 
     let t0 = Instant::now();
+    // 预算给足(全量并行时机器很忙,`:echo` 落地的第一轮也可能要几秒),
+    // 断言的是"**没等满预算**"这件事本身 ⇒ 阈值取预算的一半,既能钉住回归、
+    // 又不会被 400+ 用例并行时的调度抖动打成假红(实测:1.5s 阈值在全量下会红)。
+    let budget = Duration::from_secs(10);
     pump_until(
         &mut app,
         ":echo hello<ret>",
-        Duration::from_secs(5),
+        budget,
         "状态栏出现 hello",
         |a| status_text(a).contains("hello"),
     )
     .await?;
     assert!(
-        t0.elapsed() < Duration::from_millis(1500),
+        t0.elapsed() < budget / 2,
         "通过路径不该等满预算: {:?}",
         t0.elapsed()
     );
@@ -83,9 +87,9 @@ helix.register_command("count", () => { n = n + 1; helix.echo("n=" + n); });"#,
     )
     .await?;
     assert!(
-        status_text(&mut app).contains("n=3"),
+        status_text(&app).contains("n=3"),
         "{}",
-        status_text(&mut app)
+        status_text(&app)
     );
     Ok(())
 }
