@@ -5,6 +5,31 @@ use helix_view::current_ref;
 use std::time::Duration;
 
 use helix_view::input::parse_macro;
+
+/// 异步等待预算：mock server 本地往返正常 <100ms；5s 只影响失败路径的诊断时长。
+const D5: Duration = Duration::from_secs(5);
+
+/// 状态栏含 `needle`（谓词用前缀，见计划 T3 表格的说明）
+fn status_has(app: &mut Application, needle: &str) -> bool {
+    status_text(app).contains(needle)
+}
+
+/// 跑一次 `:<cmd>` 并**等到**状态栏出现 `prefix`，返回状态栏全文。
+///
+/// LSP 响应不是同步的：`helix.lsp.*` 走 promise，回包要等 `capabilities` 初始化
+/// + 一次往返。"跑完一轮事件循环就查状态栏"在高并发下会拿到 None（本文件 9 条用例
+/// 此前都这么写，加压下必红）。
+async fn run_and_wait(app: &mut Application, cmd: &str, prefix: &str) -> anyhow::Result<String> {
+    pump_until(
+        app,
+        &format!("{cmd}<ret>"),
+        D5,
+        &format!("{cmd} 的 LSP 回包（前缀 {prefix}）"),
+        |a| status_text(a).contains(prefix),
+    )
+    .await?;
+    Ok(status_text(app))
+}
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
@@ -28,35 +53,19 @@ async fn plugin_lsp_mock_format_applies() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("format_basic", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-fmt<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), r#"fmt:{"applied":true}"#);
-                }),
-            ),
-            (
-                Some(":mock-fmt<ret>"),
-                Some(&|app| {
-                    let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "ONE\n", "format 编辑已应用");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("format_basic", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-fmt", "fmt:").await?;
+    assert_eq!(status, r#"fmt:{"applied":true}"#);
+
+    run_and_wait(&mut app, ":mock-fmt", "fmt:").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "ONE\n", "format 编辑已应用");
     Ok(())
 }
 
@@ -79,36 +88,20 @@ async fn plugin_lsp_mock_rename_cross_file() -> anyhow::Result<()> {
         "#,
     )?;
     let b_path = file_b.display().to_string();
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file_a, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("rename_cross_file", &[&b_path]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-ren<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    // files = workspace_edit_file_count(Edits 按条目)= 2
-                    assert_eq!(status.as_ref(), r#"ren:{"applied":true,"files":2}"#);
-                }),
-            ),
-            (
-                Some(&format!(":open {}<ret>", file_b.display())),
-                Some(&|app| {
-                    let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "new\n", "第二文件被 rename 编辑");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file_a, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("rename_cross_file", &[&b_path]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-ren", "ren:").await?;
+    // files = workspace_edit_file_count(Edits 按条目)= 2
+    assert_eq!(status, r#"ren:{"applied":true,"files":2}"#);
+
+    pump(&mut app, &format!(":open {}<ret>", file_b.display())).await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "new\n", "第二文件被 rename 编辑");
     Ok(())
 }
 
@@ -129,35 +122,19 @@ async fn plugin_lsp_mock_rename_stale_version() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("rename_stale", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-ren-stale<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "stale:null", "过期版本 → null");
-                }),
-            ),
-            (
-                Some(":mock-ren-stale<ret>"),
-                Some(&|app| {
-                    let (_, doc) = current_ref!(app.editor);
-                    assert_eq!(doc.text().to_string(), "old\n", "陈旧编辑不落地");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("rename_stale", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-ren-stale", "stale:").await?;
+    assert_eq!(status, "stale:null", "过期版本 → null");
+
+    run_and_wait(&mut app, ":mock-ren-stale", "stale:").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "old\n", "陈旧编辑不落地");
     Ok(())
 }
 
@@ -177,28 +154,15 @@ async fn plugin_lsp_mock_no_capability_resolves_null() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("initialize_only", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-nocap<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "nocap:null");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("initialize_only", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-nocap", "nocap:").await?;
+    assert_eq!(status, "nocap:null");
     Ok(())
 }
 
@@ -359,28 +323,15 @@ async fn plugin_lsp_mock_query_real_hover() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("hover_basic", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-hover<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "hover:mock hover");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("hover_basic", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-hover", "hover:").await?;
+    assert_eq!(status, "hover:mock hover");
     Ok(())
 }
 
@@ -400,28 +351,15 @@ async fn plugin_lsp_mock_query_real_completion() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("completion_basic", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-comp<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "comp:mock-item");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("completion_basic", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-comp", "comp:").await?;
+    assert_eq!(status, "comp:mock-item");
     Ok(())
 }
 
@@ -441,28 +379,15 @@ async fn plugin_lsp_mock_query_real_goto() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("goto_definition_basic", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-def<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "def:0");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("goto_definition_basic", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-def", "def:").await?;
+    assert_eq!(status, "def:0");
     Ok(())
 }
 
@@ -482,28 +407,15 @@ async fn plugin_lsp_mock_query_real_symbols() -> anyhow::Result<()> {
         });
         "#,
     )?;
-    test_key_sequences(
-        &mut AppBuilder::new()
-            .with_file(file, None)
-            .with_config(test_config_with_lsp())
-            .with_lang_loader(mock_lsp_loader("symbols_basic", &[]))
-            .build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            (
-                Some(":mock-syms<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "syms:MockSymbol");
-                }),
-            ),
-        ],
-        false,
-    )
-    .await?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("symbols_basic", &[]))
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin_path.display())).await?;
+
+    let status = run_and_wait(&mut app, ":mock-syms", "syms:").await?;
+    assert_eq!(status, "syms:MockSymbol");
     Ok(())
 }
 
@@ -542,23 +454,16 @@ async fn plugin_lsp_mock_timeout_rejects() -> anyhow::Result<()> {
         }
         app.event_loop_until_idle(&mut rx_stream).await;
     }
-    // 等 server 初始化完成(否则 hover 被 is_initialized 短路 resolve null,测不到超时)
-    let init_deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if app
-            .editor
-            .language_servers
-            .iter_clients()
-            .any(|c| c.is_initialized())
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < init_deadline,
-            "mock server 未在 5s 内完成初始化"
-        );
-        app.event_loop_until_idle(&mut rx_stream).await;
-    }
+    // 等 server 初始化完成(否则 hover 被 is_initialized 短路 resolve null,测不到超时)。
+    // 空 keys 只推进事件循环；条件与原来的手写 deadline 循环等价(5s 预算)。
+    pump_until(
+        &mut app,
+        "",
+        D5,
+        "mock server 完成 initialize",
+        |a| a.editor.language_servers.iter_clients().any(|c| c.is_initialized()),
+    )
+    .await?;
     for keys in [":mock-timeout<ret>".to_string()] {
         for key_event in parse_macro(&keys)? {
             tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
@@ -713,18 +618,16 @@ async fn completion_icon_hook_is_called() -> anyhow::Result<()> {
         "插件应先加载成功,实得 {after_load}"
     );
 
-    // insert + C-x 触发补全(mock LSP 的 completion_basic)。补全是异步的 ⇒ 有界重试:
-    // 每轮把回调跑干,直到菜单**被创建**(`last_completion`),最多 30 轮。
-    let mut menu_created = false;
-    for _ in 0..30 {
-        pump(&mut app, "i<C-x>").await?;
-        if app.editor.last_completion.is_some() {
-            menu_created = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(menu_created, "补全菜单应被创建(mock LSP 已就绪)");
+    // insert + C-x 触发补全(mock LSP 的 completion_basic)。补全是异步的 ⇒ 有界等待:
+    // 每轮重发 `i<C-x>`（幂等）并推进事件循环，直到菜单**被创建**(`last_completion`)。
+    pump_until_probe(
+        &mut app,
+        "i<C-x>",
+        D5,
+        "补全菜单被创建（mock LSP 就绪）",
+        |a| a.editor.last_completion.is_some(),
+    )
+    .await?;
 
     // 回到普通模式,再读计数器:钩子应在菜单布局/渲染时被调过至少一次
     pump(&mut app, "<esc>").await?;
