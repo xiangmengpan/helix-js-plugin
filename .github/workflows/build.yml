@@ -151,6 +151,16 @@ jobs:
         if: always()
         run: cargo xtask api-check
 
+      # 类型面门禁:api-check 只对账**名字与签名**(文本解析注册表),不查类型。
+      # `helix.d.ts` 是插件作者唯一的补全/跳转来源 ⇒ 语法错、类型错、接口自相矛盾
+      # 必须在这一步红。本机同命令:先 `npm i -g typescript@5.6.3`,再
+      # `tsc --noEmit -p plugins/jsconfig.json`。
+      - name: Check plugin type definitions
+        if: always()
+        run: |
+          npm i -g typescript@5.6.3
+          tsc --noEmit -p plugins/jsconfig.json
+
       - name: Generate docs
         if: always()
         run: cargo xtask docgen

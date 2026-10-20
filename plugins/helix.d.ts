@@ -709,8 +709,8 @@ interface Helix {
   /**
    * 弹层是否仍在 JS 注册表里(`false` = 已被关闭/reload 清掉)。
    *
-   * 用来给"自己记的 popup id"做自愈:JS 侧没有主动关闭入口(`close_popup` 未注册),
-   * 层可能被 onKey 的 "close"、reload 或别的插件移除,本地句柄会失效。
+   * 用来给"自己记的 popup id"做自愈:层可能被 `onKey` 返回的 "close"、
+   * `helix.close_popup(id)`、reload 或别的插件移除,本地句柄会失效。
    */
   popup_exists(id: number): boolean;
 
@@ -719,8 +719,7 @@ interface Helix {
    * 与 onKey 返回 `"close"` 完全等价。id 不存在时静默(幂等)。
    */
   close_popup(id: number): void;
-  // 注:`helix.close_popup(id)` **不存在**(核心未注册;2026-10 对账核实)。
-  //     关面板用 `close_panel(id)` / `pane.close(id)`;弹窗目前只能由自身键位(如 Esc)关。
+  // 关面板用 `close_panel(id)` / `pane.close(id)`（弹窗与面板是两套层）。
   open_panel(opts: PanelOptions): number;
   close_panel(id: number): void;
   move_panel(id: number, side: PanelSide): void;

@@ -567,7 +567,8 @@ cargo test --workspace --lib                            # 库里那批只跑在 
 cargo test -p helix-js                                   # 可加 -- --ignored
 cargo integration-test                                   # = cargo test --features integration --profile integration --workspace --test integration
 cargo test -p helix-term --features integration --test integration <module>
-cargo xtask api-check                                    # 期望:134 成员 / 9 命名空间 / 20 事件 / 15 检查点 · 豁免 1
+cargo xtask api-check                                    # 期望:151 成员 / 12 命名空间 / 21 事件 / 23 检查点 · 豁免 1
+tsc --noEmit -p plugins/jsconfig.json                    # 类型面(需 npm i -g typescript@5.6.3);CI 也跑
 cargo xtask docgen                                       # 产物应零 diff
 cargo xtask query-check | indent-check | highlight-check | theme-check
 sh contrib/install-plugins.sh                            # 改了 plugins/ 之后必须跑
@@ -646,6 +647,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | `popup.rs::parse_node` | 161 | S3:JSON → 节点的递归下降,拆开反而更难读 |
 | ~~`plugin_terminal.rs::handle_event`~~ | ~~147~~ → **12** | ✅ **已拆**(2026-10-17,G10b):`on_mouse` 18 / `on_paste` 8 / `on_key` 35 / `term_key_decision` 28 / `normal_mode_key` 49 / `insert_mode_key` 13 / `copy_visible` 11;不接 `JsSurface`(共享面为零) |
 | `ui_op.rs::apply` | 139 | **不做**:24 个 arm 的单 match,每个 arm 5–6 行;拆成 24 个函数只是把 match 搬走 |
+| `draw.rs::apply` | 121 | **不做**(2026-10-19 复核新增):`DrawOp` 的单 `match` 派发,与上一条同构;每帧路径但只是 op 派发,拆开会让"每个 op 怎么画"散到 20 个函数里 |
 | ~~`popup.rs::{js_open_popup, js_open_terminal, js_el}`~~ | 120/136/143 → **103/101/129** | ✅ **已清**(2026-10-17):根因不是「函数太长」,而是**错误构造样板** —— `JsError::from_opaque(JsValue::from(JsString::from(..)))` 全 crate **239 处**,统一成 `crate::js_err(..)` 后净 **−517 行** |
 | `typed.rs::server_panel` | 109 | S3 |
 | `server_rows.rs::deliver` | 108 | S3 |
@@ -653,7 +655,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 
 ### 9.4 其它遗留(都记录在案,均不阻塞)
 
-1. **`tsc --noEmit` 不在 CI**:`docs/` 把它列为插件侧检查,但 `build.yml` 里没有这一步(本机也没装 tsc)。类型面目前靠 `helix.d.ts` 人工维护 + api-check 的名字对账。
+1. ~~**`tsc --noEmit` 不在 CI**~~ **已修(2026-10-19, 见 §12)**:`build.yml` 的 `docs` job 加了 `Check plugin type definitions`（`npm i -g typescript@5.6.3` + `tsc --noEmit -p plugins/jsconfig.json`）。api-check 只对账名字/签名，类型面此前确实是无人值守的。
 2. **一次未能复现的偶发红**:收尾时 `cargo test -p helix-js` 有 1 次(9 次里)整模块
    失败且耗时 71s(平时 11.7s)⇒ 是「某个等待型用例超时后被 TEST_LOCK 放大」那一类
    (模块注释 2026-10-14 记过同款事故)。随后 8 轮单跑 + 4 轮 `--workspace --lib` 全绿,
@@ -721,6 +723,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | API 三道门禁 | `cargo xtask api-check` | `Check plugin API surface` |
 | 生成物 | `cargo xtask docgen` + `git diff` | `Generate docs` + `Check uncommitted documentation changes` |
 | 文档 | `cargo doc --no-deps --workspace --document-private-items`(`-D warnings`) | `Run cargo doc` |
+| **插件类型** | `tsc --noEmit -p plugins/jsconfig.json`（需 `npm i -g typescript@5.6.3`） | `Check plugin type definitions`（2026-10-19 新增，第 9 道） |
 
 ### 10.4 明确不做(3 条,带理由,别再提)
 
@@ -737,7 +740,7 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 |---|---|
 | `ACTIVE: Cell<Option<NonNull<JsHost>>>` 裸指针 | **保留**(换 `Rc<RefCell>` 会把「回调里重入 = 编译不过」退化成运行期 panic);契约由 `host_cleared_before_drop` + `ActiveGuard` + 单一读点守着 |
 | `helix-js` 并行等待型测试偶发超时 | 收尾期间出现 **1/9 次**;随后 `helix-js` 单跑 8 轮 + `--workspace --lib` 4 轮均未复现;已把两处「不持锁却碰宿主」的测试收进 `TEST_LOCK` |
-| `tsc --noEmit` 不在 CI | 本机未装 typescript;类型面目前靠 `helix.d.ts` 人工 + api-check 名字对账 |
+| ~~`tsc --noEmit` 不在 CI~~ | **已修(2026-10-19)**:CI 新增 `Check plugin type definitions`（见 §12） |
 | 2 个 pre-existing stash | 非本次产物,原样保留 |
 | 6 处 `#[ignore]`(均在 fork) | **`-- --ignored` 6/6 通过**,默认不跑只因慢(会复制整个 `plugins/` 做 reload) |
 | ~~**release-profile 才可见的 dead code**~~ | 出 opt 二进制时发现:`term_native` 只被 `#[cfg(debug_assertions)]` 的表引用,函数本身没挂 cfg ⇒ `cargo build --profile opt` 报 dead_code,而 `clippy --all-targets`(dev,测试目标里函数仍被用到)**看不见**。已修(`b3e9be462`);**门禁缺口已补**:CI 新增 `cargo clippy --release --workspace -- -D warnings`(本地 ~50s,不链接)—— 反证过:去掉那行 cfg 该步骤立刻红 |
@@ -793,7 +796,7 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "t
 | A6 | 首帧闪「no servers yet」(`server.rows` 是异步) | 抽 `empty_list_text()`:未回传过 → "loading servers…" | ✅ |
 | A7 | 搜索不匹配命令名 | 搜索串加入 `bin` | ✅ |
 | B1 | **`helix.server.*` 不在能力模型内**(任意插件零声明可装二进制) | 8 个入口加 `check_js(CAP_PROCESS)`;意图表 + 文档 + arsenal 声明;新增拒绝/授权测试 | ✅ |
-| B2 | JS 无 `close_popup`/`popupExists` ⇒ 句柄失效后 `:arsenal` 永回 already open | 新增 `helix.popup_exists(id)` + arsenal 自愈;**主动关闭仍未做**(需新 UiRequest + onClose 语义) | ✅ 一半 |
+| B2 | JS 无 `close_popup`/`popupExists` ⇒ 句柄失效后 `:arsenal` 永回 already open | 新增 `helix.popup_exists(id)` + arsenal 自愈;主动关闭 `helix.close_popup(id)` 2026-10-19 已落地（`000979083`：触发 `onClose` + 从合成器移除，与 `onKey` 返回 `"close"` 等价） | ✅ |
 | C1 | arsenal 的 node 测试自目录布局迁移后**从未跑过**(require `../index.js` 已改名) | require 修成 `../plugin.js`;29 条存量全绿;新增 14 条(batch/x/空文案/刷新/自愈) | ✅ |
 
 **顺带修掉的两个真问题**(都不是 arsenal 自身):
@@ -802,6 +805,57 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "t
 - `cargo test --workspace --lib` 之外的这道「干净环境」验证此前从未跑过 —— 已写进本次记录。
 
 **API 面变化**:`popup_exists` 加入后 api-check 134 → **135 成员**;能力检查点 15 → **23 个 API**。
+
+---
+
+## 12. 复核(2026-10-19):D 批 —— 数字重测 + 门禁补缺
+
+> G0–G12 与 D1–D8 在 2026-10-17 全部收口后再没复核过。此后至少合入 5 个特性批次
+> (`cwd` / `close_popup` / `draw` ×2 / `doc-change` 逐文档 / `pane.list` 几何 / Shift-Tab / 本地安装 / `reload_plugins`),
+> 所以本节是**当前真相**,§10.2 那张表保留为当时的快照。
+
+### 12.1 数字重测
+
+| 指标 | §10.2(10-17) | 实测(10-19) | 说明 |
+|---|---|---|---|
+| 集成测试 | 377 | **397** | 新增 20 条（本轮 6 个 commit 各带回归） |
+| `api-check` 成员 / 命名空间 / 事件 / 检查点 | 134 / 9 / 20 / 15 | **151 / 12 / 21 / 23** | `draw.*`、`text.*`、`reload_plugins`、`pane.open` 等 |
+| 长函数 >100 行（全程，clippy 口径） | 63 | **60** | 净减 3，但**新增 1**：`draw.rs::apply` 121 行（§9.3 已记，判定不拆） |
+| `helix-js/src/lib.rs` | 202 | **226** | draw/`reload_plugins` 的注册 |
+| `#[ignore]` | 6 | **7** | 新增 1（慢用例） |
+| `helix-js` 公共面 | 136 | **151 成员注册**（`lib.rs` 内 `pub fn` 489） | 口径不同，勿直接比 |
+| 门禁道数 | 8 | **9** | 见 12.2 |
+
+### 12.2 D1:插件类型门禁进 CI
+
+- **缺口**:`api-check` 三道门禁全是**文本解析注册表**,只对账"名字有没有、参数几个",不查类型。
+  `helix.d.ts` 是插件作者唯一的补全来源,却没有任何自动化守着。
+- **修法**:`.github/workflows/build.yml` 的 `docs` job 新增
+  `Check plugin type definitions` = `npm i -g typescript@5.6.3` + `tsc --noEmit -p plugins/jsconfig.json`。
+  用 runner 预装的 node(api-check 本来就依赖它),版本钉死避免上游漂移。
+- **验证**:本机同一命令通过;YAML 解析后 `docs` job 10 个 step 顺序正确。
+
+### 12.3 D2:类型文件与本文档的过时表述
+
+| 位置 | 当时写的 | 实际 |
+|---|---|---|
+| `plugins/helix.d.ts::close_popup` | 声明了 `close_popup(id)`,紧跟一行注释"`helix.close_popup(id)` **不存在**(核心未注册)" | 自相矛盾。`000979083` 已注册,`onKey` 返回 `"close"` 的等价语义也在 |
+| `plugins/helix.d.ts::popup_exists` docstring | "JS 侧没有主动关闭入口(`close_popup` 未注册)" | 同上 |
+| 本文 §11.2 B2 | "**主动关闭仍未做**(需新 UiRequest + onClose 语义)" | 已做 |
+
+### 12.4 D3(**未做**):并行等待型测试偶发超时
+
+`cargo test -p helix-term --features integration --test integration plugin`(162 通过 / **7 失败** / **899 秒**)
+失败集中在 `plugin_lsp_mock_*` 与 `picker_ui_opens`;**单跑模块全绿**(13 / 27 条)。
+判定:mockserver 启动握手与超时阈值在高并发下竞争,需要单独设计(不是超时调大就能解决)。
+**跑全量请用 `cargo integration-test`,不要用大字符串过滤** —— 后者会把无关的重用例塞进同一批。
+
+### 12.5 仍然明确不做(承接 §10.4,新增 1 条)
+
+1. `ui_op::apply` 139 行（24 arm 单 `match`）
+2. `helix-dap ↔ helix-lsp` transport 重复（上游）
+3. `popup.rs::parse_node`（递归下降）
+4. **`draw.rs::apply` 121 行**（2026-10-19 新增；`DrawOp` 单 `match` 派发，与第 1 条同构）
 
 ---
 
