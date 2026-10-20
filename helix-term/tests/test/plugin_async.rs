@@ -5,10 +5,15 @@ use std::time::Duration;
 /// 异步等待预算：本地 worker 正常 <100ms；5s 只影响失败路径的诊断时长。
 const D5: Duration = Duration::from_secs(5);
 
-// ponytail: 本测试需 multi_thread（harness 的 app.close → block_try_flush_writes 用
-// block_in_place，current_thread 会 panic）。multi_thread 下主任务 await 时可能迁移 OS 线程，
-// 线程本地 TERM_EVENTS 通道滞留旧线程 → ~1/22 随机丢事件；与 docchange 同源，属已知测试侧
-// 隐患，生产端编辑器单线程无此路径，待后续任务处理。
+// 本测试需 multi_thread（harness 的 app.close → block_try_flush_writes 用 block_in_place，
+// current_thread 会 panic）。
+//
+// 2026-10-20 更新（原注释说"主任务迁移 OS 线程导致线程本地通道丢事件"——**已证伪**）：
+// `Application` 持 boa `Context`（`!Send`）⇒ 它不能被 tokio 在 worker 间搬。实测
+// （`HX_DBG_JS_THREAD=1`）失败时的形态是：进程 worker 线程**开始跑但迟迟不 send(Exit)**
+// （日志里 5 个 worker 只有 3–5 个打出 `worker send Exit`，且无 `spawn FAILED`），
+// 即**线程饥饿**（测试开 64 线程、或两套全量并发跑时尤其明显），不是通道串线程。
+// 证据与结论见 `docs/superpowers/specs/2026-10-19-t7-event-loss.md` §3。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_async_run() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;

@@ -75,6 +75,7 @@ pub fn init() {
     let _ = state::LAST_LAYOUT.get_or_init(Default::default);
     state::with_term_events(|t| {
         if t.is_none() {
+            state::js_dbg(format_args!("init channel term"));
             let (tx, rx) = std::sync::mpsc::channel();
             *t = Some(state::wake_sender(tx));
             state::with_term_events_rx(|r| *r = Some(rx));
@@ -82,6 +83,7 @@ pub fn init() {
     });
     state::with_async_events(|t| {
         if t.is_none() {
+            state::js_dbg(format_args!("init channel async"));
             let (tx, rx) = std::sync::mpsc::channel();
             *t = Some(state::wake_sender(tx));
             state::with_async_events_rx(|r| *r = Some(rx));
@@ -89,6 +91,7 @@ pub fn init() {
     });
     state::with_lsp_results(|t| {
         if t.is_none() {
+            state::js_dbg(format_args!("init channel lsp"));
             let (tx, rx) = std::sync::mpsc::channel();
             *t = Some(state::wake_sender(tx));
             state::with_lsp_results_rx(|r| *r = Some(rx));

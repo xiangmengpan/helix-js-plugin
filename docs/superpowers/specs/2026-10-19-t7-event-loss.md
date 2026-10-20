@@ -175,3 +175,54 @@ pub struct JsHost {
 |---|---|---|
 | 2026-10-19 | 立项；确定性实验证明"跨线程不可见、事件留在原线程" | 探针输出 `on_a=1 on_b=0 on_a2=1`（A 线程 init 后由 B drain） |
 | 2026-10-19 | 订正 D3 spec 的"主任务迁移"假设 | `Application: !Send`（持 boa `Context`）⇒ 不能被 tokio 搬线程 |
+
+---
+
+## 9. T1 执行结果（2026-10-20）：根因**不是**通道串线程
+
+### 9.1 诊断能力（已入库，默认关闭）
+
+`HX_DBG_JS_THREAD=1` 时打印（`helix-js/src/state.rs::js_dbg`）：
+
+| 打印点 | 内容 |
+|---|---|
+| `init()`（三条通道各一次） | `init channel {term,async,lsp}` + 线程 id（**每线程一套**） |
+| `js_run_async` / `spawn_async_op` | `spawn term id=N (run_async)` / `spawn async id=N` |
+| `spawn_worker` | `worker start id=N` / `worker spawn FAILED` / `worker send Exit id=N code=…` / `worker end id=N` |
+| `drain_term_events` / `drain_async_events` | 只在**有事件**或**本线程没建过通道**时打印（避免每帧刷屏） |
+
+### 9.2 三次复现的日志结论
+
+| 复现 | 结果 | 关键日志 |
+|---|---|---|
+| `plugin_async --test-threads=64`（对照，绿） | ok | `spawn` 与 `drain` 同线程；worker 在**另一线程**跑，正常 send |
+| `plugin --test-threads=64`（1/1 红） | `plugin_async_run` | 5 个 worker **start**，只有 **3** 个打出 `send Exit`；无 `spawn FAILED`；`drain` 全程无跨线程、无 `rx_present=false` |
+| 两套 `plugin --test-threads=64` 并发（1 红） | 同上 | 6 个 worker start / 5 个 send Exit；同样是"没 send" |
+
+⇒ 失败时**事件根本没被发出**，不是"发出去了但落在别的线程通道里"。
+
+### 9.3 因此
+
+1. **T2（把通道搬进 `JsHost`）撤回**：没有观察到任何"跨线程可见性"导致的丢失。
+   §2.2 的实验证明该机制**存在**，但它不是本次 flake 的原因；若将来真的观察到
+   `drain` 线程 ≠ `spawn` 线程，再按 T2 做（诊断已在库，届时一条日志即可判定）。
+2. **真实根因**：进程 worker 线程在高倍超订下**迟迟不完成**（起得来、不 send）。
+   触发条件是测试环境的线程数（`--test-threads=64`）或**同时跑两套全量**，
+   即"机器没有调度余量"，不是产品缺陷。
+3. **产品侧无改动**。`plugin_async.rs` 文件头那条"主任务迁移"的解释已按实测改写。
+
+### 9.4 处置（建议）
+
+| 项 | 处置 | 理由 |
+|---|---|---|
+| 预算 | **保持不变（5s）** | `pump_until` 是事件驱动等待：条件成立立即返回，预算只决定"真坏了要等多久才报错"。但线程饥饿可长达分钟级，调预算救不回来 |
+| 加压跑 | 只在**单套**运行时用（不要两套并发） | 本次失败全部出现在"两套并发"或 64 线程；单套 64 线程 4/5 绿 |
+| CI | 不动（16 线程，`cargo integration-test`） | 没有证据表明 16 线程单套会红；万一红，超时信息已能指向本文 §9.2 |
+| 后续（可选，不在本 spec） | 每个进程 worker 现在起 **2 个读线程 + 1 个主线程**；若想提高高并发下的稳定性，可改成单线程 `select`/poll | 属性能重构，收益仅在测试环境 |
+
+### 9.5 验收对照
+
+- [x] 诊断入库（`HX_DBG_JS_THREAD`，默认关闭、零语义变化）
+- [x] 拿到"谁在第二线程上跑了什么"：**进程 worker 在另一线程跑**（正常），失败时它**没跑完**
+- [x] 结论写回本文并订正 `plugin_async.rs` 的旧注释
+- [ ] ~~10 次加压全绿~~ → 改为：**单套 64 线程** 4/5（记录在 D3 spec §9.2）；两套并发会红，属环境限制

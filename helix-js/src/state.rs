@@ -16,6 +16,19 @@ use crate::types::{
     TermCallbacks, TermCtrl, TermEvent, UiRequest,
 };
 
+/// T7 诊断开关：`HX_DBG_JS_THREAD=1` 时把"通道建在哪个线程 / 在哪个线程 spawn / 在哪个线程 drain"
+/// 打到 stderr。**只打印，不改任何行为**（默认关闭 ⇒ 零开销、零语义变化）。
+///
+/// 用途：定位 1/5 概率的"事件丢了"。当前假说（`plugin_async.rs` 文件头）是"主任务迁移 OS 线程"，
+/// 但 `Application` 持有 boa `Context`（`!Send`）⇒ 该假说站不住，必须靠日志找出真正的第二线程。
+pub(crate) fn js_dbg(args: std::fmt::Arguments<'_>) {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("HX_DBG_JS_THREAD").is_some()) {
+        eprintln!("[jsdbg tid={:?}] {}", std::thread::current().id(), args);
+    }
+}
+
 pub struct WakeSender<T> {
     inner: std::sync::mpsc::Sender<T>,
 }

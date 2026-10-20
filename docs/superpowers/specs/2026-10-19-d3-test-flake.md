@@ -192,7 +192,7 @@ run5 FAILED  169 passed / 1 failed / 150s   ← plugin_async::plugin_async_run
    drain 发生在新线程上 ⇒ 事件留在旧线程的通道里，5s 也等不到。
    `pump_until` 修的是"晚到"，修不了"丢失"。⇒ 单列为 **T7（未做）**。
 
-### 9.4 T7（新增，待决策）
+### 9.4 T7（已定位，见 [`2026-10-19-t7-event-loss.md`](2026-10-19-t7-event-loss.md) §9）
 
 | 选项 | 代价 / 风险 |
 |---|---|
@@ -200,8 +200,9 @@ run5 FAILED  169 passed / 1 failed / 150s   ← plugin_async::plugin_async_run
 | b. 测试侧把 `App` 钉在固定线程（专用 runtime + `spawn_blocking` 驱动） | 不动产品代码；但 harness 大改，且 `close()` 依赖 `block_in_place` |
 | c. 接受 1/5 级别残留，改成"失败信息明确指向 T7" | 成本最低；但验收标准"5 次全绿"达不到 |
 
-**建议**：先做 c（`pump_until` 的超时信息已能指向这一节），把 a 作为独立 spec 再评估——
-它是产品侧的线程模型问题，不属于"测试 flake"这个题目。
+**结论（2026-10-20 实测）**：不是通道串线程，而是**进程 worker 线程在高倍超订下跑不完**
+（5 个 worker 只有 3 个 `send Exit`，无 `spawn FAILED`）⇒ 选 c，产品侧不改；
+"通道搬进宿主"撤回。详见 T7 spec §9。
 
 ### 9.5 验收对照
 

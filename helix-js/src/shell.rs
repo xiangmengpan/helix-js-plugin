@@ -83,6 +83,7 @@ fn spawn_worker(
     std::thread::spawn(move || {
         use std::io::Write;
         use std::process::{Command, Stdio};
+        crate::state::js_dbg(format_args!("worker start id={id}"));
         let mut child = match Command::new("sh")
             .arg("-c")
             .arg(&cmd)
@@ -92,7 +93,9 @@ fn spawn_worker(
             .spawn()
         {
             Ok(c) => c,
-            Err(_) => {
+            Err(e) => {
+                // T7 诊断：spawn 失败（EAGAIN/ENOMEM 在高并发测试里真会撞上）会伪装成"事件没回来"
+                crate::state::js_dbg(format_args!("worker spawn FAILED id={id}: {e}"));
                 let _ = tx.send(TermEvent::Exit(id, 127, None));
                 return;
             }
@@ -163,7 +166,9 @@ fn spawn_worker(
         } else {
             None
         };
+        crate::state::js_dbg(format_args!("worker send Exit id={id} code={code}"));
         let _ = tx.send(TermEvent::Exit(id, code, stdout));
+        crate::state::js_dbg(format_args!("worker end id={id}"));
     });
 }
 
@@ -324,11 +329,13 @@ pub(crate) fn js_run_async(
     });
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx.clone()));
+    let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
+    crate::state::js_dbg(format_args!("spawn term id={id} (run_async)"));
     spawn_worker(
         id,
         &cmd,
         true,
-        crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized")),
+        term_tx,
         rx,
     );
     Ok(promise.into())
@@ -571,6 +578,7 @@ fn spawn_async_op<T: Send + 'static>(
     mk: impl FnOnce(u64, std::result::Result<T, String>) -> AsyncEvent + Send + 'static,
 ) {
     let tx = crate::state::with_async_events(|t| t.clone().expect("ASYNC_EVENTS initialized"));
+    crate::state::js_dbg(format_args!("spawn async id={id}"));
     std::thread::spawn(move || {
         let _ = tx.send(mk(id, op()));
     });
@@ -737,6 +745,7 @@ pub fn pump_jobs() -> Result<()> {
 /// 取走全部待处理进程事件（主线程轮询用）
 pub fn drain_term_events() -> Vec<TermEvent> {
     crate::init();
+    let has_rx = crate::state::with_term_events_rx(|r| r.is_some());
     let mut events = Vec::new();
     crate::state::with_term_events_rx(|r| {
         if let Some(rx) = r.as_mut() {
@@ -745,6 +754,13 @@ pub fn drain_term_events() -> Vec<TermEvent> {
             }
         }
     });
+    // 只在"有事件"或"本线程还没建过通道"时打印：否则每帧一行会把日志淹掉
+    if !events.is_empty() || !has_rx {
+        crate::state::js_dbg(format_args!(
+            "drain term rx_present={has_rx} n={}",
+            events.len()
+        ));
+    }
     events
 }
 
@@ -837,6 +853,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
 /// 取走全部待处理异步 fs 事件（主线程轮询用）
 pub fn drain_async_events() -> Vec<AsyncEvent> {
     crate::init();
+    let has_rx = crate::state::with_async_events_rx(|r| r.is_some());
     let mut events = Vec::new();
     crate::state::with_async_events_rx(|r| {
         if let Some(rx) = r.as_mut() {
@@ -845,6 +862,12 @@ pub fn drain_async_events() -> Vec<AsyncEvent> {
             }
         }
     });
+    if !events.is_empty() || !has_rx {
+        crate::state::js_dbg(format_args!(
+            "drain async rx_present={has_rx} n={}",
+            events.len()
+        ));
+    }
     events
 }
 
