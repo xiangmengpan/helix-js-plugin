@@ -237,6 +237,33 @@ fn async_run_and_spawn() {
     resolve_term_event(*id, TermEvent::Chunk(*id, chunk.clone())).unwrap();
     assert!(take_messages().contains(&format!("chunk:{chunk}")));
 
+    // 流式 **stderr**：单线程 poll 必须把两条流都读出来（改前各有读线程，改后共用一个循环）
+    load_script(
+        r#"
+    helix.register_command("se", () => {
+        const id = helix.spawn({ cmd: "echo OUT; echo ERR >&2; echo LAST", onChunk: (c) => helix.echo("c:" + c.trim()), onExit: () => {} });
+    });
+    "#,
+    )
+    .unwrap();
+    assert!(run_command("se", &ctx).unwrap());
+    let events = wait_for_term_event(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("LAST")));
+    let joined: String = events
+        .iter()
+        .filter_map(|e| match e {
+            TermEvent::Chunk(_, c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(joined.contains("OUT"), "stdout 流式输出: {joined}");
+    assert!(joined.contains("ERR"), "stderr 流式输出: {joined}");
+    for e in &events {
+        if let TermEvent::Chunk(id, c) = e {
+            resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap();
+        }
+    }
+    let _ = take_messages();
+
     // term_kill：sleep 100 → kill → Exit 快到达
     load_script(
         r#"
