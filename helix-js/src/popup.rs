@@ -225,6 +225,8 @@ pub(crate) fn js_open_popup(
     };
 
     let id = crate::state::next_popup_id();
+    // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
+    crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
     with_popups(|p| {
         p.insert(
             id,
@@ -303,6 +305,8 @@ pub(crate) fn js_set_component_render(
             }
         }
     }
+    // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
+    crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
     with_popups(|p| {
         p.insert(
             id,
@@ -383,6 +387,8 @@ pub(crate) fn js_open_panel(
     let id = crate::state::next_popup_id();
     crate::state::set_last_panel_id(Some(id));
     crate::state::with_open_panels(|p| p.push(id));
+    // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
+    crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
     with_popups(|p| {
         p.insert(
             id,
@@ -847,6 +853,9 @@ pub(crate) fn js_set_buffer_icon(
     if !hook.is_callable() {
         return Err(crate::js_err("set_buffer_icon: expected a function"));
     }
+    crate::permissions::bind_callback(crate::permissions::CbKey::hook(
+        crate::permissions::CB_HOOK_BUFFER_ICON,
+    ));
     with_buffer_icon_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
@@ -861,6 +870,9 @@ pub(crate) fn js_set_completion_icon(
     if !hook.is_callable() {
         return Err(crate::js_err("set_completion_icon: expected a function"));
     }
+    crate::permissions::bind_callback(crate::permissions::CbKey::hook(
+        crate::permissions::CB_HOOK_COMPLETION_ICON,
+    ));
     crate::state::with_completion_icon_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
@@ -1267,9 +1279,11 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
             Some(f) => JsValue::from(JsString::from(f.to_string())),
             None => JsValue::null(),
         };
-        let value: JsValue = func
-            .call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine)
-            .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
+        let value: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::popup(id),
+            || func.call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine),
+        )
+        .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
 
         // 脏渲染协议(插件声明式):返回**显式 `null`** = "自上次以来无变化" ⇒ 复用上次解析好的
         // Content,跳过本次转换与分配。**由插件决定何时脏**,所以不存在"宿主按输入猜测导致 UI
@@ -1577,6 +1591,9 @@ fn register_node_handlers(
     {
         return Ok(());
     }
+    // 注册期绑定属主:onPress/onKey/onChange 的属主 = **这次 render 的属主**
+    // (render 本身在 `render_popup` 的 `with_callback_owner` 作用域里 ⇒ 拿到的就是弹窗的注册者)
+    crate::permissions::bind_callback(crate::permissions::CbKey::node(view_id, &node_id));
     crate::state::with_node_handlers(|map| {
         map.insert(
             (view_id, node_id.to_string()),
@@ -1648,9 +1665,11 @@ pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<Popup
             .build();
         let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build popup doc: {e}"))?;
         let undefined = JsValue::undefined();
-        let value: JsValue = func
-            .call(&undefined, &[JsValue::from(key_obj), doc], engine)
-            .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
+        let value: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::popup(id),
+            || func.call(&undefined, &[JsValue::from(key_obj), doc], engine),
+        )
+        .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
         let s: Option<String> = value.try_js_into(engine).ok();
         Ok(match s.as_deref() {
             Some("close") => PopupKeyResult::Close,
@@ -1683,15 +1702,19 @@ pub fn close_popup(id: u64) -> Result<()> {
         let Some(callbacks) = callbacks else {
             return Ok(());
         };
+        // 注册表项没了 ⇒ 属主绑定也该没(避免 id 复用带错属主)
+        crate::permissions::forget_callback(&crate::permissions::CbKey::popup(id));
         if let Some(on_close) = callbacks.on_close {
             let func = on_close
                 .as_callable()
                 .and_then(JsFunction::from_object)
                 .ok_or_else(|| anyhow!("popup {id} onClose is not a function"))?;
             let undefined = JsValue::undefined();
-            let _: JsValue = func
-                .call(&undefined, &[], engine)
-                .map_err(|e| anyhow!("popup {id} onClose failed: {e}"))?;
+            let _: JsValue = crate::permissions::with_callback_owner(
+                &crate::permissions::CbKey::popup(id),
+                || func.call(&undefined, &[], engine),
+            )
+            .map_err(|e| anyhow!("popup {id} onClose failed: {e}"))?;
         }
         Ok(())
     })
@@ -1763,6 +1786,10 @@ pub(crate) fn js_set_statusline(
         with_statusline_hook(|h| *h = None);
         crate::state::set_statusline_replace(false);
     } else if arg.as_callable().is_some() {
+        // 注册期绑定属主(状态栏钩子在每帧路径上跑,属主必须是注册它的插件)
+        crate::permissions::bind_callback(crate::permissions::CbKey::hook(
+            crate::permissions::CB_HOOK_STATUSLINE,
+        ));
         with_statusline_hook(|h| *h = Some(arg));
         crate::state::set_statusline_replace(replace);
     } else {
@@ -1784,6 +1811,11 @@ pub(crate) fn js_set_keymap_hint(
     _context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::null());
+    if !arg.is_null() {
+        crate::permissions::bind_callback(crate::permissions::CbKey::hook(
+            crate::permissions::CB_HOOK_KEYMAP_HINT,
+        ));
+    }
     with_keymap_hint_hook(|h| *h = if arg.is_null() { None } else { Some(arg) });
     Ok(JsValue::undefined())
 }
@@ -1827,7 +1859,10 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
                 Attribute::all(),
             )
             .build();
-        let Ok(ret) = func.call(&undefined, &[JsValue::from(ctx_obj)], engine) else {
+        let Ok(ret) = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::hook(crate::permissions::CB_HOOK_KEYMAP_HINT),
+            || func.call(&undefined, &[JsValue::from(ctx_obj)], engine),
+        ) else {
             return None;
         };
         if ret.is_null_or_undefined() {
@@ -2018,9 +2053,11 @@ pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
             )
             .build();
         let undefined = JsValue::undefined();
-        let value: JsValue = func
-            .call(&undefined, &[JsValue::from(ctx_obj)], engine)
-            .ok()?;
+        let value: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::hook(crate::permissions::CB_HOOK_STATUSLINE),
+            || func.call(&undefined, &[JsValue::from(ctx_obj)], engine),
+        )
+        .ok()?;
         if value.is_null_or_undefined() {
             return None;
         }
@@ -2148,7 +2185,11 @@ pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
             None => JsValue::null(),
         };
         let undefined = JsValue::undefined();
-        let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
+        let value: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::hook(crate::permissions::CB_HOOK_BUFFER_ICON),
+            || func.call(&undefined, &[arg], engine),
+        )
+        .ok()?;
         value.try_js_into::<String>(engine).ok()
     })
 }
@@ -2165,7 +2206,11 @@ pub fn completion_kind_icon(kind: u8) -> Option<String> {
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let arg = JsValue::from(kind);
         let undefined = JsValue::undefined();
-        let value: JsValue = func.call(&undefined, &[arg], engine).ok()?;
+        let value: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::hook(crate::permissions::CB_HOOK_COMPLETION_ICON),
+            || func.call(&undefined, &[arg], engine),
+        )
+        .ok()?;
         let s: String = value.try_js_into(engine).ok()?;
         if s.is_empty() {
             None
@@ -2186,6 +2231,9 @@ pub(crate) fn js_set_completion_render(
     if !hook.is_callable() {
         return Err(crate::js_err("set_completion_render: expected a function"));
     }
+    crate::permissions::bind_callback(crate::permissions::CbKey::hook(
+        crate::permissions::CB_HOOK_COMPLETION_RENDER,
+    ));
     crate::state::with_completion_render_hook(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
@@ -2257,9 +2305,11 @@ pub fn render_completion_row(
             )
             .build();
         let undefined = JsValue::undefined();
-        let value: JsValue = func
-            .call(&undefined, &[JsValue::from(ctx_obj)], engine)
-            .map_err(|e| anyhow!("completion render hook failed: {e}"))?;
+        let value: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::hook(crate::permissions::CB_HOOK_COMPLETION_RENDER),
+            || func.call(&undefined, &[JsValue::from(ctx_obj)], engine),
+        )
+        .map_err(|e| anyhow!("completion render hook failed: {e}"))?;
         // 补全行不做节点交互:解析组件树时节点处理器注册到 id 0 空间(无实际交互,content_to_row 也只消费 Lines)
         content_from_value(&value, engine, 0, "completion row")
     })

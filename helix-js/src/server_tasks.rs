@@ -187,9 +187,11 @@ pub fn resolve_events() -> Result<()> {
                     Attribute::all(),
                 )
                 .build();
-            let _: JsValue = func
-                .call(&JsValue::undefined(), &[JsValue::from(obj)], engine)
-                .map_err(|e| anyhow!("server task {task_id} callback failed: {e}"))?;
+            let _: JsValue = crate::permissions::with_callback_owner(
+                &crate::permissions::CbKey::server_task(task_id),
+                || func.call(&JsValue::undefined(), &[JsValue::from(obj)], engine),
+            )
+            .map_err(|e| anyhow!("server task {task_id} callback failed: {e}"))?;
             Ok(())
         })?;
     }
@@ -273,6 +275,7 @@ pub(crate) fn js_server_task(
         items.push(ServerTaskItem { op, name, version });
     }
     let task_id = next_task_id();
+    crate::permissions::bind_callback(crate::permissions::CbKey::server_task(task_id));
     // 登记归属宿主：worker 回推事件时据此找回正确的事件桶（此刻还在提交方线程）
     register_task_host(task_id);
     with_callbacks(|m| {

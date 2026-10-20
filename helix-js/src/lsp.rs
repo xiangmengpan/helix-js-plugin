@@ -91,6 +91,8 @@ fn enqueue_lsp_request(
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
     crate::state::with_lsp_promises(|m| m.insert(id, resolving));
+    // 注册期绑定属主:响应兑现时跑的是发起者注册的 .then/.catch
+    crate::permissions::bind_callback(crate::permissions::CbKey::lsp_promise(id));
     crate::host::with_host_ref_or_init(|h| {
         let q = &h.lsp_requests;
         {
@@ -219,6 +221,7 @@ pub fn drain_lsp_results() -> Vec<LspResult> {
 /// Err(e) → reject Error（e.message 可读）。幂等：未知/已兑现 id → no-op。
 pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()> {
     crate::init();
+    crate::permissions::with_callback_owner(&crate::permissions::CbKey::lsp_promise(id), || {
     crate::state::with_engine(|engine| {
         let resolving = crate::state::with_lsp_promises(|m| m.remove(&id));
         let Some(resolving) = resolving else {
@@ -255,6 +258,7 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
             }
         };
         outcome.map_err(|e| anyhow!("lsp {id} settle failed: {e}"))
+    })
     })
 }
 

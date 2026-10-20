@@ -107,6 +107,91 @@ pub(crate) struct PermissionState {
     pub(crate) command_owners: HashMap<String, String>,
     /// 注册期绑定:事件名 → 各处理器的属主插件(下标与处理器列表对齐)
     pub(crate) handler_owners: HashMap<String, Vec<String>>,
+    /// 注册期绑定:其余回调("谁注册的 onPress/render/preview/.then")→ 属主插件。
+    /// 键见 [`CbKey`]。命令与事件各有自己的表(历史原因,不动它们)。
+    pub(crate) callback_owners: HashMap<CbKey, String>,
+}
+
+/// 回调的注册期身份。
+///
+/// * 按 id 的回调(popup / 异步 promise / 终端 / watch / 一次性行回调)= `(kind, id)`,
+///   构造**零分配**(每帧的 render 走这条);
+/// * 按名字的回调(node / picker 源)= 名字进 `name`(按键路径,一次小分配可忽略);
+/// * 单例钩子(statusline / bufferline 图标 …)= `hook` 常量 + 空 name/id。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CbKey {
+    kind: u8,
+    id: u64,
+    name: String,
+}
+
+// 回调种类(纯内部;不用 enum 是为了让 `CbKey::popup(3)` 这种构造零成本)
+pub(crate) const CB_POPUP: u8 = 1;
+pub(crate) const CB_NODE: u8 = 2;
+pub(crate) const CB_PICKER: u8 = 3;
+pub(crate) const CB_ASYNC: u8 = 4;
+pub(crate) const CB_LSP: u8 = 5;
+pub(crate) const CB_TERM: u8 = 6;
+pub(crate) const CB_SERVER_ROWS: u8 = 7;
+pub(crate) const CB_SERVER_TASK: u8 = 8;
+pub(crate) const CB_WATCH: u8 = 9;
+pub(crate) const CB_HOOK_STATUSLINE: u8 = 10;
+pub(crate) const CB_HOOK_BUFFER_ICON: u8 = 11;
+pub(crate) const CB_HOOK_COMPLETION_ICON: u8 = 12;
+pub(crate) const CB_HOOK_COMPLETION_RENDER: u8 = 13;
+pub(crate) const CB_HOOK_KEYMAP_HINT: u8 = 14;
+pub(crate) const CB_KEYMAP: u8 = 15;
+
+impl CbKey {
+    fn bare(kind: u8, id: u64) -> Self {
+        Self {
+            kind,
+            id,
+            name: String::new(),
+        }
+    }
+
+    pub(crate) fn popup(id: u64) -> Self {
+        Self::bare(CB_POPUP, id)
+    }
+    pub(crate) fn async_promise(id: u64) -> Self {
+        Self::bare(CB_ASYNC, id)
+    }
+    pub(crate) fn lsp_promise(id: u64) -> Self {
+        Self::bare(CB_LSP, id)
+    }
+    pub(crate) fn term(id: u64) -> Self {
+        Self::bare(CB_TERM, id)
+    }
+    pub(crate) fn server_rows(id: u64) -> Self {
+        Self::bare(CB_SERVER_ROWS, id)
+    }
+    pub(crate) fn server_task(id: u64) -> Self {
+        Self::bare(CB_SERVER_TASK, id)
+    }
+    pub(crate) fn watch(id: u64) -> Self {
+        Self::bare(CB_WATCH, id)
+    }
+    pub(crate) fn keymap(id: u64) -> Self {
+        Self::bare(CB_KEYMAP, id)
+    }
+    pub(crate) fn hook(kind: u8) -> Self {
+        Self::bare(kind, 0)
+    }
+    pub(crate) fn node(view_id: u64, node_id: &str) -> Self {
+        Self {
+            kind: CB_NODE,
+            id: view_id,
+            name: node_id.to_string(),
+        }
+    }
+    pub(crate) fn picker(source: &str) -> Self {
+        Self {
+            kind: CB_PICKER,
+            id: 0,
+            name: source.to_string(),
+        }
+    }
 }
 
 thread_local! {
@@ -165,9 +250,67 @@ pub(crate) fn restore_owner(prev: Option<String>) {
     with_state(|s| s.current = prev);
 }
 
+/// 注册期绑定:这个回调是谁注册的(不传 owner = 取当前属主)。
+///
+/// 为什么需要:权限检查点看的是"当前属主",而属主此前只在命令/事件两个入口设置;
+/// render / onPress / preview / Promise 续体全都落空 ⇒ 判定会落到"加载期最后声明的
+/// 那个插件"身上(等于拿 A 的权限判 B)。这里把归属钉在**注册**时刻 —— 那是唯一
+/// 必然知道"谁在注册"的时刻。
+pub(crate) fn bind_callback(key: CbKey) {
+    let owner = current_owner();
+    with_state(|s| {
+        if let Some(owner) = owner {
+            s.callback_owners.insert(key, owner);
+        } else {
+            s.callback_owners.remove(&key);
+        }
+    });
+}
+
+/// 显式绑定到某个属主(加载期按脚本名归属用)
+pub(crate) fn bind_callback_to(key: CbKey, owner: &str) {
+    let owner = owner.to_string();
+    with_state(|s| {
+        s.callback_owners.insert(key, owner);
+    });
+}
+
+/// 该回调的属主(注册期记录的;没有 ⇒ None,权限检查会按"无上下文"拒绝)
+pub(crate) fn callback_owner(key: &CbKey) -> Option<String> {
+    with_state(|s| s.callback_owners.get(key).cloned())
+}
+
+/// 注销一条绑定(回调随组件/进程一起消失时调;不清会让 id 复用带错属主)
+pub(crate) fn forget_callback(key: &CbKey) {
+    with_state(|s| {
+        s.callback_owners.remove(key);
+    });
+}
+
+/// 在"该回调的属主"作用域里执行 `f`。
+///
+/// 用 drop 守卫恢复:回调 panic 也不能把属主留在原地(否则后续检查全按它判)。
+/// 嵌套安全:`f` 里再进一层会把属主换掉、退出时恢复成外层。
+pub(crate) fn with_callback_owner<T>(key: &CbKey, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            restore_owner(self.0.take());
+        }
+    }
+    let prev = set_current_owner(callback_owner(key).as_deref());
+    let _guard = Restore(prev);
+    f()
+}
+
 /// 加载期归属:该脚本声明了哪个插件名(供 `load_script_checked` 打内置标记)
 pub(crate) fn last_declared() -> Option<String> {
     with_state(|s| s.last_declared.clone())
+}
+
+/// 当前属主(**只看** `current`,不看 `last_declared` —— 两者的语义在 C-3 分开)。
+pub(crate) fn current_owner() -> Option<String> {
+    with_state(|s| s.current.clone())
 }
 
 /// 注册期绑定:命令名 → 属主插件
@@ -444,6 +587,7 @@ pub(crate) fn reset_for_test() {
         s.manifests.clear();
         s.command_owners.clear();
         s.handler_owners.clear();
+        s.callback_owners.clear();
     });
 }
 
@@ -532,5 +676,39 @@ mod tests {
         assert!(!only_read.allows(CAP_FS_WRITE));
         assert!(!only_read.allows(CAP_PROCESS));
         assert!(!PluginPermissions::none().allows(CAP_FS_READ));
+    }
+
+    /// 注册期绑定的属主在调用期生效，退出后恢复外层（嵌套安全）
+    #[test]
+    fn callback_owner_is_bound_at_registration_and_restored() {
+        reset_for_test();
+        set_current_owner(Some("filetree"));
+        bind_callback(CbKey::popup(7));
+        set_current_owner(Some("evil"));
+
+        let seen = with_callback_owner(&CbKey::popup(7), current_owner);
+        assert_eq!(seen.as_deref(), Some("filetree"), "回调内应是注册期属主");
+        assert_eq!(current_owner().as_deref(), Some("evil"), "退出后恢复外层");
+    }
+
+    /// 没绑定过的回调 = 无属主（权限检查据此 fail-closed，而不是猜一个）
+    #[test]
+    fn unbound_callback_has_no_owner() {
+        reset_for_test();
+        assert!(callback_owner(&CbKey::node(1, "b")).is_none());
+        assert!(with_callback_owner(&CbKey::node(1, "b"), current_owner).is_none());
+    }
+
+    /// panic 也不能把属主留在原地（drop 守卫）
+    #[test]
+    fn callback_owner_restored_after_panic() {
+        reset_for_test();
+        set_current_owner(Some("filetree"));
+        bind_callback(CbKey::popup(9));
+        set_current_owner(Some("evil"));
+        let _ = std::panic::catch_unwind(|| {
+            with_callback_owner(&CbKey::popup(9), || panic!("boom"));
+        });
+        assert_eq!(current_owner().as_deref(), Some("evil"));
     }
 }

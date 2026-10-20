@@ -450,6 +450,7 @@ pub(crate) fn js_run_async(
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_term_id();
+    crate::permissions::bind_callback(crate::permissions::CbKey::term(id));
     crate::state::with_term_promises(|m| {
         m.insert(id, resolving);
     });
@@ -719,6 +720,8 @@ pub(crate) fn js_read_file_async(
     // 返回 promise：worker 结果经 resolve_async_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
+    // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
+    crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
     with_async_promises(|m| {
         m.insert(id, resolving);
     });
@@ -751,6 +754,8 @@ pub(crate) fn js_write_file_async(
         .map_err(|_| crate::js_err("helix.write_file_async: content must be a string"))?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
+    // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
+    crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
     with_async_promises(|m| {
         m.insert(id, resolving);
     });
@@ -778,6 +783,8 @@ pub(crate) fn js_stat_async(
         .map_err(|_| crate::js_err("helix.stat_async: path must be a string"))?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
+    // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
+    crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
     with_async_promises(|m| {
         m.insert(id, resolving);
     });
@@ -818,6 +825,8 @@ pub(crate) fn js_glob_async(
         .map_err(|_| crate::js_err("helix.glob_async: pattern must be a string"))?;
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
+    // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
+    crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
     with_async_promises(|m| {
         m.insert(id, resolving);
     });
@@ -847,6 +856,8 @@ pub(crate) fn js_read_tree(
     };
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
+    // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
+    crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
     crate::state::with_async_promises(|m| m.insert(id, resolving));
     spawn_async_op(id, move || tree_matches(&path, depth), AsyncEvent::FsTree);
     Ok(promise.into())
@@ -893,6 +904,8 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
     if let TermEvent::Exit(_, code, _) = &event {
         emit_term_exit(id, *code);
     }
+    // 终端/进程回调(含 run_async 的 .then)执行时的属主
+    crate::permissions::with_callback_owner(&crate::permissions::CbKey::term(id), || {
     crate::state::with_engine(|engine| {
         // run_async 的 promise 分支：resolve/reject 后立即清理并返回（无 TermCallbacks 注册）
         if let Some(resolving) = crate::state::with_term_promises(|m| m.remove(&id)) {
@@ -968,6 +981,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
         }
         Ok(())
     })
+    })
 }
 
 /// 取走全部待处理异步 fs 事件（主线程轮询用）
@@ -1021,6 +1035,8 @@ fn stat_to_js(st: &FsStat, ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
 /// 失败 reject Error 对象（e.message 可用）。一次性语义：settle 后从注册表移除。
 pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
     crate::init();
+    // .then/.catch 的续体在 `resolve` 里跑 ⇒ 属主必须是**注册这个 promise 的插件**
+    crate::permissions::with_callback_owner(&crate::permissions::CbKey::async_promise(id), || {
     crate::state::with_engine(|engine| {
         let resolving = with_async_promises(|m| m.remove(&id));
         let Some(resolving) = resolving else {
@@ -1096,6 +1112,7 @@ pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
             AsyncEvent::FsTree(_, Err(e)) => reject_msg(&resolving, &e, engine),
         };
         result.map_err(|e| anyhow!("async fs {id} settle failed: {e}"))
+    })
     })
 }
 

@@ -102,9 +102,11 @@ pub fn resolve_watch_events() -> Result<()> {
                 arr.push(item, engine)
                     .map_err(|e| anyhow!("watch {id} event build failed: {e}"))?;
             }
-            let _: JsValue = func
-                .call(&JsValue::undefined(), &[JsValue::from(arr)], engine)
-                .map_err(|e| anyhow!("watch {id} callback failed: {e}"))?;
+            let _: JsValue = crate::permissions::with_callback_owner(
+                &crate::permissions::CbKey::watch(id),
+                || func.call(&JsValue::undefined(), &[JsValue::from(arr)], engine),
+            )
+            .map_err(|e| anyhow!("watch {id} callback failed: {e}"))?;
             Ok(())
         })?;
     }
@@ -133,6 +135,8 @@ pub(crate) fn js_watch(
         return Err(crate::js_err("helix.watch: callback must be a function"));
     }
     let id = next_watch_id();
+    // 注册期绑定属主:文件变化回调可能在任意时刻跑(不在任何命令/事件上下文里)
+    crate::permissions::bind_callback(crate::permissions::CbKey::watch(id));
     with_watch_callbacks(|m| {
         m.insert(id, cb);
     });

@@ -44,6 +44,7 @@ pub(crate) fn js_server_rows(
         ));
     }
     let id = next_id();
+    crate::permissions::bind_callback(crate::permissions::CbKey::server_rows(id));
     with_callbacks(|m| {
         m.insert(id, cb);
     });
@@ -158,9 +159,11 @@ pub fn deliver(id: u64, rows: Vec<ServerRow>) -> Result<()> {
             arr.push(item, engine)
                 .map_err(|e| anyhow!("row build: {e}"))?;
         }
-        let _: JsValue = func
-            .call(&JsValue::undefined(), &[JsValue::from(arr)], engine)
-            .map_err(|e| anyhow!("server rows {id} callback failed: {e}"))?;
+        let _: JsValue = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::server_rows(id),
+            || func.call(&JsValue::undefined(), &[JsValue::from(arr)], engine),
+        )
+        .map_err(|e| anyhow!("server rows {id} callback failed: {e}"))?;
         with_callbacks(|m| {
             m.remove(&id);
         });

@@ -48,6 +48,8 @@ pub(crate) fn js_picker_define(
             return Err(crate::js_err("picker.define: onKey must be a function"));
         }
     }
+    // 注册期绑定属主:items/onKey/action/preview 都是**这个源**注册的
+    crate::permissions::bind_callback(crate::permissions::CbKey::picker(&name));
     with_picker_sources(|m| {
         m.insert(name, config.into());
     });
@@ -123,7 +125,10 @@ pub fn picker_key_hook(
             )
             .property(JsString::from("selected"), selected, Attribute::all())
             .build();
-        match func.call(&JsValue::undefined(), &[JsValue::from(facts)], engine) {
+        let cb_key = crate::permissions::CbKey::picker(source);
+        match crate::permissions::with_callback_owner(&cb_key, || {
+            func.call(&JsValue::undefined(), &[JsValue::from(facts)], engine)
+        }) {
             Ok(v) => v.strict_equals(&JsValue::from(JsString::from("handled"))),
             Err(_) => false, // 抛错 = 未处理 ✓
         }
@@ -156,7 +161,10 @@ pub(crate) fn js_picker_run(
         .as_callable()
         .and_then(JsFunction::from_object)
         .ok_or_else(|| crate::js_err("picker.run: source has no callable items"))?;
-    let result = items_fn.call(&JsValue::undefined(), &[], context)?;
+    // 属主 = 该源的注册者(items 里可能起进程/读文件)
+    let result = crate::permissions::with_callback_owner(&crate::permissions::CbKey::picker(&name), || {
+        items_fn.call(&JsValue::undefined(), &[], context)
+    })?;
     // 同步数组 → 立即 push；Promise → .then 续体里 push
     push_open_picker(&name, columns, result, context)?;
     Ok(JsValue::undefined())
@@ -196,7 +204,9 @@ pub fn invoke_action(source: &str, payload: &[String]) {
             return;
         };
         let arr = js_array_from_strings(payload, engine);
-        let _ = func.call(&JsValue::undefined(), &[arr], engine);
+        let _ = crate::permissions::with_callback_owner(&crate::permissions::CbKey::picker(source), || {
+            func.call(&JsValue::undefined(), &[arr], engine)
+        });
     });
 }
 
@@ -212,7 +222,11 @@ pub fn invoke_preview(source: &str, payload: &[String]) -> Option<(String, usize
         }
         let func = preview.as_callable().and_then(JsFunction::from_object)?;
         let arr = js_array_from_strings(payload, engine);
-        let value = func.call(&JsValue::undefined(), &[arr], engine).ok()?;
+        let value = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::picker(source),
+            || func.call(&JsValue::undefined(), &[arr], engine),
+        )
+        .ok()?;
         if value.is_null_or_undefined() {
             return None;
         }

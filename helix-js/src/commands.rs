@@ -816,6 +816,11 @@ pub(crate) fn js_map(
         let id = crate::state::next_map_id();
         let name = format!("__mapped_{id}");
         with_registry(|r| r.insert(name.clone(), command_arg));
+        // C-2 归属:映射函数是**命令**形态执行的(`run_command`),所以按命令绑定属主。
+        // 不绑 ⇒ 这个隐藏命令没有属主 ⇒ 权限判定退到"加载期最后声明的插件"。
+        if let Some(owner) = crate::permissions::current_owner() {
+            crate::permissions::bind_command_owner(&name, &owner);
+        }
         name
     } else {
         command_arg.try_js_into(context)?
@@ -2240,6 +2245,10 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
         let Some(handlers) = handlers else {
             return Ok(());
         };
+        // C-2 归属:节点回调的属主来自**注册期**(`parse_node` 时绑定),不再回退
+        // "加载期最后声明的插件"。早先这里没有属主 ⇒ onPress 里调 `helix.run` 会被
+        // 按别人的权限判定(最后加载的是内置插件时 = 直接放行)。
+        let cb_key = crate::permissions::CbKey::node(view_id, node_id);
         let undefined = JsValue::undefined();
         match key {
             None => {
@@ -2249,8 +2258,10 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
                         .as_callable()
                         .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("node {node_id} onPress not callable"))?;
-                    let _: JsValue = func
-                        .call(&undefined, &[], engine)
+                    let _: JsValue =
+                        crate::permissions::with_callback_owner(&cb_key, || {
+                            func.call(&undefined, &[], engine)
+                        })
                         .map_err(|e| anyhow!("node {node_id} onPress failed: {e}"))?;
                 }
             }
@@ -2261,12 +2272,14 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
                         .as_callable()
                         .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("node {node_id} onKey not callable"))?;
-                    let _: JsValue = func
-                        .call(
-                            &undefined,
-                            &[JsValue::from(JsString::from(k.to_string()))],
-                            engine,
-                        )
+                    let _: JsValue =
+                        crate::permissions::with_callback_owner(&cb_key, || {
+                            func.call(
+                                &undefined,
+                                &[JsValue::from(JsString::from(k.to_string()))],
+                                engine,
+                            )
+                        })
                         .map_err(|e| anyhow!("node {node_id} onKey failed: {e}"))?;
                 }
             }
