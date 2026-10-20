@@ -604,6 +604,9 @@ sh contrib/install-plugins.sh                            # 改了 plugins/ 之�
 | 2026-10-17 | **G10b** | 本条(`refactor(ui): …`) | `handle_event` 147→**12**;最长方法 49;终端测试 23 + 27 + 14 + 1 全绿;377 集成不变;`--workspace --lib` / api-check / docgen 全绿 | 不接 JsSurface;同文件按事件种类拆 7 个方法,分支体逐行搬(结构行差异已逐条核对) |
 | 2026-10-17 | **S3-a** | `7a5c4f485` | 239 处错误构造 → 1 个 `js_err`;净 **−517 行**(419+/936−);popup.rs −179;172 测试 / `--ignored` 6/6 / 377 集成 / api-check 不变 | 根因是样板而非长函数;`js_err` 放 crate 根,`layout_api` 的本地包装删除 |
 | 2026-10-17 | **S3-b** | 本条(`test(js): …`) | 夹具重复窗口 **9 → 0**;plugin.rs −27 / popup_panel.rs −26(夹具 +36);172 测试 / `--ignored` 6/6 / 377 集成 / api-check 不变 | 重复的是 26 行 `StatuslineCtx` 字面量 → `tests/mod.rs::statusline_ctx()` |
+| 2026-10-19 | **C 批**(8 项) | `eb32e814a`…`0e9893a9b`(6 个) | 集成 **377→397**;api-check **137→151** 成员 / 21 事件 / 23 检查点;`pane.list()` 新增绝对几何 `area`;`doc-change` 逐文档 + `doc_id`;`:plugin` 8 个操作全部落地(最后一处桩 `reload` 接上) | 见 `docs/superpowers/plans/2026-10-19-c-gaps.md`。**6 处文档落后对账**(堆叠持久化/by_path 双撤销/终端鼠标/37处/`:layout` 命令);2 条判定不做入册 |
+| 2026-10-19 | **D3** | `72d993a92`…`75eb09075` | 注入 `pump_until`/`pump_until_probe`/`status_text`,**12 处迁移**(断言字符串一字未改);64 线程加压 **165/4 → 170/0**(4/5 次,基线 2 次都红);集成 397→**401** | 见 `…-d3-test-flake.md`。**两处订正**:两条 picker 用例其实是 `cwd` 竞争(非异步);`plugin_async` 是事件未发出(非通道串线程) |
+| 2026-10-20 | **T7** | `13a96672a`…`cafbcc140` | per-spawn 线程 **3.0 → 1.0**(`/proc/self/status` 实测,回归锁 `worker_threads`);`HX_DBG_JS_THREAD` 诊断入库(默认关闭);`helix-js` 218+7;集成 **405** | 见 `…-t7-event-loss.md`。根因=**线程饥饿**(5 个 worker 仅 3 个 `send Exit`,无 `spawn FAILED`,drain 从不跨线程)⇒ 撤回"通道搬进 `JsHost`"方案;`plugin_async.rs` 的"主任务迁移"注释按实测改写 |
 
 ---
 
@@ -816,11 +819,11 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "t
 
 ### 12.1 数字重测
 
-| 指标 | §10.2(10-17) | 实测(10-19) | 说明 |
+| 指标 | §10.2(10-17) | 实测(10-20) | 说明 |
 |---|---|---|---|
-| 集成测试 | 377 | **397** | 新增 20 条（本轮 6 个 commit 各带回归） |
+| 集成测试 | 377 | **405** | C 批 +16、D3 +4，其余为并行会话新增（`CwdScope` / filetree 等）；T7 的回归锁在 `helix-js` 侧 |
 | `api-check` 成员 / 命名空间 / 事件 / 检查点 | 134 / 9 / 20 / 15 | **151 / 12 / 21 / 23** | `draw.*`、`text.*`、`reload_plugins`、`pane.open` 等 |
-| 长函数 >100 行（全程，clippy 口径） | 63 | **60** | 净减 3，但**新增 1**：`draw.rs::apply` 121 行（§9.3 已记，判定不拆） |
+| 长函数 >100 行 | 63 | **74**（**口径已统一，见 §12.8**） | 本次强制全量重编译实测：全 workspace 含测试目标、唯一 `(path,line)`。其中 fork 相关 9 个（含 2 个在测试文件） |
 | `helix-js/src/lib.rs` | 202 | **226** | draw/`reload_plugins` 的注册 |
 | `#[ignore]` | 6 | **7** | 新增 1（慢用例） |
 | `helix-js` 公共面 | 136 | **151 成员注册**（`lib.rs` 内 `pub fn` 489） | 口径不同，勿直接比 |
@@ -843,19 +846,86 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines | grep -c "t
 | `plugins/helix.d.ts::popup_exists` docstring | "JS 侧没有主动关闭入口(`close_popup` 未注册)" | 同上 |
 | 本文 §11.2 B2 | "**主动关闭仍未做**(需新 UiRequest + onClose 语义)" | 已做 |
 
-### 12.4 D3(**未做**):并行等待型测试偶发超时
+### 12.4 并行加压跑的边界(原记作"未做",已由 §12.6 处理)
 
 `cargo test -p helix-term --features integration --test integration plugin`(162 通过 / **7 失败** / **899 秒**)
 失败集中在 `plugin_lsp_mock_*` 与 `picker_ui_opens`;**单跑模块全绿**(13 / 27 条)。
-判定:mockserver 启动握手与超时阈值在高并发下竞争,需要单独设计(不是超时调大就能解决)。
-**跑全量请用 `cargo integration-test`,不要用大字符串过滤** —— 后者会把无关的重用例塞进同一批。
+**已定位并处理**(2026-10-20):其中 3 条是"异步结果 vs idle"的等待问题(§12.6 的 `pump_until`),
+2 条是进程级 `cwd` 竞争(并行会话的 `CwdScope`),残留 1–2 条是**线程饥饿**(§12.7)。
+保留本节是因为它记着一条**仍然有效的操作建议**:跑全量请用 `cargo integration-test`,
+不要用大字符串过滤 —— 后者会把无关的重用例塞进同一批,人为制造超订。
 
-### 12.5 仍然明确不做(承接 §10.4,新增 1 条)
+### 12.5 C 批(插件 API 空档,8 项)
+
+2026-10-19 完成,见 `docs/superpowers/plans/2026-10-19-c-gaps.md`(本地计划)+ 各 commit。
+一句话:**`docs/plugin-api.md` §4 现在没有一行是"待办"** —— 每条不是 ✅ 已支持(带回归测试名),
+就是 ❌ 判定不做(带理由),要么是真实的已知限制。
+
+| 项 | 结果 |
+|---|---|
+| `pane.list()` 绝对几何 `area` | 新增;顺带修了"启动后第一次调用是空数组"(快照只在布局变更点同步) |
+| `Shift-Tab` 反向焦点 | 只改两行(`tab_focus(back)` + 传 `key.shift`),**不碰 `helix-view`** |
+| 本地安装 | 单文件 + 递归目录 + 失败回滚(`read_dir(文件) → []` 是前置语义变更) |
+| `:plugin reload` | `helix.reload_plugins()` 入队,命令边界执行(避免 JS 栈内重跑脚本 panic) |
+| `doc-change` | 逐文档 + `doc_id`;**只按 revision 判定会漏发**(插件编辑不 append 命令历史) |
+| 状态栏富文本 | 运行时本已支持,缺的只是类型/文档 → 只改 `d.ts` + 文档 + 回归锁 |
+| 判定不做 2 条 | 安装期依赖 / 插件间共享状态,理由入册 |
+
+### 12.6 D3:测试基建(`pump_until`)
+
+**问题**:用例把"250ms 没有事件"当成"异步结果都到了"。`event_loop_until_idle` 在 integration
+特征下收到一次 `IdleTimer` 就返回，而异步结果来自 worker 线程。
+
+**做法**:加 `pump_until(app, keys, budget, what, cond)`(**先判、后等、有界**)，按判据迁移
+12 处(全仓 127 处 `get_status().unwrap()` 里只有 9 处跟异步来源)。**断言字符串一字未改**。
+
+**效果**:`--test-threads=64` 加压 165/4 → **170/0**(5 次里 4 次全绿)。
+
+**两处订正**(都写在 spec §9.3):
+1. 两条 picker 用例的 `all=0` 其实是 **cwd 竞争**(picker 的 `files` 源读进程 cwd)，
+   被并行会话的 `CwdScope` 修好后自动消失 ⇒ 原计划的 T4 **取消**(给它加等待只会把竞争藏进 5s)。
+2. 残留的 `plugin_async_run` 不是"等得不够" —— 见 §12.7。
+
+### 12.7 T7:根因是线程饥饿，不是通道串线程
+
+**判定过程**(每一步都有日志，不靠猜):
+1. 确定性实验:线程 A 建通道发事件，线程 B `drain` ⇒ `on_a=1 on_b=0 on_a2=1`
+   （跨线程不可见属实，事件留在原线程通道里）；
+2. 但 `Application` 持 boa `Context`(`!Send`)⇒ **不可能被 tokio 搬线程** ⇒ 文件头那条
+   "主任务迁移 OS 线程"的解释**证伪**；
+3. 开 `HX_DBG_JS_THREAD=1` 复现:失败时 **5 个 worker 只有 3 个打出 `send Exit`**，
+   无 `spawn FAILED`，drain 从不跨线程 ⇒ **事件根本没被发出**，是 worker 跑不完（线程饥饿）。
+
+**处置**:产品不改(FIFO 假设成立时不丢事件)；把每 spawn 的线程 **3 → 1**（`libc::poll`
+同时盯 stdout/stderr）从源头降低饥饿概率；诊断开关入库供后续排查。
+
+### 12.8 口径更正:长函数计数
+
+§10.2 的"63"与本次的"74"**不是同一口径**。可复算口径（本次统一为这个）:
+
+```bash
+# 强制全量重编译（否则 cargo 只重报改动过的 crate 的 warning —— 本次实测会少报 49 个）
+for c in helix-*; do touch $c/src/lib.rs 2>/dev/null; done
+cargo clippy --workspace --all-targets --features integration -- -W clippy::too_many_lines \
+  | grep -A2 "too many lines" | grep -oE "\-\-> [^:]+:[0-9]+" | sort -u | wc -l
+# => 74（含测试目标）；其中 fork 相关 9 个
+```
+
+**教训**：clippy 的 warning 是增量输出的，做"计数类"体检必须先强制全量重编译，
+否则数字会凭空变小（本次第一次跑就得出 25 这个假数）。
+
+### 12.9 仍然明确不做(承接 §10.4,+4 条)
 
 1. `ui_op::apply` 139 行（24 arm 单 `match`）
 2. `helix-dap ↔ helix-lsp` transport 重复（上游）
 3. `popup.rs::parse_node`（递归下降）
 4. **`draw.rs::apply` 121 行**（2026-10-19 新增；`DrawOp` 单 `match` 派发，与第 1 条同构）
+5. **调大 `idle_timeout` / `pump_until` 预算来"修" flake**（2026-10-20）：超订下 worker 可饿到
+   分钟级，调预算既救不回来、又让真失败更难暴露；`pump_until` 是事件驱动等待，预算只决定
+   "真坏了等多久才报错"
+6. **`--test-threads=1` 或失败自动重试**：前者把 150s 变成约 600s，后者把真 bug 洗成 flake
+7. **把三条 worker→主线程通道搬进 `JsHost`**（T7 方案 T2）：无证据支持，已撤回；
+   跨线程不可见机制**存在**（实验证明），但本次 flake 与该机制无关
 
 ---
 
