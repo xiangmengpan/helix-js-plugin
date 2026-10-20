@@ -11,6 +11,10 @@ use boa_engine::{Context, JsString, JsValue};
 /// 按 schema 注册表 + 已缓存的用户覆盖重建合并结果:
 /// `(合并 JSON, 校验错误)`。**纯函数**（不写缓存），helix-term 拿到后 `cache_configs`。
 ///
+/// 未知 **key** 会进 `errors`(拼错的键否则静默回退默认值);未知**段**不报 ——
+/// 该插件可能只是还没 `helix.load`(懒加载),报了就是噪音。`[plugins]` 顶层非表项
+/// (全局插件设置,如 `plugin_dir`)同样忽略。
+///
 /// 为什么要它：schema 是**插件脚本执行时**才注册的，而缓存只在启动与 `:config-reload` 构建。
 /// 插件 load/reload 之后不重建 ⇒ 新注册的 schema 不在 CONFIGS 里，`get_config` 拿到 null
 /// （默认值全丢），reload 后新增的键也没有默认值。
@@ -54,6 +58,12 @@ pub fn rebuild_configs() -> (String, Vec<String>) {
                 None => default,
             };
             merged.insert(key.clone(), val);
+        }
+        // 拼错的键必须可见:静默忽略 = 用户以为配置生效了(默认值静悄悄在用)
+        for key in user.keys() {
+            if !schema_obj.contains_key(key) {
+                errors.push(format!("{name}.{key}: 未在 define_config 中声明（已忽略）"));
+            }
         }
         out.insert(name, serde_json::Value::Object(merged));
     }
@@ -264,6 +274,21 @@ mod tests {
         assert_eq!(errors.len(), 1, "类型错误报一条: {errors:?}");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["rb"]["n"], 1, "非法值回退默认");
+
+        // 拼错的键必须可见:静默忽略 = 用户以为配置生效了
+        crate::cache_plugin_overrides(r#"{"rb":{"n":3,"typo":1}}"#);
+        let (json, errors) = rebuild_configs();
+        assert_eq!(errors.len(), 1, "未声明的键报一条: {errors:?}");
+        assert!(errors[0].contains("typo"), "错误里点到具体键: {errors:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v["rb"].get("typo").is_none(), "未声明的键不进入合并结果");
+
+        // 未声明 schema 的段不报(可能只是懒加载插件还没 load),也不进结果
+        crate::cache_plugin_overrides(r#"{"ghost":{"x":1}}"#);
+        let (json, errors) = rebuild_configs();
+        assert!(errors.is_empty(), "未知段不报错: {errors:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v.get("ghost").is_none(), "未知段不进结果");
 
         // 覆盖源被替换后不再残留旧键
         crate::cache_plugin_overrides("{}");
