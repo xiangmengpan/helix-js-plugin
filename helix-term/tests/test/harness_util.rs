@@ -86,11 +86,7 @@ helix.register_command("count", () => { n = n + 1; helix.echo("n=" + n); });"#,
         |a| status_text(a).contains("n=3"),
     )
     .await?;
-    assert!(
-        status_text(&app).contains("n=3"),
-        "{}",
-        status_text(&app)
-    );
+    assert!(status_text(&app).contains("n=3"), "{}", status_text(&app));
     Ok(())
 }
 
