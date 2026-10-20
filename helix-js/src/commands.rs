@@ -1151,7 +1151,15 @@ pub fn emit_doc_change(ctx: &CommandContext, changes: &[DocChange]) -> Result<()
 
 /// 同 [`emit_doc_change`]，但**显式带文档 id**（后台 buffer 的变更靠它分辨）。
 pub fn emit_doc_change_for(ctx: &CommandContext, doc_id: u64, changes: &[DocChange]) -> Result<()> {
-    emit_event_impl("doc-change", ctx, None, Some(changes), 0, None, Some(doc_id))
+    emit_event_impl(
+        "doc-change",
+        ctx,
+        None,
+        Some(changes),
+        0,
+        None,
+        Some(doc_id),
+    )
 }
 
 /// 事件触发公共实现；changes 为 Some 时序列化合并范围到 doc.changes。
