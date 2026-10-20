@@ -112,6 +112,7 @@ fn event_payload_kind_null_and_term_hook_fields() {
 fn event_payload_json_is_flat_and_named() {
     let payload = EventPayload::DocChange(DocChangePayload {
         hdr: BusHeader::new("doc-change"),
+        doc_id: 0,
         path: None,
         cursor: (1, 2).into(),
         selection: ((0, 0), (1, 2)).into(),
