@@ -61,8 +61,11 @@ pub(crate) fn js_register_command(
             crate::state::with_command_docs(|d| d.insert(name.clone(), doc));
         }
     }
-    // C-2 归属:命令→属主插件(注册期绑定,这是唯一可靠的时刻)
-    if let Some(owner) = crate::permissions::current_declared() {
+    // C-2 归属:命令→属主插件(注册期绑定,这是唯一可靠的时刻)。
+    // 优先**运行期属主**(回调里注册的命令),再退回"本次 eval 声明的名字"(加载期)。
+    if let Some(owner) = crate::permissions::current_owner() {
+        crate::permissions::bind_command_owner(&name, &owner);
+    } else if let Some(owner) = crate::permissions::current_declared() {
         crate::permissions::bind_command_owner(&name, &owner);
     }
     with_registry(|r| r.insert(name, func));
@@ -355,12 +358,16 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         // C-3 加载期属主:<name>/plugin.js ⇒ name;其它脚本(init.js / deps 的 lib)
         // 继承父属主 —— 库是引用它的那个插件的一部分,不该自成一个插件。
         // 脚本内 `helix.plugin("x")` 会再把属主升级成 x(见 js_plugin)。
-        let prev_owner = crate::permissions::plugin_name_from_key(&key)
+        let mut prev_owner = crate::permissions::plugin_name_from_key(&key)
             .map(|name| crate::permissions::set_current_owner(Some(&name)));
+        // ⚠ 属主要一直保持到**依赖也加载完**:`deps: ["lib/x.js"]` 的库是"这个插件的一部分",
+        // 它的顶层代码必须按本插件判定(否则库一碰 fs 就被拒)。restore 在闭包末尾(见下)。
         let eval_result = eval_wrapped(ctx, &src)
             .map_err(|e| crate::js_err(format!("helix.load('{key}') failed: {e}")));
-        if let Some(prev) = prev_owner {
-            crate::permissions::restore_owner(prev);
+        if eval_result.is_err() {
+            if let Some(prev) = prev_owner.take() {
+                crate::permissions::restore_owner(prev);
+            }
         }
         eval_result?;
         // C-2 的"内置"判据 = **提供根**是不是用户插件目录(用户层 = 最后一个根)。
@@ -381,6 +388,10 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
             }
         });
         with_script_exports(|m| m.insert(key.clone(), export.clone()));
+        // 依赖都加载完了 ⇒ 恢复外层属主
+        if let Some(prev) = prev_owner.take() {
+            crate::permissions::restore_owner(prev);
+        }
         Ok(export)
     })();
     crate::state::with_load_stack(|s| {
@@ -399,8 +410,8 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
 ///：声明当前脚本的 manifest(C-1:解析 + 记录,不拦截)。
 /// deps 是**加载参数数组**（插件名如 ["icons"]，或文件 key 如 ["lib/x.js"]），helix.load 自动拓扑加载。
 /// permissions 是**能力清单**（C-2 的判据）:
-/// `{ process: bool, fs_read: bool, fs_write: bool }` —— **不写这个字段 = legacy 语义**
-/// (不拦截,存量插件零影响);写了才开始检查(见 `crate::permissions`)。
+/// `{ process: bool, fs_read: bool, fs_write: bool }` —— **不写 = 空能力集**
+/// （fail-closed:受保护调用会被拒一次并进入 `:js-permission` 待授权;见 `crate::permissions`）。
 pub(crate) fn js_plugin(
     _this: &JsValue,
     args: &[JsValue],
@@ -1069,7 +1080,10 @@ pub(crate) fn js_on(
     if handler.as_callable().is_none() {
         return Err(crate::js_err("helix.on: handler must be a function"));
     }
-    if let Some(owner) = crate::permissions::current_declared() {
+    // 同 register_command:运行期属主优先(回调里注册的事件处理器属于那个回调的插件)
+    if let Some(owner) = crate::permissions::current_owner() {
+        crate::permissions::bind_handler_owner(&name, &owner);
+    } else if let Some(owner) = crate::permissions::current_declared() {
         crate::permissions::bind_handler_owner(&name, &owner);
     }
     with_event_handlers(|h| h.entry(name).or_default().push(handler));

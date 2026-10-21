@@ -629,11 +629,6 @@ pub(crate) fn reset_for_test() {
     });
 }
 
-/// **仅测试**:把当前夹具标成"脚本一律已授权"(见 `PermissionState::trust_all`)。
-#[cfg(test)]
-pub(crate) fn trust_all_for_test() {
-    with_state(|s| s.trust_all = true);
-}
 
 #[cfg(test)]
 mod tests {

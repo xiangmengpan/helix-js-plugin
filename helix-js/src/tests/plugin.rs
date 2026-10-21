@@ -1392,3 +1392,56 @@ fn entry_load_export_lazy() {
 
     std::mem::forget(dir);
 }
+
+/// **deps 的库算"引用它的插件的一部分"**:`deps: ["lib/x.js"]` 的顶层代码按**父插件**
+/// 判定,而不是"没有属主 ⇒ 拒绝"。
+///
+/// 为什么值得一条:加载顺序是 eval 本脚本 → 递归加载 deps,属主若在 eval 后就恢复,
+/// 库的顶层代码会拿到 None(被拒),而它明明属于那个声明了能力的插件。
+#[test]
+fn dep_library_inherits_parent_plugin_owner() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    crate::permissions::reset_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_path_buf();
+    std::mem::forget(dir);
+    set_plugins_dir(d.clone());
+    // deps 的 key 相对**插件根**解析(与仓库布局一致:plugins/lib/*.js 与 plugins/<name>/ 平级)
+    std::fs::create_dir_all(d.join("lib")).unwrap();
+    std::fs::create_dir_all(d.join("dep")).unwrap();
+    // 库的**顶层**就调受保护 API(读目录)
+    std::fs::write(
+        d.join("lib/x.js"),
+        r#"const seen = helix.read_dir(".");"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("dep/plugin.js"),
+        r#"helix.plugin("dep-owner", { deps: ["lib/x.js"], permissions: { fs_read: true } });"#,
+    )
+    .unwrap();
+
+    // 父插件声明了 fs_read ⇒ 库的顶层调用放行
+    load_script(r#"helix.load("dep");"#)
+        .expect("库应继承父插件的 fs_read 能力");
+
+    // 反过来:父插件没声明 ⇒ 库也被拒(错误里要能看出是哪个能力)。
+    // 用另一个库文件:同一个 key 已被上面的成功加载缓存(helix.load 的语义),不会重跑。
+    crate::permissions::reset_for_test();
+    std::fs::create_dir_all(d.join("dep2")).unwrap();
+    std::fs::write(
+        d.join("lib/y.js"),
+        r#"const seen = helix.read_dir(".");"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("dep2/plugin.js"),
+        r#"helix.plugin("dep-owner-2", { deps: ["lib/y.js"], permissions: {} });"#,
+    )
+    .unwrap();
+    let err = load_script(r#"helix.load("dep2");"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("fs_read"), "错误应指出缺的能力: {err}");
+}
