@@ -648,6 +648,44 @@ impl JsHost {
         self.pump(|| crate::cursor::emit_selection_change(doc_id, count, primary_row, primary_col))
     }
 
+    // ── 快照/配置写入（P4-1：显式宿主；原先只能走 `with_host_ref_or_init`）──
+    //
+    // 这些都是"宿主持有、调用方写入"的状态。Application 明明已经拿着宿主，却绕道
+    // 线程局部指针去写 —— 显式方法让所有权在类型上可见。
+
+    pub fn cache_buffers(&mut self, json: &str) {
+        crate::state::cache_buffers(json);
+    }
+
+    pub fn cache_diagnostics(&mut self, json: &str) {
+        crate::state::cache_diagnostics(json);
+    }
+
+    /// 快照兴趣位（查询，不需要 `&mut`，为对称起见放在宿主方法里）
+    pub fn snapshot_wanted(&self, kind: crate::state::SnapshotKind) -> bool {
+        crate::state::snapshot_wanted(kind)
+    }
+
+    pub fn set_plugin_roots(&mut self, roots: Vec<std::path::PathBuf>) {
+        crate::state::set_plugin_roots(roots);
+    }
+
+    pub fn set_layouts_dir(&mut self, dir: std::path::PathBuf) {
+        crate::state::set_layouts_dir(dir);
+    }
+
+    pub fn set_editor_version(&mut self, version: &str) {
+        set_editor_version(version);
+    }
+
+    pub fn set_runtime_dirs(&mut self, dirs: Vec<std::path::PathBuf>) {
+        crate::state::set_runtime_dirs(dirs);
+    }
+
+    pub fn take_lsp_requests(&mut self) -> Vec<crate::lsp::LspRequest> {
+        crate::lsp::take_lsp_requests()
+    }
+
     /// 泵入口·热重载:重跑已加载的全部脚本(`:plugin-reload` / `:plugin reload`)
     pub fn reload_all(&mut self) -> anyhow::Result<()> {
         self.pump(crate::commands::reload_all)

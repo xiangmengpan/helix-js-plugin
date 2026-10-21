@@ -247,18 +247,18 @@ impl Application {
             // 有序列表(HELIX_RUNTIME + exe 相对 + 系统路径),在此挂 plugins/ 子目录。
             // 这一步是"把功能拆成随软件分发的内置插件"的前置:内置放在自带 runtime 里,
             // 用户仍可用同名文件覆盖它。
-            helix_js::set_plugin_roots(plugin_roots_for(
+            js_host.set_plugin_roots(plugin_roots_for(
                 helix_loader::runtime_dirs(),
                 &helix_loader::config_dir(),
             ));
 
             // 布局文件目录(`:layout save/load` 与 helix.layout.save/load 用)
-            helix_js::set_layouts_dir(helix_loader::config_dir().join("layouts"));
+            js_host.set_layouts_dir(helix_loader::config_dir().join("layouts"));
             // manifest 的 `min_editor` 要跟**真实版本**比才有意义(helix-js 是库,不知道宿主版本)
-            helix_js::set_editor_version(helix_loader::VERSION_AND_GIT_HASH);
+            js_host.set_editor_version(helix_loader::VERSION_AND_GIT_HASH);
             // 自带 runtime 目录(`helix.runtime_path(name)` 用;让内置"内容型插件"能打开
             // 随软件分发的内容,如 tutor)
-            helix_js::set_runtime_dirs(helix_loader::runtime_dirs().to_vec());
+            js_host.set_runtime_dirs(helix_loader::runtime_dirs().to_vec());
             // 跨线程唤醒：worker 发事件 → request_redraw → 事件循环 33ms 内重绘。
             // 这是终端/异步输出即时上屏的关键（chunk 到达不等 idle）。
             helix_js::set_term_wake(Box::new(helix_event::request_redraw));
@@ -478,7 +478,10 @@ impl Application {
         // LSP 结果/请求与 term/async 事件并列泵：单独到达（无其他事件）也须处理，
         // 否则早退路径会吞掉 → promise 永不兑现
         let lsp_results = helix_js::drain_lsp_results();
-        let lsp_requests = helix_js::take_lsp_requests();
+        let lsp_requests = match self.js_host.as_deref_mut() {
+            Some(host) => host.take_lsp_requests(),
+            None => helix_js::take_lsp_requests(),
+        };
         if term_events.is_empty()
             && async_events.is_empty()
             && lsp_results.is_empty()
@@ -657,12 +660,24 @@ impl Application {
         // 渲染里 ⇒ 首次读取(或久未读取后的那次)会拿到空/陈旧列表(实测
         // `buffer_traversal_and_focus` 拿到 n:0、builtin picker 的 buffers 源打不开)。
         // 代价也不对等:这一个是 O(打开文档数) 的小 JSON。
-        helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
+        let buffers_json = crate::commands::typed::serialize_buffers(&self.editor);
+        match self.js_host.as_deref_mut() {
+            Some(host) => host.cache_buffers(&buffers_json),
+            None => helix_js::cache_buffers(&buffers_json),
+        }
         // 诊断快照:这才是贵的那份(每条 message 都要复制+序列化,大诊断集上千条),
         // 且只有显式调用 `helix.diagnostics()` 的插件才读 ⇒ 按兴趣位门控。
         // 已知取舍:插件在**启动后第一次**读它时可能拿到空(兴趣位当帧才置位)。
-        if helix_js::snapshot_wanted(helix_js::SnapshotKind::Diagnostics) {
-            helix_js::cache_diagnostics(&crate::commands::typed::serialize_diagnostics(&self.editor));
+        let want_diags = match self.js_host.as_deref() {
+            Some(host) => host.snapshot_wanted(helix_js::SnapshotKind::Diagnostics),
+            None => helix_js::snapshot_wanted(helix_js::SnapshotKind::Diagnostics),
+        };
+        if want_diags {
+            let diags_json = crate::commands::typed::serialize_diagnostics(&self.editor);
+            match self.js_host.as_deref_mut() {
+                Some(host) => host.cache_diagnostics(&diags_json),
+                None => helix_js::cache_diagnostics(&diags_json),
+            }
         }
         // 光标/选区变化检测(帧级节流:变化才 emit)
         if let Some((row, col)) =
