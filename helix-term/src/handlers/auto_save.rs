@@ -67,25 +67,29 @@ impl helix_event::AsyncHook for AutoSaveHandler {
 
     fn finish_debounce(&mut self) {
         let save_pending = self.save_pending.clone();
-        job::dispatch_blocking(move |editor, _| {
+        job::dispatch_blocking(move |editor, _, js| {
             if editor.mode() == Mode::Insert {
                 // Avoid saving while in insert mode since this mixes up
                 // the modification indicator and prevents future saves.
                 save_pending.store(true, atomic::Ordering::Relaxed);
             } else {
-                request_auto_save(editor);
+                request_auto_save(editor, js);
                 save_pending.store(false, atomic::Ordering::Relaxed);
             }
         })
     }
 }
 
-fn request_auto_save(editor: &mut Editor) {
+fn request_auto_save(
+    editor: &mut Editor,
+    js: Option<&mut helix_js::host::JsHost>,
+) {
     let context = &mut compositor::Context {
         editor,
         scroll: Some(0),
         jobs: &mut Jobs::new(),
-        js: None,
+        // P4-1 3a：宿主由调度方显式传入（原先这里写死 None，落回隐式活动指针）
+        js,
     };
 
     let options = commands::WriteAllOptions {

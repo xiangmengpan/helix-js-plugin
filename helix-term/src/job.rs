@@ -9,7 +9,12 @@ use futures_util::future::{BoxFuture, Future, FutureExt};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
-pub type EditorCompositorCallback = Box<dyn FnOnce(&mut Editor, &mut Compositor) + Send>;
+/// `EditorCompositor` 回调在**主线程**执行（`handle_callback` 由事件循环调用）。
+///
+/// 第三个参数是 JS 宿主（P4-1 3a）：回调需要发插件事件/写快照时**显式拿**，
+/// 而不是绕 `host::ACTIVE` 的隐式解析。`None` = 本次调用没有宿主（同步泵/测试）。
+pub type EditorCompositorCallback =
+    Box<dyn FnOnce(&mut Editor, &mut Compositor, Option<&mut helix_js::host::JsHost>) + Send>;
 pub type EditorCallback = Box<dyn FnOnce(&mut Editor) + Send>;
 pub type EditorCallbackFollowup = Box<dyn FnOnce(&mut Editor) -> Option<Job> + Send>;
 
@@ -21,14 +26,18 @@ pub async fn dispatch_callback(job: Callback) {
     let _ = JOB_QUEUE.wait().send(job).await;
 }
 
-pub async fn dispatch(job: impl FnOnce(&mut Editor, &mut Compositor) + Send + 'static) {
+pub async fn dispatch(
+    job: impl FnOnce(&mut Editor, &mut Compositor, Option<&mut helix_js::host::JsHost>) + Send + 'static,
+) {
     let _ = JOB_QUEUE
         .wait()
         .send(Callback::EditorCompositor(Box::new(job)))
         .await;
 }
 
-pub fn dispatch_blocking(job: impl FnOnce(&mut Editor, &mut Compositor) + Send + 'static) {
+pub fn dispatch_blocking(
+    job: impl FnOnce(&mut Editor, &mut Compositor, Option<&mut helix_js::host::JsHost>) + Send + 'static,
+) {
     let jobs = JOB_QUEUE.wait();
     send_blocking(jobs, Callback::EditorCompositor(Box::new(job)))
 }
@@ -105,13 +114,14 @@ impl Jobs {
         &self,
         editor: &mut Editor,
         compositor: &mut Compositor,
+        js: Option<&mut helix_js::host::JsHost>,
         call: anyhow::Result<Option<Callback>>,
     ) -> Option<Job> {
         match call {
             Ok(None) => None,
             Ok(Some(call)) => match call {
                 Callback::EditorCompositor(call) => {
-                    call(editor, compositor);
+                    call(editor, compositor, js);
                     None
                 }
                 Callback::Editor(call) => {
@@ -160,7 +170,8 @@ impl Jobs {
                         #[allow(clippy::needless_option_as_deref)]
                         if let Some(job) = match callback {
                             Callback::EditorCompositor(call) if compositor.is_some() => {
-                                call(editor, compositor.as_deref_mut().unwrap());
+                                // 同步泵等待路径（block_try_flush_writes）：作用域里没有宿主 ⇒ 显式 None
+                                call(editor, compositor.as_deref_mut().unwrap(), None);
                                 None
                             }
                             Callback::Editor(call) => {

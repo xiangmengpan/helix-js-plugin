@@ -60,7 +60,7 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         // Cache "denied for this session" so future trust queries treat the workspace as untrusted.
         event.editor.workspace_trust.deny_once(&workspace);
         let workspace = workspace.clone();
-        job::dispatch_blocking(move |_editor, compositor| prompt(workspace, compositor));
+        job::dispatch_blocking(move |_editor, compositor, _js| prompt(workspace, compositor));
 
         Ok(())
     });

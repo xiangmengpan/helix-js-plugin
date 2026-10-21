@@ -1,7 +1,7 @@
 //! `UiOp` —— 一次 UI 变更的**描述**(G12)。
 //!
 //! 为什么改成值:原先 pane 族的 24 个 handler 各自把 UI 接线塞进
-//! `job::dispatch_blocking(move |editor, compositor| { … })` 闭包里 —— 想验证
+//! `job::dispatch_blocking(move |editor, compositor, _js| { … })` 闭包里 —— 想验证
 //! 「这个请求到底要做什么」只能起一个 `Application`;而且
 //! `set_layout_change_kind(..) + sync_layout_cache()` 这对调用在 24 处手写,
 //! 漏一处就产出 `kind: null` 的 `layout-change` 事件(`docs/plugin-api.md` §4 记过这个坑)。
@@ -274,7 +274,7 @@ impl UiOp {
 /// 分派:保持「一个请求一次 dispatch」(与改造前逐请求一次的时序一致)。
 pub(crate) fn dispatch(op: Option<UiOp>) {
     if let Some(op) = op {
-        job::dispatch_blocking(move |editor, compositor| op.apply(editor, compositor));
+        job::dispatch_blocking(move |editor, compositor, _js| op.apply(editor, compositor));
     }
 }
 

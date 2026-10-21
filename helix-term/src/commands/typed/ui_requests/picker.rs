@@ -12,7 +12,7 @@ pub(crate) fn handle_open_picker(
         rows,
     }: OpenPickerReq,
 ) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |_editor, compositor| {
+    job::dispatch_blocking(move |_editor, compositor, _js| {
         ui::js_picker::open_picker(compositor, &source, rows, columns);
     });
     Ok(())

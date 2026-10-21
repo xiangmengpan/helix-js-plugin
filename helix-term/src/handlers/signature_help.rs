@@ -95,7 +95,7 @@ impl helix_event::AsyncHook for SignatureHelpHandler {
         let invocation = self.trigger.take().unwrap();
         self.state = State::Pending;
         let handle = self.task_controller.restart();
-        job::dispatch_blocking(move |editor, _| request_signature_help(editor, invocation, handle))
+        job::dispatch_blocking(move |editor, _, _js| request_signature_help(editor, invocation, handle))
     }
 }
 
@@ -126,7 +126,7 @@ pub fn request_signature_help(
     tokio::spawn(async move {
         match cancelable_future(future, cancel).await {
             Some(Ok(res)) => {
-                job::dispatch(move |editor, compositor| {
+                job::dispatch(move |editor, compositor, _js| {
                     show_signature_help(editor, compositor, invoked, res)
                 })
                 .await

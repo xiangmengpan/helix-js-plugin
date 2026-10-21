@@ -185,7 +185,8 @@ impl Context<'_> {
             editor: self.editor,
             jobs: self.jobs,
             scroll: None,
-            js: None,
+            // P4-1 3a：`self` 本来就是 compositor::Context，宿主就在手上（原先写死 None）
+            js: self.js.as_deref_mut(),
         }
         .block_try_flush_writes()
     }
@@ -203,7 +204,7 @@ where
     Box::pin(async move {
         let response = call.await?;
         let call: job::Callback = Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| {
+            move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                 callback(editor, compositor, response)
             },
         ));
@@ -1478,7 +1479,7 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
             }
 
             Ok(Callback::EditorCompositor(Box::new(
-                move |editor, compositor| {
+                move |editor, compositor, _js| {
                     for target in targets {
                         open_url_in_callback(editor, compositor, target, action, &rel_path);
                     }
@@ -5369,7 +5370,7 @@ fn format_selections(cx: &mut Context) {
             Ok(Some(res)) => {
                 let transaction =
                     helix_lsp::util::generate_transaction_from_edits(&text, res, offset_encoding);
-                job::dispatch(move |editor, _compositor| {
+                job::dispatch(move |editor, _compositor, _js| {
                     let Some(doc) = editor.document_mut(doc_id) else {
                         return;
                     };
@@ -6044,7 +6045,7 @@ fn transpose_view(cx: &mut Context) {
 
 fn hsplit(_cx: &mut Context) {
     // 叶=窗口:无参分裂 → 下侧同 doc 新叶
-    crate::job::dispatch_blocking(move |editor, compositor| {
+    crate::job::dispatch_blocking(move |editor, compositor, _js| {
         if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
             compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::V, false);
         }
@@ -6057,7 +6058,7 @@ fn hsplit_new(_cx: &mut Context) {
 
 fn vsplit(_cx: &mut Context) {
     // 叶=窗口:无参分裂 → 右侧同 doc 新叶
-    crate::job::dispatch_blocking(move |editor, compositor| {
+    crate::job::dispatch_blocking(move |editor, compositor, _js| {
         if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
             compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::H, false);
         }
@@ -6078,7 +6079,7 @@ fn open_path_leaf_aware(cx: &mut Context, path: &Path, action: Action) {
             } else {
                 crate::ui::layout::SplitDir::V
             };
-            crate::job::dispatch_blocking(move |editor, compositor| {
+            crate::job::dispatch_blocking(move |editor, compositor, _js| {
                 compositor.open_doc_in_new_leaf(editor, path, dir, false);
             });
         }
@@ -6092,7 +6093,7 @@ fn open_path_leaf_aware(cx: &mut Context, path: &Path, action: Action) {
 
 /// 新建空 scratch 文档到新叶(取代 :vsplit-new 的 core 树分裂)。
 fn new_scratch_leaf(dir: crate::ui::layout::SplitDir) {
-    crate::job::dispatch_blocking(move |editor, compositor| {
+    crate::job::dispatch_blocking(move |editor, compositor, _js| {
         let doc_id = editor.create_scratch_document();
         compositor.open_buffer_leaf(editor, doc_id, dir, false);
     });

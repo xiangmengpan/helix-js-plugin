@@ -780,7 +780,12 @@ impl Application {
                     self.handle_terminal_events(event).await;
                 }
                 Some(callback) = self.jobs.callbacks.recv() => {
-                    if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback))) {
+                    if let Some(job) = self.jobs.handle_callback(
+                        &mut self.editor,
+                        &mut self.compositor,
+                        self.js_host.as_deref_mut(),
+                        Ok(Some(callback)),
+                    ) {
                         self.jobs.add(job);
                     }
                     // 请求处理可能已关掉最后一个视图(如 UiRequest::Quit ✓)⇒ 渲染前先按既有条件早退 ✓
@@ -802,7 +807,12 @@ impl Application {
                     helix_event::request_redraw();
                 }
                 Some(callback) = self.jobs.wait_futures.next() => {
-                    if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback) {
+                    if let Some(job) = self.jobs.handle_callback(
+                        &mut self.editor,
+                        &mut self.compositor,
+                        self.js_host.as_deref_mut(),
+                        callback,
+                    ) {
                         self.jobs.add(job);
                     }
                     // 请求处理可能已关掉最后一个视图(如 UiRequest::Quit ✓)⇒ 渲染前先按既有条件早退 ✓

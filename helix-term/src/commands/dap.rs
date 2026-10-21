@@ -103,7 +103,7 @@ fn dap_callback<T, F>(
         let json = call.await?;
         let response = serde_json::from_value(json)?;
         let call: Callback = Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| {
+            move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                 callback(editor, compositor, response)
             },
         ));
@@ -285,7 +285,7 @@ pub fn dap_launch(cx: &mut Context) {
                 let name = template.name.clone();
                 let callback = Box::pin(async move {
                     let call: Callback =
-                        Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+                        Callback::EditorCompositor(Box::new(move |_editor, compositor, _js| {
                             let prompt = debug_parameter_prompt(completions, name, Vec::new());
                             compositor.push(Box::new(prompt));
                         }));
@@ -379,7 +379,7 @@ fn debug_parameter_prompt(
                 let params = params.clone();
                 let callback = Box::pin(async move {
                     let call: Callback =
-                        Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+                        Callback::EditorCompositor(Box::new(move |_editor, compositor, _js| {
                             let prompt = debug_parameter_prompt(completions, config_name, params);
                             compositor.push(Box::new(prompt));
                         }));
@@ -658,7 +658,7 @@ pub fn dap_edit_condition(cx: &mut Context) {
             return;
         };
         let callback = Box::pin(async move {
-            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor, _js| {
                 let mut prompt = Prompt::new(
                     "condition:".into(),
                     None,
@@ -699,7 +699,7 @@ pub fn dap_edit_log(cx: &mut Context) {
             return;
         };
         let callback = Box::pin(async move {
-            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor, _js| {
                 let mut prompt = Prompt::new(
                     "log-message:".into(),
                     None,

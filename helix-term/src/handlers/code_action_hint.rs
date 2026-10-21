@@ -35,7 +35,7 @@ impl AsyncHook for Handler {
 
     fn finish_debounce(&mut self) {
         let ids = std::mem::take(&mut self.doc_ids);
-        job::dispatch_blocking(move |editor, _| {
+        job::dispatch_blocking(move |editor, _, _js| {
             for (doc_id, view_id) in ids {
                 request_code_action_hint(editor, doc_id, view_id);
             }
@@ -98,7 +98,7 @@ fn request_code_action_hint(editor: &mut Editor, doc_id: DocumentId, view_id: Vi
             }
         }
 
-        job::dispatch(move |editor, _| {
+        job::dispatch(move |editor, _, _js| {
             apply_code_action_hint(editor, doc_id, view_id, actions);
         })
         .await;

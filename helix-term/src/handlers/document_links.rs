@@ -32,7 +32,7 @@ impl helix_event::AsyncHook for DocumentLinksHandler {
     fn finish_debounce(&mut self) {
         let docs = std::mem::take(&mut self.docs);
 
-        job::dispatch_blocking(move |editor, _compositor| {
+        job::dispatch_blocking(move |editor, _compositor, _js| {
             for doc in docs {
                 request_document_links(editor, doc);
             }
@@ -104,7 +104,7 @@ fn request_document_links(editor: &mut Editor, doc_id: DocumentId) {
             }
         }
 
-        job::dispatch(move |editor, _| attach_document_links(editor, doc_id, all_links)).await;
+        job::dispatch(move |editor, _, _js| attach_document_links(editor, doc_id, all_links)).await;
     });
 }
 

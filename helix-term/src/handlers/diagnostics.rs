@@ -118,7 +118,7 @@ impl helix_event::AsyncHook for PullDiagnosticsHandler {
 
     fn finish_debounce(&mut self) {
         let document_ids = mem::take(&mut self.document_ids);
-        job::dispatch_blocking(move |editor, _| {
+        job::dispatch_blocking(move |editor, _, _js| {
             for document_id in document_ids {
                 request_document_diagnostics(editor, document_id);
             }
@@ -145,7 +145,7 @@ impl helix_event::AsyncHook for PullAllDocumentsDiagnosticHandler {
 
     fn finish_debounce(&mut self) {
         let language_servers = mem::take(&mut self.language_servers);
-        job::dispatch_blocking(move |editor, _| {
+        job::dispatch_blocking(move |editor, _, _js| {
             let documents: Vec<_> = editor.documents.keys().copied().collect();
 
             for document in documents {
@@ -218,7 +218,7 @@ fn request_document_diagnostics_for_language_servers(
         loop {
             match cancelable_future(futures.next(), &cancel).await {
                 Some(Some((Ok(result), provider, uri))) => {
-                    job::dispatch(move |editor, _| {
+                    job::dispatch(move |editor, _, _js| {
                         handle_pull_diagnostics_response(editor, result, provider, uri, doc_id);
                     })
                     .await;
@@ -246,7 +246,7 @@ fn request_document_diagnostics_for_language_servers(
         if !retry_language_servers.is_empty() {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
-            job::dispatch(move |editor, _| {
+            job::dispatch(move |editor, _, _js| {
                 request_document_diagnostics_for_language_servers(
                     editor,
                     doc_id,

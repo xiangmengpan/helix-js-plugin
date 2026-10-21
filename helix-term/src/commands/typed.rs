@@ -302,7 +302,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
                 let path2 = path.clone();
                 let callback = async move {
                     let call: job::Callback = job::Callback::EditorCompositor(Box::new(
-                        move |editor: &mut Editor, compositor: &mut Compositor| {
+                        move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                             let picker = ui::file_picker(editor, path2.into())
                                 .with_default_action(Action::Replace);
                             compositor.push(Box::new(overlaid(picker)));
@@ -317,7 +317,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
                 } else {
                     crate::ui::layout::SplitDir::V
                 };
-                crate::job::dispatch_blocking(move |editor, compositor| {
+                crate::job::dispatch_blocking(move |editor, compositor, _js| {
                     compositor.open_doc_in_new_leaf(editor, path.into_owned(), dir, false);
                 });
             }
@@ -332,7 +332,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
         if let Ok(true) = std::fs::canonicalize(&path).map(|p| p.is_dir()) {
             let callback = async move {
                 let call: job::Callback = job::Callback::EditorCompositor(Box::new(
-                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                    move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                         let picker =
                             ui::file_picker(editor, path.into_owned()).with_default_action(action);
                         compositor.push(Box::new(overlaid(picker)));
@@ -1928,7 +1928,7 @@ fn lsp_workspace_command(
             .collect::<Vec<_>>();
         let callback = async move {
             let call: job::Callback = Callback::EditorCompositor(Box::new(
-                move |_editor: &mut Editor, compositor: &mut Compositor| {
+                move |_editor: &mut Editor, compositor: &mut Compositor, _js| {
                     let columns = [ui::PickerColumn::new(
                         "title",
                         |(_ls_id, command): &(_, helix_lsp::lsp::Command), _| {
@@ -2136,7 +2136,7 @@ fn tree_sitter_scopes(
 
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| {
+            move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                 let contents = ui::Markdown::new(contents, editor.syn_loader.clone());
                 let popup = Popup::new("hover", contents).auto_close(true);
                 compositor.replace_or_push("hover", popup);
@@ -2204,7 +2204,7 @@ fn tree_sitter_highlight_name(
 
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| {
+            move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                 let content = ui::Markdown::new(content, editor.syn_loader.clone());
                 let popup = Popup::new("hover", content).auto_close(true);
                 compositor.replace_or_push("hover", popup);
@@ -2254,7 +2254,7 @@ fn tree_sitter_layers(
 
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| {
+            move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                 let content = ui::Markdown::new(languages, editor.syn_loader.clone());
                 let popup = Popup::new("hover", content).auto_close(true);
                 compositor.replace_or_push("hover", popup);
@@ -2275,7 +2275,7 @@ fn vsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
 
     if args.is_empty() {
         // 叶=窗口:无参分裂 → 在活动叶旁开同 doc 新叶(不再走 core view-tree 分裂)
-        crate::job::dispatch_blocking(move |editor, compositor| {
+        crate::job::dispatch_blocking(move |editor, compositor, _js| {
             if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
                 compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::H, false);
             }
@@ -2294,7 +2294,7 @@ fn hsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
 
     if args.is_empty() {
         // 叶=窗口:无参分裂 → 下侧同 doc 新叶
-        crate::job::dispatch_blocking(move |editor, compositor| {
+        crate::job::dispatch_blocking(move |editor, compositor, _js| {
             if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
                 compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::V, false);
             }
@@ -2735,7 +2735,7 @@ fn tree_sitter_subtree(
 
             let callback = async move {
                 let call: job::Callback = Callback::EditorCompositor(Box::new(
-                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                    move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                         let contents = ui::Markdown::new(contents, editor.syn_loader.clone());
                         let popup = Popup::new("hover", contents).auto_close(true);
                         compositor.replace_or_push("hover", popup);
@@ -2864,7 +2864,7 @@ fn run_shell_command(
     let callback = async move {
         let output = shell_impl_async(&shell, &args, None).await?;
         let call: job::Callback = Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| {
+            move |editor: &mut Editor, compositor: &mut Compositor, _js| {
                 if !output.trim().is_empty() {
                     let contents = ui::Markdown::new(
                         format!("```sh\n{}\n```", output.trim_end()),
@@ -2992,7 +2992,7 @@ fn redraw(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
 
     let callback = Box::pin(async move {
         let call: job::Callback =
-            job::Callback::EditorCompositor(Box::new(|_editor, compositor| {
+            job::Callback::EditorCompositor(Box::new(|_editor, compositor, _js| {
                 compositor.need_full_redraw();
             }));
 
@@ -4995,7 +4995,7 @@ pub(crate) fn apply_ui_requests(
             // 热重载排到 job 队列 ⇒ 在**命令边界**跑，不与当前 JS 栈重入（`reload_plugins`
             // 会在 boa 上重跑全部脚本，同步跑必 panic）。`None` 走的是同一条自由函数
             // 路径（`JsHost::reload_all` 只是 `pump(reload_all)` 的排他性包装）。
-            helix_js::UiRequest::ReloadPlugins => job::dispatch_blocking(|editor, _compositor| {
+            helix_js::UiRequest::ReloadPlugins => job::dispatch_blocking(|editor, _compositor, _js| {
                 if let Err(e) = reload_plugins(None, editor) {
                     editor.set_error(format!("reload_plugins: {e}"));
                 }
@@ -5245,7 +5245,7 @@ fn server_panel(cx: &mut compositor::Context) -> anyhow::Result<()> {
     }
     let fut = async move {
         let call: job::Callback =
-            Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+            Callback::EditorCompositor(Box::new(move |_editor, compositor, _js| {
                 let columns = [
                     ui::PickerColumn::new("server", |s: &registry::Spec, _| s.name.as_str().into()),
                     ui::PickerColumn::new("kind", |s: &registry::Spec, _| {
