@@ -146,6 +146,17 @@ boa 的回调签名是 `fn(&JsValue, &[JsValue], &mut Context)`。`Context` 是*
 
 ### 因此 3b 只能**逐层手工**做，并按层提交
 
+**第 1 层已完成（2026-10-22）**：`sync_layout_cache(js: Option<&mut JsHost>)` ——
+27 个调用点**各自显式声明**它能不能给宿主：
+
+- 3 处传 `cx.js.as_deref_mut()`（所在函数本来就有 `cx`：`pane_mode_key` / `pane_cycle_or_stack` / `window_mode_close`）；
+- 24 处传 `None`（所在函数没有宿主可传，**行为不变**——内部仍走临时回落，第 3 层再删）；
+- 顺便发现 `ui_op.rs::UiOp::apply(self, editor, compositor)` **根本没有宿主参数** ⇒
+  下一层给它加 `js`，那 10 处就能一起迁。
+
+第 1 层验收：`0` 编译错误、413 集成全绿、`plugin_layout` 逐点/批量 2 条用例绿。
+
+
 建议顺序（每层独立提交、每层跑全量）：
 
 1. **只被 `ui_op.rs` 与测试调用**的方法（无上游级联）——大约 10 个，先做这批；

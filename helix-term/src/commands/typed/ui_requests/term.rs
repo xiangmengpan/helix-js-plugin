@@ -35,7 +35,7 @@ pub(crate) fn handle_open_terminal(
         Some(host) => host.emit_term_open(pty_id, &cmd),
         None => helix_js::emit_term_open(pty_id, &cmd),
     }
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         // 布局树：终端成为叶子
         use crate::ui::layout::SplitDir;
         let (dir, first) = match side_enum {
@@ -52,7 +52,7 @@ pub(crate) fn handle_term_mode(TermModeReq { view_id, mode }: TermModeReq) -> an
     let Some(tm) = crate::ui::plugin_terminal::TermMode::from_str(&mode) else {
         bail!("set_terminal_mode: unknown mode '{mode}'");
     };
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         if let Some(term) = compositor
             .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == view_id)
         {
@@ -75,7 +75,7 @@ pub(crate) fn handle_term_mode(TermModeReq { view_id, mode }: TermModeReq) -> an
 }
 
 pub(crate) fn handle_term_close(TermCloseReq { view_id }: TermCloseReq) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         if let Some(id) = compositor
             .layout_tree()
             .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == view_id)
@@ -85,14 +85,14 @@ pub(crate) fn handle_term_close(TermCloseReq { view_id }: TermCloseReq) -> anyho
             // 这一臂此前**漏了** sync ⇒ 关终端时 JS 侧快照会陈旧、layout-change 也不发 ✗
             // （与另 9 个臂对齐；关闭终端同样改变了布局）
             compositor.set_layout_change_kind("close");
-            compositor.sync_layout_cache();
+            compositor.sync_layout_cache(_js.as_deref_mut());
         }
     });
     Ok(())
 }
 
 pub(crate) fn handle_term_clear(TermClearReq { view_id }: TermClearReq) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         if let Some(term) = compositor
             .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == view_id)
         {
@@ -132,7 +132,7 @@ pub(crate) fn handle_term_save(TermSaveReq { view_id, path }: TermSaveReq) -> an
 pub(crate) fn handle_term_resize(
     TermResizeReq { view_id, size }: TermResizeReq,
 ) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         if let Some(term) = compositor
             .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == view_id)
         {
@@ -149,7 +149,7 @@ pub(crate) fn handle_term_feed(TermFeedReq { view_id, chunk }: TermFeedReq) -> a
     // **Send 闭包**(喂网格发生在 job 里,可能不在主线程)⇒ `&mut JsHost`(!Send)
     // **不能**跨进来。所以 `term-title`(在 `feed` 里发)永久走 legacy 隐式解析:
     // 这不是"还没做",是这条边界的存在理由。
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         if let Some(terminal) = compositor.find_where::<PluginTerminal>(|t| t.view_id() == view_id)
         {
             terminal.feed(&chunk);

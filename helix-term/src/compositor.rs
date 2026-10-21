@@ -368,7 +368,7 @@ impl Compositor {
             .retain(|component| component.type_name() != type_name);
         // 布局树里的同类组件（如终端叶子）也移除
         self.main_tree.remove_component_type::<T>();
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 按插件面板实例 id 关闭面板(布局树路径)。
@@ -401,7 +401,7 @@ impl Compositor {
         if !self.close_rail(leaf) {
             self.remove_leaf(leaf);
         }
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         true
     }
 
@@ -434,7 +434,7 @@ impl Compositor {
             return false;
         }
         self.main_tree.register_rail(comp, left, ratio);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         // 焦点跟到新的 rail 叶(旧 id 已被 prune 掉)
         if let Some(new_leaf) = self.main_tree.rail_leaf() {
             self.main_tree.focus(new_leaf);
@@ -775,7 +775,7 @@ impl Compositor {
     ) -> Option<u64> {
         let active = self.main_tree.active();
         let ret = self.main_tree.split_side(active, dir, new_first, component);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         ret
     }
 
@@ -804,7 +804,7 @@ impl Compositor {
         let ret = self
             .main_tree
             .split_side_ratio(active, dir, new_first, ratio, component, new_id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         ret
     }
 
@@ -832,7 +832,7 @@ impl Compositor {
         let _ = self
             .main_tree
             .split_side_ratio(active, dir, new_first, ratio, component, id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     pub fn area(&self) -> Rect {
@@ -841,7 +841,7 @@ impl Compositor {
 
     pub fn remove_leaf(&mut self, id: u64) {
         self.main_tree.remove(id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 同步 editor.tree.focus 到活动叶子承载的 view（叶=可编辑窗口的路由基础）：
@@ -893,7 +893,7 @@ impl Compositor {
                     let _ = editor.close_document(doc_id, false);
                 }
             }
-            self.sync_layout_cache();
+            self.sync_layout_cache(None);
             self.sync_editor_focus(editor);
         } else {
             self.remove_leaf(id);
@@ -905,7 +905,7 @@ impl Compositor {
     pub fn close_leaf_clean(&mut self, editor: &mut Editor, id: u64) {
         if self.main_tree.is_rail(id) {
             self.main_tree.take_rail();
-            self.sync_layout_cache();
+            self.sync_layout_cache(None);
             self.sync_editor_focus(editor);
         } else if self.main_tree.view_id_of(id).is_some() {
             self.remove_buffer_leaf(editor, id);
@@ -919,7 +919,7 @@ impl Compositor {
     pub fn close_rail(&mut self, id: u64) -> bool {
         if self.main_tree.is_rail(id) {
             self.main_tree.take_rail();
-            self.sync_layout_cache();
+            self.sync_layout_cache(None);
             true
         } else {
             false
@@ -961,7 +961,7 @@ impl Compositor {
         let width = self.area.width.max(1) as f32;
         let ratio = (size as f32 / width).clamp(0.05, 0.9);
         self.main_tree.register_rail(Box::new(panel), left, ratio);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         self.main_tree.rail_leaf()
     }
 
@@ -1019,17 +1019,17 @@ impl Compositor {
 
     pub fn zoom_leaf(&mut self, id: u64) {
         self.main_tree.zoom(id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     pub fn unzoom(&mut self) {
         self.main_tree.unzoom();
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     pub fn resize_leaf(&mut self, id: u64, ratio: f32) {
         self.main_tree.resize(id, ratio);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 按方向调整叶子份额（H=左右 / V=上下；delta>0 增大该叶子）。返回是否调整。
@@ -1040,21 +1040,21 @@ impl Compositor {
         delta: f32,
     ) -> bool {
         let ret = self.main_tree.resize_leaf_dir(id, dir, delta);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         ret
     }
 
     /// 交换两个叶子的内容（组件引用互换，树结构/焦点不变）。
     pub fn swap_leaves(&mut self, id1: u64, id2: u64) -> bool {
         let ret = self.main_tree.swap(id1, id2);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         ret
     }
 
     /// 最小化/恢复叶子（不占布局，渲染为底部标题横条）
     pub fn minimize_leaf(&mut self, id: u64, minimized: bool) {
         self.main_tree.set_minimized(id, minimized);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None
@@ -1065,7 +1065,7 @@ impl Compositor {
         first: bool,
     ) -> Option<u64> {
         let ret = self.main_tree.focus_dir(id, dir, first);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         ret
     }
 
@@ -1077,14 +1077,14 @@ impl Compositor {
         first: bool,
     ) -> bool {
         let ret = self.main_tree.swap_dir(id, dir, first);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
         ret
     }
 
     /// 叶子所在 Split 恢复 50/50
     pub fn equalize_leaf(&mut self, id: u64) {
         self.main_tree.equalize(id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 最小化叶子 id
@@ -1141,7 +1141,7 @@ impl Compositor {
             if let Some(new_anchor) = self.main_tree.stack_rotate(active, forward) {
                 self.main_tree.focus(new_anchor);
                 self.sync_editor_focus(cx.editor);
-                self.sync_layout_cache();
+                self.sync_layout_cache(cx.js.as_deref_mut());
                 return;
             }
         }
@@ -1402,7 +1402,7 @@ impl Compositor {
                 Some('s') => {
                     let id = self.main_tree.active();
                     if self.main_tree.stack_new_with_sibling(id).is_some() {
-                        self.sync_layout_cache();
+                        self.sync_layout_cache(cx.js.as_deref_mut());
                         cx.editor
                             .set_status("已堆叠(p / P / Tab 在组内切换;再按 s 无效)");
                     } else if self.main_tree.is_stacked(id) {
@@ -1537,7 +1537,7 @@ impl Compositor {
                 !t.contains("::plugin_terminal::PluginTerminal")
                     && !t.contains("::plugin_panel::PluginPanel")
             });
-            self.sync_layout_cache();
+            self.sync_layout_cache(cx.js.as_deref_mut());
             return;
         }
         let a = self.main_tree.active();
@@ -1580,7 +1580,7 @@ impl Compositor {
     /// 设置叶子 fixed 标记（fixed 叶子不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
     pub fn set_leaf_fixed(&mut self, id: u64, fixed: bool) {
         self.main_tree.set_fixed(id, fixed);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 叶子是否 fixed
@@ -1649,7 +1649,7 @@ impl Compositor {
         helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
     }
 
-    pub(crate) fn sync_layout_cache(&mut self) {
+    pub(crate) fn sync_layout_cache(&mut self, js: Option<&mut helix_js::host::JsHost>) {
         self.sync_panes_cache();
         let dump = self.main_tree.dump();
         let json = serde_json::to_string(&dump).unwrap_or_default();
@@ -1667,7 +1667,14 @@ impl Compositor {
             self.pending_layout_changes.push(kind);
             return;
         }
-        if let Err(e) = helix_js::emit_layout_change_kind(kind) {
+        // P4-1 3b 第 1 层：**调用点显式声明**它能不能给宿主。
+        // `Some(host)` ⇒ 走显式入口（不再依赖 host::ACTIVE）；
+        // `None` ⇒ 该调用点所在函数还没有宿主可传（逐层迁移中，**行为不变**）。
+        let emitted = match js {
+            Some(host) => host.emit_layout_change(kind),
+            None => helix_js::emit_layout_change_kind(kind),
+        };
+        if let Err(e) = emitted {
             // 让失败可见(只 log 会静默)
             helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
         }
@@ -1721,7 +1728,7 @@ impl Compositor {
 
     pub fn focus_leaf(&mut self, id: u64) {
         self.main_tree.focus(id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     pub fn layout_tree(&mut self) -> &mut crate::ui::layout::LayoutTree {
@@ -1735,13 +1742,13 @@ impl Compositor {
     /// 设置浮动叶子（渲染在最上层浮窗）；组件不存在时 no-op
     pub fn set_float(&mut self, id: u64) {
         self.main_tree.set_float(id);
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     /// 取消浮动（终端回其 split 位置）
     pub fn unfloat(&mut self) {
         self.main_tree.unfloat();
-        self.sync_layout_cache();
+        self.sync_layout_cache(None);
     }
 
     pub fn reset_plugin_diffs(&mut self) {

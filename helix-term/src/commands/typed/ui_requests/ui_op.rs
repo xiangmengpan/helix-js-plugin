@@ -3,7 +3,7 @@
 //! 为什么改成值:原先 pane 族的 24 个 handler 各自把 UI 接线塞进
 //! `job::dispatch_blocking(move |editor, compositor, _js| { … })` 闭包里 —— 想验证
 //! 「这个请求到底要做什么」只能起一个 `Application`;而且
-//! `set_layout_change_kind(..) + sync_layout_cache()` 这对调用在 24 处手写,
+//! `set_layout_change_kind(..) + sync_layout_cache(None)` 这对调用在 24 处手写,
 //! 漏一处就产出 `kind: null` 的 `layout-change` 事件(`docs/plugin-api.md` §4 记过这个坑)。
 //!
 //! 现在:handler 只负责「请求 → op」的映射与参数校验(可单测),执行收敛到
@@ -169,18 +169,18 @@ impl UiOp {
                 compositor.split_leaf_prealloc(id, dir, first, size, component);
                 // 标注变更种类(紧随其后的 sync_layout_cache 会把它带进 layout-change 事件)
                 compositor.set_layout_change_kind("split");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::CloseLeaf { id } => {
                 compositor.close_leaf_clean(editor, id);
                 compositor.set_layout_change_kind("close");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::SetFloat { id } => {
                 // 复用 ②-1 的浮窗模型:set_float 给默认居中槽位
                 compositor.set_float(id);
                 compositor.set_layout_change_kind("float");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::StackCreate { id } => {
                 // 非兄弟 → None(无效操作);成功才刷新缓存
@@ -190,7 +190,7 @@ impl UiOp {
                     .is_some()
                 {
                     compositor.set_layout_change_kind("stack-create");
-                    compositor.sync_layout_cache();
+                    compositor.sync_layout_cache(None);
                 }
             }
             UiOp::StackActivate { id, member } => {
@@ -205,28 +205,28 @@ impl UiOp {
                         lt.stack_rotate(id, true);
                     }
                     compositor.set_layout_change_kind("stack-activate");
-                    compositor.sync_layout_cache();
+                    compositor.sync_layout_cache(None);
                 }
             }
             UiOp::StackRemove { id } => {
                 compositor.layout_tree().stack_remove_member(id);
                 compositor.set_layout_change_kind("stack-remove");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::RaiseLeaf { id } => {
                 compositor.layout_tree().float_raise(id);
                 compositor.set_layout_change_kind("raise");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::PinLeaf { id, on } => {
                 compositor.layout_tree().float_set_pinned(id, on);
                 compositor.set_layout_change_kind("pin");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::EmbedLeaf { id } => {
                 compositor.layout_tree().remove_float(id);
                 compositor.set_layout_change_kind("embed");
-                compositor.sync_layout_cache();
+                compositor.sync_layout_cache(None);
             }
             UiOp::Zoom { id } => compositor.zoom_leaf(id),
             UiOp::Unzoom => compositor.unzoom(),
