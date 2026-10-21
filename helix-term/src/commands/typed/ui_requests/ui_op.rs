@@ -3,7 +3,7 @@
 //! 为什么改成值:原先 pane 族的 24 个 handler 各自把 UI 接线塞进
 //! `job::dispatch_blocking(move |editor, compositor, _js| { … })` 闭包里 —— 想验证
 //! 「这个请求到底要做什么」只能起一个 `Application`;而且
-//! `set_layout_change_kind(..) + sync_layout_cache(None)` 这对调用在 24 处手写,
+//! `set_layout_change_kind(..) + sync_layout_cache(js.as_deref_mut())` 这对调用在 24 处手写,
 //! 漏一处就产出 `kind: null` 的 `layout-change` 事件(`docs/plugin-api.md` §4 记过这个坑)。
 //!
 //! 现在:handler 只负责「请求 → op」的映射与参数校验(可单测),执行收敛到
@@ -119,7 +119,12 @@ pub(crate) enum UiOp {
 
 impl UiOp {
     /// 唯一的执行点。函数体逐段搬自各 handler 原来的闭包,**没有改任何判断条件**。
-    pub(crate) fn apply(self, editor: &mut Editor, compositor: &mut Compositor) {
+    pub(crate) fn apply(
+        self,
+        editor: &mut Editor,
+        compositor: &mut Compositor,
+        mut js: Option<&mut helix_js::host::JsHost>,
+    ) {
         match self {
             UiOp::OpenPanel {
                 id,
@@ -169,18 +174,18 @@ impl UiOp {
                 compositor.split_leaf_prealloc(id, dir, first, size, component);
                 // 标注变更种类(紧随其后的 sync_layout_cache 会把它带进 layout-change 事件)
                 compositor.set_layout_change_kind("split");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::CloseLeaf { id } => {
                 compositor.close_leaf_clean(editor, id);
                 compositor.set_layout_change_kind("close");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::SetFloat { id } => {
                 // 复用 ②-1 的浮窗模型:set_float 给默认居中槽位
                 compositor.set_float(id);
                 compositor.set_layout_change_kind("float");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::StackCreate { id } => {
                 // 非兄弟 → None(无效操作);成功才刷新缓存
@@ -190,7 +195,7 @@ impl UiOp {
                     .is_some()
                 {
                     compositor.set_layout_change_kind("stack-create");
-                    compositor.sync_layout_cache(None);
+                    compositor.sync_layout_cache(js.as_deref_mut());
                 }
             }
             UiOp::StackActivate { id, member } => {
@@ -205,28 +210,28 @@ impl UiOp {
                         lt.stack_rotate(id, true);
                     }
                     compositor.set_layout_change_kind("stack-activate");
-                    compositor.sync_layout_cache(None);
+                    compositor.sync_layout_cache(js.as_deref_mut());
                 }
             }
             UiOp::StackRemove { id } => {
                 compositor.layout_tree().stack_remove_member(id);
                 compositor.set_layout_change_kind("stack-remove");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::RaiseLeaf { id } => {
                 compositor.layout_tree().float_raise(id);
                 compositor.set_layout_change_kind("raise");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::PinLeaf { id, on } => {
                 compositor.layout_tree().float_set_pinned(id, on);
                 compositor.set_layout_change_kind("pin");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::EmbedLeaf { id } => {
                 compositor.layout_tree().remove_float(id);
                 compositor.set_layout_change_kind("embed");
-                compositor.sync_layout_cache(None);
+                compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::Zoom { id } => compositor.zoom_leaf(id),
             UiOp::Unzoom => compositor.unzoom(),
@@ -274,7 +279,7 @@ impl UiOp {
 /// 分派:保持「一个请求一次 dispatch」(与改造前逐请求一次的时序一致)。
 pub(crate) fn dispatch(op: Option<UiOp>) {
     if let Some(op) = op {
-        job::dispatch_blocking(move |editor, compositor, _js| op.apply(editor, compositor));
+        job::dispatch_blocking(move |editor, compositor, js| op.apply(editor, compositor, js));
     }
 }
 
