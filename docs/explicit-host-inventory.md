@@ -194,3 +194,70 @@ boa 的回调签名是 `fn(&JsValue, &[JsValue], &mut Context)`。`Context` 是*
 `ACTIVE` 仍然存在，服务于**原生回调**（`Context` 从宿主借出，回调里拿不到 `&mut JsHost`）
 与测试。4a（`Context::insert_data` 放句柄）与 4b（删 `ACTIVE`）是另一层重构，
 规模不小于 3b，需要单独一轮。
+
+---
+
+## 4a 可行性验证（2026-10-22）—— 机制成立，规模比 3b 大
+
+### 结论先说
+
+`Context::insert_data / get_data` 这条路**可行且不需要 `unsafe`**：宿主状态用
+`Rc<HostState>` 存进引擎，原生函数 `ctx.get_data::<Rc<HostState>>()` 取回 ——
+**不比线程局部指针多一次解引用之外的成本**，反而把"指针活得比宿主久"的约定
+变成类型关系（`HostState` 由 `Rc` 持有，引擎里的那份就是它的一个引用）。
+
+最小原型（40 行，已验证后删除）：
+
+```rust
+#[derive(Default)]
+struct HostState { hits: RefCell<u32> }
+
+fn js_ping(_: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let st = ctx.get_data::<Rc<HostState>>().expect("必须由 JsHost::new 注入");
+    *st.hits.borrow_mut() += 1;
+    Ok(JsValue::undefined())
+}
+
+let state = Rc::new(HostState::default());
+let mut ctx = Context::default();
+ctx.insert_data(Rc::clone(&state));      // ← 宿主建引擎时注入
+// …注册原生函数、eval("helix.ping(); helix.ping()")…
+assert_eq!(*state.hits.borrow(), 2);     // ✓ 实测通过
+```
+
+### 规模（脚本统计，非估算）
+
+| 项 | 数量 | 改动形态 |
+|---|---|---|
+| `JsHost` 字段 | **62**（1 个 engine + 61 个状态） | 拆成 `JsHost { engine, state: Rc<HostState> }`，字段搬到 `HostState` |
+| 访问器（函数体直接触达隐式宿主） | **49** | 签名加 `st: &HostState` |
+| 访问器调用点（生产代码，helix-js 内） | **60** | 其中 **32（53%）所在函数已有 `ctx`** ⇒ 一行 `ctx.get_data()`；**28** 需要把 `&HostState` 透传进来 |
+| `with_engine(` 调用点 | **63** | 这些只能拿 `&mut JsHost`（原生回调里引擎已借出，不能调它） |
+| 直接 `Context::default()` 的测试 | **8** | 4 处（watch/lsp/diagnostics 的单测）需要改成经 `JsHost::new` 或用测试助手注入 `HostState` |
+
+合计约 **180 处编辑**（3b 是 ~140），分布两个 crate。
+
+### 建议的落地分层（每层独立提交）
+
+1. **L1 形状**：引入 `HostState`（先只放 3–5 个字段）+ `JsHost { engine, state }` +
+   `insert_data(Rc::clone)`；再加一个 `with_state(ctx, f)` 助手，**迁一个访问器**做真实闭环。
+   验收：这一个访问器的调用点全部走 `ctx.get_data()`，`ACTIVE` 仍存在但不再被它使用。
+2. **L2 搬字段**：把 61 个字段搬进 `HostState`（编译器驱动，纯机械）。
+3. **L3 迁访问器**：49 个访问器分 3 批（state.rs 内部 → 各模块 → 边角），
+   每批 15–20 个；每批跑 `cargo test -p helix-js --lib`。
+4. **L4 删 `ACTIVE`**：`DEFAULT_HOST`/`set_active`/`clear_active`/`park_or_forget` 全部删除；
+   8 处单测改成 `JsHost::new()`（它自己会 `insert_data`）。
+
+### 风险（比 3b 高的地方）
+
+- **测试要改**：现在单测可以裸建 `Context::default()`；改完必须经 `JsHost::new` 注入状态，
+  否则 `get_data` 返回 `None` ⇒ 需要 `with_state` 明确 panic 并给出原因（不要静默）。
+- **`park_or_forget` 语义**：宿主在 Application 之间停放/接管；`Rc<HostState>` 随引擎走，
+  这点比裸指针**更安全**（引擎到哪，状态到哪）。
+- **`with_engine` 的 63 处**：它们是"需要引擎"的调用点，不能靠 `get_data` 解决
+  （原生回调里引擎已借出）⇒ 这些函数继续接收 `&mut JsHost`，属于 3a/3b 已铺好的路。
+
+### 建议
+
+值得做，但**别和 3b 混在一轮**。如果要做，按 L1→L4 走，L1 单独提交（它已经把机制
+放进生产代码，即使后面停下也不留半成品）。
