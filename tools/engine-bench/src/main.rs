@@ -93,13 +93,7 @@ fn node_measure(scenario: &str) -> anyhow::Result<Option<Row>> {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     Ok(Some(Row {
         engine: "v8(node)",
-        scenario: match scenario {
-            "eval" => "eval",
-            "filter" => "filter",
-            "render" => "render",
-            "native" => "native",
-            _ => "json",
-        },
+        scenario: scenario.to_string(),
         iters: v["iters"].as_u64().unwrap_or(0),
         per_op_ns: v["per_op_ns"].as_f64().unwrap_or(-1.0),
         checksum: v["checksum"].as_f64().unwrap_or(-1.0),
@@ -114,7 +108,7 @@ fn print_table(rows: &[Row]) {
         let (label, div) = unit(s);
         let get = |eng: &str| {
             rows.iter()
-                .find(|r| r.scenario == *s && r.engine == eng)
+                .find(|r| r.scenario.as_str() == *s && r.engine == eng)
                 .map(|r| format!("{:.3}", r.per_op_ns / div))
                 .unwrap_or_else(|| "—".into())
         };
@@ -137,7 +131,7 @@ fn print_table(rows: &[Row]) {
     for s in SCENARIOS {
         let vals: Vec<f64> = rows
             .iter()
-            .filter(|r| r.scenario == *s)
+            .filter(|r| r.scenario.as_str() == *s)
             .map(|r| r.checksum)
             .collect();
         if vals.len() > 1 {

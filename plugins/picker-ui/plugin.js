@@ -36,6 +36,11 @@ helix.plugin("picker-ui", {
 // ── 可配置 ────────────────────────────────────────────────────────────────
 helix.define_config("picker-ui", {
   max_items: { type: "number", default: 200, doc: "最多显示/匹配的条目数" },
+  core_match_min: {
+    type: "number",
+    default: 1000,
+    doc: "条目数 ≥ 这个值时改用进程内匹配（helix.fuzzy.filter，nucleo）；0 = 始终用进程内",
+  },
   width: { type: "string", default: "80%", doc: "弹窗宽度" },
   height: { type: "string", default: "70%", doc: "弹窗高度" },
 });
@@ -160,12 +165,47 @@ let def_draw = 0;   // ② 默认渲染器是否已注册 ✓
 let onkey_hits = 0; // S6 onKey 被调用的次数 ✓
 let onkey_last = ""; // S6 最后一次认领时读到的选中行 ✓
 
+/// 大列表判定:条目数达到阈值且核心有 fuzzy.session(旧编辑器/裁剪构建可能没有)⇒ 用进程内
+function useCoreMatch(cfg) {
+  if (!helix.fuzzy || typeof helix.fuzzy.session !== "function") return false;
+  const min = typeof cfg.core_match_min === "number" ? cfg.core_match_min : 1000;
+  return all.length >= min;
+}
+
+// 进程内匹配的**会话句柄**:条目只搬一次(5000 个字符串逐项过边界的成本比打分本身还贵,
+// 实测一次性 filter 是 11.0ms、会话式是 0.4ms —— 见 docs/architecture-plugin-engine-bench.md)
+let fuzzySession = 0;
+let fuzzyAllRef = null; // 会话对应的那个 all 数组（身份比较：all 只被整体替换，不原地改）
+
+/// `all` 换了才重建会话(load/切源);query 变化只 `run`
+function syncFuzzySession(cfg) {
+  if (fuzzyAllRef === all) return;
+  if (fuzzySession) {
+    guard(() => helix.fuzzy.drop(fuzzySession));
+    fuzzySession = 0;
+  }
+  fuzzyAllRef = all;
+  if (!useCoreMatch(cfg)) return;
+  const views = [];
+  for (const it of all) views.push(view(it));
+  fuzzySession = guard(() => helix.fuzzy.session(views), 0);
+}
+
 function refilter() {
   refresh_cwd_view();
   const cfg = guard(() => helix.get_config("picker-ui"), {}) || {};
+  syncFuzzySession(cfg);
   const maxn = typeof cfg.max_items === "number" && cfg.max_items > 0 ? cfg.max_items : 200;
   if (!query) {
     shown = all.slice(0, maxn);
+  } else if (fuzzySession) {
+    // 大列表:交给**进程内**匹配(nucleo,与核心 picker 同一套)。
+    // 为什么:同是 5000 行,手写 JS 打分 7.1ms/按键,会话式进程内 ~0.4ms/按键(横评)。
+    // ⚠ 必须用**会话**:一次性 filter(query, items) 要把 5000 个字符串逐项搬过边界,
+    // 反而比 JS 打分慢(11.0ms)—— 这是量过之后才发现的。
+    const hits = helix.fuzzy.run(fuzzySession, query, { limit: maxn });
+    shown = [];
+    for (const h of hits) shown.push(all[h.index]);
   } else {
     const scored = [];
     for (const it of all) {

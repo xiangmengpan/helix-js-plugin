@@ -22,6 +22,7 @@ use crate::{
 
 pub(crate) mod buffer;
 pub(crate) mod draw;
+pub(crate) mod fuzzy;
 pub(crate) mod icons;
 pub(crate) mod lsp;
 pub(crate) mod pane;

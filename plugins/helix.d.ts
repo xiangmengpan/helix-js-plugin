@@ -865,6 +865,29 @@ interface Helix {
     /** 固定：更新时跳过（堆叠成员用） */
     pin(id: number, on?: boolean): void;
   };
+  /** 进程内模糊匹配（nucleo，与核心 picker 同一套）。
+   *
+   *  为什么用它:5000 行的手写 JS 打分是 7.1ms/按键,进程内约 0.3ms（2026-10-21 横评）。
+   *  排序规则是 nucleo 的（与下面"手写子序列打分"不完全相同）⇒ 小列表维持原来的手感,
+   *  大列表才切过来（picker-ui 的 `core_match_min`,默认 1000）。 */
+  fuzzy: {
+    /** 建**会话**:把条目交一次（之后每次查询只传 query）。
+     *
+     *  为什么是会话而不是 `filter(query, items)`:一次性传 5000 个字符串,
+     *  搬运成本比打分本身还贵（实测 boa 11.0ms vs 会话式 2.0ms）。
+     *  `items` 必须全是字符串（非字符串项报错,不静默跳过）。返回 id。 */
+    session(items: string[]): number;
+    /** 在会话上查询。`query` 为空 ⇒ `[]`（"不过滤"是调用方的决定）。
+     *  返回按 `score` 降序的 `{index, score}`（`index` 指回 `session(items)` 的下标）;
+     *  同分按下标升序（稳定、可复现）。未知 id ⇒ 抛错。 */
+    run(
+      id: number,
+      query: string,
+      opts?: { limit?: number; case?: "smart" | "insensitive" | "sensitive" },
+    ): { index: number; score: number }[];
+    /** 释放会话（条目集变化 / 弹窗关闭时调）。未知 id 是 no-op。 */
+    drop(id: number): void;
+  };
   /** 图标表 —— **核心单一来源**(helix-js/src/icons.rs)。
    *  所有插件**零依赖**可用,不需要再声明 `deps: ["lib/icons.js"]`。
    *  字体不支持 nerd font 时用 `enabled(false)` 一处降级(文件类图标变空、目录回退 ▸/▾),

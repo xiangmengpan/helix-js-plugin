@@ -2152,6 +2152,7 @@ dependencies = [
  "globset",
  "helix-stdx",
  "libc",
+ "nucleo",
  "serde",
  "serde_json",
  "tempfile",

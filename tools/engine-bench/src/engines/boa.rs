@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use boa_engine::{
     js_string,
-    object::ObjectInitializer,
+    object::{builtins::JsArray, ObjectInitializer},
     Context, JsValue, NativeFunction, Source,
 };
 
@@ -30,6 +30,57 @@ fn js_noop(_: &JsValue, _: &[JsValue], _: &mut Context) -> boa_engine::JsResult<
     Ok(JsValue::undefined())
 }
 
+/// `helix.fuzzy.session(items)` —— 会话式（条目只搬一次）；与产品侧同一份实现。
+fn js_fuzzy_session(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let Some(arr) = args.first().and_then(|v| v.as_object()) else {
+        return Ok(JsValue::undefined());
+    };
+    let len = arr
+        .get(js_string!("length"), ctx)?
+        .as_number()
+        .unwrap_or(0.0) as usize;
+    let mut items = Vec::with_capacity(len);
+    for i in 0..len {
+        items.push(arr.get(i as u32, ctx)?.to_string(ctx)?.to_std_string_escaped());
+    }
+    Ok(JsValue::from(super::fuzzy::session(items) as f64))
+}
+
+fn js_fuzzy_run(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
+    let id = args
+        .first()
+        .and_then(|v| v.as_number())
+        .unwrap_or(0.0) as u64;
+    let query: String = args
+        .get(1)
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
+        .transpose()?
+        .unwrap_or_default();
+    let limit = args
+        .get(2)
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get(js_string!("limit"), ctx).ok())
+        .and_then(|v| v.as_number())
+        .unwrap_or(200.0) as usize;
+    let hits = super::fuzzy::run(id, &query, limit);
+    let out = JsArray::new(ctx)?;
+    for (idx, score) in hits {
+        let o = ObjectInitializer::new(ctx)
+            .property(js_string!("index"), idx as f64, Default::default())
+            .property(js_string!("score"), f64::from(score), Default::default())
+            .build();
+        out.push(JsValue::from(o), ctx)?;
+    }
+    Ok(JsValue::from(out))
+}
+
+fn js_fuzzy_drop(_: &JsValue, args: &[JsValue], _: &mut Context) -> boa_engine::JsResult<JsValue> {
+    if let Some(id) = args.first().and_then(|v| v.as_number()) {
+        super::fuzzy::drop_session(id as u64);
+    }
+    Ok(JsValue::undefined())
+}
+
 impl Boa {
     pub fn new() -> anyhow::Result<Self> {
         let mut ctx = Context::default();
@@ -42,6 +93,14 @@ impl Boa {
             .function(NativeFunction::from_fn_ptr(js_noop), js_string!("map"), 3)
             .function(NativeFunction::from_fn_ptr(js_noop), js_string!("set_statusline"), 1)
             .build();
+        let fuzzy = ObjectInitializer::new(&mut ctx)
+            .function(NativeFunction::from_fn_ptr(js_fuzzy_session), js_string!("session"), 1)
+            .function(NativeFunction::from_fn_ptr(js_fuzzy_run), js_string!("run"), 3)
+            .function(NativeFunction::from_fn_ptr(js_fuzzy_drop), js_string!("drop"), 1)
+            .build();
+        helix
+            .set(js_string!("fuzzy"), fuzzy, false, &mut ctx)
+            .map_err(|e| anyhow::anyhow!("boa: 注册 fuzzy 桩失败: {e}"))?;
         ctx.global_object()
             .set(js_string!("helix"), helix, false, &mut ctx)
             .map_err(|e| anyhow::anyhow!("boa: 注册 helix 桩失败: {e}"))?;

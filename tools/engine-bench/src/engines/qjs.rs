@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use rquickjs::{Context, Ctx, Function, Object, Runtime};
+use rquickjs::{Array, Context, Ctx, Function, Object, Runtime};
 
 use super::{script, Engine};
 
@@ -26,6 +26,12 @@ impl Qjs {
             helix.set("on", Function::new(ctx.clone(), js_noop)?)?;
             helix.set("map", Function::new(ctx.clone(), js_noop)?)?;
             helix.set("set_statusline", Function::new(ctx.clone(), js_noop)?)?;
+            // helix.fuzzy.filter —— 与 boa 侧**同一份** nucleo 实现
+            let fuzzy = Object::new(ctx.clone())?;
+            fuzzy.set("session", Function::new(ctx.clone(), js_fuzzy_session)?)?;
+            fuzzy.set("run", Function::new(ctx.clone(), js_fuzzy_run)?)?;
+            fuzzy.set("drop", Function::new(ctx.clone(), js_fuzzy_drop)?)?;
+            helix.set("fuzzy", fuzzy)?;
             globals.set("helix", helix)?;
             Ok(())
         })?;
@@ -43,6 +49,39 @@ fn js_get_style(name: String) -> String {
 }
 
 fn js_noop() {}
+
+/// quickjs 侧：显式 `'js` 生命周期（闭包表达不了 `for<'js>`）
+fn js_fuzzy_session<'js>(ctx: Ctx<'js>, items: Array<'js>) -> rquickjs::Result<u64> {
+    let mut v: Vec<String> = Vec::with_capacity(items.len());
+    for i in 0..items.len() {
+        v.push(items.get::<String>(i)?);
+    }
+    Ok(super::fuzzy::session(v))
+}
+
+fn js_fuzzy_run<'js>(
+    ctx: Ctx<'js>,
+    id: u64,
+    query: String,
+    opts: Option<Object<'js>>,
+) -> rquickjs::Result<Array<'js>> {
+    let limit = opts
+        .and_then(|o| o.get::<_, Option<u32>>("limit").ok().flatten())
+        .unwrap_or(200);
+    let hits = super::fuzzy::run(id, &query, limit as usize);
+    let out = Array::new(ctx.clone())?;
+    for (idx, score) in hits {
+        let o = Object::new(ctx.clone())?;
+        o.set("index", idx)?;
+        o.set("score", score)?;
+        out.set(out.len(), o)?;
+    }
+    Ok(out)
+}
+
+fn js_fuzzy_drop(id: u64) {
+    super::fuzzy::drop_session(id);
+}
 
 impl Engine for Qjs {
     fn name(&self) -> &'static str {

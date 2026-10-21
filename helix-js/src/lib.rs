@@ -1,6 +1,7 @@
 //! JavaScript plugin runtime for the Helix editor (PoC).
 
 mod commands;
+mod fuzzy;
 pub mod host;
 mod icons;
 mod input;
@@ -132,6 +133,7 @@ pub(crate) fn build_engine(engine: &mut Context) {
     let layout_obj = register::pane_layout::register(engine);
     let pane_mode_obj = register::pane_layout::register_pane_mode(engine);
     let icons_obj = register::icons::register(engine);
+    let fuzzy_obj = register::fuzzy::register(engine);
     let buffer_obj = register::buffer::register(engine);
     let stack_obj = register::buffer::register_stack(engine);
     let draw_obj = register::draw::register(engine);
@@ -174,6 +176,11 @@ pub(crate) fn build_engine(engine: &mut Context) {
     builder.property(
         JsString::from("icons"),
         icons_obj,
+        Attribute::READONLY | Attribute::NON_ENUMERABLE,
+    );
+    builder.property(
+        JsString::from("fuzzy"),
+        fuzzy_obj,
         Attribute::READONLY | Attribute::NON_ENUMERABLE,
     );
     builder.property(

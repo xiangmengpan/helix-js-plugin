@@ -9,7 +9,7 @@ pub mod qjs;
 use std::time::Instant;
 
 /// 场景名（与 `scripts/*.js` 的文件名一一对应）
-pub const SCENARIOS: &[&str] = &["eval", "filter", "render", "native", "json"];
+pub const SCENARIOS: &[&str] = &["eval", "filter", "filter_core", "render", "native", "json"];
 
 /// 命令行覆盖（`--iters`）；0 = 不覆盖
 static ITERS_OVERRIDE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -29,6 +29,8 @@ pub fn iters_for(scenario: &str) -> u64 {
         "eval" => 20,
         // picker 打开一次：5000 行过滤+排序
         "filter" => 50,
+        // 同一批数据走进程内匹配（nucleo）
+        "filter_core" => 50,
         // 一帧渲染：30 行 × 3 列
         "render" => 200,
         // native 边界：1000 次调用
@@ -48,7 +50,7 @@ pub trait Engine {
 #[derive(Debug, Clone)]
 pub struct Row {
     pub engine: &'static str,
-    pub scenario: &'static str,
+    pub scenario: String,
     pub iters: u64,
     /// 每次内层操作的纳秒数（中位数 of 5 轮）
     pub per_op_ns: f64,
@@ -77,16 +79,11 @@ pub fn measure(e: &mut dyn Engine, scenario: &str) -> anyhow::Result<Row> {
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
     Ok(Row {
         engine: e.name(),
-        scenario: scenario_name(scenario),
+        scenario: scenario.to_string(),
         iters,
         per_op_ns: samples[samples.len() / 2],
         checksum,
     })
-}
-
-/// 静态化场景名（Row 里要 `&'static str`）
-fn scenario_name(s: &str) -> &'static str {
-    SCENARIOS.iter().find(|x| **x == s).copied().unwrap_or("?")
 }
 
 /// 场景源码（编译期嵌入：跑的时候不依赖 cwd）
@@ -94,6 +91,7 @@ pub fn script(scenario: &str) -> &'static str {
     match scenario {
         "eval" => include_str!("../../scripts/eval-plugin.js"),
         "filter" => include_str!("../../scripts/filter.js"),
+        "filter_core" => include_str!("../../scripts/filter_core.js"),
         "render" => include_str!("../../scripts/render.js"),
         "native" => include_str!("../../scripts/native.js"),
         "json" => include_str!("../../scripts/json.js"),
@@ -107,7 +105,7 @@ pub fn unit(scenario: &str) -> (&'static str, f64) {
         // 一帧 = 1 次 render
         "render" => ("ms/帧", 1e6),
         // 一次 picker 决策 = 1 次 filter
-        "filter" => ("ms/次", 1e6),
+        "filter" | "filter_core" => ("ms/次", 1e6),
         // 一次快照读
         "json" => ("ms/次", 1e6),
         // 单次 native 调用
@@ -115,5 +113,66 @@ pub fn unit(scenario: &str) -> (&'static str, f64) {
         // 单次插件加载
         "eval" => ("ms/次", 1e6),
         _ => ("µs/次", 1e3),
+    }
+}
+
+/// `helix.fuzzy.*` 的**同一份**实现（boa 与 quickjs 的桩都调它）：
+/// 会话式 —— 条目只搬一次，每次 run 只做打分 + 返回前 limit 条。
+pub mod fuzzy {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use nucleo::pattern::{CaseMatching, Normalization, Pattern};
+    use nucleo::{Config, Matcher, Utf32Str};
+
+    thread_local! {
+        static SESSIONS: RefCell<HashMap<u64, Vec<String>>> = RefCell::new(HashMap::new());
+        static NEXT_ID: RefCell<u64> = const { RefCell::new(1) };
+    }
+
+    pub fn session(items: Vec<String>) -> u64 {
+        let id = NEXT_ID.with(|c| {
+            let id = *c.borrow();
+            *c.borrow_mut() = id + 1;
+            id
+        });
+        SESSIONS.with(|m| {
+            m.borrow_mut().insert(id, items);
+        });
+        id
+    }
+
+    pub fn drop_session(id: u64) {
+        SESSIONS.with(|m| {
+            m.borrow_mut().remove(&id);
+        });
+    }
+
+    /// 与产品侧 `helix.fuzzy.run` 同构：空 query ⇒ 空；按分数降序、同分按下标升序、按 limit 截断。
+    pub fn run(id: u64, query: &str, limit: usize) -> Vec<(usize, u32)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        // 注意:**借**着用,不要把 5000 个 String 克隆一份（克隆本身就是 1.5ms 量级）
+        SESSIONS.with(|m| {
+            let store = m.borrow();
+            let Some(items) = store.get(&id) else {
+                return Vec::new();
+            };
+            let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+            let mut matcher = Matcher::new(Config::DEFAULT);
+            let mut buf = Vec::new();
+            let mut hits = Vec::new();
+            for (i, s) in items.iter().enumerate() {
+                if let Some(score) = pattern.score(Utf32Str::new(s, &mut buf), &mut matcher) {
+                    hits.push((i, score));
+                }
+            }
+            hits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            if limit > 0 {
+                hits.truncate(limit);
+            }
+            hits
+        })
     }
 }

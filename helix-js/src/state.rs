@@ -1059,6 +1059,21 @@ pub fn snapshot_stats() -> (u64, u64) {
     crate::host::try_with_host_ref(|h| h.serialized.get()).unwrap_or((0, 0))
 }
 
+/// `helix.fuzzy.session` 的会话表（按宿主隔离；随 `:plugin-reload` 清空）。
+pub(crate) fn with_fuzzy_sessions<T>(f: impl FnOnce(&mut HashMap<u64, Vec<String>>) -> T) -> T {
+    crate::host::with_host_ref_or_init(|h| f(&mut h.fuzzy_sessions.borrow_mut()))
+}
+
+/// 取下一个会话 id（单调，避免 drop 之后复用造成"旧句柄命中新数据"）
+pub(crate) fn next_fuzzy_session_id() -> u64 {
+    crate::host::with_host_ref_or_init(|h| {
+        let c = &h.next_fuzzy_session;
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}
+
 /// 取走并清空 UI 请求队列
 pub fn take_ui_requests() -> Vec<UiRequest> {
     crate::init();

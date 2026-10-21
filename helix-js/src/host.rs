@@ -72,6 +72,10 @@ pub struct JsHost {
     pub(crate) layout: RefCell<String>,
     /// 诊断快照 JSON(2:原为进程级 `static DIAGNOSTICS`)
     pub(crate) diagnostics: RefCell<String>,
+    /// `helix.fuzzy.session` 的条目快照（id → 字符串数组）。按宿主隔离。
+    pub(crate) fuzzy_sessions: RefCell<HashMap<u64, Vec<String>>>,
+    /// 会话 id 计数器（单调）
+    pub(crate) next_fuzzy_session: Cell<u64>,
     /// 快照**读取**兴趣位(`SnapshotKind` 位掩码):有人读过才值得序列化。
     /// 帧路径每帧只查一个位,零分配、零 HashMap。
     pub(crate) snapshot_reads: Cell<u8>,
@@ -179,6 +183,8 @@ impl JsHost {
             buffers: RefCell::new(String::new()),
             layout: RefCell::new(String::new()),
             diagnostics: RefCell::new(String::new()),
+            fuzzy_sessions: RefCell::new(HashMap::new()),
+            next_fuzzy_session: Cell::new(1),
             snapshot_reads: Cell::new(0),
             serialized: Cell::new((0, 0)),
             pane_mode: RefCell::new(String::new()),

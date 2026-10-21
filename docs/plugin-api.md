@@ -47,6 +47,14 @@
 是"只有一条路"。表格、`:config-reload` 与 `:plugin-reload` 各自管什么、以及"改键位要重启"
 这类坑,见 [`config-precedence.md`](config-precedence.md)。
 
+### 进程内模糊匹配
+
+`helix.fuzzy.session(items)` / `run(id, query, opts?)` / `drop(id)` —— nucleo，与核心 picker 同一套。
+**会话式**：条目只搬一次。5000 行从 7.1ms/按键降到 2.0ms（2026-10-21 横评）；
+一次性 `filter(query, items)` 那种形状反而更慢（11.0ms，搬运成本 > 打分）。
+
+→ 详细见 [`api/fuzzy.md`](api/fuzzy.md)
+
 ### 加载 / 命令 / 消息 / 键位
 
 `helix.load(name)`(缓存加载)、`helix.export(obj)`(导出)、`helix.lazy(name, ...commands)`(懒加载桩)、`helix.run_command(name, ctx?)`、`helix.register_command(name, fn, doc?)`(一个命令 = 一次撤销)、`helix.echo(text)`、`helix.map(mode, key, command|fn)`。
@@ -363,6 +371,7 @@ helix.stack.*   activate, create, list, remove
 helix.buffer.*   current, focus, list
 helix.pane_mode.*   current, keymap
 helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
+helix.fuzzy.*   drop, run, session
 helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
 helix.server.*   install, list, remove, rows, search, status, task, update

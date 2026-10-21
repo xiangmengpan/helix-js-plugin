@@ -1,0 +1,126 @@
+{
+  "commit": "4ed6f0de6",
+  "machine": "linux",
+  "profile": "release",
+  "rows": [
+    {
+      "checksum": 20.0,
+      "engine": "boa",
+      "iters": 20,
+      "per_op_ns": 999158.65,
+      "scenario": "eval"
+    },
+    {
+      "checksum": 20.0,
+      "engine": "quickjs",
+      "iters": 20,
+      "per_op_ns": 179768.9,
+      "scenario": "eval"
+    },
+    {
+      "checksum": 20.0,
+      "engine": "v8(node)",
+      "iters": 20,
+      "per_op_ns": 5607.7,
+      "scenario": "eval"
+    },
+    {
+      "checksum": 55550.0,
+      "engine": "boa",
+      "iters": 50,
+      "per_op_ns": 7345963.16,
+      "scenario": "filter"
+    },
+    {
+      "checksum": 55550.0,
+      "engine": "quickjs",
+      "iters": 50,
+      "per_op_ns": 2389067.18,
+      "scenario": "filter"
+    },
+    {
+      "checksum": 55550.0,
+      "engine": "v8(node)",
+      "iters": 50,
+      "per_op_ns": 596099.34,
+      "scenario": "filter"
+    },
+    {
+      "checksum": 10000.0,
+      "engine": "boa",
+      "iters": 50,
+      "per_op_ns": 1956550.56,
+      "scenario": "filter_core"
+    },
+    {
+      "checksum": 10000.0,
+      "engine": "quickjs",
+      "iters": 50,
+      "per_op_ns": 1629130.5,
+      "scenario": "filter_core"
+    },
+    {
+      "checksum": 6200.0,
+      "engine": "boa",
+      "iters": 200,
+      "per_op_ns": 127779.85,
+      "scenario": "render"
+    },
+    {
+      "checksum": 6200.0,
+      "engine": "quickjs",
+      "iters": 200,
+      "per_op_ns": 39279.4,
+      "scenario": "render"
+    },
+    {
+      "checksum": 6200.0,
+      "engine": "v8(node)",
+      "iters": 200,
+      "per_op_ns": 15052.485,
+      "scenario": "render"
+    },
+    {
+      "checksum": 13000.0,
+      "engine": "boa",
+      "iters": 1000,
+      "per_op_ns": 476.535,
+      "scenario": "native"
+    },
+    {
+      "checksum": 13000.0,
+      "engine": "quickjs",
+      "iters": 1000,
+      "per_op_ns": 309.611,
+      "scenario": "native"
+    },
+    {
+      "checksum": 13000.0,
+      "engine": "v8(node)",
+      "iters": 1000,
+      "per_op_ns": 93.192,
+      "scenario": "native"
+    },
+    {
+      "checksum": 50000.0,
+      "engine": "boa",
+      "iters": 100,
+      "per_op_ns": 10917099.78,
+      "scenario": "json"
+    },
+    {
+      "checksum": 50000.0,
+      "engine": "quickjs",
+      "iters": 100,
+      "per_op_ns": 1131130.8,
+      "scenario": "json"
+    },
+    {
+      "checksum": 50000.0,
+      "engine": "v8(node)",
+      "iters": 100,
+      "per_op_ns": 357990.49,
+      "scenario": "json"
+    }
+  ]
+}

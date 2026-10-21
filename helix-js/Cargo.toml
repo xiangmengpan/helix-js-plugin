@@ -15,6 +15,8 @@ helix-stdx = { path = "../helix-stdx" }
 # 宽字符列宽:版本必须与 helix-tui/helix-core **同源**,否则 CJK 占列数会与渲染器打架
 unicode-width = "=0.1.12"
 unicode-segmentation = { workspace = true }
+# 进程内模糊匹配(与核心 picker 同一套;helix.fuzzy.filter)
+nucleo = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
