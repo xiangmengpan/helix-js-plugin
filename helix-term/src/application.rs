@@ -652,12 +652,15 @@ impl Application {
             self.compositor.full_redraw = false;
         }
 
-        // 快照缓存:**有插件读过才做**(`snapshot_wanted` 由读点自己打标)。
-        // 早先这里每帧无条件序列化 —— 没插件读也照付,大诊断集/大 workspace 时
-        // 是纯浪费(LSP spinner 会以 20–60fps 触发 render)。
-        if helix_js::snapshot_wanted(helix_js::SnapshotKind::Buffers) {
-            helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
-        }
+        // 打开文档快照:每帧写。
+        // 试过按"有人读才写",**退回**了:JS 侧读快照是同步的,而写入只能发生在
+        // 渲染里 ⇒ 首次读取(或久未读取后的那次)会拿到空/陈旧列表(实测
+        // `buffer_traversal_and_focus` 拿到 n:0、builtin picker 的 buffers 源打不开)。
+        // 代价也不对等:这一个是 O(打开文档数) 的小 JSON。
+        helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
+        // 诊断快照:这才是贵的那份(每条 message 都要复制+序列化,大诊断集上千条),
+        // 且只有显式调用 `helix.diagnostics()` 的插件才读 ⇒ 按兴趣位门控。
+        // 已知取舍:插件在**启动后第一次**读它时可能拿到空(兴趣位当帧才置位)。
         if helix_js::snapshot_wanted(helix_js::SnapshotKind::Diagnostics) {
             helix_js::cache_diagnostics(&crate::commands::typed::serialize_diagnostics(&self.editor));
         }

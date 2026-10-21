@@ -424,16 +424,16 @@ helix.plugin("my-plugin", {
 
 > **`helix.server.*` 为什么也归 `process`**(2026-10 补):这些 API 会**下载二进制并安装到受管目录**、
 > 改写 `languages.toml`;`rows` 会为探测版本起子进程(`<bin> --version`)。之前它们**完全在能力模型之外**
-> —— 任意插件零声明就能让 helix 装东西。现在与 `helix.run` 同一能力;内置插件(含 arsenal)照旧
-> grandfathered,第三方插件若写了 `permissions` 就必须包含 `process`,否则第一次调用会进入待授权。
+> —— 任意插件零声明就能让 helix 装东西。现在与 `helix.run` 同一能力。
 
 #### 3. 三种情形,行为不同
 
 | 情形 | 第一次用未声明的能力时 | 说明 |
 |---|---|---|
-| **没写 `permissions`**(legacy) | 直接放行,不询问 | 存量插件零影响;但用户**看不到**你用这些能力 |
-| **写了 `permissions`** | 该次调用**报错** + 记入待授权 | 用户答一次即记住(见 §4) |
+| **没写 `permissions`**(= 空能力集) | 该次调用**报错** + 记入待授权 | **fail-closed**(2026-10-21):不写 manifest 不再等于放行 |
+| **写了 `permissions`** | 同上 | 用户答一次即记住(见 §4) |
 | **内置插件**(随软件分发的 runtime) | 永不询问 | 用户目录里同名覆盖的那份按第三方对待;`:plugin-load /abs/x.js` 同样按第三方(没有"提供根") |
+| **没有属主的调用** | 直接拒绝 | 编辑器内部/不属于任何脚本的代码;受保护 API 只在插件回调、命令、加载期脚本里可用 |
 
 #### 4. 被询问之后,用户怎么处理
 
@@ -446,8 +446,11 @@ helix.plugin("my-plugin", {
 - 回答一次即记住(等价于 zellij 的 `request_permission`);**重新回答会覆盖**旧决定,
   且会把该条从"待授权"里移出。
 - `deny` 之后**不会**再问 —— 调用一直失败,错误消息写明"已被拒绝"与改法。
-- 决定是按 **(插件名, 能力)** 记的,"哪个插件在调"由**注册期绑定**决定:`helix.register_command`
-  / `helix.on` 注册时记下属主;裸脚本顶层代码归属"最后声明的插件名"。
+- 决定是按 **(插件名, 能力)** 记的,"哪个插件在调"由**注册期绑定**决定:
+  `helix.register_command` / `helix.on` / 弹窗与面板的 render·onPress / picker 的
+  items·preview·action / Promise 续体 / `helix.watch` …… 都在**注册那一刻**记下属主。
+  加载期顶层代码归属**脚本名**(`<name>/plugin.js` ⇒ `name`,绝对路径 ⇒ 文件名),
+  脚本里 `helix.plugin("x")` 一旦执行就升级为 `x`。
 
 #### 5. 写"能降级"的插件(推荐姿势)
 
@@ -466,8 +469,8 @@ async function refreshGit(path) {
 ```
 
 `helix.permissions()` 返回 `{ process, fs_read, fs_write }`,语义 = "**不问就放行吗**":
-没声明 `permissions` 的插件(legacy)与内置插件三项都是 `true`;声明了的插件看声明或
-**已记住的决定**(未决定 ⇒ `false`,因为那次调用会被问一次)。
+内置插件三项都是 `true`;其余看 `permissions` 声明或**已记住的决定**
+(未声明 / 未决定 ⇒ `false`,因为那次调用会被问一次;无属主 ⇒ 全 `false`)。
 
 内置插件里已有两处按这个形状写:`statusline`(git 分支前查 `process`)、`plugin-manager`
 (`install`/`update` 前查 `process`,没有就明确报错并跳过)。

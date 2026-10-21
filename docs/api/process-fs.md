@@ -78,3 +78,27 @@ helix.read_dir("/tmp").forEach(e => {
 **优缺点**
 - 优点：全部异步不阻塞;read_tree 递归 + 排序 + 深度限制(files 源基础);glob 支持 `**` 跨目录。
 - 局限：`read_dir` 是同步的(不递归,列表短时可用);`read_file_async` UTF-8 lossy;glob 相对 CWD;read_tree 一次性返回(万级目录有延迟)。
+
+## 能力声明（fail-closed）
+
+本页所有碰文件系统/进程的 API 都受 `permissions` 门控（见
+[`plugin-api.md` §3](../plugin-api.md#3-三种情形行为不同)）：
+
+| 能力 | 本页覆盖的 API |
+|---|---|
+| `process` | `helix.run` / `run_async` / `spawn` / `open_terminal` / `server.*` |
+| `fs_read` | `read_file` / `read_file_async` / `read_dir` / `stat_async` / `glob_async` / `read_tree` / `watch` |
+| `fs_write` | `write_file` / `write_file_async` / `write_plugin_file` / `remove_plugin_file` |
+
+```js
+helix.plugin("my-plugin", {
+  deps: [],
+  // 只声明真正用到的：没写 permissions = 空能力集 = **拒绝**
+  permissions: { process: true, fs_read: true },
+});
+```
+
+- **没写 `permissions` 不再是"放行"**（2026-10-21 起的 fail-closed）：调用会报错并进入
+  `:js-permission list` 的待授权项，用户 `allow` 一次后即可用。
+- 17 个内置插件全部显式声明（不用能力的写 `permissions: {}`）。
+- 没有属主的调用（不属于任何脚本/回调）一律拒绝。

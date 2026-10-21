@@ -939,3 +939,26 @@ cargo clippy --workspace --all-targets --features integration -- -W clippy::too_
 | **隐藏耦合** | `ACTIVE` 裸指针 + `pump()` 约定;`UiRequest` 92 变体 / 16 文件;`job` 闭包 85 处 | 代码阅读 + 计数 |
 | **深模块破坏** | `lib.rs` 85% 是测试;`build_engine` 773 行手工注册 134 成员;`state.rs` 106 个 11 行访问器 | 文件内比例 |
 | **正向(勿破坏)** | `too_many_arguments` 0 处、`allow(too_many_lines)` 仅 1 处、三道 API 门禁全绿、文档挂实测数字 | 实测 |
+
+## 附:2026-10-21 插件边界硬化后的基线
+
+分支 `plugin-boundary-hardening`(计划见 `docs/superpowers/plans/2026-10-21-plugin-boundary-hardening.md`)。
+
+```bash
+cargo test -p helix-js --lib                                           # 225 passed / 7 ignored
+cargo test -p helix-term --features integration --test integration      # 413 passed
+cargo xtask api-check                                                  # 151 成员 / 21 事件 / 23 API·3 能力
+cargo clippy --workspace --all-targets -- -W clippy::too_many_lines     # 66 处(基线 70)
+```
+
+行为变化(fail-closed,breaking):
+
+- 没写 `permissions` 的插件不再 legacy 放行 —— 调用失败 + 进 `:js-permission list` 待授权。
+- 没有属主的调用(编辑器内部/不属于任何脚本)一律拒绝。
+- 17 个内置插件全部显式声明能力(不用的写 `permissions: {}`)。
+
+仍未处理(记为后续候选):
+
+- `CONFIGS` / `PICKER_STATE` / `PLUGIN_OVERRIDES` 仍是进程级 `static`(与本次搬走的
+  layout/diagnostics 同类;消费端不同,未在本次范围内)。
+- 引擎横评(boa vs rquickjs vs wasm)按计划排在 P3。
