@@ -962,3 +962,11 @@ cargo clippy --workspace --all-targets -- -W clippy::too_many_lines     # 66 处
 - `CONFIGS` / `PICKER_STATE` / `PLUGIN_OVERRIDES` 仍是进程级 `static`(与本次搬走的
   layout/diagnostics 同类;消费端不同,未在本次范围内)。
 - 引擎横评(boa vs rquickjs vs wasm)按计划排在 P3。
+
+## 附:2026-10-21 引擎横评(boa / QuickJS / V8)
+
+结论见 [`architecture-plugin-engine-bench.md`](architecture-plugin-engine-bench.md)。要点:
+
+- release 下 boa 渲染 30×3 = **0.125ms/帧**(debug 的 `bench_picker_frame` 是 3.2ms,**25 倍差距**)。
+- 真正贵的是 **JSON.parse 53KB 快照 = 11.8ms**(阈值 11.8×)与 **5000 行过滤 = 7.1ms**(3.6×)。
+- 结论:**不换引擎**;先改边界(布局快照别走 JSON、大列表过滤别在 JS 热路径)。

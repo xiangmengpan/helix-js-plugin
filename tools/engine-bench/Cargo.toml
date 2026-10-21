@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "engine-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Helix 插件引擎横评（boa / QuickJS / V8 参考）—— 独立 crate，不进主 workspace"
+publish = false
+
+[dependencies]
+boa_engine = "0.22"
+rquickjs = "0.14"
+anyhow = "1"
+serde_json = "1"

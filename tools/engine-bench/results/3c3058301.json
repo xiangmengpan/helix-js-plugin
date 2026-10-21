@@ -1,0 +1,14 @@
+{
+  "commit": "3c3058301",
+  "machine": "linux",
+  "profile": "release",
+  "rows": [
+    {
+      "checksum": 50000.0,
+      "engine": "boa",
+      "iters": 100,
+      "per_op_ns": 10654283.43,
+      "scenario": "json"
+    }
+  ]
+}
