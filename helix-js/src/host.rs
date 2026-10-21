@@ -57,14 +57,180 @@ use std::sync::{Mutex, MutexGuard};
 /// ⚠ 逐层搬迁中：目前只有 `next_map_id` 一个字段在这里（L1 的闭环验证），
 /// 其余 61 个字段仍在 `JsHost` 上。
 pub struct HostState {
+    /// 映射命令 id 计数器（4a L1 起就在这里）
     pub(crate) next_map_id: Cell<u64>,
-}
+    /// echo 消息队列(**按宿主**隔离 —— 原来是进程级 `OnceLock<Mutex<..>>`)。
+    /// 访问点实测只在主线程(见 docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论),
+    /// 所以用 `RefCell` 而不是 `Mutex`;若将来真有非主线程访问,它会先撞上"host not registered"。
+    messages: RefCell<Vec<String>>,
 
-/// 一份 JS 运行时状态。
-///
-/// 只拥有**引擎与按宿主隔离的状态**(消息/导出/清单/权限);跨线程通道与帧路径缓存
-/// 仍是进程级 —— 那是它们的本质属性,见模块头的「状态所有权地图」。
+    /// 加载缓存:脚本名 → `helix.export(...)` 的值(**按宿主**隔离;原来是 thread_local)
+    exports: RefCell<HashMap<String, JsValue>>,
+
+    /// 已加载脚本清单(名, 源码)—— 热重载按它重跑(**按宿主**隔离)
+    loaded_scripts: RefCell<Vec<(String, String)>>,
+
+    /// 打开的面板 id 列表(1b:原来是一张 `HashMap<宿主key, Vec<u64>>` 的进程级表)
+    pub(crate) open_panels: RefCell<Vec<u64>>,
+
+    /// 打开文档快照 JSON(1b:同款进程级键表 → 宿主字段)
+    pub(crate) buffers: RefCell<String>,
+
+    /// 布局快照 JSON(2:原为进程级 `static LAST_LAYOUT` —— 与 buffers 同类的跨宿主串味)
+    pub(crate) layout: RefCell<String>,
+
+    /// 诊断快照 JSON(2:原为进程级 `static DIAGNOSTICS`)
+    pub(crate) diagnostics: RefCell<String>,
+
+    /// `helix.fuzzy.session` 的条目快照（id → 字符串数组）。按宿主隔离。
+    pub(crate) fuzzy_sessions: RefCell<HashMap<u64, Vec<String>>>,
+
+    /// 会话 id 计数器（单调）
+    pub(crate) next_fuzzy_session: Cell<u64>,
+
+    /// 快照**读取**兴趣位(`SnapshotKind` 位掩码):有人读过才值得序列化。
+    /// 帧路径每帧只查一个位,零分配、零 HashMap。
+    pub(crate) snapshot_reads: Cell<u8>,
+
+    /// 序列化次数(测试/诊断用):证明"没人读 ⇒ 一次都不做"
+    pub(crate) serialized: Cell<(u64, u64)>,
+
+    /// 平级模式快照 JSON(1b)
+    pub(crate) pane_mode: RefCell<String>,
+
+    /// pane 清单快照 JSON(1b)
+    pub(crate) panes: RefCell<String>,
+
+    /// 打开的终端:pty_id → (view_id, cmd)(1b;原来这张表的键是 pty id,但状态本就是宿主的)
+    pub(crate) open_terms: RefCell<HashMap<u64, (u64, String)>>,
+
+    /// 插件根(**有序**:自带 runtime 在前、用户目录在后)。1b:原为
+    /// `HashMap<宿主key, &'static [PathBuf]>` 键表。值仍是 `Box::leak` 出来的 `&'static` ——
+    /// 为了**不改** `plugin_roots() -> &'static [PathBuf]` 签名(7 个读取点依赖它);
+    /// 设置是"启动一次/测试每例一次" ⇒ 泄漏有界(比原来"每次 set 都漏"更收敛)。
+    pub(crate) plugin_roots: RefCell<&'static [PathBuf]>,
+
+    /// runtime 目录(含自带 runtime;1b 同上)
+    pub(crate) runtime_dirs: RefCell<&'static [PathBuf]>,
+
+    /// 布局文件目录(`<config>/layouts`;未设置 ⇒ `None`。1b 同上)
+    pub(crate) layouts_dir: RefCell<Option<&'static PathBuf>>,
+
+    /// 插件命令注册表(name → export)。1b-3:原为 thread_local 的
+    /// `RefCell<Option<&'static mut …>>`(惰性 init + `Box::leak`)⇒ 状态跟**宿主**而不是线程,且不再泄漏。
+    pub(crate) registry: RefCell<HashMap<String, JsValue>>,
+
+    /// 事件处理器(事件名 → 处理器列表)。1b-3 同上
+    pub(crate) event_handlers: RefCell<HashMap<String, Vec<JsValue>>>,
+
+    /// 弹窗/面板回调注册表(id → 回调)。1b-3 同上
+    pub(crate) popups: RefCell<HashMap<u64, PopupCallbacks>>,
+
+    /// keymap 前缀提示回调。1b-3 同上
+    pub(crate) keymap_hint_hook: RefCell<Option<JsValue>>,
+
+    /// 组件节点事件处理器(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) node_handlers: RefCell<HashMap<(u64, String), NodeHandlers>>,
+
+    /// bufferline 图标钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) buffer_icon_hook: RefCell<Option<JsValue>>,
+
+    /// 补全图标钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) completion_icon_hook: RefCell<Option<JsValue>>,
+
+    /// 补全渲染钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) completion_render_hook: RefCell<Option<JsValue>>,
+
+    /// picker 源(onKey)(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) picker_sources: RefCell<HashMap<String, JsValue>>,
+
+    /// 状态栏钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) statusline_hook: RefCell<Option<JsValue>>,
+
+    /// 终端回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) terms: RefCell<HashMap<u64, TermCallbacks>>,
+
+    /// 终端 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) term_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
+
+    /// 最近一次 helix.export(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) last_export: RefCell<Option<JsValue>>,
+
+    /// 异步 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) async_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
+
+    /// LSP Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) lsp_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
+
+    /// server rows 一次性回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) server_rows_callbacks: RefCell<HashMap<u64, JsValue>>,
+
+    /// server task 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) server_task_callbacks: RefCell<HashMap<u64, JsValue>>,
+
+    /// watch 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
+    pub(crate) watch_callbacks: RefCell<HashMap<u64, JsValue>>,
+
+    /// 1b-3c:原 thread_local(`LSP_REQUESTS`)
+    pub(crate) lsp_requests: RefCell<Vec<crate::lsp::LspRequest>>,
+
+    /// 1b-3c:原 thread_local(`INPUT_STATES`)
+    pub(crate) input_states: RefCell<HashMap<(u64, String), crate::input::InputState>>,
+
+    /// 1b-3c:原 thread_local;状态改跟**宿主**(不泄漏,但换线程不应丢)
+    pub(crate) current_edits: RefCell<Vec<Edit>>,
+
+    pub(crate) decoration_requests: RefCell<Vec<DecorationRequest>>,
+
+    pub(crate) doc_snapshots: RefCell<Vec<DocSnapshot>>,
+
+    pub(crate) cursor_requests: RefCell<Vec<CursorRequest>>,
+
+    pub(crate) last_plugin_deps: RefCell<Vec<String>>,
+
+    pub(crate) pending_command_args: RefCell<Vec<String>>,
+
+    pub(crate) load_stack: RefCell<Vec<String>>,
+
+    pub(crate) load_roots: RefCell<Vec<PathBuf>>,
+
+    pub(crate) command_docs: RefCell<HashMap<String, String>>,
+
+    pub(crate) theme_overrides: RefCell<HashMap<String, crate::theme::StyleOverride>>,
+
+    pub(crate) component_states: RefCell<ComponentStateMap>,
+
+    pub(crate) theme_dirty: Cell<bool>,
+
+    pub(crate) statusline_replace: Cell<bool>,
+
+    pub(crate) statusline_zones: RefCell<[u16; 3]>,
+
+    pub(crate) edit_txn_depth: Cell<usize>,
+
+    pub(crate) last_panel_id: Cell<Option<u64>>,
+
+    pub(crate) next_popup_id: Cell<u64>,
+
+    pub(crate) next_term_id: Cell<u64>,
+
+    pub(crate) next_terminal_view_id: Cell<u64>,
+
+    /// T0:原 `server_rows::NEXT_ID`(thread_local)—— server rows 一次性回调 id 计数器
+    pub(crate) next_server_row_id: Cell<u64>,
+
+    /// T0:原 `watch::NEXT_WATCH_ID`(thread_local)—— watcher id 计数器
+    pub(crate) next_watch_id: Cell<u64>,
+
+    /// C-1/C-2:能力清单与授权状态(按宿主隔离)
+    pub(crate) permissions: RefCell<crate::permissions::PermissionState>,
+
+    /// 编辑器版本(如 `25.07.1 (c4831272)`;由 helix-term 启动时推入)。
+    /// 用于 manifest 的 `min_editor` 比较 —— helix-js 自己不知道宿主软件的版本。
+    pub(crate) editor_version: RefCell<Option<String>>,
+}
 pub struct JsHost {
+
     /// **宿主状态**（4a）：由 `Rc` 持有并注入引擎，原生回调用 `host_state(ctx)` 取回。
     /// 逐层搬迁中——目前只放了 `next_map_id`，其余字段仍在本结构体上。
     state: Rc<HostState>,
@@ -73,131 +239,27 @@ pub struct JsHost {
     /// 那套"该归还给谁"的判定。宿主字段级的可重入访问(`messages`/`exports`…)仍各走自己的
     /// `RefCell` ⇒ JS 回调里访问它们不会撞上引擎守卫。
     engine: RefCell<Context>,
-    /// echo 消息队列(**按宿主**隔离 —— 原来是进程级 `OnceLock<Mutex<..>>`)。
-    /// 访问点实测只在主线程(见 docs/superpowers/plans/2026-10-11-js-host-phaseB.md 的闸门结论),
-    /// 所以用 `RefCell` 而不是 `Mutex`;若将来真有非主线程访问,它会先撞上"host not registered"。
-    messages: RefCell<Vec<String>>,
-    /// 加载缓存:脚本名 → `helix.export(...)` 的值(**按宿主**隔离;原来是 thread_local)
-    exports: RefCell<HashMap<String, JsValue>>,
-    /// 已加载脚本清单(名, 源码)—— 热重载按它重跑(**按宿主**隔离)
-    loaded_scripts: RefCell<Vec<(String, String)>>,
-    /// 打开的面板 id 列表(1b:原来是一张 `HashMap<宿主key, Vec<u64>>` 的进程级表)
-    pub(crate) open_panels: RefCell<Vec<u64>>,
-    /// 打开文档快照 JSON(1b:同款进程级键表 → 宿主字段)
-    pub(crate) buffers: RefCell<String>,
-    /// 布局快照 JSON(2:原为进程级 `static LAST_LAYOUT` —— 与 buffers 同类的跨宿主串味)
-    pub(crate) layout: RefCell<String>,
-    /// 诊断快照 JSON(2:原为进程级 `static DIAGNOSTICS`)
-    pub(crate) diagnostics: RefCell<String>,
-    /// `helix.fuzzy.session` 的条目快照（id → 字符串数组）。按宿主隔离。
-    pub(crate) fuzzy_sessions: RefCell<HashMap<u64, Vec<String>>>,
-    /// 会话 id 计数器（单调）
-    pub(crate) next_fuzzy_session: Cell<u64>,
-    /// 快照**读取**兴趣位(`SnapshotKind` 位掩码):有人读过才值得序列化。
-    /// 帧路径每帧只查一个位,零分配、零 HashMap。
-    pub(crate) snapshot_reads: Cell<u8>,
-    /// 序列化次数(测试/诊断用):证明"没人读 ⇒ 一次都不做"
-    pub(crate) serialized: Cell<(u64, u64)>,
-    /// 平级模式快照 JSON(1b)
-    pub(crate) pane_mode: RefCell<String>,
-    /// pane 清单快照 JSON(1b)
-    pub(crate) panes: RefCell<String>,
-    /// 打开的终端:pty_id → (view_id, cmd)(1b;原来这张表的键是 pty id,但状态本就是宿主的)
-    pub(crate) open_terms: RefCell<HashMap<u64, (u64, String)>>,
-    /// 插件根(**有序**:自带 runtime 在前、用户目录在后)。1b:原为
-    /// `HashMap<宿主key, &'static [PathBuf]>` 键表。值仍是 `Box::leak` 出来的 `&'static` ——
-    /// 为了**不改** `plugin_roots() -> &'static [PathBuf]` 签名(7 个读取点依赖它);
-    /// 设置是"启动一次/测试每例一次" ⇒ 泄漏有界(比原来"每次 set 都漏"更收敛)。
-    pub(crate) plugin_roots: RefCell<&'static [PathBuf]>,
-    /// runtime 目录(含自带 runtime;1b 同上)
-    pub(crate) runtime_dirs: RefCell<&'static [PathBuf]>,
-    /// 布局文件目录(`<config>/layouts`;未设置 ⇒ `None`。1b 同上)
-    pub(crate) layouts_dir: RefCell<Option<&'static PathBuf>>,
-    /// 插件命令注册表(name → export)。1b-3:原为 thread_local 的
-    /// `RefCell<Option<&'static mut …>>`(惰性 init + `Box::leak`)⇒ 状态跟**宿主**而不是线程,且不再泄漏。
-    pub(crate) registry: RefCell<HashMap<String, JsValue>>,
-    /// 事件处理器(事件名 → 处理器列表)。1b-3 同上
-    pub(crate) event_handlers: RefCell<HashMap<String, Vec<JsValue>>>,
-    /// 弹窗/面板回调注册表(id → 回调)。1b-3 同上
-    pub(crate) popups: RefCell<HashMap<u64, PopupCallbacks>>,
-    /// keymap 前缀提示回调。1b-3 同上
-    pub(crate) keymap_hint_hook: RefCell<Option<JsValue>>,
-    /// 组件节点事件处理器(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) node_handlers: RefCell<HashMap<(u64, String), NodeHandlers>>,
-    /// bufferline 图标钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) buffer_icon_hook: RefCell<Option<JsValue>>,
-    /// 补全图标钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) completion_icon_hook: RefCell<Option<JsValue>>,
-    /// 补全渲染钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) completion_render_hook: RefCell<Option<JsValue>>,
-    /// picker 源(onKey)(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) picker_sources: RefCell<HashMap<String, JsValue>>,
-    /// 状态栏钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) statusline_hook: RefCell<Option<JsValue>>,
-    /// 终端回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) terms: RefCell<HashMap<u64, TermCallbacks>>,
-    /// 终端 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) term_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
-    /// 最近一次 helix.export(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) last_export: RefCell<Option<JsValue>>,
-    /// 异步 Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) async_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
-    /// LSP Promise(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) lsp_promises: RefCell<HashMap<u64, ResolvingFunctions>>,
-    /// server rows 一次性回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) server_rows_callbacks: RefCell<HashMap<u64, JsValue>>,
-    /// server task 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) server_task_callbacks: RefCell<HashMap<u64, JsValue>>,
-    /// watch 回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
-    pub(crate) watch_callbacks: RefCell<HashMap<u64, JsValue>>,
-    /// 1b-3c:原 thread_local(`LSP_REQUESTS`)
-    pub(crate) lsp_requests: RefCell<Vec<crate::lsp::LspRequest>>,
-    /// 1b-3c:原 thread_local(`INPUT_STATES`)
-    pub(crate) input_states: RefCell<HashMap<(u64, String), crate::input::InputState>>,
-    /// 1b-3c:原 thread_local;状态改跟**宿主**(不泄漏,但换线程不应丢)
-    pub(crate) current_edits: RefCell<Vec<Edit>>,
-    pub(crate) decoration_requests: RefCell<Vec<DecorationRequest>>,
-    pub(crate) doc_snapshots: RefCell<Vec<DocSnapshot>>,
-    pub(crate) cursor_requests: RefCell<Vec<CursorRequest>>,
-    pub(crate) last_plugin_deps: RefCell<Vec<String>>,
-    pub(crate) pending_command_args: RefCell<Vec<String>>,
-    pub(crate) load_stack: RefCell<Vec<String>>,
-    pub(crate) load_roots: RefCell<Vec<PathBuf>>,
-    pub(crate) command_docs: RefCell<HashMap<String, String>>,
-    pub(crate) theme_overrides: RefCell<HashMap<String, crate::theme::StyleOverride>>,
-    pub(crate) component_states: RefCell<ComponentStateMap>,
-    pub(crate) theme_dirty: Cell<bool>,
-    pub(crate) statusline_replace: Cell<bool>,
-    pub(crate) statusline_zones: RefCell<[u16; 3]>,
-    pub(crate) edit_txn_depth: Cell<usize>,
-    pub(crate) last_panel_id: Cell<Option<u64>>,
-    pub(crate) next_popup_id: Cell<u64>,
-    pub(crate) next_term_id: Cell<u64>,
-    pub(crate) next_terminal_view_id: Cell<u64>,
-    /// T0:原 `server_rows::NEXT_ID`(thread_local)—— server rows 一次性回调 id 计数器
-    pub(crate) next_server_row_id: Cell<u64>,
-    /// T0:原 `watch::NEXT_WATCH_ID`(thread_local)—— watcher id 计数器
-    pub(crate) next_watch_id: Cell<u64>,
-    /// C-1/C-2:能力清单与授权状态(按宿主隔离)
-    pub(crate) permissions: RefCell<crate::permissions::PermissionState>,
-    /// 编辑器版本(如 `25.07.1 (c4831272)`;由 helix-term 启动时推入)。
-    /// 用于 manifest 的 `min_editor` 比较 —— helix-js 自己不知道宿主软件的版本。
-    pub(crate) editor_version: RefCell<Option<String>>,
+}
+
+/// 让 `h.<field>` 继续可用：字段全在 `HostState` 上，且都是 `RefCell`/`Cell`
+/// （`&HostState` 就足够做内部可变写入），所以 `Deref` 是安全的。
+///
+/// 为什么需要它：L2 把 60 个字段搬进 `HostState` 后，原有 100+ 处 `h.field` 访问
+/// 不必逐个改成 `h.state.field` —— 编译器不会因此变宽松，只是少一次搬迁噪音。
+impl std::ops::Deref for JsHost {
+    type Target = HostState;
+    fn deref(&self) -> &HostState {
+        &self.state
+    }
 }
 
 impl JsHost {
     /// 建宿主,并在其中注册 `helix` 全局(建引擎的代码在 `crate::build_engine`)。
     pub fn new() -> Self {
-        let state = Rc::new(HostState {
-            next_map_id: Cell::new(1),
-        });
         let mut ctx = Context::default();
         crate::build_engine(&mut ctx);
-        // 注入引擎：原生回调经 `host_state(ctx)` 取回（4a 的核心机制）
-        ctx.insert_data(Rc::clone(&state));
-        Self {
-            state,
-            engine: RefCell::new(ctx),
+        let state = Rc::new(HostState {
+            next_map_id: Cell::new(1),
             messages: RefCell::new(Vec::new()),
             exports: RefCell::new(HashMap::new()),
             loaded_scripts: RefCell::new(Vec::new()),
@@ -258,6 +320,14 @@ impl JsHost {
             next_watch_id: Cell::new(1),
             permissions: RefCell::new(crate::permissions::PermissionState::default()),
             editor_version: RefCell::new(None),
+        });
+        let mut ctx = Context::default();
+        crate::build_engine(&mut ctx);
+        // 注入引擎：原生回调经 `host_state(ctx)` 取回（4a 的核心机制）
+        ctx.insert_data(Rc::clone(&state));
+        Self {
+            state,
+            engine: RefCell::new(ctx),
         }
     }
 }
