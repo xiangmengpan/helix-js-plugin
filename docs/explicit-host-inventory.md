@@ -166,3 +166,31 @@ boa 的回调签名是 `fn(&JsValue, &[JsValue], &mut Context)`。`Context` 是*
 
 每层的验收：`cargo build -p helix-term` 0 error + 413 集成全绿 + `plugin_layout` 的
 逐点/批量两条用例（它们钉的正是这里的行为）。
+
+---
+
+## 3b 完成（2026-10-22，四层，四个提交）
+
+| 层 | 提交 | 内容 | 验收 |
+|---|---|---|---|
+| 1 | `adf0b6c1c` | `sync_layout_cache(js)`；27 个调用点显式声明（3 处 `cx.js`，24 处 `None`） | 0 error / 413 绿 |
+| 2 | `f115d6786` | `UiOp::apply` 带上 `js`；10 处 `None` 转正 | 0 error / plugin_layout 绿 |
+| 3 | `a0b99a8df` | 24 个布局原语 + 5 个上游函数带 `js`；全部调用点给参 | 同上 |
+| 4 | `a0b99a8df` | `None` 分支改为**入队**，帧首 `flush_layout_change(cx.js)` 补发；不再调 `emit_layout_change_kind` | 同上 |
+
+**结果**：`grep -rn "sync_layout_cache(None)" helix-term/src` = **0**；
+布局路径上不再触达隐式活动指针。
+
+### 这一轮踩的坑（都是"同名方法"与"闭包作用域"）
+
+1. `LayoutTree`（`ui/layout.rs`）有同名方法 `set_float`/`unzoom`/`split_leaf` ⇒ 脚本按方法名匹配
+   会把几何层的调用也加上宿主参数。**必须按接收者 `self|compositor` 锚定，并排除 `main_tree`/`tree`。**
+2. `dispatch_blocking(move |editor, compositor, _js| …)` 里的调用要用 `_js`，
+   用外层函数的 `cx` 会让闭包捕获非 `Send` 的 `cx`（编译错误：`DynAccess<Config> cannot be sent`）。
+3. `js: Option<&mut …>` 参数要写 `mut js`（`as_deref_mut()` 需要可变借用），但别重复写（`mut mut`）。
+
+### 剩余（P4-1 的 4a/4b）
+
+`ACTIVE` 仍然存在，服务于**原生回调**（`Context` 从宿主借出，回调里拿不到 `&mut JsHost`）
+与测试。4a（`Context::insert_data` 放句柄）与 4b（删 `ACTIVE`）是另一层重构，
+规模不小于 3b，需要单独一轮。
