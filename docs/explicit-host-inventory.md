@@ -89,3 +89,38 @@ boa 的回调签名是 `fn(&JsValue, &[JsValue], &mut Context)`。`Context` 是*
 `test::commands::write::test_overwrite_protection`：全量并行跑时偶发失败，
 **隔离跑 5/5 通过**（本次实测）。它在 2026-10-21 的 P3-2 全量跑里也失败过（早于 P4-1 改动）⇒
 既有测试隔离问题，不是本次引入。
+
+---
+
+## 任务 3b 的实测尺寸（2026-10-22，**未落地，已回退**）
+
+计划里写的是"把布局事件从 `sync_layout_cache` 内部挪到调用方"。实测：
+
+| 事实 | 数字 |
+|---|---|
+| 调 `sync_layout_cache()` 的 `Compositor` 方法 | **27 个**（每个 1 处） |
+| 这些方法的全仓调用点 | **约 78 处**（`compositor.rs` 内部 26、`ui_requests/ui_op.rs` 18、`ui/plugin_*` 6、测试 17，其余在 `ui/layout.rs` —— 那里是 `LayoutTree` 的**同名方法**，不需要改） |
+| 级联方向 | 从布局原语**向上**传到 `Compositor::handle_event` 与 `window_mode_*` 这层输入 API |
+
+两次机械改法都试过并**已回退**：
+
+1. 第一版脚本处理零参数调用时把 `self.sync_layout_cache()` 改成 `self.sync_layout_cachejs)` —— 直接改坏语法。
+2. 第二版修好扫描器后，签名 + 调用点改到 27 个方法，剩余报错集中在**上游**函数
+   （`handle_event` / `adopt_orphan_views` / `window_mode_swap` / `window_mode_resize_signed` /
+   `window_mode_minimize` / `window_mode_zoom`）—— 给它们补参数又会让它们的调用点报错，
+   级联到整个 `Compositor` 输入面。
+
+### 由此得到两条可选路线（需要决策）
+
+- **(a) 全量线程化**：给 27 个方法 + 6 个上游函数加 `js` 参数，约 **90 处**改动；
+  语义**完全不变**（事件仍在变更点同步发、处理器仍看到当时的布局）；
+  纯机械但要一轮完整验证，且 `LayoutTree` 必须**保持**不认识 JS（几何层不该知道宿主）。
+- **(b) 改成"意图队列 + 按请求 flush"**：`sync_layout_cache` 只写快照 + 记一个变更点，
+  由 `apply_ui_requests`（手里有宿主）在每个请求后 drain。代码只动 ~40 行，
+  但**语义变化**：同一个请求内的多个变更点会都看到"该请求结束时的布局"。
+  现有逐点用例只断言"窗格数非递减且首<尾"，所以**仍会绿**——正因如此，
+  这会是一次**测试覆盖不到的行为变化**，必须显式确认（`js_layout_change_batch` 开关也正好一起删，
+  审计里本来就建议删它）。
+
+> 我的建议：如果"处理器看到变更点当时的布局"是契约，选 (a)；如果接受 (b) 的语义并愿意把
+> 逐点用例改成"窗口内合并"，选 (b)。两者都不该在没有明确决定的情况下混着做。
