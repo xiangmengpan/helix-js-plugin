@@ -71,3 +71,25 @@ test('cwd 变了以后,旧条目仍然指向原来的文件(这就是这次修�
   assert.equal(items[0], '/proj/sub/src/main.rs', '旧条目不该跟着新 cwd 走');
   assert.equal(view(items[0]), '/proj/sub/src/main.rs', '新 cwd 之外 ⇒ 显示绝对,不再误导');
 });
+
+// ── 大列表走进程内匹配的判定（2026-10-21 横评的直接结论） ──────────────────
+const { shouldUseCoreMatch } = require('../plugin.js');
+
+test('shouldUseCoreMatch:没有 fuzzy.session 的构建 ⇒ 永远走手写打分（向后兼容）', () => {
+  assert.equal(shouldUseCoreMatch({}, 5000, false), false);
+  assert.equal(shouldUseCoreMatch({ core_match_min: 0 }, 5000, false), false);
+});
+
+test('shouldUseCoreMatch:阈值默认 1000,达到才切', () => {
+  assert.equal(shouldUseCoreMatch({}, 999, true), false);
+  assert.equal(shouldUseCoreMatch({}, 1000, true), true);
+  assert.equal(shouldUseCoreMatch({}, 5000, true), true);
+});
+
+test('shouldUseCoreMatch:core_match_min 可调,0 = 始终用进程内', () => {
+  assert.equal(shouldUseCoreMatch({ core_match_min: 0 }, 0, true), true);
+  assert.equal(shouldUseCoreMatch({ core_match_min: 10000 }, 5000, true), false);
+  // 非法值(字符串/负数)按默认 1000 处理,而不是意外全走进程内
+  assert.equal(shouldUseCoreMatch({ core_match_min: "x" }, 500, true), false);
+  assert.equal(shouldUseCoreMatch({ core_match_min: -1 }, 0, true), true);
+});

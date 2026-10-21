@@ -165,11 +165,17 @@ let def_draw = 0;   // ② 默认渲染器是否已注册 ✓
 let onkey_hits = 0; // S6 onKey 被调用的次数 ✓
 let onkey_last = ""; // S6 最后一次认领时读到的选中行 ✓
 
+/// 大列表判定(纯函数,便于 node 测)
+function shouldUseCoreMatch(cfg, count, hasApi) {
+  if (!hasApi) return false;
+  const min = typeof cfg.core_match_min === "number" ? cfg.core_match_min : 1000;
+  return count >= min;
+}
+
 /// 大列表判定:条目数达到阈值且核心有 fuzzy.session(旧编辑器/裁剪构建可能没有)⇒ 用进程内
 function useCoreMatch(cfg) {
-  if (!helix.fuzzy || typeof helix.fuzzy.session !== "function") return false;
-  const min = typeof cfg.core_match_min === "number" ? cfg.core_match_min : 1000;
-  return all.length >= min;
+  const hasApi = !!(helix.fuzzy && typeof helix.fuzzy.session === "function");
+  return shouldUseCoreMatch(cfg, all.length, hasApi);
 }
 
 // 进程内匹配的**会话句柄**:条目只搬一次(5000 个字符串逐项过边界的成本比打分本身还贵,
@@ -588,5 +594,5 @@ helix.register_command("pick-diag", () => {
 // 只导出**纯逻辑**(路径存绝对/看相对、归一化)。engine 加载时 `module` 未定义 ⇒ 自动跳过。
 // 运行:node --test plugins/picker-ui/tests/picker-ui.test.js
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { to_abs, view, normalize, refresh_cwd_view, dw, cut };
+  module.exports = { to_abs, view, normalize, refresh_cwd_view, dw, cut, shouldUseCoreMatch };
 }
