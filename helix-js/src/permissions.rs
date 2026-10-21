@@ -147,7 +147,6 @@ pub(crate) const CB_HOOK_BUFFER_ICON: u8 = 11;
 pub(crate) const CB_HOOK_COMPLETION_ICON: u8 = 12;
 pub(crate) const CB_HOOK_COMPLETION_RENDER: u8 = 13;
 pub(crate) const CB_HOOK_KEYMAP_HINT: u8 = 14;
-pub(crate) const CB_KEYMAP: u8 = 15;
 
 impl CbKey {
     fn bare(kind: u8, id: u64) -> Self {
@@ -178,9 +177,6 @@ impl CbKey {
     }
     pub(crate) fn watch(id: u64) -> Self {
         Self::bare(CB_WATCH, id)
-    }
-    pub(crate) fn keymap(id: u64) -> Self {
-        Self::bare(CB_KEYMAP, id)
     }
     pub(crate) fn hook(kind: u8) -> Self {
         Self::bare(kind, 0)
@@ -495,13 +491,9 @@ pub(crate) fn check(cap: &str) -> anyhow::Result<()> {
     }
 }
 
-/// 检查点的 **JS 绑定侧**包装:失败转成 JS 异常(带 API 名定位,插件作者一眼知道是哪个调用)。
-pub(crate) fn check_js(api: &str, cap: &str) -> boa_engine::JsResult<()> {
-    match check(cap) {
-        Ok(()) => Ok(()),
-        Err(e) => Err(crate::js_err(format!("{api}: {e}"))),
-    }
-}
+// 检查点的 JS 绑定侧包装(`check_js`)已删除(2026-10-22):
+// 能力现在是 `api::API` 的字段,由 `api::native()` 在**派发点**统一检查 —— 实现里再调一次
+// 属于重复,而"忘记调用"这个失败模式已经不存在了。非表入口(如果有)请直接用 `check()`。
 
 // ── helix-term 侧接口(:js-permission 命令)─────────────────────────────
 

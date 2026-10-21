@@ -1,38 +1,11 @@
-//! JS API 注册表(G6) —— `build_engine` 从这里取各命名空间与根对象成员。
+//! 例外清单：**表驱动注册剩下的两个特例**（其余成员见 `crate::api::API`）。
 //!
-//! 为什么拆:原先 `build_engine` 773 行、手工注册 134 个成员,宽度而非复杂度;
-//! 改一个命名空间要在 773 行里找,新增一个成员要复制 6 行样板。
+//! * `icons` —— 成员来自 `crate::icons::native_fns()`（数据驱动，表里只有登记行）；
+//! * 函数对象 `helix.plugin` 与常量 `TABBAR_ID` 直接在 `api.rs` 里构造。
 //!
-//! 结构:
-//! - `lsp` / `picker` / `server` / `pane` / `pane_layout` / `buffer` / `icons` / `plugin`
-//!   —— 各自返回一个 `JsObject`(或可调用 `JsFunction`),由 `build_engine` 挂到 `helix` 上;
-//! - `root_*` —— 挂在 `helix` **根对象**上的成员,接收 `&mut ObjectInitializer`;
-//! - 裸路径 `commands::js_echo` / `layout_api::js_split` 之所以可用:下面这行把兄弟模块
-//!   导入了本模块,子模块 `use super::*;` 就能看到。
-//!   例外:`icons` / `lsp` / `picker` 与本目录同名,子模块里要写 `crate::icons::…`。
+//! 历史：这里曾有 15 个文件、~700 行 `.function(...)` 样板，与 `helix.d.ts` / `docs/`
+//! / 三个对账脚本各存一份事实。2026-10 收敛到 `api.rs` 一张表（见该文件的模块注释）。
 //!
-//! ⚠ 改这里之后**必须**跑 `cargo xtask api-check`:它按源码文本解析注册表
-//! (容器 = `let <ns>_obj = ObjectInitializer::new` 或 `let mut builder = ObjectInitializer::new`),
-//! 变量改名/换文件都可能让门禁失明。
+//! 新增 API 请改 `api.rs`，**不要**在这里加文件。
 
-use crate::{
-    commands, config, diagnostics, input, layout_api, permissions, popup, server_rows,
-    server_tasks, shell, theme, watch,
-};
-
-pub(crate) mod buffer;
-pub(crate) mod draw;
-pub(crate) mod fuzzy;
 pub(crate) mod icons;
-pub(crate) mod lsp;
-pub(crate) mod pane;
-pub(crate) mod pane_layout;
-pub(crate) mod picker;
-pub(crate) mod plugin;
-pub(crate) mod root_buffer;
-pub(crate) mod root_doc;
-pub(crate) mod root_fs;
-pub(crate) mod root_term;
-pub(crate) mod root_theme;
-pub(crate) mod root_ui;
-pub(crate) mod server;

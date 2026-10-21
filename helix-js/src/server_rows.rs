@@ -36,7 +36,6 @@ pub(crate) fn js_server_rows(
     _context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     // B1:行数据会探测已装工具的版本(`<bin> --version` 起子进程)⇒ 同一能力。
-    crate::permissions::check_js("helix.server.rows", crate::permissions::CAP_PROCESS)?;
     let cb = args.first().cloned().unwrap_or(JsValue::undefined());
     if cb.as_callable().is_none() {
         return Err(crate::js_err(

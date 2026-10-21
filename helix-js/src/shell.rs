@@ -446,7 +446,6 @@ pub(crate) fn js_run_async(
         .try_js_into(context)
         .map_err(|_| crate::js_err("helix.run_async: command must be a string"))?;
     // C-2 检查点:异步起进程同属 `process`(与 helix.run 同一能力)
-    crate::permissions::check_js("helix.run_async", crate::permissions::CAP_PROCESS)?;
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_term_id();
@@ -473,7 +472,6 @@ pub(crate) fn js_spawn(
         .as_object()
         .ok_or_else(|| crate::js_err("helix.spawn: options object required"))?;
     // C-2 检查点:spawn 同属 `process`
-    crate::permissions::check_js("helix.spawn", crate::permissions::CAP_PROCESS)?;
     let cmd: String = opts.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
     let on_chunk = opts.get(JsString::from("onChunk"), ctx)?;
     if on_chunk.as_callable().is_none() {
@@ -716,7 +714,6 @@ pub(crate) fn js_read_file_async(
         .try_js_into(context)
         .map_err(|_| crate::js_err("helix.read_file_async: path must be a string"))?;
     // C-2 检查点:异步读同属 `fs_read`
-    crate::permissions::check_js("helix.read_file_async", crate::permissions::CAP_FS_READ)?;
     // 返回 promise：worker 结果经 resolve_async_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
@@ -746,7 +743,6 @@ pub(crate) fn js_write_file_async(
         .try_js_into(context)
         .map_err(|_| crate::js_err("helix.write_file_async: path must be a string"))?;
     // C-2 检查点:异步写同属 `fs_write`
-    crate::permissions::check_js("helix.write_file_async", crate::permissions::CAP_FS_WRITE)?;
     let content: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
@@ -775,7 +771,6 @@ pub(crate) fn js_stat_async(
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     // C-2 检查点:读文件系统元信息/枚举同属 `fs_read`(此前漏在检查点之外)
-    crate::permissions::check_js("helix.stat_async", crate::permissions::CAP_FS_READ)?;
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -817,7 +812,6 @@ pub(crate) fn js_glob_async(
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     // C-2 检查点:读文件系统元信息/枚举同属 `fs_read`(此前漏在检查点之外)
-    crate::permissions::check_js("helix.glob_async", crate::permissions::CAP_FS_READ)?;
     let pattern: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -841,7 +835,6 @@ pub(crate) fn js_read_tree(
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     // C-2 检查点:读文件系统元信息/枚举同属 `fs_read`(此前漏在检查点之外)
-    crate::permissions::check_js("helix.read_tree", crate::permissions::CAP_FS_READ)?;
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())

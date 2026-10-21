@@ -121,7 +121,6 @@ pub(crate) fn js_watch(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     // C-2 检查点:监听目录 = 读访问(能看出文件何时出现/改名)⇒ 同属 `fs_read`
-    crate::permissions::check_js("helix.watch", crate::permissions::CAP_FS_READ)?;
     let path: String = args
         .first()
         .unwrap_or(&JsValue::undefined())

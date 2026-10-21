@@ -386,6 +386,22 @@ helix.text.*   pad, truncate, width
   term-open, term-resize, term-title, theme-change
 ```
 
+### 加一个新的 `helix.*` API（给改本仓的人）
+
+唯一声明处是 **`helix-js/src/api.rs` 的 `API` 表**（一行 = 命名空间、名字、arity、实现函数、
+能力、实现函数标识符）。注册、`describe()`、能力门控都从这张表来。
+
+1. 表里加一行（照抄邻行的形状）；碰 fs/进程的必须写 `caps`（如
+   `&[crate::permissions::CAP_FS_READ]`）——**不写就是没有能力要求**，而派发点按它检查；
+2. `plugins/helix.d.ts` 补类型（手写：TS 类型是有价值的手工资产）；
+3. `docs/api/xxx.md` 补条目、`docs/plugin-api.md` 的索引块补名字；
+4. `cargo xtask api-check`（它会先跑 `api-describe` 把表导成 JSON，再对账 d.ts / 文档 / 能力）。
+
+> 历史：这三份对账脚本曾经**各自正则解析 Rust 源码**（`register/*.rs` 的 `.function(...)` 样板）。
+> 那张表存在之后，解析源码就是第二份真相 —— 现在它们只读 `target/api-surface.json`。
+> 能力检查也从"每个实现里手写 `check_js(...)`"改成**派发点统一执行**：忘记加检查这个失败模式
+> 已经不存在了（忘的是在表里写 `caps`，而那由哨兵段兜）。
+
 **这份文档有门禁**:`cargo xtask api-check`(CI 的 "Check plugin API surface" 步骤)现在
 跑**三半** —— `plugins/helix.d.ts ↔ 注册表`、**本文件 ↔ 注册表**
 (`plugins/tools/check_doc_surface.mjs`)、以及**能力检查点 ↔ 注册的 JS API**

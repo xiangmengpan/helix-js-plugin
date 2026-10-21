@@ -454,7 +454,6 @@ pub(crate) fn js_open_terminal(
     // C-2 检查点:`helix.open_terminal` 会**起 pty 跑命令**(与 `spawn`/`run` 同属 process)。
     // 此前漏在检查点之外 —— 声明了 `permissions` 却没要 process 的插件仍能借此起 shell
     // (能力清单因此有洞)。放在最前面:参数校验失败也不该先付出一次 pty 的代价。
-    crate::permissions::check_js("helix.open_terminal", crate::permissions::CAP_PROCESS)?;
     let opts = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -686,7 +685,6 @@ pub(crate) fn js_read_file(
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("read_file: path must be a string"))?;
     // C-2 检查点:读任意文件需要 `fs_read`
-    crate::permissions::check_js("helix.read_file", crate::permissions::CAP_FS_READ)?;
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(JsValue::from(JsString::from(text))),
         Err(e) => Err(crate::js_err(format!("read_file('{path}'): {e}"))),
@@ -710,7 +708,6 @@ pub(crate) fn js_write_file(
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("write_file: path must be a string"))?;
     // C-2 检查点:写文件需要 `fs_write`
-    crate::permissions::check_js("helix.write_file", crate::permissions::CAP_FS_WRITE)?;
     let text: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
@@ -737,7 +734,6 @@ pub(crate) fn js_read_dir(
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("read_dir: path must be a string"))?;
     // C-2 检查点:列目录需要 `fs_read`
-    crate::permissions::check_js("helix.read_dir", crate::permissions::CAP_FS_READ)?;
     // 文件 → **空数组**（"没有子项"），而不是 ENOTDIR 报错：
     // 插件安装要用它区分「这是个文件（单文件安装）」与「路径非法」。
     // 目录不存在 / 权限不足 仍然报错（那才是真的非法路径）。

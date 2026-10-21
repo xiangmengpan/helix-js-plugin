@@ -93,146 +93,45 @@ function matchBrace(text, openIdx) {
 /// 返回 { members: Map<ns, Map<name, {src, line}>>, callables: Map<name,...>,
 ///        globals: Map<name,...>, events: Map<name,...> }
 function parseRustRegistry() {
-  // G6 起注册表按命名空间/能力拆到 `helix-js/src/register/*.rs`:`build_engine` 只剩拼装。
-  // 解析方式:把 lib.rs(截到第一个 `#[cfg(test)]`,跳过测试代码)与 register 目录下的文件
-  // 按固定顺序拼成一个字符串,并保留 偏移 → (文件, 行号) 的映射,报错才能指对文件。
+  // **唯一数据源**：`helix-js/src/api.rs` 的表 → `cargo xtask api-describe` 导出的 JSON。
   //
-  // ⚠ 顺序有语义:`lib.rs` 必须在最前(它末尾的 `let mut builder = ObjectInitializer::new`
-  // 定义了"根对象"容器),各 register 文件自带自己的 `<ns>_obj/_builder` 容器。
-  const libMaskedAll = maskComments(read("helix-js/src/lib.rs"));
-  const cut = libMaskedAll.indexOf("#[cfg(test)]");
-  const segments = [
-    { src: "helix-js/src/lib.rs", masked: cut >= 0 ? libMaskedAll.slice(0, cut) : libMaskedAll },
-  ];
-  for (const f of readdirSync(rel("helix-js/src/register")).filter((n) => n.endsWith(".rs")).sort()) {
-    segments.push({ src: `helix-js/src/register/${f}`, masked: maskComments(read(`helix-js/src/register/${f}`)) });
+  // 历史：这里曾经用 700 行正则解析 `lib.rs` + `register/*.rs`（容器归属、成员、挂载、
+  // 全局量、icons 动态名、事件白名单…）。那张表存在之后，解析源码就成了"第二份真相"：
+  // 表改了脚本未必认得出（变量改名/换文件都会失明）。现在只读 JSON。
+  const src = "target/api-surface.json";
+  if (!existsSync(rel(src))) {
+    console.log(`  ✗ 缺 ${src}（先跑 cargo xtask api-describe）`);
+    process.exit(1);
   }
-  let lib = "";
-  const layout = [];
-  for (const seg of segments) {
-    layout.push({ start: lib.length, ...seg });
-    lib += seg.masked + "\n";
-  }
-  const segAt = (idx) => {
-    let hit = layout[0];
-    for (const o of layout) if (o.start <= idx) hit = o;
-    return hit;
-  };
-  const at = (idx) => {
-    const hit = segAt(idx);
-    return { src: hit.src, line: lineOf(hit.masked, idx - hit.start) };
-  };
-
-  // ── 容器:命名空间(成员归属)与 FunctionObjectBuilder(可调用根名)──
-  const containers = [];
-  // 必须是**真的**建了 ObjectInitializer 才算容器:否则 `let lsp_obj = register::lsp::register(engine)`
-  // 这类"把命名空间交给拼装"的语句也会被当容器,把 root 成员错挂到命名空间上(G6 踩过)。
-  for (const m of lib.matchAll(
-    /let\s+(?:mut\s+)?([a-z_0-9]+)_(?:obj|builder)\s*=\s*ObjectInitializer::new/g,
-  )) {
-    containers.push({ name: m[1], start: m.index, seg: segAt(m.index) });
-  }
-  for (const m of lib.matchAll(
-    /let\s+\w+\s*=\s*FunctionObjectBuilder::new[\s\S]*?\.name\("([^"]+)"\)/g,
-  )) {
-    containers.push({ name: m[1], start: m.index });
-  }
-  // 根对象:它之后的所有成员都挂在 helix 上(命名空间都在它之前构建)
-  const rootBuilder = /let\s+mut\s+builder\s*=\s*ObjectInitializer::new/.exec(lib);
-  if (rootBuilder) containers.push({ name: "root", start: rootBuilder.index, seg: segAt(rootBuilder.index) });
-  else console.log("  ⚠ 自检:没找到根对象 `let mut builder = ObjectInitializer::new`");
-  // 同名只留最早那处(lsp_obj + lsp_builder 是同一命名空间)
-  const seen = new Set();
-  const spans = containers
-    .sort((a, b) => a.start - b.start)
-    .filter((c) => (seen.has(c.name) ? false : (seen.add(c.name), true)));
-
-  // 归属:某下标处第一个落在其 span 内的容器(最靠后的 start ≤ idx)
-  // 归属只在**同一个文件**内生效:G6 之后每个 register/*.rs 自带自己的容器,
-  // 跨文件沿用"上一个容器"会把 root_*.rs 的成员错挂到前面某个命名空间上。
-  // 排查"成员被挂到错的命名空间"时:DEBUG_API_CHECK=1 打印分段与容器归属。
-  if (process.env.DEBUG_API_CHECK) {
-    console.log("[debug] segments:", layout.map((s) => `${s.src}@${s.start}`).join(", "));
-    console.log("[debug] containers:", spans.map((c) => `${c.name}@${c.start}:${c.seg.src.split("/").pop()}`).join(", "));
-  }
-  const nsspan = (idx) => {
-    const seg = segAt(idx);
-    let hit = null;
-    for (const c of spans) if (c.start <= idx && c.seg === seg) hit = c;
-    return hit ? hit.name : "root";
-  };
-
-  // ── 成员:`.function(NativeFunction::from_fn_ptr(X), JsString::from("name"), arity)` ──
-  const members = new Map();
-  const callables = new Map();
+  const surface = JSON.parse(read(src));
+  const members = new Map(); // ns → Map(name → info)；"root" = helix 根上的函数
+  const callables = new Map(); // 函数对象根名（helix.plugin）
+  const globals = new Map(); // 引擎全局量（TABBAR_ID）
+  const attached = new Set(); // 出现过的命名空间
   const push = (map, ns, name, info) => {
     if (!map.has(ns)) map.set(ns, new Map());
     map.get(ns).set(name, info);
   };
-  for (const m of lib.matchAll(/NativeFunction::from_fn_ptr\(\s*([\w:]+)\s*\)/g)) {
-    const after = lib.slice(m.index, m.index + 240);
-    const named = /JsString::from\("([^"]+)"\)/.exec(after) || /\.name\("([^"]+)"\)/.exec(after);
-    if (!named) continue; // icons::native_fns() 那类:名字在 icons.rs
-    const info = { ...at(m.index), rust: m[1] };
-    // FunctionObjectBuilder + .name(…) ⇒ 可调用的**根名**(helix.plugin 本身),不是某命名空间的成员
-    if (/\.name\("/.test(after)) push(callables, "root", named[1], info);
-    else push(members, nsspan(m.index), named[1], info);
-  }
-
-  // ── 命名空间挂载(权威 JS 名):`builder.property(JsString::from("pane"), pane_obj, …)` ──
-  const attached = new Set();
-  for (const m of lib.matchAll(
-    /builder\.property\(\s*JsString::from\("([^"]+)"\)\s*,\s*(\w+)\s*,/g,
-  )) {
-    attached.add(m[1]);
-    const varName = m[2].replace(/_(obj|builder|fn)$/, "");
-    if (varName !== m[1] && varName !== "plugin") {
-      console.log(
-        `  ⚠ 自检:容器 ${m[2]} 挂成 "helix.${m[1]}" ≠ 变量名推断(${varName})—— 检查本脚本的归属规则`,
-      );
+  for (const m of surface.members) {
+    const info = { src: "helix-js/src/api.rs", line: 0, where: m.where, rust: m.fname || m.name };
+    if (m.global) {
+      globals.set(m.name, info);
+      continue;
     }
-  }
-  for (const ns of members.keys()) {
-    if (ns !== "root" && !attached.has(ns)) {
-      console.log(`  ⚠ 自检:命名空间 "${ns}" 没有对应的 builder.property 挂载`);
+    if (m.ns) {
+      push(members, m.ns, m.name, info);
+      attached.add(m.ns);
+      continue;
     }
+    if (m.kind === "function_object") push(callables, "root", m.name, info);
+    else push(members, "root", m.name, info);
   }
-
-  // ── 全局量:`register_global_property(JsString::from("helix"|"TABBAR_ID"))` ──
-  const globals = new Map();
-  for (const m of lib.matchAll(/register_global_property\(\s*JsString::from\("([^"]+)"\)/g)) {
-    globals.set(m[1], at(m.index));
+  for (const g of surface.globals || []) {
+    globals.set(g, { src: "helix-js/src/api.rs", line: 0, where: `global: ${g}` });
   }
-
-  // ── icons.rs:native_fns() 动态注册的名字 ──
-  const icons = maskComments(read("helix-js/src/icons.rs"));
-  const nf = icons.indexOf("pub fn native_fns()");
-  if (nf >= 0) {
-    const end = icons.indexOf("]", nf);
-    for (const m of icons.slice(nf, end).matchAll(/\(\s*"([A-Za-z_0-9]+)"\s*,/g)) {
-      push(members, "icons", m[1], {
-        src: "helix-js/src/icons.rs",
-        line: lineOf(icons, nf + m.index),
-        rust: `icons::${m[1]}`,
-      });
-    }
-  }
-
-  // ── 事件白名单 ──
-  const cmd = maskComments(read("helix-js/src/commands.rs"));
-  const events = new Map();
-  const wh = /const\s+EVENT_WHITELIST[\s\S]*?=\s*\[([\s\S]*?)\];/.exec(cmd);
-  if (wh) {
-    for (const m of wh[1].matchAll(/"([^"]+)"/g)) {
-      events.set(m[1], {
-        src: "helix-js/src/commands.rs",
-        line: lineOf(cmd, wh.index + wh[1].indexOf(m[0])),
-      });
-    }
-  } else {
-    console.log("  ⚠ 自检:没在 commands.rs 里找到 EVENT_WHITELIST");
-  }
-
+  const events = new Map(
+    (surface.events || []).map((e) => [e, { src: "helix-js/src/api.rs", line: 0, where: `events: ${e}` }]),
+  );
   return { members, callables, globals, events, attached };
 }
 
@@ -420,18 +319,18 @@ function compareSet(label, rustMap, dtsMap, opts = {}) {
   } else {
     if (missing.length) {
       console.log(`  ✗ ${label}:d.ts **缺** ${missing.length} 项(注册表有,d.ts 没有)`);
-      for (const [n, i] of missing) console.log(`      ${n}  ← ${i.src}:${i.line}${i.rust ? ` (${i.rust})` : ""}`);
+      for (const [n, i] of missing) console.log(`      ${n}  ← ${i.where || `${i.src}:${i.line}`}${i.rust ? ` (${i.rust})` : ""}`);
     }
     if (stale.length) {
       console.log(`  ✗ ${label}:d.ts **多** ${stale.length} 项(两边都没有 ⇒ 照它写会 undefined)`);
       for (const [n, i] of stale) {
         const hint = elsewhereHint(opts.ns || "root", n, opts.rustAll || new Map(), opts.augmentations || new Map());
-        console.log(`      ${n}  ← ${i.src}:${i.line}${hint ? `  → ${hint}` : ""}`);
+        console.log(`      ${n}  ← ${i.where || `${i.src}:${i.line}`}${hint ? `  → ${hint}` : ""}`);
       }
     }
     if (aug.length) {
       console.log(`  ℹ ${label}:${aug.length} 项由插件提供(不算漂移)`);
-      for (const [n, i, p] of aug) console.log(`      ${n}  ← ${i.src}:${i.line} ← 提供者 ${p}`);
+      for (const [n, i, p] of aug) console.log(`      ${n}  ← ${i.where || `${i.src}:${i.line}`} ← 提供者 ${p}`);
     }
     if (missing.length || stale.length) problems.push(`${label}: ${missing.length} 缺 / ${stale.length} 多`);
     if (aug.length) infos.push(`${label}: ${aug.length} 项由插件提供`);

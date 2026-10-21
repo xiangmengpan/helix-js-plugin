@@ -1,5 +1,6 @@
 //! JavaScript plugin runtime for the Helix editor (PoC).
 
+pub mod api;
 mod commands;
 mod fuzzy;
 pub mod host;
@@ -75,7 +76,7 @@ pub use types::*;
 
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsString, JsValue};
+use boa_engine::{Context, JsObject, JsString, JsValue};
 
 /// 初始化线程局部运行时（幂等）：消息/UI 队列、事件通道、boa 引擎与全局 `helix` 对象。
 pub fn init() {
@@ -123,119 +124,47 @@ pub(crate) fn js_err(msg: impl Into<String>) -> boa_engine::JsError {
 }
 
 pub(crate) fn build_engine(engine: &mut Context) {
-    // 各命名空间先独立构建(`ObjectInitializer` 独占 `&mut Context`),再挂到 helix 上。
-    // 成员注册表在 `register/*`:这里只负责**拼装顺序**,不再写 134 份样板。
-    let lsp_obj = register::lsp::register(engine);
-    let picker_obj = register::picker::register(engine);
-    let plugin_fn = register::plugin::build(engine);
-    let server_obj = register::server::register(engine);
-    let pane_obj = register::pane::register(engine);
-    let layout_obj = register::pane_layout::register(engine);
-    let pane_mode_obj = register::pane_layout::register_pane_mode(engine);
-    let icons_obj = register::icons::register(engine);
-    let fuzzy_obj = register::fuzzy::register(engine);
-    let buffer_obj = register::buffer::register(engine);
-    let stack_obj = register::buffer::register_stack(engine);
-    let draw_obj = register::draw::register(engine);
-    let text_obj = register::draw::register_text(engine);
+    // 成员与顺序全部来自 `api.rs` 的一张表（`API` + `ATTACH`）。
+    // 这里只做三件事：建命名空间对象 → 交给根对象 → 注册全局。
+    let attr = Attribute::READONLY | Attribute::NON_ENUMERABLE;
 
-    // 根对象成员按能力分族注册(每族一个文件,顺序即属性插入顺序)
+    // 命名空间对象先各自构建（`ObjectInitializer` 独占 `&mut Context`）
+    let mut ns_objs: Vec<JsObject> = Vec::new();
+    for a in api::ATTACH {
+        if let api::Attach::Ns(ns) = a {
+            ns_objs.push(api::register_ns(engine, ns));
+        }
+    }
+    let plugin_fn = api::build_plugin(engine);
+
     let mut builder = ObjectInitializer::new(engine);
-    register::root_doc::register(&mut builder);
-    register::root_fs::register(&mut builder);
-    register::root_buffer::register(&mut builder);
-    register::root_term::register(&mut builder);
-    register::root_ui::register(&mut builder);
-    register::root_theme::register(&mut builder);
+    api::register_root(&mut builder);
 
-    builder.property(
-        JsString::from("lsp"),
-        lsp_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("picker"),
-        picker_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("plugin"),
-        plugin_fn,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("server"),
-        server_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("pane"),
-        pane_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("icons"),
-        icons_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("fuzzy"),
-        fuzzy_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("stack"),
-        stack_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("draw"),
-        draw_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("text"),
-        text_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("buffer"),
-        buffer_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("layout"),
-        layout_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    builder.property(
-        JsString::from("pane_mode"),
-        pane_mode_obj,
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
-    // 边界协议的线格式版本(B-1/B-2 同一份):插件可在运行时分支
-    // (`if (helix.api_version >= 2) …`),而不必靠"猜哪个版本引入了哪个字段"。
-    builder.property(
-        JsString::from("api_version"),
-        JsValue::from(crate::types::API_VERSION),
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
-    );
+    let mut ns_iter = ns_objs.into_iter();
+    for a in api::ATTACH {
+        match a {
+            api::Attach::Ns(ns) => {
+                let obj = ns_iter.next().expect("命名空间对象与 ATTACH 顺序一致");
+                builder.property(JsString::from(*ns), obj, attr);
+            }
+            api::Attach::Plugin => {
+                builder.property(JsString::from("plugin"), plugin_fn.clone(), attr);
+            }
+            api::Attach::ApiVersion => {
+                builder.property(
+                    JsString::from("api_version"),
+                    JsValue::from(crate::types::API_VERSION),
+                    attr,
+                );
+            }
+        }
+    }
+
     let helix = builder.build();
     engine
-        .register_global_property(
-            JsString::from("helix"),
-            helix,
-            Attribute::READONLY | Attribute::NON_ENUMERABLE,
-        )
+        .register_global_property(JsString::from("helix"), helix, attr)
         .expect("register helix object");
-    // 布局标签条组件 id(与 helix-term::compositor::TABBAR_ID 一致)
-    engine
-        .register_global_property(
-            JsString::from("TABBAR_ID"),
-            JsValue::from(0x7ABB_0001_u64),
-            Attribute::READONLY | Attribute::NON_ENUMERABLE,
-        )
-        .expect("register TABBAR_ID");
+    api::register_globals(engine);
 }
 
 #[cfg(test)]

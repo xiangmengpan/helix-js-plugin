@@ -27,11 +27,9 @@
 //!
 //! 会话**按宿主隔离**（`JsHost.fuzzy_sessions`），随 `:plugin-reload` 一起清空。
 
-use std::collections::HashMap;
-
 use boa_engine::{
-    object::builtins::JsArray, object::ObjectInitializer, property::Attribute, Context, JsObject,
-    JsString, JsValue,
+    object::builtins::JsArray, object::ObjectInitializer, property::Attribute, Context, JsString,
+    JsValue,
 };
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32Str};

@@ -33,52 +33,37 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const rel = (p) => join(ROOT, p);
 
+/// ## 数据源（2026-10-22 起）
+///
+/// 能力声明**搬进了表**：`helix-js/src/api.rs` 的 `Entry.caps`。`cargo xtask api-describe`
+/// 把它导出成 `target/api-surface.json`，本脚本只读这份 JSON。
+///
+/// 于是：
+/// * **段 A（意图表里的 API 是否存在）** 变成"每个带 caps 的成员是否都能在源码里找到实现"
+///   —— 表与代码漂移会红；
+/// * **段 B（实现里是否有 check_js）取消**：检查点由 `api::native()` 在**派发点**统一执行，
+///   "忘记写检查"这个失败模式已经不存在（表里不写 caps 才是问题，而那由段 C 兜）；
+/// * **段 C（哨兵）保留**：函数体里出现 fs/进程痕迹、但表里 caps 为空 ⇒ 报"疑似漏检查"。
+///   这是唯一还需要读源码的部分，也是"新增 API 忘了声明能力"的最后一道网。
+///
 /// **意图表**:API 名 → 它该受哪种能力检查。这是"能力模型"的唯一声明处。
-const EXPECTED = {
-  // process:起子进程 / shell
-  // B1(2026-10):server.* 会下载/安装/卸载(写盘 + 起子进程)并改写 languages.toml;
-  // rows 还会探测已装工具的版本(`<bin> --version`)。原先**完全没有**检查点:
-  // 任意插件零权限声明就能让 helix 装二进制 —— 能力模型最大的一个洞。
-  // B1(2026-10):server.* 会下载/安装/卸载(写盘 + 起子进程)并改写 languages.toml;
-  // rows 还会探测已装工具的版本(`<bin> --version`)。原先**完全没有**检查点:
-  // 任意插件零权限声明就能让 helix 装二进制 —— 能力模型最大的一个洞。
-  //
-  // ⚠ 名字用**叶子名**:本脚本的注册表解析是"命名空间无关"的(`server_obj` 里的成员
-  // 只记 `list`,不记 `server.list`),所以这里写 `list` 而不是 `server.list`;
-  // 判定语义是"同名多注册里**任意一个**实现带检查点即可"(见段 B),`list` 同时被
-  // pane/buffer/stack 用到 —— 那些本来就不该受能力检查,靠 server.list 命中即可。
-  process: [
-    "run",
-    "run_async",
-    "spawn",
-    "open_terminal",
-    "search",
-    "install",
-    "update",
-    "remove",
-    "status",
-    "task",
-    "rows",
-    "list",
-  ],
-  // fs_read:读文件系统(含元信息、枚举、监听)
-  fs_read: [
-    "read_file",
-    "read_file_async",
-    "read_dir",
-    "stat_async",
-    "glob_async",
-    "read_tree",
-    "watch",
-  ],
-  // fs_write:写/删文件系统
-  fs_write: [
-    "write_file",
-    "write_file_async",
-    "write_plugin_file",
-    "remove_plugin_file",
-  ],
-};
+const readSync = (p) => readFileSync(p, "utf8");
+
+const SURFACE = JSON.parse(readSync(rel("target/api-surface.json")));
+if (!SURFACE.members) {
+  console.log("  ✗ target/api-surface.json 里没有 members（先跑 cargo xtask api-describe）");
+  process.exit(1);
+}
+
+/// 期望表：能力 → 成员名（**全名**：`server.list`；根成员就是 `run`）
+const EXPECTED = {};
+for (const m of SURFACE.members) {
+  for (const cap of m.caps || []) {
+    const name = m.ns ? `${m.ns}.${m.name}` : m.name;
+    (EXPECTED[cap] ||= []).push(name);
+  }
+}
+
 
 /// **豁免**:函数体里虽然有 fs/进程痕迹,但**有意**不做能力检查 —— 每条必须写清理由。
 const EXEMPT = {
@@ -185,8 +170,9 @@ function registrations() {
 }
 
 const SRC = {};
-for (const f of ["commands", "shell", "popup", "watch", "picker", "input", "lsp", "server_tasks", "server_rows"])
-  SRC[f] = stripComments(read(`helix-js/src/${f}.rs`));
+// 全部顶层模块（实现函数散在 layout_api/theme/draw 等文件里；按目录扫，避免再手工维护清单）
+for (const f of readdirSync(rel("helix-js/src")).filter((n) => n.endsWith(".rs")))
+  SRC[f.replace(/\.rs$/, "")] = stripComments(read(`helix-js/src/${f}`));
 
 /// 取函数体(同名函数只在**限定路径**指向的文件里找;找不到就看所有文件)
 function bodyOf(fnPath) {
@@ -214,66 +200,45 @@ function bodyOf(fnPath) {
 const registered = registryNames();
 const regs = registrations();
 
-section("── A. 意图表里的 API 是否真的注册着 ──");
+section("── A. 表里的实现函数是否都能在源码里找到 ──");
 {
   const missing = [];
-  for (const [cap, names] of Object.entries(EXPECTED))
-    for (const n of names) if (!registered.has(n)) missing.push(`${n}(${cap})`);
-  if (missing.length) for (const m of missing) fail(`EXPECTED 里的 ${m} 在注册表里不存在(改名/删除?)`);
-  else {
-    const total = Object.values(EXPECTED).flat().length;
-    ok(`意图表 ${total} 个 API 全部注册着`);
+  for (const m of SURFACE.members) {
+    if (!m.fname) continue; // Dynamic / Const / FunctionObject 没有直接实现体
+    if (!bodyOf(m.fname)) missing.push(`${m.ns ? m.ns + "." : ""}${m.name} → ${m.fname}`);
   }
+  if (missing.length) for (const x of missing) fail(`表里登记的实现函数在源码里找不到: ${x}`);
+  else ok(`${SURFACE.members.filter((m) => m.fname).length} 个实现函数都能定位`);
 }
 
-section("── B. 每个 API 的实现里是否真有对应检查点 ──");
+section("── B. 能力声明的一致性 ──");
 {
-  let checked = 0;
-  for (const [cap, names] of Object.entries(EXPECTED)) {
-    for (const name of names) {
-      // 同名多注册(picker.run / run):取**任意**一个有该检查点的实现即可
-      const bodies = regs.filter((r) => r.name === name).map((r) => bodyOf(r.fnPath));
-      const hit = bodies.find((b) => b && b.includes(`check_js("`));
-      if (!hit) {
-        fail(`helix.${name}: 实现里**没有** check_js(应受 ${cap} 检查)`);
-        continue;
-      }
-      const m = hit.match(/check_js\(\s*"[^"]+"\s*,\s*crate::permissions::CAP_(\w+)/);
-      if (!m) {
-        fail(`helix.${name}: 有 check_js 但取不到能力常量(写法变了?)`);
-        continue;
-      }
-      const got = m[1].toLowerCase();
-      if (got !== cap) fail(`helix.${name}: 检查点用的是 ${got.toUpperCase()},意图表要求 ${cap}`);
-      else checked++;
-    }
-  }
-  if (checked === Object.values(EXPECTED).flat().length)
-    ok(`${checked} 个 API 的检查点与意图表一致`);
+  // 派发点统一执行（`api::native`），这里只校验"声明本身自洽"：
+  // 有 caps 的成员必须是普通函数（Const/Dynamic 不该带 caps）。
+  const bad = SURFACE.members.filter((m) => (m.caps || []).length && m.kind !== "fn");
+  if (bad.length) for (const m of bad) fail(`${m.ns || "helix"}.${m.name}: 非函数成员不该声明 caps`);
+  else ok(`${Object.values(EXPECTED).flat().length} 个受保护 API 的 caps 声明自洽（由派发点执行）`);
 }
 
-section("── C. 哨兵:碰到 fs/进程但没登记的入口 ──");
+section("── C. 哨兵:函数体碰到 fs/进程但表里没声明能力 ──");
 {
-  const expectedNames = new Set(Object.values(EXPECTED).flat());
-  const seen = new Set();
+  const exempt = EXEMPT;
   const unknown = [];
-  for (const { name, fnPath } of regs) {
-    const key = `${name}@${fnPath}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (expectedNames.has(name) || EXEMPT[name]) continue;
-    const body = bodyOf(fnPath);
+  for (const m of SURFACE.members) {
+    if (!m.fname) continue;
+    if ((m.caps || []).length) continue; // 已声明
+    if (exempt[m.name]) continue;
+    const body = bodyOf(m.fname);
     if (!body) continue;
-    const caps = Object.entries(MARKERS)
+    const hit = Object.entries(MARKERS)
       .filter(([, pats]) => pats.some((p) => body.includes(p)))
       .map(([cap]) => cap);
-    if (caps.length) unknown.push(`helix.${name} (${fnPath}) 碰到 ${caps.join("/")}`);
+    if (hit.length) unknown.push(`helix.${m.ns ? m.ns + "." : ""}${m.name} → ${m.fname} 碰到 ${hit.join("/")}`);
   }
   if (unknown.length) {
-    for (const u of unknown) fail(`疑似漏检查:${u} —— 加 check_js 并登记进 EXPECTED,或加进 EXEMPT 说明理由`);
+    for (const u of unknown) fail(`疑似漏声明:${u} —— 在 api.rs 的 caps 里声明,或加进 EXEMPT 说明理由`);
   } else {
-    const exempt = Object.keys(EXEMPT).length;
-    ok(`没有"碰到 fs/进程却未登记"的入口(已豁免 ${exempt} 个,均附理由)`);
+    ok(`没有"碰到 fs/进程却没声明能力"的入口(已豁免 ${Object.keys(exempt).length} 个,均附理由)`);
   }
 }
 
@@ -284,7 +249,7 @@ console.log(
 );
 if (problems.length) {
   console.log(`\n✗ 有缺口(${problems.length} 处)`);
-  console.log("\n修法:实现里加 `check_js(\"helix.xxx\", crate::permissions::CAP_…)` 并登记进 EXPECTED;");
+  console.log("\n修法:在 helix-js/src/api.rs 的对应行补 `caps`（或加进 EXEMPT 说明理由）;");
   console.log("      确实不该受检查的,登记进 EXEMPT 并写清理由。");
   process.exit(1);
 }

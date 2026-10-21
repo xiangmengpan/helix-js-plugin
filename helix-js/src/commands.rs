@@ -10,7 +10,7 @@ use boa_engine::{Context, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-const EVENT_WHITELIST: [&str; 21] = [
+pub(crate) const EVENT_WHITELIST: [&str; 21] = [
     "save",
     "mode-change",
     "cwd-change", // 工作目录真的变了（:cd / :lcd / :pop-directory）——插件据此重取根目录
@@ -33,6 +33,11 @@ const EVENT_WHITELIST: [&str; 21] = [
     "layout-change",
     "startup", // 启动完成（发在 application.rs 的初始文件处理之后；由插件自行判断“是否空白无名 buffer”）
 ];
+
+/// 事件白名单（`api::describe()` 与对账脚本用；唯一事实仍是上面那张表）
+pub(crate) fn event_whitelist() -> Vec<&'static str> {
+    EVENT_WHITELIST.to_vec()
+}
 
 use crate::state::{
     with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_popups,
@@ -93,7 +98,6 @@ pub(crate) fn js_remove_plugin_file(
     // C-2 检查点:删文件是写操作(与 `write_plugin_file` 对称)⇒ `fs_write`。
     // 此前它与 remove 的"限域"性质一起被当成安全操作 ⇒ 文档的能力表写了、代码却没检查
     // (由 `check_capability_surface.mjs` 第一次跑就抓到)。
-    crate::permissions::check_js("helix.remove_plugin_file", crate::permissions::CAP_FS_WRITE)?;
     let rel: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -123,7 +127,6 @@ pub(crate) fn js_write_plugin_file(
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("helix.write_plugin_file: text must be a string"))?;
     // C-2 检查点:写插件自身文件属于 `fs_write`
-    crate::permissions::check_js("helix.write_plugin_file", crate::permissions::CAP_FS_WRITE)?;
     match crate::state::write_plugin_file(&rel, &text) {
         Ok(p) => Ok(JsValue::from(JsString::from(
             p.to_string_lossy().to_string(),
@@ -512,7 +515,6 @@ pub(crate) fn js_server_list(
 ) -> boa_engine::JsResult<JsValue> {
     // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
     // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
-    crate::permissions::check_js("helix.server.list", crate::permissions::CAP_PROCESS)?;
     let arg = args
         .first()
         .and_then(|v| v.as_string())
@@ -528,7 +530,6 @@ pub(crate) fn js_server_search(
 ) -> boa_engine::JsResult<JsValue> {
     // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
     // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
-    crate::permissions::check_js("helix.server.search", crate::permissions::CAP_PROCESS)?;
     let kw: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -545,7 +546,6 @@ pub(crate) fn js_server_install(
 ) -> boa_engine::JsResult<JsValue> {
     // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
     // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
-    crate::permissions::check_js("helix.server.install", crate::permissions::CAP_PROCESS)?;
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -562,7 +562,6 @@ pub(crate) fn js_server_update(
 ) -> boa_engine::JsResult<JsValue> {
     // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
     // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
-    crate::permissions::check_js("helix.server.update", crate::permissions::CAP_PROCESS)?;
     // 无参 = 更新全部(与 :server update 一致)
     let name: Option<String> = match args.first() {
         Some(v) if !v.is_undefined() && !v.is_null() => Some(
@@ -583,7 +582,6 @@ pub(crate) fn js_server_remove(
 ) -> boa_engine::JsResult<JsValue> {
     // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
     // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
-    crate::permissions::check_js("helix.server.remove", crate::permissions::CAP_PROCESS)?;
     let name: String = args
         .first()
         .unwrap_or(&JsValue::undefined())
@@ -600,7 +598,6 @@ pub(crate) fn js_server_status(
 ) -> boa_engine::JsResult<JsValue> {
     // B1:server.* 会触发下载/安装/卸载并改写 languages.toml(并且探测版本要起子进程)
     // ⇒ 与 `helix.run` 同一能力。内置插件 grandfathered;第三方 manifest 需声明 process。
-    crate::permissions::check_js("helix.server.status", crate::permissions::CAP_PROCESS)?;
     let arg = args
         .first()
         .and_then(|v| v.as_string())
@@ -1950,7 +1947,6 @@ pub(crate) fn js_run(
 ) -> boa_engine::JsResult<JsValue> {
     use std::process::Command;
     // C-2 检查点:起进程需要 `process` 能力
-    crate::permissions::check_js("helix.run", crate::permissions::CAP_PROCESS)?;
     let cmd: String = args
         .first()
         .unwrap_or(&JsValue::undefined())

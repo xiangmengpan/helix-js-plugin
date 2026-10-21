@@ -13,6 +13,7 @@
 //! `cargo xtask`(不带参数)打印的 help 直接来自 `TASKS`,不会再与 dispatch 漂移。
 
 mod api;
+mod api_describe;
 mod docgen;
 mod highlight;
 mod indent;
@@ -35,6 +36,11 @@ pub const TASKS: &[Task] = &[
         name: "docgen",
         run: docgen::run,
         help: "Generate files to be included in the mdbook output.",
+    },
+    Task {
+        name: "api-describe",
+        run: api_describe::run,
+        help: "Write the helix.* declaration surface (helix-js/src/api.rs) to target/api-surface.json.",
     },
     Task {
         name: "query-check",
