@@ -91,7 +91,11 @@ async fn layout_change_batch_mode_sees_final_layout() -> anyhow::Result<()> {
     std::fs::write(
         &plugin,
         format!(
-            r#"helix.on("layout-change", (kind) => {{
+            r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", {{ deps: [], permissions: {{ process: true, fs_read: true, fs_write: true }} }});
+
+helix.on("layout-change", (kind) => {{
                  let prev = "";
                  try {{ prev = helix.read_file({log:?}); }} catch (e) {{ prev = ""; }}
                  const panes = (helix.pane.list() || []).length;
@@ -154,7 +158,11 @@ async fn layout_change_is_per_change_point() -> anyhow::Result<()> {
     std::fs::write(
         &plugin,
         format!(
-            r#"helix.on("layout-change", (kind) => {{
+            r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", {{ deps: [], permissions: {{ process: true, fs_read: true, fs_write: true }} }});
+
+helix.on("layout-change", (kind) => {{
                  let prev = "";
                  try {{ prev = helix.read_file({log:?}); }} catch (e) {{ prev = ""; }}
                  const panes = (helix.pane.list() || []).length;

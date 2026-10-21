@@ -181,8 +181,13 @@ async fn plugin_permission_deny_is_sticky() -> anyhow::Result<()> {
 }
 
 /// 没声明 `permissions` 的插件**不受影响**(legacy 语义)—— 存量插件的零影响保证。
+/// **fail-closed**:没声明 `permissions` 的插件不再 legacy 放行。
+///
+/// 改前:不写 manifest = 绕过全部检查(这是"权限系统只有装饰作用"的根)。
+/// 改后:与"声明了但没要这项"同档 —— 拒绝本次 + 进待授权;`:js-permission allow`
+/// 之后仍然可用(存量插件有一条显式的升级路径)。
 #[tokio::test(flavor = "multi_thread")]
-async fn plugin_without_permissions_is_unaffected() -> anyhow::Result<()> {
+async fn plugin_without_permissions_is_denied() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("p.txt");
     std::fs::write(&file, "x\n")?;
@@ -208,10 +213,70 @@ async fn plugin_without_permissions_is_unaffected() -> anyhow::Result<()> {
                 Some(":perm-legacy-run<ret>"),
                 Some(&|app| {
                     let (status, severity) = app.editor.get_status().unwrap();
-                    assert_eq!(status.as_ref(), "ran:legacy-ok");
+                    let status = status.as_ref().to_string();
                     assert!(
-                        matches!(severity, helix_core::diagnostic::Severity::Info),
-                        "没声明 permissions ⇒ 不拦截, got {severity:?}"
+                        matches!(severity, helix_core::diagnostic::Severity::Error),
+                        "没声明 permissions ⇒ 拒绝(不再是 legacy 放行), got {severity:?}"
+                    );
+                    assert!(
+                        status.contains("perm-legacy") && status.contains("process"),
+                        "错误里要能看出是谁缺什么: {status}"
+                    );
+                }),
+            ),
+            // 显式授权后可用(存量插件的升级路径)
+            (
+                Some(":js-permission allow perm-legacy process<ret>"),
+                None,
+            ),
+            (
+                Some(":perm-legacy-run<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "ran:legacy-ok");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// **加载期归属**:`helix.plugin()` **之前**的顶层代码按脚本名归属,不按
+/// "最后声明的那个插件"(那是 A 的权限判 B 的来源)。
+#[tokio::test(flavor = "multi_thread")]
+async fn load_time_code_owns_its_script_name() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("lt.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("perm_top.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        // 顶层第一行就碰受保护 API(此时还没声明 manifest)
+        try { helix.read_file("/etc/hostname"); } catch (e) { helix.echo("DENIED:" + e.message); }
+        helix.plugin("perm-top", { deps: [], permissions: {} });
+        "#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (
+                Some(&format!(":plugin-load {}<ret>", plugin.display())),
+                None,
+            ),
+            // 被拒的证据:待授权列表里是**脚本名**(perm_top),不是别的插件
+            (
+                Some(":js-permission list<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    let status = status.as_ref().to_string();
+                    assert!(
+                        status.contains("perm_top") && status.contains("fs_read"),
+                        "加载期顶层代码应按脚本名归属(perm_top / fs_read): {status}"
                     );
                 }),
             ),

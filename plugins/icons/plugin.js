@@ -8,7 +8,7 @@
 // **新代码请直接用 `helix.icons.file(path)` 等** —— 不必再声明 `deps`。
 //
 // 已删除:旧的原始表导出 `ICONS`(经查**无任何消费方**使用,它们只用下面 6 个函数)。
-helix.plugin("icons", { deps: [], version: "2.0" });
+helix.plugin("icons", { deps: [], version: "2.0", permissions: {} }); // permissions: 纯图标映射，不碰 fs/进程
 
 // ─────────────────────────────────────────────────────────────────────────
 // ⚠️ 两个已知点(改这个文件前请先读):

@@ -509,7 +509,8 @@ fn js_permissions_query() {
     let v: serde_json::Value = serde_json::from_str(&msg[0]).unwrap();
     assert_eq!(v["fs_read"], serde_json::json!(true), "决定后查询应为 true");
 
-    // **没声明 permissions** 的插件(legacy):三项都 true(不拦截)
+    // **没声明 permissions** 的插件 = 空能力集(fail-closed):三项都 false
+    // (调用会被问一次,而不是静默放行 —— legacy 放行已废除)
     load_script(
         r#"
         helix.plugin("legacy-caps", { deps: [] });
@@ -527,11 +528,11 @@ fn js_permissions_query() {
             v["fs_write"].clone()
         ),
         (
-            serde_json::json!(true),
-            serde_json::json!(true),
-            serde_json::json!(true)
+            serde_json::json!(false),
+            serde_json::json!(false),
+            serde_json::json!(false)
         ),
-        "legacy 全放行"
+        "未声明 permissions = 空能力集（fail-closed）"
     );
 }
 

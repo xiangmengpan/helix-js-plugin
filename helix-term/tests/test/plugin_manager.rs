@@ -199,7 +199,11 @@ async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
     let plugin = dir.path().join("api.js");
-    std::fs::write(&plugin, r#"helix.plugin.remove("nope-js-api");"#)?;
+    std::fs::write(&plugin, r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+helix.plugin.remove("nope-js-api");"#)?;
     // 本用例不靠任何全局锁(原 `PLUGIN_TEST_LOCK` 已删,插件用例现在全并行)
     // ⇒ 单独设插件根:集成进程不执行 application.rs 的启动推入,`plugins_dir()` 会是 null,
     //    JS 侧便早退报"插件目录不可用",断言就看不到预期的 `failed to remove` ✗

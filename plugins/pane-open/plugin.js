@@ -11,7 +11,7 @@
 // `helix.pane` 是 `helix` 对象上的**属性对象**(`builder.property("pane", …)`)⇒
 // JS 可以给它加属性(§13 的探测已证:原生对象既可挂新属性、也可覆盖既有属性 ✓)
 // ⇒ 这类"形状收敛"完全不需要动核心 ✓
-helix.plugin("pane-open", { deps: [], version: "1.0" });
+helix.plugin("pane-open", { deps: [], version: "1.0", permissions: {} }); // permissions: 只调 pane API
 
 /// `helix.pane.open({ place, content })`
 ///   place  : "right" | "left" | "top" | "bottom"(也接受别名 below/above)

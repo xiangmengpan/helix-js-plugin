@@ -272,7 +272,15 @@ pub fn clear_active() {
 }
 
 /// 安装默认宿主(由 `init()` 调用;幂等由调用方守 —— 已有宿主时不要覆盖)。
-pub(crate) fn install_default(host: JsHost) {
+pub(crate) fn install_default(mut host: JsHost) {
+    // 单元测试夹具:新宿主默认"脚本一律已授权"(helix-js 的单测直接 eval 脚本验
+    // API 机制,它们没有 manifest)。**在宿主创建时**设,而不是每次 init() ——
+    // 否则权限用例调 reset_for_test() 清掉之后,下一次 init() 又把它打开。
+    // 集成测试走真实路径(那边没有 cfg(test))。
+    #[cfg(test)]
+    {
+        host.permissions.borrow_mut().trust_all = true;
+    }
     DEFAULT_HOST.with(|h| *h.borrow_mut() = Some(Box::new(host)));
 }
 

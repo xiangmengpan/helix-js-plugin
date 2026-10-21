@@ -23,6 +23,10 @@ async fn plugin_terminal_modes() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         let tid = null;
         helix.register_command("tm-open", () => { tid = helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
         helix.register_command("tm-min", () => { helix.set_terminal_mode(tid, "minimized"); });
@@ -85,6 +89,10 @@ async fn plugin_terminal_floating_and_mode() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         let tid = null;
         helix.register_command("tf-open", () => {
             tid = helix.open_terminal({ cmd: "cat", side: "bottom", size: 10 });
@@ -189,6 +197,10 @@ async fn plugin_terminal_dock_focus_back_to_editor() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("td-open", () => {
             helix.open_terminal({ cmd: "cat", side: "bottom", size: 10 });
         });
@@ -248,6 +260,10 @@ async fn plugin_terminal_float_plus_dock_focus_editor() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         let tid = null;
         helix.register_command("mx-float", () => {
             tid = helix.open_terminal({ cmd: "cat", side: "bottom", size: 10 });
@@ -398,6 +414,10 @@ async fn plugin_terminal_save_and_yank() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         let tid = null;
         helix.register_command("ts-open", () => {
             tid = helix.open_terminal({ cmd: "cat", side: "bottom", size: 10 });
@@ -487,6 +507,10 @@ async fn plugin_layout_ops_api() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         let tid = null;
         helix.register_command("lw-open", () => {
             tid = helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
@@ -547,6 +571,10 @@ async fn plugin_focus_return_to_editor() -> anyhow::Result<()> {
     std::fs::write(
         &opener,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("fr-open", () => {
             helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
         });
@@ -661,6 +689,10 @@ async fn plugin_focus_border() -> anyhow::Result<()> {
     std::fs::write(
         &opener,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("fb-open", () => {
             helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
         });
@@ -746,6 +778,10 @@ async fn plugin_terminal_insert_cw_passthrough() -> anyhow::Result<()> {
     std::fs::write(
         &opener,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("wk-open", () => {
             helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
         });
@@ -1019,6 +1055,10 @@ async fn plugin_statusline_global() -> anyhow::Result<()> {
     std::fs::write(
         &opener,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("sg-open", () => {
             helix.open_terminal({ cmd: "cat", side: "right", size: 40 });
         });

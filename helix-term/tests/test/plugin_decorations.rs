@@ -189,6 +189,10 @@ async fn plugin_decorations_async_begin_edit() -> anyhow::Result<()> {
         &plugin_path,
         format!(
             r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", {{ deps: [], permissions: {{ process: true, fs_read: true, fs_write: true }} }});
+
+
             helix.register_command("dec-async", () => {{
                 helix.begin_edit();
                 helix.set_virtual_text("{f}", 0, 0, "A");

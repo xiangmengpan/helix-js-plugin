@@ -11,6 +11,10 @@ async fn plugin_fsasync_read() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("fs-demo", () => {
             helix.read_file_async("PLACEHOLDER_FILE").then((content) => {
                 helix.echo("fs::" + content);

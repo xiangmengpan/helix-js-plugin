@@ -44,6 +44,10 @@ async fn term_key_hook_minimize_on_esc() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.on("term-key", (id, key) => { if (key.code === "esc") return "minimize"; });
         helix.register_command("th-open", () => { helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
         "#,
@@ -78,6 +82,10 @@ async fn esc_switches_to_normal_q_noop() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("th-open", () => { helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
         helix.register_command("th-mode", () => {
             const t = helix.term_list()[0];
@@ -135,6 +143,10 @@ async fn term_hooks_notify_events() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.on("term-open", (id, cmd) => helix.echo("open:" + cmd));
         helix.on("term-mode-change", (id, m) => helix.echo("mode:" + m));
         helix.on("term-title", (id, t) => helix.echo("title:" + t));
@@ -228,6 +240,10 @@ async fn terminal_state_via_get_component_state() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("st-open", () => { globalThis.__tid = helix.open_terminal({ cmd: "cat", side: "right", size: 30 }); });
         helix.register_command("st-dump", () => {
             const st = helix.get_component_state(globalThis.__tid);
@@ -279,6 +295,10 @@ async fn terminal_title_bar_from_js_view() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("tv-open", () => {
             const tid = helix.open_terminal({ cmd: "cat", side: "right", size: 30 });
             helix.set_component_render(tid, () => [{ type: "text", text: "TITLE-BAR" }]);
@@ -621,7 +641,11 @@ async fn layout_change_event_fires_after_split() -> anyhow::Result<()> {
     std::fs::write(
         &plugin,
         format!(
-            r#"helix.on("layout-change", (kind) => {{ helix.write_file({m:?}, kind || "none"); }});
+            r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", {{ deps: [], permissions: {{ process: true, fs_read: true, fs_write: true }} }});
+
+helix.on("layout-change", (kind) => {{ helix.write_file({m:?}, kind || "none"); }});
 helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cmd: "true" }} }}); }});"#,
             m = marker.to_string_lossy()
         ),
@@ -992,6 +1016,10 @@ async fn fs_watch_event_fires_on_change() -> anyhow::Result<()> {
         &plugin_path,
         format!(
             r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", {{ deps: [], permissions: {{ process: true, fs_read: true, fs_write: true }} }});
+
+
             let events = [];
             helix.register_command("fw-watch", () => {{
                 helix.watch("{wd_str}", (evs) => {{ events = evs; }});

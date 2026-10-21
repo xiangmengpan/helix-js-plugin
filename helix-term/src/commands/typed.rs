@@ -5520,6 +5520,8 @@ fn term_native(
         return Ok(());
     }
     let src = r#"
+        // 这段是调 JS 路径的调试脚手架:fail-closed 之后必须自己声明能力
+        helix.plugin("term-native", { deps: [], permissions: { process: true } });
         let tid;
         helix.register_command("__term_native", () => {
             tid = helix.open_terminal({ cmd: "cat", side: "right", size: 40 });

@@ -6,7 +6,7 @@
 //
 // 数据 API 一直在 helix-js 里(`helix.layout.save/load/list/delete`),带纯函数单测与**路径穿越防护**;
 // 本插件只做"解析子命令 + 转发 + 反馈"。
-helix.plugin("layout", { deps: [], version: "1.0" });
+helix.plugin("layout", { deps: [], version: "1.0", permissions: {} }); // permissions: 只调布局 API
 
 helix.register_command("layout", () => {
   const args = helix.command_args();

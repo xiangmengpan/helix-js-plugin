@@ -23,6 +23,10 @@ async fn plugin_async_run() -> anyhow::Result<()> {
     std::fs::write(
         &plugin_path,
         r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", { deps: [], permissions: { process: true, fs_read: true, fs_write: true } });
+
+
         helix.register_command("async-demo", () => {
             helix.run_async("echo async-ok").then((out) => {
                 helix.echo("async:" + (out ?? "").trim());

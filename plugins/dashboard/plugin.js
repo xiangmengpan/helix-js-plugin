@@ -17,7 +17,7 @@
 // ## 安全设计
 // 所有 API 探测/动作都包 guard();失败一律 echo(**绝不静默**,更不 throw ✗
 // —— 真机上抛出的异常不可见,这一路被它坑过三次 ✓)
-helix.plugin("dashboard", { deps: [], version: "2.1" }); // 2.1:仅"启动时已打开文件"不再自动弹(2.0 无条件弹,与文件选择器叠加)
+helix.plugin("dashboard", { deps: [], version: "2.1", permissions: {} }); // permissions: 不碰 fs/进程（fail-closed 前置） // 2.1:仅"启动时已打开文件"不再自动弹(2.0 无条件弹,与文件选择器叠加)
 
 // ── 可配置 ────────────────────────────────────────────────────────────────
 helix.define_config("dashboard", {

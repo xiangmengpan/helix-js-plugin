@@ -305,6 +305,10 @@ async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
         &plugin_path,
         format!(
             r#"
+        // 测试夹具:fail-closed 之后,脚本必须声明它用的能力(否则被拒)
+        helix.plugin("test-fixture", {{ deps: [], permissions: {{ process: true, fs_read: true, fs_write: true }} }});
+
+
             helix.register_command("async-xedit", () => {{
                 helix.begin_edit();
                 const d = helix.by_path("{}");

@@ -6,21 +6,22 @@
 //!
 //! 1. **C-1 只解析、只记录**:manifest 的新字段进 `PluginManifest`,不影响行为。
 //! 2. **C-2 三个入口做检查**:`helix.run` / `read_file` / `write_plugin_file`。
-//! 3. **grandfathered**(本仓 17 个内置插件与所有"没声明 permissions 的插件"):
+//! 3. **fail-closed**(C-4,2026-10-21 定):
 //!    - 内置插件(提供根是**用户插件目录以外**的**已知**根 ⇒ 随软件分发的 runtime)
-//!      一律放行。注意判据是"已知根":绝对路径加载 / `load_script_named`(如
+//!      一律放行。判据是"已知根":绝对路径加载 / `load_script_named`(如
 //!      `:plugin-load /abs/x.js`)没有提供根 ⇒ 按**第三方**对待(早先把这种情况判成
 //!      内置 ⇒ 检查点对 `:plugin-load` 整体失效,见 `state::is_builtin_root`);
-//!    - **没声明 `permissions`** 的 manifest = legacy 语义 ⇒ 放行(否则 369 个集成
-//!      测试与所有存量插件立刻红;这也符合"先声明、再执行"的迁移顺序);
-//!    - **声明了 `permissions`** 的插件才进入检查:声明的能力放行,未声明的:
-//!      有记住的决定就用它,否则**问一次**(记入 pending,并**拒绝本次**)。
+//!    - **没声明 `permissions`** 的 manifest = **空能力集** ⇒ 与"声明了但没要这项"同档:
+//!      **问一次**(拒绝本次 + 记 pending)。这条替代了早期的 legacy 放行 —— 那个语义
+//!      让"不写 manifest"成为绕过全部检查的办法。17 个内置插件因此都显式声明了
+//!      (无受保护调用的写 `permissions: {}`);
+//!    - **没有属主**(编辑器内部调用 / 不属于任何脚本的裸代码)⇒ 直接拒绝。
 //!
 //! "拒绝本次"而不是"静默放行"是刻意的:静默放行会让 `permissions` 变成装饰,
 //! 而失败可见(错误消息 + pending 列表)才让人有机会授权。
 //!
 //! 端到端证据:`helix-term/tests/test/plugin_permissions.rs`(询问 → allow 放行 /
-//! deny 长期生效 / 未声明 permissions 不受影响)。
+//! deny 长期生效 / 未声明 permissions 被拒 / onPress 越权被拒)。
 //!
 //! # 归属(哪个插件在调?)
 //!
@@ -110,6 +111,12 @@ pub(crate) struct PermissionState {
     /// 注册期绑定:其余回调("谁注册的 onPress/render/preview/.then")→ 属主插件。
     /// 键见 [`CbKey`]。命令与事件各有自己的表(历史原因,不动它们)。
     pub(crate) callback_owners: HashMap<CbKey, String>,
+    /// **仅测试**:本夹具的脚本一律视为已授权。
+    ///
+    /// 为什么需要:helix-js 的单元测试直接用 `eval` 跑一段脚本去验 API 机制
+    /// (pty/fs/watch/server_*),它们不是"插件",也没有 manifest。集成测试
+    /// (`--features integration`)走真实路径,仍然执行 fail-closed 判定。
+    pub(crate) trust_all: bool,
 }
 
 /// 回调的注册期身份。
@@ -384,19 +391,17 @@ fn verdict(ctx: &RequestCtx, cap: &str) -> Verdict {
     if ctx.builtin {
         return Verdict::Allow;
     }
-    match &ctx.permissions {
-        // legacy:没声明 permissions ⇒ 不拦截(grandfathered)
-        None => Verdict::Allow,
-        Some(p) => {
-            if p.allows(cap) {
-                return Verdict::Allow;
-            }
-            match ctx.decision {
-                Some(true) => Verdict::Allow,
-                Some(false) => Verdict::Denied,
-                None => Verdict::Ask,
-            }
-        }
+    // fail-closed:没声明 permissions = **空能力集**(早先是 legacy 放行 —— 那让
+    // "不写 manifest"成为绕过全部检查的办法)。
+    let declared = ctx.permissions.is_some_and(|p| p.allows(cap));
+    if declared {
+        return Verdict::Allow;
+    }
+    // 用户显式记住的决定覆盖"没声明"(老插件授权一次后继续可用)
+    match ctx.decision {
+        Some(true) => Verdict::Allow,
+        Some(false) => Verdict::Denied,
+        None => Verdict::Ask,
     }
 }
 
@@ -431,9 +436,15 @@ pub(crate) fn check(cap: &str) -> anyhow::Result<()> {
     if !crate::host::engine_exists() {
         return Ok(());
     }
-    let Some(plugin) = current_plugin() else {
-        // 归属未知(裸脚本、加载期)= legacy 语义 ⇒ 放行,与"没声明 permissions"一致
+    if cfg!(test) && with_state(|s| s.trust_all) {
         return Ok(());
+    }
+    let Some(plugin) = current_plugin() else {
+        // 归属未知 = 没有插件上下文(编辑器内部调用 / 未归到任何脚本的裸代码)。
+        // fail-closed:拒绝并说清原因,而不是"猜一个插件"或"静默放行"。
+        return Err(anyhow::anyhow!(
+            "没有插件上下文,拒绝 '{cap}':受保护 API 只能在插件回调/命令/加载期脚本里调用"
+        ));
     };
     let (builtin, permissions, decision) = with_state(|s| {
         (
@@ -534,14 +545,17 @@ pub fn manifests() -> Vec<PluginManifest> {
 
 /// 某个能力**现在**会不会被放行(不产生副作用:不问、不记 pending)。
 ///
-/// 语义 = "不问就放行吗":没声明 permissions / 内置插件 / 无归属 ⇒ true(legacy 放行);
-/// 声明了则看声明或已记住的决定(未决定 ⇒ false,因为那次调用会被问一次)。
+/// 语义 = "不问就放行吗":内置插件 ⇒ true;其余看声明或已记住的决定
+/// (未声明 / 未决定 ⇒ false —— 调用会被问一次)。无归属 ⇒ false(fail-closed)。
 pub(crate) fn allowed_now(cap: &str) -> bool {
     if !crate::host::engine_exists() {
         return true;
     }
-    let Some(plugin) = current_plugin() else {
+    if cfg!(test) && with_state(|s| s.trust_all) {
         return true;
+    }
+    let Some(plugin) = current_plugin() else {
+        return false;
     };
     let (builtin, permissions, decision) = with_state(|s| {
         (
@@ -611,7 +625,14 @@ pub(crate) fn reset_for_test() {
         s.command_owners.clear();
         s.handler_owners.clear();
         s.callback_owners.clear();
+        s.trust_all = false;
     });
+}
+
+/// **仅测试**:把当前夹具标成"脚本一律已授权"(见 `PermissionState::trust_all`)。
+#[cfg(test)]
+pub(crate) fn trust_all_for_test() {
+    with_state(|s| s.trust_all = true);
 }
 
 #[cfg(test)]
@@ -640,8 +661,13 @@ mod tests {
             verdict(&mk(true, Some(p(false, false, false)), None), CAP_PROCESS),
             Verdict::Allow
         );
-        // 没声明 permissions ⇒ legacy 放行
-        assert_eq!(verdict(&mk(false, None, None), CAP_PROCESS), Verdict::Allow);
+        // 没声明 permissions ⇒ 空能力集 ⇒ 问一次(fail-closed)
+        assert_eq!(verdict(&mk(false, None, None), CAP_PROCESS), Verdict::Ask);
+        // 但已记住的 allow 仍然覆盖它(用户显式授权过的老插件继续可用)
+        assert_eq!(
+            verdict(&mk(false, None, Some(true)), CAP_PROCESS),
+            Verdict::Allow
+        );
         // 声明了 process 但没声明 fs_write
         assert_eq!(
             verdict(&mk(false, Some(p(true, false, false)), None), CAP_PROCESS),

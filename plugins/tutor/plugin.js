@@ -10,7 +10,7 @@
 //                                 所以由 helix-term 启动时推入
 //   `open_file(p, { scratch: true })` —— **不绑定路径**:用户 `:w` 不会覆盖 runtime 里的原文件
 //                                        (Rust 版原本也是 `set_path(None)`,这是安全前提)
-helix.plugin("tutor", { deps: [], version: "1.0" });
+helix.plugin("tutor", { deps: [], version: "1.0", permissions: {} }); // permissions: runtime_path 不受能力门控
 
 helix.register_command("tutor", () => {
   const p = helix.runtime_path("tutor");
