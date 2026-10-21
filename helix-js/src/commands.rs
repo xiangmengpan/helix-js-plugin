@@ -833,7 +833,8 @@ pub(crate) fn js_map(
 
     // 函数 → 注册为隐藏插件命令 __mapped_N
     let command: String = if command_arg.as_callable().is_some() {
-        let id = crate::state::next_map_id();
+        // 4a L1：宿主状态从**引擎**取回（原生回调拿不到 &mut JsHost）
+        let id = crate::state::next_map_id(crate::host::host_state(context));
         let name = format!("__mapped_{id}");
         with_registry(|r| r.insert(name.clone(), command_arg));
         // C-2 归属:映射函数是**命令**形态执行的(`run_command`),所以按命令绑定属主。

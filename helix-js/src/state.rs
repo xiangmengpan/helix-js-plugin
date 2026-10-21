@@ -430,15 +430,12 @@ pub(crate) fn next_popup_id() -> u64 {
     })
 }
 
-pub(crate) fn next_map_id() -> u64 {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.next_map_id;
-        {
-            let v = c.get();
-            c.set(v + 1);
-            v
-        }
-    })
+/// 下一个映射命令 id（4a L1：**显式**接收宿主状态，不再走隐式宿主）。
+pub(crate) fn next_map_id(st: &crate::host::HostState) -> u64 {
+    let c = &st.next_map_id;
+    let v = c.get();
+    c.set(v + 1);
+    v
 }
 
 pub(crate) fn next_terminal_view_id() -> u64 {

@@ -44,13 +44,30 @@ use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::{Mutex, MutexGuard};
+
+/// **宿主状态**（4a L1）：从 `JsHost` 里搬出来的字段，放进 `Rc`，
+/// 并**注入引擎**（`Context::insert_data`）—— 原生回调里 `Context` 是从宿主借出的，
+/// 拿不到 `&mut JsHost`，但可以用 `host_state(ctx)` 取回这份状态。
+///
+/// 为什么不用裸指针：`Rc<HostState>` 的归属是类型关系（引擎持有它的一份引用），
+/// "指针活得比宿主久"的约定由所有权保证。
+///
+/// ⚠ 逐层搬迁中：目前只有 `next_map_id` 一个字段在这里（L1 的闭环验证），
+/// 其余 61 个字段仍在 `JsHost` 上。
+pub struct HostState {
+    pub(crate) next_map_id: Cell<u64>,
+}
 
 /// 一份 JS 运行时状态。
 ///
 /// 只拥有**引擎与按宿主隔离的状态**(消息/导出/清单/权限);跨线程通道与帧路径缓存
 /// 仍是进程级 —— 那是它们的本质属性,见模块头的「状态所有权地图」。
 pub struct JsHost {
+    /// **宿主状态**（4a）：由 `Rc` 持有并注入引擎，原生回调用 `host_state(ctx)` 取回。
+    /// 逐层搬迁中——目前只放了 `next_map_id`，其余字段仍在本结构体上。
+    state: Rc<HostState>,
     /// 引擎(**普通 `RefCell<Context>`**)。`try_borrow_mut()` 就是**排他/重入检测** ——
     /// 引擎始终留在宿主里,不再有"借出期间槽为空"的中间态,也就不需要 `Owner`/`put_engine`
     /// 那套"该归还给谁"的判定。宿主字段级的可重入访问(`messages`/`exports`…)仍各走自己的
@@ -155,7 +172,6 @@ pub struct JsHost {
     pub(crate) edit_txn_depth: Cell<usize>,
     pub(crate) last_panel_id: Cell<Option<u64>>,
     pub(crate) next_popup_id: Cell<u64>,
-    pub(crate) next_map_id: Cell<u64>,
     pub(crate) next_term_id: Cell<u64>,
     pub(crate) next_terminal_view_id: Cell<u64>,
     /// T0:原 `server_rows::NEXT_ID`(thread_local)—— server rows 一次性回调 id 计数器
@@ -172,9 +188,15 @@ pub struct JsHost {
 impl JsHost {
     /// 建宿主,并在其中注册 `helix` 全局(建引擎的代码在 `crate::build_engine`)。
     pub fn new() -> Self {
+        let state = Rc::new(HostState {
+            next_map_id: Cell::new(1),
+        });
         let mut ctx = Context::default();
         crate::build_engine(&mut ctx);
+        // 注入引擎：原生回调经 `host_state(ctx)` 取回（4a 的核心机制）
+        ctx.insert_data(Rc::clone(&state));
         Self {
+            state,
             engine: RefCell::new(ctx),
             messages: RefCell::new(Vec::new()),
             exports: RefCell::new(HashMap::new()),
@@ -230,7 +252,6 @@ impl JsHost {
             edit_txn_depth: Cell::new(0),
             last_panel_id: Cell::new(None),
             next_popup_id: Cell::new(1),
-            next_map_id: Cell::new(1),
             next_term_id: Cell::new(1),
             next_terminal_view_id: Cell::new(1),
             next_server_row_id: Cell::new(1),
@@ -354,7 +375,22 @@ impl Drop for ActiveGuard {
 /// 不再是一个运行期 panic(借用冲突),而是**编译不过**。
 /// 反例见 `helix-term/src/compositor.rs` 的 `Context::with_js` 文档与
 /// `docs/superpowers/plans/2026-10-14-js-host-phaseD-and-boundary.md` §D-4。
+/// **原生回调路径**：从引擎取回宿主状态。
+///
+/// 引擎里没有状态 = 有人绕过了 `JsHost::new` 自己建 `Context` —— 明确 panic 并说清原因
+/// （静默返回默认值会让"状态丢失"变成难查的 bug）。
+pub fn host_state(ctx: &Context) -> &HostState {
+    ctx.get_data::<Rc<HostState>>()
+        .map(Rc::as_ref)
+        .expect("宿主状态缺失：Context 必须由 JsHost::new 创建（它负责 insert_data）")
+}
+
 impl JsHost {
+    /// 显式路径：宿主状态（`&HostState` 足够，字段内部都是 `RefCell`/`Cell`）。
+    pub fn state(&self) -> &HostState {
+        &self.state
+    }
+
     /// 在 `self` 上执行 `f`,期间 `self` 是活动宿主(嵌套时恢复)。
     fn pump<R>(&mut self, f: impl FnOnce() -> R) -> R {
         let prev = ACTIVE.with(|a| a.replace(Some(NonNull::from(&mut *self))));
@@ -1457,6 +1493,18 @@ mod engine_ownership_tests {
             a_saw.contains("A-RED.txt"),
             "宿主 A 的快照不该被别的宿主覆盖;实得 {a_saw:?}"
         );
+    }
+
+    /// 4a L1：`Rc<HostState>` 真的被注进了引擎 —— 原生回调取回的就是宿主那一个（地址相同）。
+    #[test]
+    fn engine_carries_the_host_state_rc() {
+        crate::init();
+        let same = crate::state::with_engine(|ctx| {
+            let via_engine = crate::host::host_state(ctx) as *const HostState;
+            let via_host: *const HostState = with_host_ref(|h| h.state() as *const HostState);
+            via_engine == via_host
+        });
+        assert!(same, "引擎里的 HostState 必须与 JsHost.state 是同一个 Rc");
     }
 
     /// 布局/诊断快照必须**按宿主**隔离(2:它们此前是进程级 `static`,
