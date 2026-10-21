@@ -57,7 +57,7 @@ fn request_document_highlights(editor: &mut Editor, doc_id: DocumentId, view_id:
             .map(|highlights| document_highlight_ranges(&text, offset_encoding, highlights))
             .unwrap_or_default();
 
-        job::dispatch(move |editor, _, _js| {
+        job::dispatch(move |editor, _, mut _js| {
             apply_document_highlights(editor, doc_id, view_id, ranges);
         })
         .await;
@@ -131,7 +131,7 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         if event.doc.config.load().lsp.auto_document_highlight {
             let doc_id = event.doc.id();
             let view_id = event.view;
-            job::dispatch_blocking(move |editor, _, _js| {
+            job::dispatch_blocking(move |editor, _, mut _js| {
                 request_document_highlights(editor, doc_id, view_id);
             });
         }
@@ -154,7 +154,7 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         if event.doc.config.load().lsp.auto_document_highlight && !event.ghost_transaction {
             let doc_id = event.doc.id();
             let view_id = event.view;
-            job::dispatch_blocking(move |editor, _, _js| {
+            job::dispatch_blocking(move |editor, _, mut _js| {
                 request_document_highlights(editor, doc_id, view_id);
             });
         }

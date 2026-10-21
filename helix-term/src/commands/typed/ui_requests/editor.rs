@@ -7,7 +7,7 @@ use super::*;
 
 pub(crate) fn handle_set_theme(SetThemeReq { name }: SetThemeReq) -> anyhow::Result<()> {
     // 复用 :theme Validate 逻辑：加载 + set_theme + 重捕获基准 + 清插件覆盖
-    job::dispatch_blocking(move |editor, _compositor, _js| {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
         let true_color = editor.config.load().true_color || crate::true_color();
         let theme = match editor.theme_loader.load(&name) {
             Ok(t) => t,
@@ -44,7 +44,7 @@ pub(crate) fn handle_map_key(
 ) -> anyhow::Result<()> {
     // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
     let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         if let Some(view) = compositor.find::<ui::EditorView>() {
             if unbind {
                 // 解绑(dashboard 关屏时用)—— 真正的"摘叶",不是绑到 no_op ✗

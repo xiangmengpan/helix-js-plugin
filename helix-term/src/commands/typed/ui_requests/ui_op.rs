@@ -1,7 +1,7 @@
 //! `UiOp` —— 一次 UI 变更的**描述**(G12)。
 //!
 //! 为什么改成值:原先 pane 族的 24 个 handler 各自把 UI 接线塞进
-//! `job::dispatch_blocking(move |editor, compositor, _js| { … })` 闭包里 —— 想验证
+//! `job::dispatch_blocking(move |editor, compositor, mut _js| { … })` 闭包里 —— 想验证
 //! 「这个请求到底要做什么」只能起一个 `Application`;而且
 //! `set_layout_change_kind(..) + sync_layout_cache(js.as_deref_mut())` 这对调用在 24 处手写,
 //! 漏一处就产出 `kind: null` 的 `layout-change` 事件(`docs/plugin-api.md` §4 记过这个坑)。
@@ -136,24 +136,24 @@ impl UiOp {
                 let panel = ui::PluginPanel::new(id, side, focusable);
                 // rail:true + left/right → 注册 rail(贴边全高);否则维持普通叶分裂
                 if rail && matches!(side, ui::PanelSide::Left | ui::PanelSide::Right) {
-                    compositor.register_panel(panel, side, size);
+                    compositor.register_panel(panel, side, size, js.as_deref_mut());
                 } else {
                     let (dir, first) = match side {
                         ui::PanelSide::Right => (SplitDir::H, false),
                         ui::PanelSide::Left => (SplitDir::H, true),
                         ui::PanelSide::Bottom => (SplitDir::V, false),
                     };
-                    let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(panel));
+                    let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(panel), js.as_deref_mut());
                 }
             }
             UiOp::ClosePanel { id } => {
                 // popup id ≠ 布局树 leaf id(split 分配):由 close_panel_by_id 按它找叶
                 // 先清 render 注册表(幂等),再按实例 id 关掉树里的面板叶
                 let _ = helix_js::close_popup(id);
-                compositor.close_panel_by_id(id);
+                compositor.close_panel_by_id(id, js.as_deref_mut());
             }
             UiOp::MovePanel { id, side } => {
-                if !compositor.set_panel_side(id, side) {
+                if !compositor.set_panel_side(id, side, js.as_deref_mut()) {
                     editor.set_error(format!("move_panel: no panel with id {id}"));
                 }
             }
@@ -171,19 +171,19 @@ impl UiOp {
                     _ => Box::new(ui::PluginPanel::new(id, ui::PanelSide::Right, false)),
                 };
                 // 用预分配 id 直接建叶子(split 的 id 由 JS 分配,回调已注册)
-                compositor.split_leaf_prealloc(id, dir, first, size, component);
+                compositor.split_leaf_prealloc(id, dir, first, size, component, js.as_deref_mut());
                 // 标注变更种类(紧随其后的 sync_layout_cache 会把它带进 layout-change 事件)
                 compositor.set_layout_change_kind("split");
                 compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::CloseLeaf { id } => {
-                compositor.close_leaf_clean(editor, id);
+                compositor.close_leaf_clean(editor, id, js.as_deref_mut());
                 compositor.set_layout_change_kind("close");
                 compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::SetFloat { id } => {
                 // 复用 ②-1 的浮窗模型:set_float 给默认居中槽位
-                compositor.set_float(id);
+                compositor.set_float(id, js.as_deref_mut());
                 compositor.set_layout_change_kind("float");
                 compositor.sync_layout_cache(js.as_deref_mut());
             }
@@ -233,33 +233,33 @@ impl UiOp {
                 compositor.set_layout_change_kind("embed");
                 compositor.sync_layout_cache(js.as_deref_mut());
             }
-            UiOp::Zoom { id } => compositor.zoom_leaf(id),
-            UiOp::Unzoom => compositor.unzoom(),
-            UiOp::ResizeLeaf { id, ratio } => compositor.resize_leaf(id, ratio),
+            UiOp::Zoom { id } => compositor.zoom_leaf(id, js.as_deref_mut()),
+            UiOp::Unzoom => compositor.unzoom(js.as_deref_mut()),
+            UiOp::ResizeLeaf { id, ratio } => compositor.resize_leaf(id, ratio, js.as_deref_mut()),
             UiOp::ResizeLeafDir { id, dir, delta } => {
-                if !compositor.resize_leaf_dir(id, dir, delta) {
+                if !compositor.resize_leaf_dir(id, dir, delta, js.as_deref_mut()) {
                     editor.set_error("layout_resize: 该叶子此方向不可调（父分割方向不匹配）");
                 }
             }
             UiOp::SwapLeaves { id1, id2 } => {
-                if !compositor.swap_leaves(id1, id2) {
+                if !compositor.swap_leaves(id1, id2, js.as_deref_mut()) {
                     editor.set_error("layout_swap: 叶子不存在");
                 }
             }
-            UiOp::Minimize { id, minimized } => compositor.minimize_leaf(id, minimized),
-            UiOp::SetFixed { id, fixed } => compositor.set_leaf_fixed(id, fixed),
+            UiOp::Minimize { id, minimized } => compositor.minimize_leaf(id, minimized, js.as_deref_mut()),
+            UiOp::SetFixed { id, fixed } => compositor.set_leaf_fixed(id, fixed, js.as_deref_mut()),
             UiOp::FocusLeafDir { id, dir, first } => {
-                if compositor.focus_leaf_dir(id, dir, first).is_none() {
+                if compositor.focus_leaf_dir(id, dir, first, js.as_deref_mut()).is_none() {
                     editor.set_error("layout_focus: 该方向无邻居（边界）");
                 }
             }
             UiOp::SwapLeafDir { id, dir, first } => {
-                if !compositor.swap_leaf_dir(id, dir, first) {
+                if !compositor.swap_leaf_dir(id, dir, first, js.as_deref_mut()) {
                     editor.set_error("layout_swap_dir: 该方向无邻居");
                 }
             }
-            UiOp::Equalize { id } => compositor.equalize_leaf(id),
-            UiOp::FocusLeaf { id } => compositor.focus_leaf(id),
+            UiOp::Equalize { id } => compositor.equalize_leaf(id, js.as_deref_mut()),
+            UiOp::FocusLeaf { id } => compositor.focus_leaf(id, js.as_deref_mut()),
             UiOp::RestoreLayout { json } => {
                 match serde_json::from_str::<serde_json::Value>(&json) {
                     Ok(v) => {

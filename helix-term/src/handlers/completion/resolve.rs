@@ -144,7 +144,7 @@ impl ResolveRequest {
         let Some(resolved_item) = helix_event::cancelable_future(future, cancel).await else {
             return;
         };
-        job::dispatch(move |_, compositor, _js| {
+        job::dispatch(move |_, compositor, mut _js| {
             if let Some(completion) = &mut compositor
                 .find::<crate::ui::EditorView>()
                 .unwrap()

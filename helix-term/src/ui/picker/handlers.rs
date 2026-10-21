@@ -53,7 +53,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
             return;
         };
 
-        job::dispatch_blocking(move |editor, compositor, _js| {
+        job::dispatch_blocking(move |editor, compositor, mut _js| {
             let Some(Overlay {
                 content: picker, ..
             }) = compositor.find::<Overlay<Picker<T, D>>>()
@@ -86,7 +86,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
                     }
                 };
 
-                job::dispatch_blocking(move |editor, compositor, _js| {
+                job::dispatch_blocking(move |editor, compositor, mut _js| {
                     let Some(Overlay {
                         content: picker, ..
                     }) = compositor.find::<Overlay<Picker<T, D>>>()
@@ -166,7 +166,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
         self.last_query = query.clone();
         let callback = self.callback.clone();
 
-        job::dispatch_blocking(move |editor, compositor, _js| {
+        job::dispatch_blocking(move |editor, compositor, mut _js| {
             let Some(Overlay {
                 content: picker, ..
             }) = compositor.find::<Overlay<Picker<T, D>>>()

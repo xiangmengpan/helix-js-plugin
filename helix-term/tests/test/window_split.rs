@@ -156,7 +156,7 @@ async fn orphan_views_adopted_into_leaves() -> anyhow::Result<()> {
     let types = app.compositor.layout_tree().leaf_types();
     assert_eq!(types.len(), 1, "迁移前仍单叶(旧双 view 在叶内): {types:?}");
     // 收编
-    app.compositor.adopt_orphan_views(&mut app.editor);
+    app.compositor.adopt_orphan_views(&mut app.editor, None);
     let types = app.compositor.layout_tree().leaf_types();
     assert_eq!(types.len(), 2, "迁移后 2 叶: {types:?}");
     assert!(

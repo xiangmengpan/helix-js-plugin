@@ -31,7 +31,7 @@ pub(crate) fn handle_open_popup(
         .auto_close(false)
     };
     // 由事件循环在下一轮推层并渲染。
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         compositor.replace_or_push(lid, popup);
     });
     Ok(())
@@ -44,7 +44,7 @@ pub(crate) fn handle_open_popup(
 /// (弹层可能不在栈顶,所以不能 `pop()`)。
 pub(crate) fn handle_close_popup(ClosePopupReq { id }: ClosePopupReq) -> anyhow::Result<()> {
     let _ = helix_js::close_popup(id);
-    job::dispatch_blocking(move |_editor, compositor, _js| {
+    job::dispatch_blocking(move |_editor, compositor, mut _js| {
         compositor.close_popup_by_id(id);
     });
     Ok(())

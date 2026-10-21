@@ -176,7 +176,7 @@ pub fn raw_regex_prompt(
                             if event == PromptEvent::Validate {
                                 let callback = async move {
                                     let call: job::Callback = Callback::EditorCompositor(Box::new(
-                                        move |_editor: &mut Editor, compositor: &mut Compositor, _js| {
+                                        move |_editor: &mut Editor, compositor: &mut Compositor, mut _js| {
                                             let contents = Text::new(format!("{}", err));
                                             let size = compositor.size();
                                             let popup = Popup::new("invalid-regex", contents)
@@ -352,7 +352,7 @@ pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std
                 let new_root = helix_stdx::path::normalize(path);
                 let callback = Box::pin(async move {
                     let call: Callback =
-                        Callback::EditorCompositor(Box::new(move |editor, compositor, _js| {
+                        Callback::EditorCompositor(Box::new(move |editor, compositor, mut _js| {
                             if let Ok(picker) = file_explorer(new_root, editor) {
                                 compositor.push(Box::new(overlay::overlaid(picker)));
                             }

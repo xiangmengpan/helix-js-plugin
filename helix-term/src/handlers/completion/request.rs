@@ -153,7 +153,7 @@ impl helix_event::AsyncHook for CompletionHandler {
         let trigger = self.trigger.take().expect("debounce always has a trigger");
         self.in_flight = Some(trigger);
         let handle = self.task_controller.restart();
-        dispatch_blocking(move |editor, compositor, _js| {
+        dispatch_blocking(move |editor, compositor, mut _js| {
             request_completions(trigger, handle, editor, compositor)
         });
     }
@@ -284,7 +284,7 @@ fn request_completions(
             response.take_items(&mut items);
             context.insert(response.provider, response.context);
         }
-        dispatch(move |editor, compositor, _js| {
+        dispatch(move |editor, compositor, mut _js| {
             show_completion(editor, compositor, items, context, trigger)
         })
         .await;

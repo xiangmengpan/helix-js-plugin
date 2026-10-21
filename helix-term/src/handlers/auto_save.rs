@@ -82,7 +82,7 @@ impl helix_event::AsyncHook for AutoSaveHandler {
 
 fn request_auto_save(
     editor: &mut Editor,
-    js: Option<&mut helix_js::host::JsHost>,
+    mut js: Option<&mut helix_js::host::JsHost>,
 ) {
     let context = &mut compositor::Context {
         editor,

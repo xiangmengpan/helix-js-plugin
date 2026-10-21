@@ -77,8 +77,8 @@ impl PluginPanel {
                     .find_leaf_id::<PluginPanel>(|p| p.id() == id)
                 {
                     // rail 面板:取除 rail(remove 对 rail 免疫)
-                    if !compositor.close_rail(leaf) {
-                        compositor.remove_leaf(leaf);
+                    if !compositor.close_rail(leaf, cx.js.as_deref_mut()) {
+                        compositor.remove_leaf(leaf, cx.js.as_deref_mut());
                     }
                 }
                 cx.editor.set_error(format!(
@@ -139,7 +139,7 @@ impl Component for PluginPanel {
                 EventResult::Consumed(Some(Box::new(
                     move |compositor: &mut Compositor, cx: &mut Context| {
                         let _ = helix_js::close_popup(id);
-                        compositor.close_panel_by_id(id);
+                        compositor.close_panel_by_id(id, cx.js.as_deref_mut());
                         let msgs = helix_js::take_messages();
                         if !msgs.is_empty() {
                             cx.editor.set_status(msgs.join(" "));

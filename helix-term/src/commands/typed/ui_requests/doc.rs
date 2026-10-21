@@ -16,7 +16,7 @@ pub(crate) fn handle_quit() -> anyhow::Result<()> {
     // ✅ 照抄同文件的 `fn quit`(typed.rs:244)的**完整流程** ✓
     // 我上一版只做了最后一步 `close` ✗ ⇒ 关掉最后一个视图后应用没退出
     // ⇒ 焦点悬空 ⇒ tree.rs:323 `try_get().unwrap()` panic ✓
-    job::dispatch_blocking(move |editor, _compositor, _js| {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
         // ① 最后一个视图且**有未保存** ⇒ 先提示,不硬关 ✓(与 :quit 同 ✓)
         if editor.tree.views().count() == 1 {
             if let Err(e) = buffers_remaining_impl(editor) {
@@ -41,7 +41,7 @@ pub(crate) fn handle_quit() -> anyhow::Result<()> {
 pub(crate) fn handle_open_scratch_file(
     OpenScratchFileReq { path }: OpenScratchFileReq,
 ) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |editor, _compositor, _js| {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
         let p = PathBuf::from(&path);
         match editor.open(&p, Action::Replace) {
             Err(err) => editor.set_error(format!("open_scratch: {err}")),
@@ -60,7 +60,7 @@ pub(crate) fn handle_open_file(OpenFileReq { path, row, col }: OpenFileReq) -> a
     // 错误经 set_error 上报（闭包内无 Result 传播路径）；
     // 带行列 → 打开后定位光标（clamp 复用 pos_to_char，JS 输入不可信）
     let path = PathBuf::from(path);
-    job::dispatch_blocking(move |editor, _compositor, _js| {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
         if let Err(err) = editor.open(&path, Action::Replace) {
             editor.set_error(format!("open_file: {err}"));
         } else if let (Some(row), Some(col)) = (row, col) {
@@ -75,7 +75,7 @@ pub(crate) fn handle_open_file(OpenFileReq { path, row, col }: OpenFileReq) -> a
 }
 
 pub(crate) fn handle_focus_buffer(FocusBufferReq { id }: FocusBufferReq) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |editor, _compositor, _js| {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
         if let Some((doc_id, _)) = editor.documents.iter().find(|(did, _)| did.as_u64() == id) {
             editor.switch(*doc_id, helix_view::editor::Action::Replace);
         } else {
@@ -88,7 +88,7 @@ pub(crate) fn handle_focus_buffer(FocusBufferReq { id }: FocusBufferReq) -> anyh
 pub(crate) fn handle_open_buffer_leaf(
     OpenBufferLeafReq { path, split }: OpenBufferLeafReq,
 ) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |editor, compositor, _js| {
+    job::dispatch_blocking(move |editor, compositor, mut _js| {
         let dir = match split.as_deref() {
             Some("h") => crate::ui::layout::SplitDir::H,
             _ => crate::ui::layout::SplitDir::V,

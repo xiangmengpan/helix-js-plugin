@@ -812,9 +812,9 @@ impl PluginTerminal {
                     // 回 helix：收起浮窗（若浮动）+ 焦点切回编辑器叶子（终端保留）
                     EventResult::Consumed(Some(Box::new(
                         |compositor: &mut Compositor, _cx: &mut Context| {
-                            compositor.unfloat();
+                            compositor.unfloat(_cx.js.as_deref_mut());
                             // focus_leaf 会同步布局缓存（get_layout 实时性）；layout_tree().focus 绕过
-                            compositor.focus_leaf(0);
+                            compositor.focus_leaf(0, _cx.js.as_deref_mut());
                         },
                     )))
                 }
@@ -850,13 +850,13 @@ impl PluginTerminal {
                         .layout_tree()
                         .find_leaf_id::<PluginTerminal>(|_| true)
                     {
-                        compositor.minimize_leaf(id, true);
+                        compositor.minimize_leaf(id, true, _cx.js.as_deref_mut());
                     }
                 }),
             ))),
             Some(helix_js::TermKeyDecision::Close) => Some(EventResult::Consumed(Some(Box::new(
                 |compositor: &mut Compositor, _cx: &mut Context| {
-                    compositor.remove_type::<PluginTerminal>();
+                    compositor.remove_type::<PluginTerminal>(None);
                 },
             )))),
             None => None,

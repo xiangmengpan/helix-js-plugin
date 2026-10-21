@@ -39,7 +39,7 @@ async fn window_mode_directional_focus() -> anyhow::Result<()> {
         false,
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
-    );
+     None);
     let active = app.compositor.layout_tree().active();
     assert_eq!(active, 1, "面板打开后活动叶子=面板");
     pump(&mut app, "<C-p>h<esc>").await?;
@@ -63,7 +63,7 @@ async fn window_mode_close_minimize_zoom() -> anyhow::Result<()> {
         false,
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
-    );
+     None);
     // 最小化往返
     pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
@@ -97,7 +97,7 @@ async fn window_mode_swap_and_resize() -> anyhow::Result<()> {
         false,
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
-    );
+     None);
     // 活动=面板(1),H + h 与左邻居(编辑器)交换内容;焦点仍在 id=1
     pump(&mut app, "<C-p>H<esc>").await?;
     let types: Vec<_> = app.compositor.layout_tree().leaf_types();
@@ -169,11 +169,11 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
         false,
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
-    );
+     None);
     // 面板(id=1)设为固定
     let dump = app.compositor.layout_tree().dump();
     let fixed_id = dump.leafs.iter().find(|l| l.id == 1).unwrap().id;
-    app.compositor.set_leaf_fixed(fixed_id, true);
+    app.compositor.set_leaf_fixed(fixed_id, true, None);
     assert!(
         app.compositor.layout_tree().is_fixed(fixed_id),
         "fixed 标记生效"
@@ -190,13 +190,13 @@ async fn window_mode_fixed_leaf_immune() -> anyhow::Result<()> {
     let f = dump.leafs.iter().find(|l| l.id == fixed_id).unwrap();
     assert!(f.fixed, "dump 含 fixed 字段");
     // 陷阱回归:先最小化后 fixed 的叶子可还原(还原不受 fixed 拦截;否则无恢复路径)
-    app.compositor.set_leaf_fixed(fixed_id, false);
+    app.compositor.set_leaf_fixed(fixed_id, false, None);
     pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
         app.compositor.layout_tree().minimized().is_some(),
         "z 最小化(未 fixed)"
     );
-    app.compositor.set_leaf_fixed(fixed_id, true);
+    app.compositor.set_leaf_fixed(fixed_id, true, None);
     pump(&mut app, "<C-p>z<esc>").await?;
     assert!(
         app.compositor.layout_tree().minimized().is_none(),
@@ -321,7 +321,7 @@ async fn zoom_unzoom_restores_tree_render() -> anyhow::Result<()> {
         false,
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
-    );
+     None);
     pump(&mut app, "<C-p>f<esc>").await?;
     assert_eq!(app.compositor.layout_tree().zoomed(), Some(1));
     pump(&mut app, "<C-p>f<esc>").await?;

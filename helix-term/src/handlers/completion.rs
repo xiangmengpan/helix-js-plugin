@@ -55,7 +55,7 @@ async fn replace_completions(
 ) {
     while let Some(mut response) = handle_response(&mut requests, is_incomplete).await {
         let handle = handle.clone();
-        dispatch(move |editor, compositor, _js| {
+        dispatch(move |editor, compositor, mut _js| {
             let editor_view = compositor.find::<ui::EditorView>().unwrap();
             let Some(completion) = &mut editor_view.completion else {
                 return;

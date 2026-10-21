@@ -43,7 +43,7 @@ pub(crate) fn handle_open_terminal(
             crate::ui::plugin_panel::PanelSide::Left => (SplitDir::H, true),
             crate::ui::plugin_panel::PanelSide::Bottom => (SplitDir::V, false),
         };
-        let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal));
+        let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal), _js.as_deref_mut());
     });
     Ok(())
 }
@@ -65,9 +65,9 @@ pub(crate) fn handle_term_mode(TermModeReq { view_id, mode }: TermModeReq) -> an
                 });
             match (tm, leaf_id) {
                 (crate::ui::plugin_terminal::TermMode::Floating, Some(id)) => {
-                    compositor.set_float(id);
+                    compositor.set_float(id, _js.as_deref_mut());
                 }
-                _ => compositor.unfloat(),
+                _ => compositor.unfloat(_js.as_deref_mut()),
             }
         }
     });
@@ -80,7 +80,7 @@ pub(crate) fn handle_term_close(TermCloseReq { view_id }: TermCloseReq) -> anyho
             .layout_tree()
             .find_leaf_id::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == view_id)
         {
-            compositor.remove_leaf(id);
+            compositor.remove_leaf(id, _js.as_deref_mut());
             // 布局变更 ⇒ 同步 JS 快照并触发 layout-change(#47)。
             // 这一臂此前**漏了** sync ⇒ 关终端时 JS 侧快照会陈旧、layout-change 也不发 ✗
             // （与另 9 个臂对齐；关闭终端同样改变了布局）
@@ -103,7 +103,7 @@ pub(crate) fn handle_term_clear(TermClearReq { view_id }: TermClearReq) -> anyho
 }
 
 pub(crate) fn handle_term_save(TermSaveReq { view_id, path }: TermSaveReq) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |editor, compositor, _js| {
+    job::dispatch_blocking(move |editor, compositor, mut _js| {
         let Some(term) = compositor
             .find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == view_id)
         else {

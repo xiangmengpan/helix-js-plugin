@@ -6,7 +6,7 @@
 use super::*;
 
 pub(crate) fn handle_server_op(ServerOpReq { op, arg }: ServerOpReq) -> anyhow::Result<()> {
-    job::dispatch_blocking(move |editor, _compositor, _js| {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
         if let Err(e) = server_op(editor, &op, arg.as_deref(), None) {
             editor.set_error(format!("server: {e}"));
         }

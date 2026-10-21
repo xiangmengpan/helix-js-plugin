@@ -362,13 +362,13 @@ impl Compositor {
         Some(self.layers.remove(idx))
     }
 
-    pub fn remove_type<T: 'static>(&mut self) {
+    pub fn remove_type<T: 'static>(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         let type_name = std::any::type_name::<T>();
         self.layers
             .retain(|component| component.type_name() != type_name);
         // 布局树里的同类组件（如终端叶子）也移除
         self.main_tree.remove_component_type::<T>();
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 按插件面板实例 id 关闭面板(布局树路径)。
@@ -392,16 +392,16 @@ impl Compositor {
         true
     }
 
-    pub fn close_panel_by_id(&mut self, id: u64) -> bool {
+    pub fn close_panel_by_id(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) -> bool {
         use crate::ui::plugin_panel::PluginPanel;
         let Some(leaf) = self.main_tree.find_leaf_id::<PluginPanel>(|p| p.id() == id) else {
             return false;
         };
         // rail 面板要走 close_rail(remove 对 rail 免疫)
-        if !self.close_rail(leaf) {
-            self.remove_leaf(leaf);
+        if !self.close_rail(leaf, js.as_deref_mut()) {
+            self.remove_leaf(leaf, js.as_deref_mut());
         }
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         true
     }
 
@@ -409,7 +409,7 @@ impl Compositor {
     /// 所以走树:rail 叶子换边 = 取出组件→按新边重新注册(保住宽度比例)。
     /// 旧实现查 `compositor.layers`,而面板不在那儿 → 恒 false,
     /// 于是 `move_panel` 永远报 "no panel with id"(见 plugin_panel.rs 的钉住测试)。
-    pub fn set_panel_side(&mut self, id: u64, side: PanelSide) -> bool {
+    pub fn set_panel_side(&mut self, id: u64, side: PanelSide, mut js: Option<&mut helix_js::host::JsHost>) -> bool {
         use crate::ui::plugin_panel::PluginPanel;
         let Some(leaf) = self.main_tree.find_leaf_id::<PluginPanel>(|p| p.id() == id) else {
             return false;
@@ -434,7 +434,7 @@ impl Compositor {
             return false;
         }
         self.main_tree.register_rail(comp, left, ratio);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         // 焦点跟到新的 rail 叶(旧 id 已被 prune 掉)
         if let Some(new_leaf) = self.main_tree.rail_leaf() {
             self.main_tree.focus(new_leaf);
@@ -772,10 +772,10 @@ impl Compositor {
         dir: crate::ui::layout::SplitDir,
         new_first: bool,
         component: Box<dyn Component>,
-    ) -> Option<u64> {
+     mut js: Option<&mut helix_js::host::JsHost>) -> Option<u64> {
         let active = self.main_tree.active();
         let ret = self.main_tree.split_side(active, dir, new_first, component);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         ret
     }
 
@@ -786,7 +786,7 @@ impl Compositor {
         new_first: bool,
         new_size: u16,
         component: Box<dyn Component>,
-    ) -> Option<u64> {
+     mut js: Option<&mut helix_js::host::JsHost>) -> Option<u64> {
         let active = self.main_tree.active();
         let total = if dir == crate::ui::layout::SplitDir::H {
             self.area.width
@@ -804,7 +804,7 @@ impl Compositor {
         let ret = self
             .main_tree
             .split_side_ratio(active, dir, new_first, ratio, component, new_id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         ret
     }
 
@@ -816,7 +816,7 @@ impl Compositor {
         new_first: bool,
         new_size: u16,
         component: Box<dyn Component>,
-    ) {
+     mut js: Option<&mut helix_js::host::JsHost>) {
         let active = self.main_tree.active();
         let total = if dir == crate::ui::layout::SplitDir::H {
             self.area.width
@@ -832,16 +832,16 @@ impl Compositor {
         let _ = self
             .main_tree
             .split_side_ratio(active, dir, new_first, ratio, component, id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     pub fn area(&self) -> Rect {
         self.area
     }
 
-    pub fn remove_leaf(&mut self, id: u64) {
+    pub fn remove_leaf(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.remove(id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 同步 editor.tree.focus 到活动叶子承载的 view（叶=可编辑窗口的路由基础）：
@@ -873,7 +873,7 @@ impl Compositor {
 
     /// 关闭一个 BufferLeaf 叶子：同步移除其在 editor.tree 中注册的 view
     /// （否则 tree.traverse 仍视为“文档被其他窗口显示”，remove_empty_scratch 等误判）。
-    pub fn remove_buffer_leaf(&mut self, editor: &mut Editor, id: u64) {
+    pub fn remove_buffer_leaf(&mut self, editor: &mut Editor, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         if let Some(vid) = self.main_tree.view_id_of(id) {
             let doc_id = editor.tree.contains(vid).then(|| editor.tree.get(vid).doc);
             self.main_tree.remove(id);
@@ -893,33 +893,33 @@ impl Compositor {
                     let _ = editor.close_document(doc_id, false);
                 }
             }
-            self.sync_layout_cache(None);
+            self.sync_layout_cache(js.as_deref_mut());
             self.sync_editor_focus(editor);
         } else {
-            self.remove_leaf(id);
+            self.remove_leaf(id, js.as_deref_mut());
         }
     }
 
     /// 关闭任意叶(JS close_leaf 等入口):BufferLeaf 须同步清理其在 editor.tree 的 view
     /// (否则 tree.focus 悬空 → 每帧 serialize 的 tree.get(focus) panic);rail 走 take_rail。
-    pub fn close_leaf_clean(&mut self, editor: &mut Editor, id: u64) {
+    pub fn close_leaf_clean(&mut self, editor: &mut Editor, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         if self.main_tree.is_rail(id) {
             self.main_tree.take_rail();
-            self.sync_layout_cache(None);
+            self.sync_layout_cache(js.as_deref_mut());
             self.sync_editor_focus(editor);
         } else if self.main_tree.view_id_of(id).is_some() {
-            self.remove_buffer_leaf(editor, id);
+            self.remove_buffer_leaf(editor, id, js.as_deref_mut());
         } else {
-            self.remove_leaf(id);
+            self.remove_leaf(id, js.as_deref_mut());
             self.sync_editor_focus(editor);
         }
     }
 
     /// 关闭 rail(专用:x/ClosePanel 落在 rail 上;LayoutTree.remove 对 rail 免疫)
-    pub fn close_rail(&mut self, id: u64) -> bool {
+    pub fn close_rail(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) -> bool {
         if self.main_tree.is_rail(id) {
             self.main_tree.take_rail();
-            self.sync_layout_cache(None);
+            self.sync_layout_cache(js.as_deref_mut());
             true
         } else {
             false
@@ -928,7 +928,7 @@ impl Compositor {
 
     /// 收编孤儿 view(旧 view-tree 分裂遗留/启动多文件等非叶 view)为 BufferLeaf 叶:
     /// 保留首个作为编辑器叶,其余逐个开叶。调用点:Application::new 启动末尾。
-    pub fn adopt_orphan_views(&mut self, editor: &mut Editor) {
+    pub fn adopt_orphan_views(&mut self, editor: &mut Editor, mut js: Option<&mut helix_js::host::JsHost>) {
         let claimed = self.main_tree.claimed_view_ids();
         let views: Vec<helix_view::ViewId> = editor
             .tree
@@ -944,7 +944,7 @@ impl Compositor {
                 crate::ui::layout::SplitDir::H,
                 false,
                 Box::new(crate::ui::BufferLeaf { view_id: *vid }),
-            );
+             js.as_deref_mut());
         }
         self.sync_editor_focus(editor);
     }
@@ -956,12 +956,12 @@ impl Compositor {
         panel: crate::ui::PluginPanel,
         side: crate::ui::plugin_panel::PanelSide,
         size: u16,
-    ) -> Option<u64> {
+     mut js: Option<&mut helix_js::host::JsHost>) -> Option<u64> {
         let left = matches!(side, crate::ui::plugin_panel::PanelSide::Left);
         let width = self.area.width.max(1) as f32;
         let ratio = (size as f32 / width).clamp(0.05, 0.9);
         self.main_tree.register_rail(Box::new(panel), left, ratio);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         self.main_tree.rail_leaf()
     }
 
@@ -982,7 +982,7 @@ impl Compositor {
                 return false;
             }
         };
-        self.open_buffer_leaf(editor, doc_id, dir, new_first);
+        self.open_buffer_leaf(editor, doc_id, dir, new_first, None);
         true
     }
 
@@ -995,7 +995,7 @@ impl Compositor {
         doc_id: helix_view::DocumentId,
         dir: crate::ui::layout::SplitDir,
         new_first: bool,
-    ) -> Option<u64> {
+     mut js: Option<&mut helix_js::host::JsHost>) -> Option<u64> {
         let gutters = editor.config().gutters.clone();
         let cur = editor
             .tree
@@ -1012,24 +1012,24 @@ impl Compositor {
             dir,
             new_first,
             Box::new(crate::ui::BufferLeaf { view_id: vid }),
-        );
+         js.as_deref_mut());
         self.sync_editor_focus(editor);
         leaf
     }
 
-    pub fn zoom_leaf(&mut self, id: u64) {
+    pub fn zoom_leaf(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.zoom(id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
-    pub fn unzoom(&mut self) {
+    pub fn unzoom(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.unzoom();
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
-    pub fn resize_leaf(&mut self, id: u64, ratio: f32) {
+    pub fn resize_leaf(&mut self, id: u64, ratio: f32, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.resize(id, ratio);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 按方向调整叶子份额（H=左右 / V=上下；delta>0 增大该叶子）。返回是否调整。
@@ -1038,23 +1038,23 @@ impl Compositor {
         id: u64,
         dir: crate::ui::layout::SplitDir,
         delta: f32,
-    ) -> bool {
+     mut js: Option<&mut helix_js::host::JsHost>) -> bool {
         let ret = self.main_tree.resize_leaf_dir(id, dir, delta);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         ret
     }
 
     /// 交换两个叶子的内容（组件引用互换，树结构/焦点不变）。
-    pub fn swap_leaves(&mut self, id1: u64, id2: u64) -> bool {
+    pub fn swap_leaves(&mut self, id1: u64, id2: u64, mut js: Option<&mut helix_js::host::JsHost>) -> bool {
         let ret = self.main_tree.swap(id1, id2);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         ret
     }
 
     /// 最小化/恢复叶子（不占布局，渲染为底部标题横条）
-    pub fn minimize_leaf(&mut self, id: u64, minimized: bool) {
+    pub fn minimize_leaf(&mut self, id: u64, minimized: bool, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.set_minimized(id, minimized);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None
@@ -1063,9 +1063,9 @@ impl Compositor {
         id: u64,
         dir: crate::ui::layout::SplitDir,
         first: bool,
-    ) -> Option<u64> {
+     mut js: Option<&mut helix_js::host::JsHost>) -> Option<u64> {
         let ret = self.main_tree.focus_dir(id, dir, first);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         ret
     }
 
@@ -1075,16 +1075,16 @@ impl Compositor {
         id: u64,
         dir: crate::ui::layout::SplitDir,
         first: bool,
-    ) -> bool {
+     mut js: Option<&mut helix_js::host::JsHost>) -> bool {
         let ret = self.main_tree.swap_dir(id, dir, first);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
         ret
     }
 
     /// 叶子所在 Split 恢复 50/50
-    pub fn equalize_leaf(&mut self, id: u64) {
+    pub fn equalize_leaf(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.equalize(id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 最小化叶子 id
@@ -1121,15 +1121,15 @@ impl Compositor {
     fn window_mode_focus(&mut self, c: char, cx: &mut Context) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
-        let _ = self.focus_leaf_dir(a, dir, side);
+        let _ = self.focus_leaf_dir(a, dir, side, cx.js.as_deref_mut());
         self.sync_editor_focus(cx.editor);
     }
 
     /// 窗口模式:与方向邻居交换内容(H/J/K/L)。委托 swap_leaf_dir(含缓存同步)
-    fn window_mode_swap(&mut self, c: char) {
+    fn window_mode_swap(&mut self, c: char, mut js: Option<&mut helix_js::host::JsHost>) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
-        let _ = self.swap_leaf_dir(a, dir, side);
+        let _ = self.swap_leaf_dir(a, dir, side, js.as_deref_mut());
     }
 
     /// `p` / `P` / `Tab`:活动叶在堆叠组里 → **轮转堆叠**(组内容就地切换);
@@ -1175,7 +1175,7 @@ impl Compositor {
             'k' => (crate::ui::layout::SplitDir::V, 0.05),
             _ => unreachable!(),
         };
-        let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta * sign);
+        let _ = self.resize_leaf_dir(self.main_tree.active(), dir, delta * sign, None);
     }
 
     /// 切换平级模式:置位 + 显示/清除键位提示(``Normal`` 时清掉)
@@ -1247,7 +1247,7 @@ impl Compositor {
 
     /// 把模式快照推给插件:helix.pane_mode.current()/keymap() 读它,
     /// 同时发 pane-mode-change 事件。单一来源 = pane_mode_entries。
-    fn publish_pane_mode(mode: PaneMode, js: Option<&mut helix_js::host::JsHost>) {
+    fn publish_pane_mode(mode: PaneMode, mut js: Option<&mut helix_js::host::JsHost>) {
         let (name, entries) = Self::pane_mode_entries(mode);
         let keys: Vec<serde_json::Value> = entries
             .iter()
@@ -1364,16 +1364,16 @@ impl Compositor {
         match self.pane_mode {
             PaneMode::Pane => match ch {
                 Some(c @ ('h' | 'j' | 'k' | 'l')) => self.window_mode_focus(c, cx),
-                Some('H') => self.window_mode_swap('h'),
-                Some('J') => self.window_mode_swap('j'),
-                Some('K') => self.window_mode_swap('k'),
-                Some('L') => self.window_mode_swap('l'),
+                Some('H') => self.window_mode_swap('h', cx.js.as_deref_mut()),
+                Some('J') => self.window_mode_swap('j', cx.js.as_deref_mut()),
+                Some('K') => self.window_mode_swap('k', cx.js.as_deref_mut()),
+                Some('L') => self.window_mode_swap('l', cx.js.as_deref_mut()),
                 Some('n') => self.window_mode_split('n', cx),
                 Some('d') => self.window_mode_split('s', cx),
                 Some('r') => self.window_mode_split('v', cx),
                 Some('x') => self.window_mode_close(cx),
-                Some('f') => self.window_mode_zoom(),
-                Some('z') => self.window_mode_minimize(),
+                Some('f') => self.window_mode_zoom(cx.js.as_deref_mut()),
+                Some('z') => self.window_mode_minimize(cx.js.as_deref_mut()),
                 // zellij 的浮动/嵌入/stack/pin(阶段②:浮动已接通,stack 待布局模型)
                 Some('w') | Some('e') => {
                     let id = self.main_tree.active();
@@ -1466,7 +1466,7 @@ impl Compositor {
                         self.main_tree.float_nudge(id, dx, dy);
                     }
                 } else if let Some(c @ ('h' | 'j' | 'k' | 'l')) = ch {
-                    self.window_mode_swap(c);
+                    self.window_mode_swap(c, cx.js.as_deref_mut());
                 }
             }
             PaneMode::Scroll => match ch {
@@ -1506,7 +1506,7 @@ impl Compositor {
         if c == 'n' {
             let dir = SplitDir::V;
             let doc_id = cx.editor.create_scratch_document();
-            self.open_buffer_leaf(cx.editor, doc_id, dir, false);
+            self.open_buffer_leaf(cx.editor, doc_id, dir, false, cx.js.as_deref_mut());
         } else {
             let dir = match c {
                 'v' => SplitDir::H,
@@ -1514,7 +1514,7 @@ impl Compositor {
                 _ => unreachable!(),
             };
             if let Some(doc_id) = cx.editor.tree.try_get(cx.editor.tree.focus).map(|v| v.doc) {
-                self.open_buffer_leaf(cx.editor, doc_id, dir, false);
+                self.open_buffer_leaf(cx.editor, doc_id, dir, false, cx.js.as_deref_mut());
             }
         }
     }
@@ -1543,12 +1543,12 @@ impl Compositor {
         let a = self.main_tree.active();
         if a != 0 {
             if self.main_tree.is_rail(a) {
-                self.close_rail(a);
+                self.close_rail(a, cx.js.as_deref_mut());
                 self.sync_editor_focus(cx.editor);
             } else if self.main_tree.view_id_of(a).is_some() {
-                self.remove_buffer_leaf(cx.editor, a);
+                self.remove_buffer_leaf(cx.editor, a, cx.js.as_deref_mut());
             } else {
-                self.remove_leaf(a);
+                self.remove_leaf(a, cx.js.as_deref_mut());
             }
             self.sync_editor_focus(cx.editor);
         }
@@ -1556,31 +1556,31 @@ impl Compositor {
 
     /// 窗口模式:最小化/还原(z)。已最小化 → 还原;否则最小化活动叶子(编辑器除外)。
     /// 委托 minimize_leaf(含缓存同步)
-    fn window_mode_minimize(&mut self) {
+    fn window_mode_minimize(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         if let Some(m) = self.main_tree.minimized() {
-            self.minimize_leaf(m, false);
+            self.minimize_leaf(m, false, js.as_deref_mut());
         } else {
             let a = self.main_tree.active();
             if a != 0 {
-                self.minimize_leaf(a, true);
+                self.minimize_leaf(a, true, js.as_deref_mut());
             }
         }
     }
 
     /// 窗口模式:最大化/还原(f)
-    fn window_mode_zoom(&mut self) {
+    fn window_mode_zoom(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         let a = self.main_tree.active();
         if self.main_tree.zoomed() == Some(a) {
-            self.unzoom();
+            self.unzoom(js.as_deref_mut());
         } else {
-            self.zoom_leaf(a);
+            self.zoom_leaf(a, js.as_deref_mut());
         }
     }
 
     /// 设置叶子 fixed 标记（fixed 叶子不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
-    pub fn set_leaf_fixed(&mut self, id: u64, fixed: bool) {
+    pub fn set_leaf_fixed(&mut self, id: u64, fixed: bool, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.set_fixed(id, fixed);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 叶子是否 fixed
@@ -1649,7 +1649,7 @@ impl Compositor {
         helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
     }
 
-    pub(crate) fn sync_layout_cache(&mut self, js: Option<&mut helix_js::host::JsHost>) {
+    pub(crate) fn sync_layout_cache(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         self.sync_panes_cache();
         let dump = self.main_tree.dump();
         let json = serde_json::to_string(&dump).unwrap_or_default();
@@ -1670,13 +1670,18 @@ impl Compositor {
         // P4-1 3b 第 1 层：**调用点显式声明**它能不能给宿主。
         // `Some(host)` ⇒ 走显式入口（不再依赖 host::ACTIVE）；
         // `None` ⇒ 该调用点所在函数还没有宿主可传（逐层迁移中，**行为不变**）。
-        let emitted = match js {
-            Some(host) => host.emit_layout_change(kind),
-            None => helix_js::emit_layout_change_kind(kind),
-        };
-        if let Err(e) = emitted {
-            // 让失败可见(只 log 会静默)
-            helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
+        match js {
+            Some(host) => {
+                if let Err(e) = host.emit_layout_change(kind) {
+                    // 让失败可见(只 log 会静默)
+                    helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
+                }
+            }
+            // **没有宿主**（测试 / 无 JS 构建 / 少数拿不到 `cx` 的路径）：
+            // 不再走隐式活动指针，而是把变更点入队 —— 帧首 `flush_layout_change(cx.js)`
+            // 用**显式宿主**补发。语义差异：这批事件在该窗口结束时观察布局
+            // （与既有的批量模式同一契约，只在"本来就没有宿主"时发生）。
+            None => self.pending_layout_changes.push(kind),
         }
     }
 
@@ -1708,7 +1713,12 @@ impl Compositor {
             let kind = batch.iter().rev().find_map(|k| *k);
             let emitted = match js.as_mut() {
                 Some(host) => host.emit_layout_change(kind),
-                None => helix_js::emit_layout_change_kind(kind),
+                // 帧首也没有宿主（测试）：**留在队列里**，等有宿主的那一帧再发；
+                // 不用隐式指针（P4-1 3b 的目标），也不吞掉事件。
+                None => {
+                    self.pending_layout_changes.extend(batch);
+                    return;
+                }
             };
             if let Err(e) = emitted {
                 helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
@@ -1726,9 +1736,9 @@ impl Compositor {
         self.layout_change_stash = Some(kind);
     }
 
-    pub fn focus_leaf(&mut self, id: u64) {
+    pub fn focus_leaf(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.focus(id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     pub fn layout_tree(&mut self) -> &mut crate::ui::layout::LayoutTree {
@@ -1740,15 +1750,15 @@ impl Compositor {
     }
 
     /// 设置浮动叶子（渲染在最上层浮窗）；组件不存在时 no-op
-    pub fn set_float(&mut self, id: u64) {
+    pub fn set_float(&mut self, id: u64, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.set_float(id);
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     /// 取消浮动（终端回其 split 位置）
-    pub fn unfloat(&mut self) {
+    pub fn unfloat(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.unfloat();
-        self.sync_layout_cache(None);
+        self.sync_layout_cache(js.as_deref_mut());
     }
 
     pub fn reset_plugin_diffs(&mut self) {
