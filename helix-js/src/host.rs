@@ -68,6 +68,15 @@ pub struct JsHost {
     pub(crate) open_panels: RefCell<Vec<u64>>,
     /// 打开文档快照 JSON(1b:同款进程级键表 → 宿主字段)
     pub(crate) buffers: RefCell<String>,
+    /// 布局快照 JSON(2:原为进程级 `static LAST_LAYOUT` —— 与 buffers 同类的跨宿主串味)
+    pub(crate) layout: RefCell<String>,
+    /// 诊断快照 JSON(2:原为进程级 `static DIAGNOSTICS`)
+    pub(crate) diagnostics: RefCell<String>,
+    /// 快照**读取**兴趣位(`SnapshotKind` 位掩码):有人读过才值得序列化。
+    /// 帧路径每帧只查一个位,零分配、零 HashMap。
+    pub(crate) snapshot_reads: Cell<u8>,
+    /// 序列化次数(测试/诊断用):证明"没人读 ⇒ 一次都不做"
+    pub(crate) serialized: Cell<(u64, u64)>,
     /// 平级模式快照 JSON(1b)
     pub(crate) pane_mode: RefCell<String>,
     /// pane 清单快照 JSON(1b)
@@ -168,6 +177,10 @@ impl JsHost {
             loaded_scripts: RefCell::new(Vec::new()),
             open_panels: RefCell::new(Vec::new()),
             buffers: RefCell::new(String::new()),
+            layout: RefCell::new(String::new()),
+            diagnostics: RefCell::new(String::new()),
+            snapshot_reads: Cell::new(0),
+            serialized: Cell::new((0, 0)),
             pane_mode: RefCell::new(String::new()),
             panes: RefCell::new(String::new()),
             open_terms: RefCell::new(HashMap::new()),
@@ -1398,6 +1411,25 @@ mod engine_ownership_tests {
             a_saw.contains("A-RED.txt"),
             "宿主 A 的快照不该被别的宿主覆盖;实得 {a_saw:?}"
         );
+    }
+
+    /// 布局/诊断快照必须**按宿主**隔离(2:它们此前是进程级 `static`,
+    /// 与 `buffers` 曾经的跨用例串味是同一类 bug —— 并行跑的两个 Application 会互相覆盖)。
+    #[test]
+    fn layout_and_diagnostics_are_per_host_not_process_global() {
+        let a = Box::new(JsHost::new());
+        install_default(*a);
+        crate::state::cache_layout("A-layout");
+        crate::state::cache_diagnostics("A-diag");
+
+        // 换一个宿主:读不到上一个宿主写的东西
+        let b = Box::new(JsHost::new());
+        install_default(*b);
+        assert_eq!(crate::state::layout_json(), "", "新宿主不该看到旧宿主布局");
+        assert_eq!(crate::state::diagnostics_json(), "");
+
+        crate::state::cache_layout("B-layout");
+        assert_eq!(crate::state::layout_json(), "B-layout");
     }
 
     /// **对照实验**:新造的 `Context` 丢弃是**安全**的。

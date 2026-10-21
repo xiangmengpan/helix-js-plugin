@@ -11,7 +11,7 @@ use crate::js_err;
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 
 use crate::popup::{obj_opt_str, obj_opt_u16};
-use crate::state::{buffers_json, LAST_LAYOUT};
+use crate::state::{buffers_json, layout_json};
 
 use crate::state::{with_popups, UI_REQUESTS};
 
@@ -441,10 +441,7 @@ pub(crate) fn js_get_layout(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = LAST_LAYOUT
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = layout_json();
     if json.is_empty() {
         return Ok(JsValue::null());
     }

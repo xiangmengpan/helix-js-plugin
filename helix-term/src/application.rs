@@ -652,10 +652,15 @@ impl Application {
             self.compositor.full_redraw = false;
         }
 
-        // 打开文档缓存(每帧;buffers/current_buffer 读取)
-        helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
-        // 诊断缓存(每帧;diagnostics 读取)
-        helix_js::cache_diagnostics(&crate::commands::typed::serialize_diagnostics(&self.editor));
+        // 快照缓存:**有插件读过才做**(`snapshot_wanted` 由读点自己打标)。
+        // 早先这里每帧无条件序列化 —— 没插件读也照付,大诊断集/大 workspace 时
+        // 是纯浪费(LSP spinner 会以 20–60fps 触发 render)。
+        if helix_js::snapshot_wanted(helix_js::SnapshotKind::Buffers) {
+            helix_js::cache_buffers(&crate::commands::typed::serialize_buffers(&self.editor));
+        }
+        if helix_js::snapshot_wanted(helix_js::SnapshotKind::Diagnostics) {
+            helix_js::cache_diagnostics(&crate::commands::typed::serialize_diagnostics(&self.editor));
+        }
         // 光标/选区变化检测(帧级节流:变化才 emit)
         if let Some((row, col)) =
             crate::plugins_cursor::cursor_change(&self.editor, &mut self.last_cursor)

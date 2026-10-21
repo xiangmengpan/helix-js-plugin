@@ -5,19 +5,16 @@
 use boa_engine::object::builtins::JsFunction;
 use boa_engine::{Context, JsValue};
 
-use crate::state::{with_engine, with_event_handlers, DIAGNOSTICS};
+use crate::state::{diagnostics_json, with_engine, with_event_handlers};
 
 /// 当前文档诊断:helix.diagnostics() → [{line, message, severity, code, source}]
-/// （只读快照；helix-term 每帧写入 DIAGNOSTICS 缓存；无缓存 → null）
+/// （只读快照；helix-term 只在**有人读**时写入（兴趣标记）；无缓存 → null）
 pub(crate) fn js_diagnostics(
     _this: &JsValue,
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = DIAGNOSTICS
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
+    let json = diagnostics_json();
     if json.is_empty() {
         return Ok(JsValue::null());
     }

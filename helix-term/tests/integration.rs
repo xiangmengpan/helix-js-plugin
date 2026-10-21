@@ -52,6 +52,7 @@ mod test {
     mod plugin_reload_real;
     mod plugin_run;
     mod plugin_selection;
+    mod plugin_snapshots;
     mod plugin_statusline;
     mod plugin_terminal_hooks;
     mod plugin_terminal_modes;

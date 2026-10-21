@@ -803,12 +803,10 @@ pub(crate) fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
     let pref = current_load_root();
     resolve_in_pref(plugin_roots(), key, pref.as_deref())
 }
-/// 布局树序列化缓存（helix-term 树变更时写入；get_layout 读取）
-pub(crate) static LAST_LAYOUT: OnceLock<Mutex<String>> = OnceLock::new();
+
 /// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: `{"<name>": {...}}`
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
-/// 当前文档诊断序列化缓存（helix-term 每帧写入；diagnostics 读取）
-pub(crate) static DIAGNOSTICS: OnceLock<Mutex<String>> = OnceLock::new();
+
 
 /// 终端实例注册表(pty_id → (view_id, cmd);`term_kill(pty_id)` 清理、`term_list` 查询)。
 /// 1b:存进宿主字段(这张表的键是 pty id,但状态本就属于某个宿主)。
@@ -960,17 +958,11 @@ pub(crate) fn layouts_dir() -> Option<&'static PathBuf> {
 
 /// 读当前布局 dump(还没缓存过 → 空串)
 pub(crate) fn layout_json() -> String {
-    LAST_LAYOUT
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default()
+    crate::host::with_host_ref(|h| h.layout.borrow().clone())
 }
 
 pub fn cache_layout(json: &str) {
-    let _ = LAST_LAYOUT.get_or_init(Default::default);
-    if let Some(m) = LAST_LAYOUT.get() {
-        *m.lock().unwrap() = json.to_string();
-    }
+    crate::host::with_host_ref_or_init(|h| *h.layout.borrow_mut() = json.to_string());
 }
 
 /// 写入打开文档序列化缓存(helix-term 每帧更新;buffers/current_buffer 读取)
@@ -979,7 +971,11 @@ pub fn cache_layout(json: &str) {
 /// 历史:键表时代并行跑会读到别人的快照(实测 `buffer_traversal_and_focus` 拿到 z.txt)。
 pub fn cache_buffers(json: &str) {
     // 1b:快照存宿主字段(原来是 `HashMap<宿主key, String>` 键表)
-    crate::host::with_host_ref_or_init(|h| *h.buffers.borrow_mut() = json.to_string());
+    crate::host::with_host_ref_or_init(|h| {
+        *h.buffers.borrow_mut() = json.to_string();
+        let (b, d) = h.serialized.get();
+        h.serialized.set((b + 1, d));
+    });
 }
 
 /// 当前宿主的 pane 清单快照(还没缓存过 → 空串)。`helix.pane.*` 的读取口。
@@ -995,6 +991,7 @@ pub(crate) fn pane_mode_json() -> String {
 /// 当前宿主的打开文档快照(还没缓存过 → 空串)。
 /// `helix.buffer.list()` / `helix.buffer.current()` 的**唯一读取口** ⇒ 分桶时只改这里。
 pub(crate) fn buffers_json() -> String {
+    note_snapshot_read(SnapshotKind::Buffers);
     crate::host::with_host_ref(|h| h.buffers.borrow().clone())
 }
 
@@ -1011,12 +1008,55 @@ pub fn cache_pane_mode(json: &str) {
     crate::host::with_host_ref_or_init(|h| *h.pane_mode.borrow_mut() = json.to_string());
 }
 
-/// 写入当前文档诊断序列化缓存(helix-term 每帧更新;diagnostics 读取)
+/// 写入当前文档诊断序列化缓存(helix-term **有人读时**才更新;diagnostics 读取)
 pub fn cache_diagnostics(json: &str) {
-    let _ = DIAGNOSTICS.get_or_init(Default::default);
-    if let Some(m) = DIAGNOSTICS.get() {
-        *m.lock().unwrap() = json.to_string();
+    crate::host::with_host_ref_or_init(|h| {
+        *h.diagnostics.borrow_mut() = json.to_string();
+        let (b, d) = h.serialized.get();
+        h.serialized.set((b, d + 1));
+    });
+}
+
+/// 诊断快照(还没缓存过 → 空串)。`helix.diagnostics()` 的唯一读取口。
+pub(crate) fn diagnostics_json() -> String {
+    note_snapshot_read(SnapshotKind::Diagnostics);
+    crate::host::with_host_ref(|h| h.diagnostics.borrow().clone())
+}
+
+/// 快照种类:只有"帧路径上无条件重建"的两类需要兴趣标记
+/// (布局/pane/模式是**变更时**写,不在帧路径上)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotKind {
+    Buffers,
+    Diagnostics,
+}
+
+impl SnapshotKind {
+    fn bit(self) -> u8 {
+        match self {
+            SnapshotKind::Buffers => 1,
+            SnapshotKind::Diagnostics => 2,
+        }
     }
+}
+
+/// 记下"有人读过这类快照"。**读点自己打标** —— 这是唯一不会漂的时刻
+/// (靠 helix-term 猜"哪些插件会读"必然漂,见 R3/R4)。
+pub(crate) fn note_snapshot_read(kind: SnapshotKind) {
+    crate::host::with_host_ref_or_init(|h| {
+        h.snapshot_reads.set(h.snapshot_reads.get() | kind.bit());
+    });
+}
+
+/// 这类快照有人读吗?(帧路径上每帧问一次;没人读 ⇒ 不序列化)
+pub fn snapshot_wanted(kind: SnapshotKind) -> bool {
+    crate::host::try_with_host_ref(|h| h.snapshot_reads.get() & kind.bit() != 0).unwrap_or(false)
+}
+
+/// 序列化次数快照 `(buffers, diagnostics)` —— 测试与诊断用,证明"没人读 ⇒ 零次"。
+#[doc(hidden)]
+pub fn snapshot_stats() -> (u64, u64) {
+    crate::host::try_with_host_ref(|h| h.serialized.get()).unwrap_or((0, 0))
 }
 
 /// 取走并清空 UI 请求队列
@@ -1277,3 +1317,36 @@ mod write_plugin_file_tests {
 }
 
 // 引擎所有权/借出/重入的测试随实现搬进 `helix-js/src/host.rs`
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    /// 兴趣标记:没人读 ⇒ 不要;读过一次 ⇒ 之后都要(粘性)。
+    /// 帧路径每帧只查这一位。
+    #[test]
+    fn snapshot_interest_is_lazy_then_sticky() {
+        crate::init();
+        // 别的用例可能先读过 ⇒ 先清干净(宿主级状态,本模块独占锁不需要:标记只会被置位)
+        crate::host::with_host_ref_or_init(|h| h.snapshot_reads.set(0));
+        assert!(!snapshot_wanted(SnapshotKind::Buffers));
+        assert!(!snapshot_wanted(SnapshotKind::Diagnostics));
+        let _ = buffers_json();
+        assert!(snapshot_wanted(SnapshotKind::Buffers), "读过一次就该被标记");
+        assert!(!snapshot_wanted(SnapshotKind::Diagnostics), "两类互不影响");
+        let _ = diagnostics_json();
+        assert!(snapshot_wanted(SnapshotKind::Diagnostics));
+    }
+
+    /// 序列化计数只在 cache_* 里加(证明"没人读 ⇒ 一次都不做"可观测)
+    #[test]
+    fn serialize_counter_tracks_cache_writes() {
+        crate::init();
+        let (b0, d0) = snapshot_stats();
+        cache_buffers("{}");
+        cache_diagnostics("[]");
+        let (b1, d1) = snapshot_stats();
+        assert_eq!(b1, b0 + 1);
+        assert_eq!(d1, d0 + 1);
+    }
+}

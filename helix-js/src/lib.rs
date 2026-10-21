@@ -16,6 +16,9 @@ mod permissions;
 mod pty;
 mod shell;
 mod state;
+// 快照按需序列化的门控(helix-term 的帧路径用):`snapshot_wanted` 问"有人读吗",
+// `SnapshotKind` 是位标记的种类,`snapshot_stats` 是"做了几次"的可观测计数。
+pub use state::{snapshot_stats, snapshot_wanted, SnapshotKind};
 mod theme;
 mod types;
 
@@ -76,7 +79,6 @@ use boa_engine::{Context, JsString, JsValue};
 /// 初始化线程局部运行时（幂等）：消息/UI 队列、事件通道、boa 引擎与全局 `helix` 对象。
 pub fn init() {
     state::UI_REQUESTS.get_or_init(Default::default);
-    let _ = state::LAST_LAYOUT.get_or_init(Default::default);
     state::with_term_events(|t| {
         if t.is_none() {
             state::js_dbg(format_args!("init channel term"));
