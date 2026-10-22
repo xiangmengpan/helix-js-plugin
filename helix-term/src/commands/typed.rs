@@ -4481,7 +4481,7 @@ pub(crate) fn run_plugin_command(
 
     // §12.0:把键入参数交给 JS 命令(独立通道,不动 CommandContext)。
     // **先取结果再清空** —— 这样即使下面各分支 early return,也不会漏清。
-    helix_js::set_command_args(args.to_vec());
+    helix_js::set_command_args_current(args.to_vec());
     // D-2 **泵入口**:有宿主就走 `&mut JsHost`(泵方法拿独占借用 ⇒ 重入 = 编译错),
     // 没有宿主才退回那层唯一的 legacy 隐式解析。两者语义相同(后者靠 ACTIVE 找到
     // 同一个宿主),区别只在“库层面能不能证明排他”。
@@ -4489,7 +4489,7 @@ pub(crate) fn run_plugin_command(
         Some(res) => res,
         None => helix_js::run_command(name, &ctx),
     };
-    helix_js::clear_command_args();
+    helix_js::clear_command_args_current();
     match res {
         Ok(true) => {
             let msgs = helix_js::take_messages();

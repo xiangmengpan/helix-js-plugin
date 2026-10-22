@@ -450,7 +450,7 @@ pub(crate) fn js_run_async(
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_term_id(crate::host::host_state(context));
     crate::permissions::bind_callback(crate::permissions::CbKey::term(id));
-    crate::state::with_term_promises(|m| {
+    crate::state::with_term_promises(crate::host::host_state(context), |m| {
         m.insert(id, resolving);
     });
     let (tx, rx) = std::sync::mpsc::channel();
@@ -490,7 +490,9 @@ pub(crate) fn js_spawn(
         }
     };
     let id = crate::state::next_term_id(crate::host::host_state(ctx));
-    with_terms(|m| m.insert(id, TermCallbacks { on_chunk, on_exit }));
+    with_terms(crate::host::host_state(ctx), |m| {
+        m.insert(id, TermCallbacks { on_chunk, on_exit })
+    });
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx));
     let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
@@ -903,7 +905,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::term(id), || {
         crate::state::with_engine(|engine| {
             // run_async 的 promise 分支：resolve/reject 后立即清理并返回（无 TermCallbacks 注册）
-            if let Some(resolving) = crate::state::with_term_promises(|m| m.remove(&id)) {
+            if let Some(resolving) = crate::state::with_term_promises_current(|m| m.remove(&id)) {
                 match event {
                     TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
                     TermEvent::Exit(_, code, stdout) => {
@@ -937,7 +939,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 crate::state::with_term_masters(|m| m.remove(&id));
                 return Ok(());
             }
-            let callbacks = with_terms(|m| {
+            let callbacks = crate::state::with_terms_current(|m| {
                 m.get(&id).map(|c| TermCallbacks {
                     on_chunk: c.on_chunk.clone(),
                     on_exit: c.on_exit.clone(),
@@ -968,7 +970,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                             .call(&undefined, &[JsValue::from(code)], engine)
                             .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
                     }
-                    with_terms(|m| m.remove(&id));
+                    crate::state::with_terms_current(|m| m.remove(&id));
                     crate::state::with_term_workers(|m| m.remove(&id));
                     #[cfg(unix)]
                     crate::state::with_term_masters(|m| m.remove(&id));

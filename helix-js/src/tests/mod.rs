@@ -5,7 +5,6 @@
 //! 所以子模块不需要也不应该有 `use crate::*;`)。
 
 use super::*;
-use crate::state::with_terms;
 use boa_engine::JsValue;
 use std::sync::Mutex;
 

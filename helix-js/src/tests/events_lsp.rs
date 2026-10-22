@@ -186,7 +186,7 @@ fn lsp_enhance_request_shapes() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
     // 清残留队列(其它测试不入队,防御)
-    let _ = take_lsp_requests();
+    let _ = take_lsp_requests_current();
     // rename newName 非字符串 / execute 非对象 → 命令失败且不入队
     // (同步命令:参数校验错误同步抛出;async 命令会包进 promise 拒绝)
     load_script(
@@ -205,7 +205,7 @@ fn lsp_enhance_request_shapes() {
     };
     assert!(run_command("ren-bad", &ctx).is_err());
     assert!(run_command("exec-bad", &ctx).is_err());
-    assert!(take_lsp_requests().is_empty(), "校验失败不应入队");
+    assert!(take_lsp_requests_current().is_empty(), "校验失败不应入队");
     // 合法调用 → 请求形态正确(同步命令:四个调用都同步入队)
     load_script(
         r#"
@@ -219,7 +219,7 @@ fn lsp_enhance_request_shapes() {
     )
     .unwrap();
     run_command("ren-ok", &ctx).unwrap();
-    let reqs = take_lsp_requests();
+    let reqs = take_lsp_requests_current();
     assert_eq!(reqs.len(), 4);
     assert!(matches!(reqs[0].method, crate::lsp::LspMethod::Rename));
     assert_eq!(

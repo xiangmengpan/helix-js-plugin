@@ -64,7 +64,7 @@ pub(crate) fn js_fuzzy_session(
     }
 
     let id = crate::state::next_fuzzy_session_id(crate::host::host_state(ctx));
-    crate::state::with_fuzzy_sessions(|m| {
+    crate::state::with_fuzzy_sessions(crate::host::host_state(ctx), |m| {
         m.insert(id, values);
     });
     Ok(JsValue::from(id as f64))
@@ -116,7 +116,7 @@ pub(crate) fn js_fuzzy_run(
 
     // ⚠ **借着打分，不要克隆**：5000 条 String 的克隆本身是 0.2ms 量级（实测），
     // 而打分函数不碰宿主状态 ⇒ 可以在借用里跑完。
-    let hits = crate::state::with_fuzzy_sessions(|m| {
+    let hits = crate::state::with_fuzzy_sessions(crate::host::host_state(ctx), |m| {
         let items = m.get(&id)?;
         let mut hits = score(&query, items, case);
         hits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -147,7 +147,7 @@ pub(crate) fn js_fuzzy_drop(
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     if let Some(id) = args.first().and_then(|v| v.as_number()) {
-        crate::state::with_fuzzy_sessions(|m| {
+        crate::state::with_fuzzy_sessions_current(|m| {
             m.remove(&(id as u64));
         });
     }
@@ -218,7 +218,9 @@ mod tests {
             .unwrap()
             .as_number()
             .unwrap() as u64;
-        assert!(crate::state::with_fuzzy_sessions(|m| m.contains_key(&id)));
+        assert!(crate::state::with_fuzzy_sessions_current(
+            |m| m.contains_key(&id)
+        ));
 
         let hits = js_fuzzy_run(
             &JsValue::undefined(),

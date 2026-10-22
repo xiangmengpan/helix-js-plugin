@@ -8,7 +8,7 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("r.txt");
@@ -72,7 +72,7 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -111,7 +111,7 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -147,7 +147,7 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -193,7 +193,7 @@ async fn plugin_js_api_remove_uninstalled() -> anyhow::Result<()> {
     // `helix.plugins_dir()` 返回 null;**Rust 的 :plugin 应答时无妨,迁到 JS 后必需** ✗
     // (`set_plugin_roots` 是 OnceLock:首设生效,重复调用是 no-op ✓)
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
@@ -211,7 +211,7 @@ helix.plugin.remove("nope-js-api");"#,
     // ⇒ 单独设插件根:集成进程不执行 application.rs 的启动推入,`plugins_dir()` 会是 null,
     //    JS 侧便早退报"插件目录不可用",断言就看不到预期的 `failed to remove` ✗
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
     let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
@@ -269,7 +269,7 @@ async fn run_plugin_op(
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_install_single_file_local() -> anyhow::Result<()> {
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -294,7 +294,7 @@ async fn plugin_install_single_file_local() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_install_dir_recursive() -> anyhow::Result<()> {
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -327,7 +327,7 @@ async fn plugin_install_dir_recursive() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_install_failure_leaves_no_orphan() -> anyhow::Result<()> {
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;

@@ -85,9 +85,12 @@ mod tests {
         let v = js_diagnostics(&JsValue::undefined(), &[], &mut ctx).unwrap();
         assert!(v.is_null(), "无缓存 → null");
         // 缓存写入 → JSON.parse 数组
-        crate::state::cache_diagnostics(
-            r#"[{"line":1,"message":"oops","severity":"error","code":1,"source":"rust-analyzer"}]"#,
-        );
+        crate::host::with_state_or_init(|st| {
+            crate::state::cache_diagnostics(
+                st,
+                r#"[{"line":1,"message":"oops","severity":"error","code":1,"source":"rust-analyzer"}]"#,
+            )
+        });
         let v = js_diagnostics(&JsValue::undefined(), &[], &mut ctx).unwrap();
         let arr =
             boa_engine::object::builtins::JsArray::from_object(v.as_object().unwrap().clone())
@@ -100,7 +103,7 @@ mod tests {
         assert_eq!(msg.as_string().unwrap().to_std_string_escaped(), "oops");
         let sev = obj.get(JsString::from("severity"), &mut ctx).unwrap();
         assert_eq!(sev.as_string().unwrap().to_std_string_escaped(), "error");
-        crate::state::cache_diagnostics("");
+        crate::host::with_state_or_init(|st| crate::state::cache_diagnostics(st, ""));
     }
 
     /// emit_lsp_diagnostics 调 handler（docId + 解析后数组）；无 handler 零开销返回

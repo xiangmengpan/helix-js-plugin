@@ -1303,7 +1303,7 @@ impl Compositor {
             })
             .collect();
         let json = serde_json::json!({ "mode": name, "keys": keys }).to_string();
-        helix_js::cache_pane_mode(&json);
+        helix_js::cache_pane_mode_current(&json);
         match js {
             Some(host) => host.emit_pane_mode_change(name),
             None => helix_js::emit_pane_mode_change(name),
@@ -1694,14 +1694,14 @@ impl Compositor {
                 "area": { "x": r.x, "y": r.y, "w": r.width, "h": r.height },
             }));
         }
-        helix_js::cache_panes(&serde_json::json!({ "panes": panes }).to_string());
+        helix_js::cache_panes_current(&serde_json::json!({ "panes": panes }).to_string());
     }
 
     pub(crate) fn sync_layout_cache(&mut self, js: Option<&mut helix_js::host::JsHost>) {
         self.sync_panes_cache();
         let dump = self.main_tree.dump();
         let json = serde_json::to_string(&dump).unwrap_or_default();
-        helix_js::cache_layout(&json);
+        helix_js::cache_layout_current(&json);
         // `layout-change` 事件:两种投递模式(默认逐点,**可配置**切批量)。
         //
         // 逐点(默认):当场发 ⇒ 处理器看到**该变更点当时**的布局(插件侧更可信的契约);

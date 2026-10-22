@@ -134,7 +134,9 @@ fn pty_bash_interactive_no_error() {
     let _ = term_kill(pty_id);
     // 消费 Exit 事件，清理回调注册
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !with_terms(|m| m.is_empty()) && std::time::Instant::now() < deadline {
+    while !crate::state::with_terms_current(|m| m.is_empty())
+        && std::time::Instant::now() < deadline
+    {
         let _ = drain_term_events();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -175,7 +177,9 @@ fn open_terminal_after_kill_repro() {
     term_kill(pty_id).unwrap();
     // 消费 Exit 事件（worker 退出回调），与事件循环 drain 一致
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !with_terms(|m| m.is_empty()) && std::time::Instant::now() < deadline {
+    while !crate::state::with_terms_current(|m| m.is_empty())
+        && std::time::Instant::now() < deadline
+    {
         let _ = drain_term_events();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -539,7 +543,7 @@ fn term_exit_hook_via_resolve() {
     load_script(r#"helix.on("term-exit", (id, code) => helix.echo("exit:" + code));"#).unwrap();
     let id = crate::host::with_state_or_init(crate::state::next_term_id);
     // 注册回调(否则 resolve 直接 return)
-    crate::state::with_terms(|m| {
+    crate::state::with_terms_current(|m| {
         m.insert(
             id,
             crate::types::TermCallbacks {

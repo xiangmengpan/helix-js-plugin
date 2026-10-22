@@ -951,7 +951,7 @@ impl Drop for PluginTerminal {
     fn drop(&mut self) {
         // 关闭面板（Esc/层移除）→ 杀 pty；未知 id（已退出）静默
         let _ = helix_js::term_kill(self.pty_id);
-        helix_js::unregister_component_state(self.view_id);
+        helix_js::unregister_component_state_current(self.view_id);
         helix_js::unregister_component_render(self.view_id);
     }
 }
@@ -988,7 +988,7 @@ impl Component for PluginTerminal {
             "scroll_offset": self.grid.scroll_offset(),
         })
         .to_string();
-        helix_js::register_component_state(self.view_id, move |_| snap.clone());
+        helix_js::register_component_state_current(self.view_id, move |_| snap.clone());
         // 标题条：JS 视图回调优先(顶部 1 行,网格下移);无回调 → 无标题条(现状)
         let has_view = helix_js::has_component_render(self.view_id);
         if has_view {

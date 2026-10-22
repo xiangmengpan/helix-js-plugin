@@ -50,7 +50,7 @@ pub(crate) fn js_picker_define(
     }
     // 注册期绑定属主:items/onKey/action/preview 都是**这个源**注册的
     crate::permissions::bind_callback(crate::permissions::CbKey::picker(&name));
-    with_picker_sources(|m| {
+    with_picker_sources(crate::host::host_state(context), |m| {
         m.insert(name, config.into());
     });
     Ok(JsValue::undefined())
@@ -66,7 +66,8 @@ pub fn picker_has_on_key(source: &str) -> bool {
         return false;
     }
     crate::state::with_engine(|engine| {
-        let Some(config) = crate::state::with_picker_sources(|m| m.get(source).cloned()) else {
+        let Some(config) = crate::state::with_picker_sources_current(|m| m.get(source).cloned())
+        else {
             return false;
         };
         let Some(obj) = config.as_object() else {
@@ -95,7 +96,8 @@ pub fn picker_key_hook(
 ) -> bool {
     crate::init();
     crate::state::with_engine(|engine| {
-        let Some(config) = crate::state::with_picker_sources(|m| m.get(source).cloned()) else {
+        let Some(config) = crate::state::with_picker_sources_current(|m| m.get(source).cloned())
+        else {
             return false;
         };
         let Some(obj) = config.as_object() else {
@@ -145,8 +147,9 @@ pub(crate) fn js_picker_run(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)
         .map_err(|_| crate::js_err("picker.run: name must be a string"))?;
-    let config = with_picker_sources(|m| m.get(&name).cloned())
-        .ok_or_else(|| crate::js_err(format!("picker.run: source '{name}' not defined")))?;
+    let config =
+        with_picker_sources(crate::host::host_state(context), |m| m.get(&name).cloned())
+            .ok_or_else(|| crate::js_err(format!("picker.run: source '{name}' not defined")))?;
     let config_obj = config.as_object().unwrap().clone();
     // 列名随请求下发（define 已校验 columns 是数组）：term 侧建表头 + 行宽校验用
     let columns = read_cells(
@@ -189,7 +192,8 @@ fn js_array_from_strings(items: &[String], ctx: &mut Context) -> JsValue {
 pub fn invoke_action(source: &str, payload: &[String]) {
     crate::init();
     with_engine(|engine| {
-        let Some(config) = with_picker_sources(|m| m.get(source).cloned()) else {
+        let Some(config) = crate::state::with_picker_sources_current(|m| m.get(source).cloned())
+        else {
             return;
         };
         let Some(config) = config.as_object() else {
@@ -216,7 +220,7 @@ pub fn invoke_action(source: &str, payload: &[String]) {
 pub fn invoke_preview(source: &str, payload: &[String]) -> Option<(String, usize)> {
     crate::init();
     with_engine(|engine| {
-        let config = with_picker_sources(|m| m.get(source).cloned())?;
+        let config = crate::state::with_picker_sources_current(|m| m.get(source).cloned())?;
         let config = config.as_object()?;
         let preview = config.get(JsString::from("preview"), engine).ok()?;
         if !preview.is_callable() {
@@ -412,7 +416,7 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn picker_source_exists(name: &str) -> bool {
-        with_picker_sources(|m| m.contains_key(name))
+        crate::state::with_picker_sources_current(|m| m.contains_key(name))
     }
 
     #[test]

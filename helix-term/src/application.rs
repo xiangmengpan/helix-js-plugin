@@ -480,7 +480,7 @@ impl Application {
         let lsp_results = helix_js::drain_lsp_results();
         let lsp_requests = match self.js_host.as_deref_mut() {
             Some(host) => host.take_lsp_requests(),
-            None => helix_js::take_lsp_requests(),
+            None => Vec::new(), // 没有宿主 ⇒ 没有 JS 侧请求可泵
         };
         if term_events.is_empty()
             && async_events.is_empty()
@@ -661,22 +661,20 @@ impl Application {
         // `buffer_traversal_and_focus` 拿到 n:0、builtin picker 的 buffers 源打不开)。
         // 代价也不对等:这一个是 O(打开文档数) 的小 JSON。
         let buffers_json = crate::commands::typed::serialize_buffers(&self.editor);
-        match self.js_host.as_deref_mut() {
-            Some(host) => host.cache_buffers(&buffers_json),
-            None => helix_js::cache_buffers(&buffers_json),
+        if let Some(host) = self.js_host.as_deref_mut() {
+            host.cache_buffers(&buffers_json);
         }
         // 诊断快照:这才是贵的那份(每条 message 都要复制+序列化,大诊断集上千条),
         // 且只有显式调用 `helix.diagnostics()` 的插件才读 ⇒ 按兴趣位门控。
         // 已知取舍:插件在**启动后第一次**读它时可能拿到空(兴趣位当帧才置位)。
         let want_diags = match self.js_host.as_deref() {
             Some(host) => host.snapshot_wanted(helix_js::SnapshotKind::Diagnostics),
-            None => helix_js::snapshot_wanted(helix_js::SnapshotKind::Diagnostics),
+            None => false, // 没有宿主 ⇒ 没有读者
         };
         if want_diags {
             let diags_json = crate::commands::typed::serialize_diagnostics(&self.editor);
-            match self.js_host.as_deref_mut() {
-                Some(host) => host.cache_diagnostics(&diags_json),
-                None => helix_js::cache_diagnostics(&diags_json),
+            if let Some(host) = self.js_host.as_deref_mut() {
+                host.cache_diagnostics(&diags_json);
             }
         }
         // 光标/选区变化检测(帧级节流:变化才 emit)

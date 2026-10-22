@@ -106,12 +106,14 @@ async fn plugin_paste_unfocused_bubbles_to_editor() -> anyhow::Result<()> {
         "未聚焦时 Paste 冒泡给编辑器正文插入"
     );
     // input 值仍为空(未被 Paste 修改)
-    let val = helix_js::with_input_states(|m| {
-        m.iter()
-            .find(|((_, id), _)| id == "i1")
-            .map(|(_, s)| s.value.clone())
-            .unwrap_or_default()
-    });
+    let val = helix_js::with_input_states_current(
+        |m: &mut std::collections::HashMap<(u64, String), helix_js::InputState>| {
+            m.iter()
+                .find(|((_, id), _)| id == "i1")
+                .map(|(_, s)| s.value.clone())
+                .unwrap_or_default()
+        },
+    );
     assert_eq!(val, "", "未聚焦时 Paste 不应进 input");
     Ok(())
 }

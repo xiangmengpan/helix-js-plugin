@@ -1,4 +1,5 @@
 //! 输入组件编辑状态：InputState + input_edit 纯函数 + InputStates 存储。
+use crate::host::HostState;
 use boa_engine::{Context, JsString, JsValue};
 use std::collections::HashMap;
 
@@ -14,11 +15,14 @@ pub struct InputState {
 
 // 1b-3c:原为 thread_local;现为宿主字段 `input_states`(状态跟宿主而不跟线程)。
 
-pub fn with_input_states<T>(f: impl FnOnce(&mut HashMap<(u64, String), InputState>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| {
-        let m = &h.input_states;
+pub fn with_input_states<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<(u64, String), InputState>) -> T,
+) -> T {
+    {
+        let m = &st.input_states;
         f(&mut m.borrow_mut())
-    })
+    }
 }
 
 /// value 按 \n 分段的每行 char 范围：(start, end)（end 不含 \n；末行含尾部）。
@@ -136,24 +140,28 @@ pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Re
     use boa_engine::object::builtins::JsFunction;
 
     crate::init();
-    let changed = with_input_states(|m| {
-        let entry = m
-            .entry((popup_id, node_id.to_string()))
-            .or_insert_with(|| InputState {
-                value: String::new(),
-                cursor: 0,
-                multiline: false,
-            });
-        input_edit(entry, key)
+    let changed = crate::host::with_state_or_init(|st| {
+        with_input_states(st, |m| {
+            let entry = m
+                .entry((popup_id, node_id.to_string()))
+                .or_insert_with(|| InputState {
+                    value: String::new(),
+                    cursor: 0,
+                    multiline: false,
+                });
+            input_edit(entry, key)
+        })
     });
     let Some(new_value) = changed else {
         return Ok(());
     };
     // 调 onChange(若有)：注册在 NODE_HANDLERS，与 onKey 同机制
     crate::state::with_engine(|engine| {
-        let on_change = crate::state::with_node_handlers(|h| {
-            h.get(&(popup_id, node_id.to_string()))
-                .and_then(|hd| hd.on_change.clone())
+        let on_change = crate::host::with_state_or_init(|st| {
+            crate::state::with_node_handlers(st, |h| {
+                h.get(&(popup_id, node_id.to_string()))
+                    .and_then(|hd| hd.on_change.clone())
+            })
         });
         let Some(f) = on_change else { return Ok(()) };
         let func = f
@@ -189,21 +197,25 @@ pub fn dispatch_input_paste(popup_id: u64, node_id: &str, text: &str) -> anyhow:
     use boa_engine::object::builtins::JsFunction;
 
     crate::init();
-    let new_value = with_input_states(|m| {
-        let entry = m
-            .entry((popup_id, node_id.to_string()))
-            .or_insert_with(|| InputState {
-                value: String::new(),
-                cursor: 0,
-                multiline: false,
-            });
-        input_insert_batch(entry, text)
+    let new_value = crate::host::with_state_or_init(|st| {
+        with_input_states(st, |m| {
+            let entry = m
+                .entry((popup_id, node_id.to_string()))
+                .or_insert_with(|| InputState {
+                    value: String::new(),
+                    cursor: 0,
+                    multiline: false,
+                });
+            input_insert_batch(entry, text)
+        })
     });
     // 调 onChange(若有)：与 dispatch_input_key 同机制
     crate::state::with_engine(|engine| {
-        let on_change = crate::state::with_node_handlers(|h| {
-            h.get(&(popup_id, node_id.to_string()))
-                .and_then(|hd| hd.on_change.clone())
+        let on_change = crate::host::with_state_or_init(|st| {
+            crate::state::with_node_handlers(st, |h| {
+                h.get(&(popup_id, node_id.to_string()))
+                    .and_then(|hd| hd.on_change.clone())
+            })
         });
         let Some(f) = on_change else { return Ok(()) };
         let func = f
@@ -243,43 +255,58 @@ pub(crate) fn js_set_input_value(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("set_input_value: value must be a string"))?;
-    with_input_states(|m| {
-        // 保留既有 multiline 标志：set_input_value 只改值,不改节点的多行属性
-        let multiline = m
-            .get(&(popup_id, node_id.clone()))
-            .map(|s| s.multiline)
-            .unwrap_or(false);
-        m.insert(
-            (popup_id, node_id),
-            InputState {
-                cursor: value.chars().count(),
-                value,
-                multiline,
-            },
-        );
+    crate::host::with_state_or_init(|st| {
+        with_input_states(st, |m| {
+            // 保留既有 multiline 标志：set_input_value 只改值,不改节点的多行属性
+            let multiline = m
+                .get(&(popup_id, node_id.clone()))
+                .map(|s| s.multiline)
+                .unwrap_or(false);
+            m.insert(
+                (popup_id, node_id),
+                InputState {
+                    cursor: value.chars().count(),
+                    value,
+                    multiline,
+                },
+            );
+        })
     });
     Ok(JsValue::undefined())
 }
 
 /// 弹窗关闭清理：删该 popup 的全部 InputStates（生命周期）。
 pub(crate) fn clear_popup_inputs(popup_id: u64) {
-    with_input_states(|m| m.retain(|(pid, _), _| *pid != popup_id));
+    crate::host::with_state_or_init(|st| {
+        with_input_states(st, |m| m.retain(|(pid, _), _| *pid != popup_id))
+    });
 }
 
 /// 该 input 节点是否已渲染（有引擎状态）。未渲染的节点返回 false。
 /// 供 helix-term 按键路由判断：有状态 → 编辑键走 dispatch_input_key，否则按 button 处理。
 pub fn input_has_state(popup_id: u64, node_id: &str) -> bool {
-    with_input_states(|m| m.contains_key(&(popup_id, node_id.to_string())))
+    crate::host::with_state_or_init(|st| {
+        with_input_states(st, |m| m.contains_key(&(popup_id, node_id.to_string())))
+    })
 }
 
 /// 该 input 是否多行（按键路由用）：multiline 时 Enter/Up/Down 是编辑键
 /// （换行/行间移动,走 dispatch_input_key）；单行时 Enter/Up/Down 走 onKey（提交/候选导航）。
 pub fn input_is_multiline(popup_id: u64, node_id: &str) -> bool {
-    with_input_states(|m| {
-        m.get(&(popup_id, node_id.to_string()))
-            .map(|s| s.multiline)
-            .unwrap_or(false)
+    crate::host::with_state_or_init(|st| {
+        with_input_states(st, |m| {
+            m.get(&(popup_id, node_id.to_string()))
+                .map(|s| s.multiline)
+                .unwrap_or(false)
+        })
     })
+}
+
+/// **L3 过渡入口**:helix-term 集成测试/边界拿不到 `&HostState` 时用(隐式解析)。
+pub fn with_input_states_current<T>(
+    f: impl FnOnce(&mut std::collections::HashMap<(u64, String), InputState>) -> T,
+) -> T {
+    crate::host::with_host_ref_or_init(|h| f(&mut h.input_states.borrow_mut()))
 }
 
 #[cfg(test)]
@@ -399,7 +426,11 @@ mod tests {
         // 非编辑键：不动状态、不触发 onChange（Left 只动光标）
         dispatch_input_key(id, "q", "Left").unwrap();
         assert!(take_messages().is_empty());
-        with_input_states(|m| assert_eq!(m.get(&(id, "q".to_string())).unwrap().cursor, 1));
+        crate::host::with_state_or_init(|st| {
+            crate::input::with_input_states(st, |m| {
+                assert_eq!(m.get(&(id, "q".to_string())).unwrap().cursor, 1)
+            })
+        });
         // set_input_value：JS 强制改值，cursor 置末尾
         load_script(&format!("helix.set_input_value({id}, \"q\", \"setval\");")).unwrap();
         match render_popup(id, 40, 10, None).unwrap() {
@@ -411,7 +442,12 @@ mod tests {
         }
         // 生命周期：close_popup 清空该 popup 的 InputStates
         close_popup(id).unwrap();
-        with_input_states(|m| assert!(!m.contains_key(&(id, "q".to_string()))));
+        crate::host::with_state_or_init(|st| {
+            crate::input::with_input_states(
+                st,
+                |m| assert!(!m.contains_key(&(id, "q".to_string()))),
+            )
+        });
     }
 
     #[test]

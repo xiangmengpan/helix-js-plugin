@@ -180,11 +180,11 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         Some(host) => host.statusline_parts(&js_ctx),
         None => helix_js::statusline_parts(&js_ctx),
     };
-    let js_replace = helix_js::statusline_replaces();
+    let js_replace = helix_js::statusline_replaces_current();
 
     if js_replace {
         // 全替换模式：按 zones 比例分左/中/右三区，每区段间 1 空格 gap
-        let [zl, zc, zr] = helix_js::statusline_zones();
+        let [zl, zc, zr] = helix_js::statusline_zones_current();
         let sum = (zl + zc + zr).max(1) as u32;
         let w = viewport.width as u32;
         let left_w = (w * zl as u32 / sum) as u16;

@@ -11,9 +11,7 @@ use crate::pty;
 #[cfg(unix)]
 use crate::shell::spawn_pty_worker;
 
-use crate::state::{
-    with_buffer_icon_hook, with_keymap_hint_hook, with_popups, with_statusline_hook, UI_REQUESTS,
-};
+use crate::state::{with_popups, with_statusline_hook, UI_REQUESTS};
 // 仅 open_terminal 的 pty 路径(cfg(unix) 块)里用到 ⇒ 非 unix 下不导入,免得 unused 警告
 #[cfg(unix)]
 use crate::state::with_terms;
@@ -516,7 +514,7 @@ pub(crate) fn js_open_terminal(
         let pty_id = crate::state::next_term_id(crate::host::host_state(ctx));
         // 注册表键用 pty_id（term_kill 按 pty_id 清理）；view_id 是 UI 层/JS 侧句柄
         crate::state::register_term(crate::host::host_state(ctx), pty_id, view_id, cmd.clone());
-        with_terms(|m| {
+        with_terms(crate::host::host_state(ctx), |m| {
             m.insert(
                 pty_id,
                 TermCallbacks {
@@ -855,7 +853,7 @@ pub(crate) fn js_set_buffer_icon(
     crate::permissions::bind_callback(crate::permissions::CbKey::hook(
         crate::permissions::CB_HOOK_BUFFER_ICON,
     ));
-    with_buffer_icon_hook(|h| *h = Some(hook.clone()));
+    crate::state::with_buffer_icon_hook_current(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
 
@@ -872,7 +870,7 @@ pub(crate) fn js_set_completion_icon(
     crate::permissions::bind_callback(crate::permissions::CbKey::hook(
         crate::permissions::CB_HOOK_COMPLETION_ICON,
     ));
-    crate::state::with_completion_icon_hook(|h| *h = Some(hook.clone()));
+    crate::state::with_completion_icon_hook_current(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
 
@@ -1503,8 +1501,8 @@ fn parse_node(
             let multiline_param = obj_opt_bool(&obj, "multiline", ctx, &api)?.unwrap_or(false);
             // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值。
             // multiline 同取 state(引擎权威)——渲染回调动态改参不与编辑语义分叉。
-            let (value, cursor, multiline) =
-                crate::input::with_input_states(|m| match m.entry((id, node_id.clone())) {
+            let (value, cursor, multiline) = crate::host::with_state_or_init(|st| {
+                crate::input::with_input_states(st, |m| match m.entry((id, node_id.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => {
                         let s = e.get();
                         (s.value.clone(), s.cursor, s.multiline)
@@ -1518,7 +1516,8 @@ fn parse_node(
                         });
                         (js_value.clone(), c, multiline_param)
                     }
-                });
+                })
+            });
             Ok(CompNode::Input {
                 value,
                 cursor,
@@ -1606,7 +1605,7 @@ fn register_node_handlers(
             &owner,
         );
     }
-    crate::state::with_node_handlers(|map| {
+    crate::state::with_node_handlers(crate::host::host_state(ctx), |map| {
         map.insert(
             (view_id, node_id.to_string()),
             NodeHandlers {
@@ -1800,14 +1799,14 @@ pub(crate) fn js_set_statusline(
         }
     }
     if arg.is_null_or_undefined() {
-        with_statusline_hook(|h| *h = None);
+        with_statusline_hook(crate::host::host_state(context), |h| *h = None);
         crate::state::set_statusline_replace(crate::host::host_state(context), false);
     } else if arg.as_callable().is_some() {
         // 注册期绑定属主(状态栏钩子在每帧路径上跑,属主必须是注册它的插件)
         crate::permissions::bind_callback(crate::permissions::CbKey::hook(
             crate::permissions::CB_HOOK_STATUSLINE,
         ));
-        with_statusline_hook(|h| *h = Some(arg));
+        with_statusline_hook(crate::host::host_state(context), |h| *h = Some(arg));
         crate::state::set_statusline_replace(crate::host::host_state(context), replace);
     } else {
         return Err(crate::js_err(
@@ -1833,7 +1832,9 @@ pub(crate) fn js_set_keymap_hint(
             crate::permissions::CB_HOOK_KEYMAP_HINT,
         ));
     }
-    with_keymap_hint_hook(|h| *h = if arg.is_null() { None } else { Some(arg) });
+    crate::state::with_keymap_hint_hook_current(|h| {
+        *h = if arg.is_null() { None } else { Some(arg) }
+    });
     Ok(JsValue::undefined())
 }
 
@@ -1907,7 +1908,7 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
 
 pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
     crate::init();
-    let hook = with_statusline_hook(|h| h.clone())?;
+    let hook = crate::state::with_statusline_hook_current(|h| h.clone())?;
     crate::state::with_engine(|engine| {
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let cursor = ObjectInitializer::new(engine)
@@ -2194,7 +2195,7 @@ pub(crate) fn js_term_close(
 pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
     crate::init();
     crate::state::with_engine(|engine| {
-        let hook = with_buffer_icon_hook(|h| h.clone());
+        let hook = crate::state::with_buffer_icon_hook_current(|h| h.clone());
         let hook = hook?;
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let arg = match path {
@@ -2218,7 +2219,7 @@ pub fn completion_kind_icon(kind: u8) -> Option<String> {
     }
     crate::init();
     crate::state::with_engine(|engine| {
-        let hook = crate::state::with_completion_icon_hook(|h| h.clone());
+        let hook = crate::state::with_completion_icon_hook_current(|h| h.clone());
         let hook = hook?;
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let arg = JsValue::from(kind);
@@ -2251,7 +2252,7 @@ pub(crate) fn js_set_completion_render(
     crate::permissions::bind_callback(crate::permissions::CbKey::hook(
         crate::permissions::CB_HOOK_COMPLETION_RENDER,
     ));
-    crate::state::with_completion_render_hook(|h| *h = Some(hook.clone()));
+    crate::state::with_completion_render_hook_current(|h| *h = Some(hook.clone()));
     Ok(JsValue::undefined())
 }
 
@@ -2268,7 +2269,7 @@ pub fn render_completion_row(
     match_indices: &[u32],
 ) -> Result<Content> {
     crate::init();
-    let hook = crate::state::with_completion_render_hook(|h| h.clone());
+    let hook = crate::state::with_completion_render_hook_current(|h| h.clone());
     let hook = hook.ok_or_else(|| anyhow!("completion render hook not registered"))?;
     crate::state::with_engine(|engine| {
         let func = hook

@@ -763,11 +763,11 @@ impl JsHost {
     // 线程局部指针去写 —— 显式方法让所有权在类型上可见。
 
     pub fn cache_buffers(&mut self, json: &str) {
-        crate::state::cache_buffers(json);
+        crate::state::cache_buffers(self.state(), json);
     }
 
     pub fn cache_diagnostics(&mut self, json: &str) {
-        crate::state::cache_diagnostics(json);
+        crate::state::cache_diagnostics(self.state(), json);
     }
 
     /// 快照兴趣位（查询，不需要 `&mut`，为对称起见放在宿主方法里）
@@ -776,11 +776,11 @@ impl JsHost {
     }
 
     pub fn set_plugin_roots(&mut self, roots: Vec<std::path::PathBuf>) {
-        crate::state::set_plugin_roots(roots);
+        crate::state::set_plugin_roots(self.state(), roots);
     }
 
     pub fn set_layouts_dir(&mut self, dir: std::path::PathBuf) {
-        crate::state::set_layouts_dir(dir);
+        crate::state::set_layouts_dir(self.state(), dir);
     }
 
     pub fn set_editor_version(&mut self, version: &str) {
@@ -788,11 +788,11 @@ impl JsHost {
     }
 
     pub fn set_runtime_dirs(&mut self, dirs: Vec<std::path::PathBuf>) {
-        crate::state::set_runtime_dirs(dirs);
+        crate::state::set_runtime_dirs(self.state(), dirs);
     }
 
     pub fn take_lsp_requests(&mut self) -> Vec<crate::lsp::LspRequest> {
-        crate::lsp::take_lsp_requests()
+        crate::lsp::take_lsp_requests(self.state())
     }
 
     /// 泵入口·热重载:重跑已加载的全部脚本(`:plugin-reload` / `:plugin reload`)
@@ -1488,7 +1488,9 @@ mod engine_ownership_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::init();
-        crate::state::set_layouts_dir(std::path::PathBuf::from("/tmp/LAYOUTS-RED"));
+        crate::host::with_state_or_init(|st| {
+            crate::state::set_layouts_dir(st, std::path::PathBuf::from("/tmp/LAYOUTS-RED"))
+        });
         assert_eq!(
             crate::host::with_state_or_init(crate::state::layouts_dir)
                 .map(|p| p.to_string_lossy().to_string()),
@@ -1505,7 +1507,9 @@ mod engine_ownership_tests {
         .expect("子线程不应 panic");
 
         // ⚠️ 结尾必须覆盖回默认:本测试改的是**本宿主的桶**,不清会污染同进程其它用到 layouts 的测试
-        crate::state::set_layouts_dir(std::env::temp_dir());
+        crate::host::with_state_or_init(|st| {
+            crate::state::set_layouts_dir(st, std::env::temp_dir())
+        });
         assert!(
             got.is_none(),
             "另一线程的宿主不该看到别人设的 layouts 目录;实得 {got:?}"
@@ -1565,19 +1569,23 @@ mod engine_ownership_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::init();
-        crate::state::cache_buffers(r#"{"current":1,"buffers":[{"name":"A-RED.txt"}]}"#);
+        crate::host::with_state_or_init(|st| {
+            crate::state::cache_buffers(st, r#"{"current":1,"buffers":[{"name":"A-RED.txt"}]}"#)
+        });
 
         // 同一线程换到另一个宿主(真实污染场景),让**它**写自己那份
         let mut other = JsHost::new();
         set_active(&mut other);
-        crate::state::cache_buffers(r#"{"current":2,"buffers":[{"name":"B-BLUE.txt"}]}"#);
+        crate::host::with_state_or_init(|st| {
+            crate::state::cache_buffers(st, r#"{"current":2,"buffers":[{"name":"B-BLUE.txt"}]}"#)
+        });
         let other_saw = crate::state::buffers_json();
         clear_active();
         std::mem::forget(other); // 引擎不可 drop
 
         // 回到宿主 A:必须仍看到**自己**那份
         let a_saw = crate::state::buffers_json();
-        crate::state::cache_buffers(""); // 清理本宿主的桶,免得污染同进程其它测试
+        crate::host::with_state_or_init(|st| crate::state::cache_buffers(st, ""));
 
         assert!(
             other_saw.contains("B-BLUE.txt"),
@@ -1607,8 +1615,8 @@ mod engine_ownership_tests {
     fn layout_and_diagnostics_are_per_host_not_process_global() {
         let a = Box::new(JsHost::new());
         install_default(*a);
-        crate::state::cache_layout("A-layout");
-        crate::state::cache_diagnostics("A-diag");
+        crate::host::with_state_or_init(|st| crate::state::cache_layout(st, "A-layout"));
+        crate::host::with_state_or_init(|st| crate::state::cache_diagnostics(st, "A-diag"));
 
         // 换一个宿主:读不到上一个宿主写的东西
         let b = Box::new(JsHost::new());
@@ -1616,7 +1624,7 @@ mod engine_ownership_tests {
         assert_eq!(crate::state::layout_json(), "", "新宿主不该看到旧宿主布局");
         assert_eq!(crate::state::diagnostics_json(), "");
 
-        crate::state::cache_layout("B-layout");
+        crate::host::with_state_or_init(|st| crate::state::cache_layout(st, "B-layout"));
         assert_eq!(crate::state::layout_json(), "B-layout");
     }
 

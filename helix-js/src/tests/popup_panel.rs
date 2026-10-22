@@ -1139,8 +1139,10 @@ fn component_state_roundtrip() {
         assert!(v.is_null(), "未注册 → null");
     });
     // 注册 JSON 提供者 → 对象
-    crate::state::register_component_state(7, |_| {
-        r#"{"mode":"insert","title":"bash"}"#.to_string()
+    crate::host::with_state_or_init(|st| {
+        crate::state::register_component_state(st, 7, |_| {
+            r#"{"mode":"insert","title":"bash"}"#.to_string()
+        })
     });
     load_script(r#"globalThis.__cs2 = helix.get_component_state(7);"#).unwrap();
     crate::state::with_engine(|engine| {
@@ -1154,7 +1156,7 @@ fn component_state_roundtrip() {
         let title = obj.get(JsString::from("title"), engine).unwrap();
         assert_eq!(title.as_string().unwrap().to_std_string_escaped(), "bash");
     });
-    crate::state::unregister_component_state(7);
+    crate::host::with_state_or_init(|st| crate::state::unregister_component_state(st, 7));
 }
 
 /// 装饰请求队列:set_virtual_text / set_highlight 入队,take_decorations 一次取走;

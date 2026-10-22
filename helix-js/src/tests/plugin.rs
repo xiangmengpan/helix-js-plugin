@@ -322,7 +322,9 @@ fn builtin_plugin_is_grandfathered() {
     std::mem::forget(builtin);
     std::mem::forget(user);
     // 自带 runtime 在前、用户目录在后(顺序即语义:末位=用户层)
-    set_plugin_roots(vec![b.clone(), u.clone()]);
+    crate::host::with_state_or_init(|st| {
+        crate::state::set_plugin_roots(st, vec![b.clone(), u.clone()])
+    });
     let src = r#"helix.plugin("core", { permissions: {} });
            helix.register_command("core-run", () => { helix.run("echo ok"); });"#;
     std::fs::write(b.join("core.js"), src).unwrap();
@@ -1147,11 +1149,12 @@ fn reload_real_statusline_render_ok() {
     eprintln!("load statusline result: {r:?}");
     r.unwrap();
     let _ = take_messages();
-    let hook_set = crate::state::with_statusline_hook(|h| h.is_some());
+    let hook_set = crate::state::with_statusline_hook_current(|h| h.is_some());
     eprintln!("statusline hook registered: {hook_set}");
     crate::state::with_engine(|_e| {
-        let callable =
-            crate::state::with_statusline_hook(|h| h.as_ref().map(|v| v.as_callable().is_some()));
+        let callable = crate::state::with_statusline_hook_current(|h| {
+            h.as_ref().map(|v| v.as_callable().is_some())
+        });
         eprintln!("hook callable: {callable:?}");
     });
     let ctx = statusline_ctx();

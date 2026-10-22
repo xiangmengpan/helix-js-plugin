@@ -126,7 +126,7 @@ pub(crate) fn js_set_theme(
             overrides.insert(scope, style);
         }
     }
-    with_theme_overrides(|o| *o = overrides);
+    with_theme_overrides(crate::host::host_state(ctx), |o| *o = overrides);
     mark_theme_dirty(crate::host::host_state(ctx));
     Ok(JsValue::undefined())
 }
@@ -137,7 +137,7 @@ pub(crate) fn js_reset_theme(
     _args: &[JsValue],
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    with_theme_overrides(|o| o.clear());
+    crate::state::with_theme_overrides_current(|o| o.clear());
     crate::host::with_state_or_init(mark_theme_dirty);
     Ok(JsValue::undefined())
 }
@@ -145,7 +145,7 @@ pub(crate) fn js_reset_theme(
 /// Rust 侧清除主题覆盖并置脏（helix-term 切基准主题后调用）
 pub fn reset_theme() {
     crate::init();
-    with_theme_overrides(|o| o.clear());
+    crate::state::with_theme_overrides_current(|o| o.clear());
     crate::host::with_state_or_init(mark_theme_dirty);
 }
 
@@ -158,7 +158,7 @@ pub fn take_theme_dirty() -> bool {
 /// 当前主题覆盖集快照（scope → 覆盖样式；helix-term 合并进基准主题）
 pub fn theme_overrides() -> HashMap<String, StyleOverride> {
     crate::init();
-    with_theme_overrides(|o| o.clone())
+    crate::state::with_theme_overrides_current(|o| o.clone())
 }
 
 /// 当前解析后的样式（fg/bg/modifiers，hex）；scope 未知返回 null。

@@ -29,13 +29,16 @@ fn pane_list_api_reads_snapshot() {
     assert_eq!(take_messages()[0], "n:0");
 
     // 推入一份含浮窗的快照后应能读到 place/pinned/focused
-    crate::state::cache_panes(
-        r#"{"panes":[
+    crate::host::with_state_or_init(|st| {
+        crate::state::cache_panes(
+            st,
+            r#"{"panes":[
             {"id":0,"kind":"EditorView","place":"tiled","focused":false,"fixed":false,"pinned":false},
             {"id":7,"kind":"PluginTerminal","place":"float","focused":true,"fixed":false,"pinned":true,"z":2,
              "rect":{"x":0.2,"y":0.2,"w":0.5,"h":0.5}}
         ]}"#,
-    );
+        )
+    });
     load_script(
         r#"
     helix.register_command("pl1", () => {
@@ -138,12 +141,15 @@ fn pane_namespace_is_wired() {
 fn pane_info_reads_same_snapshot_as_list() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
-    crate::state::cache_panes(
-        r#"{"panes":[
+    crate::host::with_state_or_init(|st| {
+        crate::state::cache_panes(
+            st,
+            r#"{"panes":[
             {"id":0,"kind":"EditorView","place":"tiled","focused":true,"fixed":false,"pinned":false},
             {"id":7,"kind":"PluginTerminal","place":"float","focused":false,"fixed":false,"pinned":true,"z":2}
         ]}"#,
-    );
+        )
+    });
     crate::load_script(
         r##"
         helix.register_command("pi", () => {
@@ -172,7 +178,7 @@ fn pane_info_reads_same_snapshot_as_list() {
 
     // **复原全局缓存**:本测试注入过 panes,不清掉会让后续依赖"空缓存"的测试失败
     // (实测:不清时有 4 个无关测试挂了)
-    crate::state::cache_panes(r#"{"panes":[]}"#);
+    crate::host::with_state_or_init(|st| crate::state::cache_panes(st, r#"{"panes":[]}"#));
 }
 
 /// `pane.raise` / `pane.pin` —— 入队对应请求;`pin` **必须显式 on**。
@@ -220,14 +226,17 @@ fn pane_raise_and_pin_push_requests() {
 fn stack_list_groups_and_dedupes_by_anchor() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
-    crate::state::cache_panes(
-        r#"{"panes":[
+    crate::host::with_state_or_init(|st| {
+        crate::state::cache_panes(
+            st,
+            r#"{"panes":[
             {"id":0,"kind":"EditorView","place":"tiled","stack":[0,1]},
             {"id":1,"kind":"PluginTerminal","place":"tiled","stack":[0,1]},
             {"id":5,"kind":"PluginPanel","place":"tiled","stack":[]},
             {"id":7,"kind":"PluginTerminal","place":"float"}
         ]}"#,
-    );
+        )
+    });
     crate::load_script(
         r##"
         helix.register_command("sl", () => {
@@ -252,7 +261,7 @@ fn stack_list_groups_and_dedupes_by_anchor() {
     assert_eq!(m[1], "a:0 m:0,1", "锚 = members[0](= 当前显示的那个)");
     assert_eq!(m[2], "t:function");
     // 复原全局缓存(本测试注入过 panes;不清会让依赖"空快照"的测试挂)
-    crate::state::cache_panes(r#"{"panes":[]}"#);
+    crate::host::with_state_or_init(|st| crate::state::cache_panes(st, r#"{"panes":[]}"#));
 }
 
 /// `helix.stack.*` —— 名字齐全 + 三个写操作各入队对应请求。
@@ -351,9 +360,12 @@ fn buffer_traversal_api() {
         assert!(v.is_null(), "无缓存 buffers → null");
     });
     // 缓存写入 → buffers 数组 / current id
-    crate::state::cache_buffers(
-        r#"{"current":3,"buffers":[{"id":3,"path":"/a.rs","name":"a.rs","dirty":false,"language":"rust"},{"id":7,"path":null,"name":"[scratch]","dirty":true,"language":null}]}"#,
-    );
+    crate::host::with_state_or_init(|st| {
+        crate::state::cache_buffers(
+            st,
+            r#"{"current":3,"buffers":[{"id":3,"path":"/a.rs","name":"a.rs","dirty":false,"language":"rust"},{"id":7,"path":null,"name":"[scratch]","dirty":true,"language":null}]}"#,
+        )
+    });
     load_script(
         r#"
         globalThis.__bs = helix.buffer.list();

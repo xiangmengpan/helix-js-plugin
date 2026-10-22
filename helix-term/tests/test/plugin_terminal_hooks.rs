@@ -511,7 +511,7 @@ async fn tutor_plugin_opens_unbound_doc() -> anyhow::Result<()> {
     // 集成测试进程里 `application.rs` 的启动推入**不执行** → 得手动设 runtime 目录。
     // 否则 `helix.runtime_path("tutor")` 返回 null,插件只 echo 一句错误 →
     // 下面的断言会**假通过**(doc 是初始空文档,path 本来也是 None)。
-    helix_js::set_runtime_dirs(vec![root.join("runtime")]);
+    helix_js::set_runtime_dirs_current(vec![root.join("runtime")]);
 
     let mut app = AppBuilder::new().build()?;
     pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
@@ -546,7 +546,7 @@ async fn layout_plugin_routes_args_and_persists() -> anyhow::Result<()> {
     // layouts 目录:集成测试进程里 application.rs 的启动推入**不执行** →
     // 必须手动指向临时目录,**否则会动到用户真实的 ~/.config/helix/layouts**
     let tmp = tempfile::tempdir()?;
-    helix_js::set_layouts_dir(tmp.path().to_path_buf());
+    helix_js::set_layouts_dir_current(tmp.path().to_path_buf());
     std::fs::write(
         tmp.path().join("dev.json"),
         r#"{"tree":{"type":"leaf","id":0}}"#,
@@ -595,7 +595,7 @@ async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
         dir.path().join("manifest.json"),
         r#"{"demo":{"source":"local","kind":"local","installed_at":"t","pinned":false,"files":["demo/plugin.js"]}}"#,
     )?;
-    helix_js::set_plugin_roots(vec![dir.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![dir.path().to_path_buf()]);
 
     let mut app = AppBuilder::new().build()?;
     pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;

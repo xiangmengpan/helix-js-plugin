@@ -80,7 +80,7 @@ fn mgr_path() -> std::path::PathBuf {
 async fn plugin_op_reload_reloads_script() -> anyhow::Result<()> {
     // `:plugin` 的 JS 侧入口要先能拿到插件根（集成进程不跑启动推入 ⇒ 必须显式设）
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;
@@ -145,7 +145,7 @@ async fn plugin_op_reload_reloads_script() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn reload_inside_command_does_not_panic() -> anyhow::Result<()> {
     let proot = tempfile::tempdir()?;
-    helix_js::set_plugin_roots(vec![proot.path().to_path_buf()]);
+    helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "x\n")?;

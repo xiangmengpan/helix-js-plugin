@@ -2,6 +2,7 @@
 //! 请求入队（LspRequest）+ Promise 注册（id → resolving）；helix-term 泵循环消费请求，
 //! 响应经 LSP_RESULTS 通道回泵 → resolve_lsp 按 id 兑现 Promise。
 
+use crate::host::HostState;
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::JsPromise;
 use boa_engine::{Context, JsNativeError, JsString, JsValue};
@@ -37,7 +38,14 @@ pub struct LspRequest {
 // 1b-3c:原为 thread_local;现为宿主字段 `lsp_requests`(状态跟宿主而不跟线程)。
 
 /// 取走并清空待处理请求队列（helix-term 泵循环每帧调用）
-pub fn take_lsp_requests() -> Vec<LspRequest> {
+pub fn take_lsp_requests(st: &HostState) -> Vec<LspRequest> {
+    {
+        let q = &st.lsp_requests;
+        std::mem::take(&mut *q.borrow_mut())
+    }
+}
+
+pub fn take_lsp_requests_current() -> Vec<LspRequest> {
     crate::host::with_host_ref_or_init(|h| {
         let q = &h.lsp_requests;
         std::mem::take(&mut *q.borrow_mut())
@@ -90,7 +98,9 @@ fn enqueue_lsp_request(
     };
     let (promise, resolving) = JsPromise::new_pending(context);
     let id = crate::state::next_async_id();
-    crate::state::with_lsp_promises(|m| m.insert(id, resolving));
+    crate::state::with_lsp_promises(crate::host::host_state(context), |m| {
+        m.insert(id, resolving)
+    });
     // 注册期绑定属主:响应兑现时跑的是发起者注册的 .then/.catch
     crate::permissions::bind_callback(crate::permissions::CbKey::lsp_promise(id));
     crate::host::with_host_ref_or_init(|h| {
@@ -223,7 +233,7 @@ pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()
     crate::init();
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::lsp_promise(id), || {
         crate::state::with_engine(|engine| {
-            let resolving = crate::state::with_lsp_promises(|m| m.remove(&id));
+            let resolving = crate::state::with_lsp_promises_current(|m| m.remove(&id));
             let Some(resolving) = resolving else {
                 return Ok(());
             };
@@ -326,10 +336,11 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         let mut ctx = Context::default();
+        ctx.insert_data(crate::host::current_state_rc());
         // 无参 → pos=None（helix-term 侧取当前光标）
         let p = js_lsp_hover(&JsValue::undefined(), &[], &mut ctx).unwrap();
         assert!(p.is_object(), "hover 应返回 Promise");
-        let hover_reqs = take_lsp_requests();
+        let hover_reqs = take_lsp_requests_current();
         assert_eq!(hover_reqs.len(), 1);
         assert!(matches!(hover_reqs[0].method, LspMethod::Hover));
         assert!(hover_reqs[0].pos.is_none());
@@ -340,7 +351,7 @@ mod tests {
             .property(JsString::from("col"), JsValue::from(3), Attribute::all())
             .build();
         let _ = js_lsp_goto_definition(&JsValue::undefined(), &[pos.into()], &mut ctx).unwrap();
-        let goto_reqs = take_lsp_requests();
+        let goto_reqs = take_lsp_requests_current();
         assert_eq!(goto_reqs.len(), 1);
         assert!(matches!(goto_reqs[0].method, LspMethod::GotoDefinition));
         assert_eq!(goto_reqs[0].pos, Some((5, 3)));
@@ -367,7 +378,10 @@ mod tests {
                 assert!(v.is_object(), "{expr} 应返回 Promise");
             }
         });
-        let got: Vec<LspMethod> = take_lsp_requests().into_iter().map(|r| r.method).collect();
+        let got: Vec<LspMethod> = take_lsp_requests_current()
+            .into_iter()
+            .map(|r| r.method)
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -390,7 +404,7 @@ mod tests {
             engine
                 .register_global_property(JsString::from("__lsp_p"), p, Attribute::all())
                 .unwrap();
-            take_lsp_requests()[0].id
+            take_lsp_requests_current()[0].id
         });
         // Ok(None) → null
         crate::load_script("__lsp_p.then((v) => { globalThis.__seen = v; });").unwrap();
@@ -409,7 +423,7 @@ mod tests {
             engine
                 .register_global_property(JsString::from("__lsp_p2"), p, Attribute::all())
                 .unwrap();
-            take_lsp_requests()[0].id
+            take_lsp_requests_current()[0].id
         });
         crate::load_script("__lsp_p2.then((v) => { globalThis.__seen2 = v; });").unwrap();
         resolve_lsp(id2, Ok(Some(r#"{"a": 1}"#.to_string()))).unwrap();
@@ -436,7 +450,7 @@ mod tests {
             engine
                 .register_global_property(JsString::from("__lsp_p3"), p, Attribute::all())
                 .unwrap();
-            take_lsp_requests()[0].id
+            take_lsp_requests_current()[0].id
         });
         crate::load_script("__lsp_p3.catch((e) => { globalThis.__seen3 = e.message; });").unwrap();
         resolve_lsp(id3, Err("boom".to_string())).unwrap();
@@ -458,7 +472,7 @@ mod tests {
             engine
                 .register_global_property(JsString::from("__lsp_p4"), p, Attribute::all())
                 .unwrap();
-            take_lsp_requests()[0].id
+            take_lsp_requests_current()[0].id
         });
         crate::load_script("__lsp_p4.catch((e) => { globalThis.__seen4 = e.message; });").unwrap();
         resolve_lsp(id4, Ok(Some("not json".to_string()))).unwrap();

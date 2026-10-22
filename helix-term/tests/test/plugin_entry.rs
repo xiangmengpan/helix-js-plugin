@@ -138,7 +138,7 @@ fn bare_plugin_name_loads_plugin_entry_file() {
            helix.register_command("myplug-cmd", () => helix.echo("from-plugin-entry"));
            helix.export({ ok: true });"#,
     );
-    helix_js::set_plugin_roots(vec![
+    helix_js::set_plugin_roots_current(vec![
         bundled.path().to_path_buf(),
         user.path().to_path_buf(),
     ]);

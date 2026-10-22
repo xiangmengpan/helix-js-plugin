@@ -105,7 +105,11 @@ pub(crate) fn try_with_registry<T>(
 }
 
 /// 访问 LAST_EXPORT：同上（内容泄漏）
-pub(crate) fn with_last_export<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+pub(crate) fn with_last_export<T>(st: &HostState, f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+    f(&mut st.last_export.borrow_mut())
+}
+
+pub(crate) fn with_last_export_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.last_export.borrow_mut()))
 }
 
@@ -199,23 +203,23 @@ pub(crate) fn try_with_event_handlers<T>(
 }
 
 /// 注册组件状态提供者：组件 id → 序列化为 JSON 的闭包（helix-term 侧调用）。
-pub fn register_component_state(id: u64, f: impl Fn(u64) -> String + 'static) {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.component_states;
+pub fn register_component_state(st: &HostState, id: u64, f: impl Fn(u64) -> String + 'static) {
+    {
+        let s = &st.component_states;
         {
             s.borrow_mut().insert(id, Box::new(f));
         }
-    })
+    }
 }
 
 /// 注销组件状态提供者（组件 Drop 时调用）。
-pub fn unregister_component_state(id: u64) {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.component_states;
+pub fn unregister_component_state(st: &HostState, id: u64) {
+    {
+        let s = &st.component_states;
         {
             s.borrow_mut().remove(&id);
         }
-    })
+    }
 }
 
 /// 读取组件状态（JSON 字符串；未注册 → None）。
@@ -244,38 +248,52 @@ pub(crate) fn try_with_popups<T>(
     crate::host::try_with_host_ref(|h| f(&mut h.popups.borrow_mut()))
 }
 
-/// 访问 BUFFER_ICON_HOOK：同上（内容泄漏）
-pub(crate) fn with_buffer_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+pub(crate) fn with_buffer_icon_hook_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.buffer_icon_hook.borrow_mut()))
 }
 
-/// 访问 COMPLETION_ICON_HOOK：同上（内容泄漏）
-pub(crate) fn with_completion_icon_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+pub(crate) fn with_completion_icon_hook_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.completion_icon_hook.borrow_mut()))
 }
 
-/// 访问 COMPLETION_RENDER_HOOK：同上（内容泄漏）
-pub(crate) fn with_completion_render_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+pub(crate) fn with_completion_render_hook_current<T>(
+    f: impl FnOnce(&mut Option<JsValue>) -> T,
+) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.completion_render_hook.borrow_mut()))
 }
 
 /// 访问 PICKER_SOURCES：同上（内容泄漏）
-pub(crate) fn with_picker_sources<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
+pub(crate) fn with_picker_sources<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, JsValue>) -> T,
+) -> T {
+    f(&mut st.picker_sources.borrow_mut())
+}
+
+pub(crate) fn with_picker_sources_current<T>(
+    f: impl FnOnce(&mut HashMap<String, JsValue>) -> T,
+) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.picker_sources.borrow_mut()))
 }
 
-/// 访问 KEYMAP_HINT_HOOK：同上（内容泄漏）
-pub(crate) fn with_keymap_hint_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+pub(crate) fn with_keymap_hint_hook_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.keymap_hint_hook.borrow_mut()))
 }
 
-/// 同 [`with_keymap_hint_hook`],但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
+/// 同 `with_keymap_hint_hook`,但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
 pub(crate) fn try_with_keymap_hint_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> Option<T> {
     crate::host::try_with_host_ref(|h| f(&mut h.keymap_hint_hook.borrow_mut()))
 }
 
 /// 访问 STATUSLINE_HOOK：同上（内容泄漏）
-pub(crate) fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
+pub(crate) fn with_statusline_hook<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut Option<JsValue>) -> T,
+) -> T {
+    f(&mut st.statusline_hook.borrow_mut())
+}
+
+pub(crate) fn with_statusline_hook_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.statusline_hook.borrow_mut()))
 }
 
@@ -283,11 +301,11 @@ pub(crate) fn set_statusline_replace(st: &HostState, v: bool) {
     st.statusline_replace.set(v);
 }
 
-pub fn statusline_replaces() -> bool {
-    crate::host::with_host_ref_or_init(|h| {
-        let r = &h.statusline_replace;
+pub fn statusline_replaces(st: &HostState) -> bool {
+    {
+        let r = &st.statusline_replace;
         r.get()
-    })
+    }
 }
 
 /// 设置 replace 模式区域比例 [左, 中, 右]（0 允许：该区不分配宽度）
@@ -296,15 +314,22 @@ pub(crate) fn set_statusline_zones(st: &HostState, zones: [u16; 3]) {
 }
 
 /// replace 模式区域比例 [左, 中, 右]
-pub fn statusline_zones() -> [u16; 3] {
-    crate::host::with_host_ref_or_init(|h| {
-        let z = &h.statusline_zones;
+pub fn statusline_zones(st: &HostState) -> [u16; 3] {
+    {
+        let z = &st.statusline_zones;
         *z.borrow()
-    })
+    }
 }
 
 /// 访问 NODE_HANDLERS：同上（内容泄漏）
 pub(crate) fn with_node_handlers<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T,
+) -> T {
+    f(&mut st.node_handlers.borrow_mut())
+}
+
+pub(crate) fn with_node_handlers_current<T>(
     f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T,
 ) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.node_handlers.borrow_mut()))
@@ -346,7 +371,19 @@ pub(crate) fn with_edits_current<T>(f: impl FnOnce(&mut Vec<Edit>) -> T) -> T {
 }
 
 /// 访问 DECORATION_REQUESTS（宿主字段;1b-3c 前为 thread_local）
-pub(crate) fn with_decoration_requests<T>(f: impl FnOnce(&mut Vec<DecorationRequest>) -> T) -> T {
+pub(crate) fn with_decoration_requests<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut Vec<DecorationRequest>) -> T,
+) -> T {
+    {
+        let c = &st.decoration_requests;
+        f(&mut c.borrow_mut())
+    }
+}
+
+pub(crate) fn with_decoration_requests_current<T>(
+    f: impl FnOnce(&mut Vec<DecorationRequest>) -> T,
+) -> T {
     crate::host::with_host_ref_or_init(|h| {
         let c = &h.decoration_requests;
         f(&mut c.borrow_mut())
@@ -364,7 +401,17 @@ pub(crate) fn with_doc_snapshots<T>(st: &HostState, f: impl FnOnce(&Vec<DocSnaps
 }
 
 /// 访问 CURSOR_REQUESTS（宿主字段;1b-3c 前为 thread_local）
-pub(crate) fn with_cursor_requests<T>(f: impl FnOnce(&mut Vec<CursorRequest>) -> T) -> T {
+pub(crate) fn with_cursor_requests<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut Vec<CursorRequest>) -> T,
+) -> T {
+    {
+        let c = &st.cursor_requests;
+        f(&mut c.borrow_mut())
+    }
+}
+
+pub(crate) fn with_cursor_requests_current<T>(f: impl FnOnce(&mut Vec<CursorRequest>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| {
         let c = &h.cursor_requests;
         f(&mut c.borrow_mut())
@@ -372,7 +419,17 @@ pub(crate) fn with_cursor_requests<T>(f: impl FnOnce(&mut Vec<CursorRequest>) ->
 }
 
 /// 访问 COMMAND_DOCS（宿主字段;1b-3c 前为 thread_local）
-pub(crate) fn with_command_docs<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
+pub(crate) fn with_command_docs<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, String>) -> T,
+) -> T {
+    {
+        let d = &st.command_docs;
+        f(&mut d.borrow_mut())
+    }
+}
+
+pub(crate) fn with_command_docs_current<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| {
         let d = &h.command_docs;
         f(&mut d.borrow_mut())
@@ -419,6 +476,16 @@ pub(crate) fn current_load_root(st: &HostState) -> Option<PathBuf> {
 
 /// 访问 THEME_OVERRIDES（宿主字段;1b-3c 前为 thread_local）
 pub(crate) fn with_theme_overrides<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, crate::theme::StyleOverride>) -> T,
+) -> T {
+    {
+        let o = &st.theme_overrides;
+        f(&mut o.borrow_mut())
+    }
+}
+
+pub(crate) fn with_theme_overrides_current<T>(
     f: impl FnOnce(&mut HashMap<String, crate::theme::StyleOverride>) -> T,
 ) -> T {
     crate::host::with_host_ref_or_init(|h| {
@@ -543,9 +610,9 @@ pub(crate) static UI_REQUESTS: OnceLock<UiRequests> = OnceLock::new();
 
 /// 设置插件根(**有序**)。1b:值存进宿主字段;`Box::leak` 保留只为不动 `plugin_roots()` 的
 /// `&'static` 签名。同宿主重复设置 = **覆盖**(与 T5-a/T5-b 的"首设生效"相反,那正是并行串台的根源)。
-pub fn set_plugin_roots(roots: Vec<PathBuf>) {
+pub fn set_plugin_roots(st: &HostState, roots: Vec<PathBuf>) {
     let leaked: &'static [PathBuf] = Box::leak(roots.into_boxed_slice());
-    crate::host::with_host_ref_or_init(|h| *h.plugin_roots.borrow_mut() = leaked);
+    *st.plugin_roots.borrow_mut() = leaked;
 }
 
 /// 当前宿主的插件根;未设置 ⇒ 空切片(集成测试依赖这个语义)
@@ -583,19 +650,15 @@ pub(crate) fn plugins_dir() -> Option<PathBuf> {
 // (3 处 typed.rs · 2 处 helix-js 非测试 · ≈52 处单测),加字段就是 57 处都要改 ——
 // 正是本项目反复吃亏的"漏一处**不报错**"的形态。(同 `OpenScratchFile` 那次的取舍。)
 /// 分派器在调用 JS 命令**之前**设入(`run_plugin_command`)。
-pub fn set_command_args(args: Vec<String>) {
-    crate::host::with_host_ref_or_init(|h| {
-        let a = &h.pending_command_args;
-        *a.borrow_mut() = args
-    });
+pub fn set_command_args(st: &HostState, args: Vec<String>) {
+    let a = &st.pending_command_args;
+    *a.borrow_mut() = args
 }
 
 /// **调用之后必须清空** —— 否则参数会"粘"到下一个命令,而那类 bug 极难查。
-pub fn clear_command_args() {
-    crate::host::with_host_ref_or_init(|h| {
-        let a = &h.pending_command_args;
-        a.borrow_mut().clear()
-    });
+pub fn clear_command_args(st: &HostState) {
+    let a = &st.pending_command_args;
+    a.borrow_mut().clear()
 }
 
 /// 当前待处理参数(JS 侧 `helix.command_args()` 读它)
@@ -605,9 +668,9 @@ pub(crate) fn command_args(st: &HostState) -> Vec<String> {
 }
 
 /// 设置 runtime 目录(同上:进宿主字段,`&'static` 签名不变)
-pub fn set_runtime_dirs(dirs: Vec<PathBuf>) {
+pub fn set_runtime_dirs(st: &HostState, dirs: Vec<PathBuf>) {
     let leaked: &'static [PathBuf] = Box::leak(dirs.into_boxed_slice());
-    crate::host::with_host_ref_or_init(|h| *h.runtime_dirs.borrow_mut() = leaked);
+    *st.runtime_dirs.borrow_mut() = leaked;
 }
 
 /// 当前宿主的 runtime 目录(`runtime_path()` 的读取口);未设置 ⇒ 空切片
@@ -908,12 +971,26 @@ pub(crate) fn with_lsp_results_rx<T>(
 }
 
 /// 访问 TERM_CALLBACKS：同上（内容泄漏）
-pub(crate) fn with_terms<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
+pub(crate) fn with_terms<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T,
+) -> T {
+    f(&mut st.terms.borrow_mut())
+}
+
+pub(crate) fn with_terms_current<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.terms.borrow_mut()))
 }
 
 /// 访问 TERM_PROMISES（run_async 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_term_promises<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
+    f(&mut st.term_promises.borrow_mut())
+}
+
+pub(crate) fn with_term_promises_current<T>(
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.term_promises.borrow_mut()))
@@ -937,6 +1014,13 @@ pub(crate) fn with_async_promises_current<T>(
 
 /// 访问 LSP_PROMISES（helix.lsp.* 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_lsp_promises<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
+    f(&mut st.lsp_promises.borrow_mut())
+}
+
+pub(crate) fn with_lsp_promises_current<T>(
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.lsp_promises.borrow_mut()))
@@ -949,9 +1033,9 @@ pub fn take_messages() -> Vec<String> {
 }
 
 /// 设置布局目录(同上:进宿主字段)。同宿主重复设置 = 覆盖(T5-a 的"首设生效"曾导致并行串台)。
-pub fn set_layouts_dir(dir: PathBuf) {
+pub fn set_layouts_dir(st: &HostState, dir: PathBuf) {
     let leaked: &'static PathBuf = Box::leak(Box::new(dir));
-    crate::host::with_host_ref_or_init(|h| *h.layouts_dir.borrow_mut() = Some(leaked));
+    *st.layouts_dir.borrow_mut() = Some(leaked);
 }
 
 /// 当前宿主的布局目录;未设置 ⇒ `None`
@@ -964,21 +1048,18 @@ pub(crate) fn layout_json() -> String {
     crate::host::with_host_ref(|h| h.layout.borrow().clone())
 }
 
-pub fn cache_layout(json: &str) {
-    crate::host::with_host_ref_or_init(|h| *h.layout.borrow_mut() = json.to_string());
+pub fn cache_layout(st: &HostState, json: &str) {
+    *st.layout.borrow_mut() = json.to_string();
 }
 
 /// 写入打开文档序列化缓存(helix-term 每帧更新;buffers/current_buffer 读取)
 /// 打开文档快照(**宿主字段**;1b:原是一张 `HashMap<宿主key, String>` 的进程级键表)。
 /// 每帧写 ⇒ 存宿主里、读时 clone;**不做 `Box::leak`**(那会无限增长)。
 /// 历史:键表时代并行跑会读到别人的快照(实测 `buffer_traversal_and_focus` 拿到 z.txt)。
-pub fn cache_buffers(json: &str) {
-    // 1b:快照存宿主字段(原来是 `HashMap<宿主key, String>` 键表)
-    crate::host::with_host_ref_or_init(|h| {
-        *h.buffers.borrow_mut() = json.to_string();
-        let (b, d) = h.serialized.get();
-        h.serialized.set((b + 1, d));
-    });
+pub fn cache_buffers(st: &HostState, json: &str) {
+    *st.buffers.borrow_mut() = json.to_string();
+    let (b, d) = st.serialized.get();
+    st.serialized.set((b + 1, d));
 }
 
 /// 当前宿主的 pane 清单快照(还没缓存过 → 空串)。`helix.pane.*` 的读取口。
@@ -1001,23 +1082,21 @@ pub(crate) fn buffers_json() -> String {
 /// 写入平级模式快照(模式切换时由 helix-term 调用)
 /// 写入 pane 清单快照(布局变更时由 helix-term 调用)
 /// pane 清单快照(宿主字段;1b 同上)。布局变更时写,`helix.pane.list()` 读。
-pub fn cache_panes(json: &str) {
-    crate::host::with_host_ref_or_init(|h| *h.panes.borrow_mut() = json.to_string());
+pub fn cache_panes(st: &HostState, json: &str) {
+    *st.panes.borrow_mut() = json.to_string();
 }
 
 /// 平级模式快照(宿主字段;1b 同上)。模式切换时写,`helix.pane_mode.current()/keymap()` 读。
 /// 历史:值取自它 ⇒ which-key 曾渲染出**别的用例的**键位(实测 2/2 复现)。
-pub fn cache_pane_mode(json: &str) {
-    crate::host::with_host_ref_or_init(|h| *h.pane_mode.borrow_mut() = json.to_string());
+pub fn cache_pane_mode(st: &HostState, json: &str) {
+    *st.pane_mode.borrow_mut() = json.to_string();
 }
 
 /// 写入当前文档诊断序列化缓存(helix-term **有人读时**才更新;diagnostics 读取)
-pub fn cache_diagnostics(json: &str) {
-    crate::host::with_host_ref_or_init(|h| {
-        *h.diagnostics.borrow_mut() = json.to_string();
-        let (b, d) = h.serialized.get();
-        h.serialized.set((b, d + 1));
-    });
+pub fn cache_diagnostics(st: &HostState, json: &str) {
+    *st.diagnostics.borrow_mut() = json.to_string();
+    let (b, d) = st.serialized.get();
+    st.serialized.set((b, d + 1));
 }
 
 /// 诊断快照(还没缓存过 → 空串)。`helix.diagnostics()` 的唯一读取口。
@@ -1061,7 +1140,16 @@ pub fn snapshot_stats() -> (u64, u64) {
 }
 
 /// `helix.fuzzy.session` 的会话表（按宿主隔离；随 `:plugin-reload` 清空）。
-pub(crate) fn with_fuzzy_sessions<T>(f: impl FnOnce(&mut HashMap<u64, Vec<String>>) -> T) -> T {
+pub(crate) fn with_fuzzy_sessions<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, Vec<String>>) -> T,
+) -> T {
+    f(&mut st.fuzzy_sessions.borrow_mut())
+}
+
+pub(crate) fn with_fuzzy_sessions_current<T>(
+    f: impl FnOnce(&mut HashMap<u64, Vec<String>>) -> T,
+) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.fuzzy_sessions.borrow_mut()))
 }
 
@@ -1244,14 +1332,16 @@ mod command_args_tests {
     fn command_args_roundtrip_and_clear() {
         // L3:`command_args` 现在显式要 `&HostState`;测试跑在默认宿主上 ⇒ 用过渡入口取态
         let args = || crate::host::with_state_or_init(command_args);
-        clear_command_args();
+        crate::host::with_state_or_init(clear_command_args);
         assert!(args().is_empty(), "初始为空");
-        set_command_args(vec!["save".into(), "dev".into()]);
+        crate::host::with_state_or_init(|st| {
+            set_command_args(st, vec!["save".into(), "dev".into()])
+        });
         assert_eq!(args(), vec!["save".to_string(), "dev".to_string()]);
         // 再设会整体替换(不是累加)
-        set_command_args(vec!["list".into()]);
+        crate::host::with_state_or_init(|st| set_command_args(st, vec!["list".into()]));
         assert_eq!(args(), vec!["list".to_string()]);
-        clear_command_args();
+        crate::host::with_state_or_init(clear_command_args);
         assert!(args().is_empty(), "清空后为空 —— 否则会粘到下一个命令");
     }
 }
@@ -1356,10 +1446,110 @@ mod snapshot_tests {
     fn serialize_counter_tracks_cache_writes() {
         crate::init();
         let (b0, d0) = snapshot_stats();
-        cache_buffers("{}");
-        cache_diagnostics("[]");
+        crate::host::with_state_or_init(|st| cache_buffers(st, "{}"));
+        crate::host::with_state_or_init(|st| cache_diagnostics(st, "[]"));
         let (b1, d1) = snapshot_stats();
         assert_eq!(b1, b0 + 1);
         assert_eq!(d1, d0 + 1);
     }
+}
+
+// ── 过渡入口(L3):helix-term 的"无宿主分支"与 `Drop` 实现拿不到 `&HostState`,
+//    这些 `*_current` 是对应的显式访问器的隐式版本。L4 删 `ACTIVE` 前必须消灭。
+pub fn unregister_component_state_current(id: u64) {
+    {
+        crate::host::with_host_ref_or_init(|h| {
+            h.component_states.borrow_mut().remove(&id);
+        });
+    }
+}
+
+pub fn register_component_state_current(id: u64, f: impl Fn(u64) -> String + 'static) {
+    {
+        crate::host::with_host_ref_or_init(|h| {
+            h.component_states.borrow_mut().insert(id, Box::new(f));
+        });
+    }
+}
+
+pub fn set_command_args_current(args: Vec<String>) {
+    {
+        crate::host::with_host_ref_or_init(|h| {
+            let a = &h.pending_command_args;
+            *a.borrow_mut() = args
+        });
+    }
+}
+
+pub fn clear_command_args_current() {
+    {
+        crate::host::with_host_ref_or_init(|h| {
+            let a = &h.pending_command_args;
+            a.borrow_mut().clear()
+        });
+    }
+}
+
+pub fn cache_layout_current(json: &str) {
+    {
+        crate::host::with_host_ref_or_init(|h| *h.layout.borrow_mut() = json.to_string());
+    }
+}
+
+pub fn cache_pane_mode_current(json: &str) {
+    {
+        crate::host::with_host_ref_or_init(|h| *h.pane_mode.borrow_mut() = json.to_string());
+    }
+}
+
+pub fn cache_panes_current(json: &str) {
+    {
+        crate::host::with_host_ref_or_init(|h| *h.panes.borrow_mut() = json.to_string());
+    }
+}
+
+pub fn statusline_replaces_current() -> bool {
+    {
+        crate::host::with_host_ref_or_init(|h| h.statusline_replace.get())
+    }
+}
+
+pub fn statusline_zones_current() -> [u16; 3] {
+    crate::host::with_host_ref_or_init(|h| *h.statusline_zones.borrow())
+}
+pub fn set_plugin_roots_current(roots: Vec<PathBuf>) {
+    crate::host::with_host_ref_or_init(|h| {
+        let leaked: &'static [PathBuf] = Box::leak(roots.into_boxed_slice());
+        *h.plugin_roots.borrow_mut() = leaked;
+    });
+}
+
+pub fn set_runtime_dirs_current(dirs: Vec<PathBuf>) {
+    crate::host::with_host_ref_or_init(|h| {
+        let leaked: &'static [PathBuf] = Box::leak(dirs.into_boxed_slice());
+        *h.runtime_dirs.borrow_mut() = leaked;
+    });
+}
+
+pub fn set_layouts_dir_current(dir: PathBuf) {
+    crate::host::with_host_ref_or_init(|h| {
+        let leaked: &'static PathBuf = Box::leak(Box::new(dir));
+        *h.layouts_dir.borrow_mut() = Some(leaked);
+    });
+}
+
+pub fn cache_buffers_current(json: &str) {
+    crate::host::with_host_ref_or_init(|h| {
+        *h.buffers.borrow_mut() = json.to_string();
+        let (b, d) = h.serialized.get();
+        h.serialized.set((b + 1, d));
+    });
+}
+
+pub fn cache_diagnostics_current(json: &str) {
+    crate::host::with_host_ref_or_init(|h| {
+        *h.diagnostics.borrow_mut() = json.to_string();
+        let (b, d) = h.serialized.get();
+        h.serialized.set((b, d + 1));
+    });
 }

@@ -36,7 +36,7 @@ pub use commands::*;
 pub use icons::*;
 pub use input::{
     dispatch_input_key, dispatch_input_paste, input_edit, input_has_state, input_is_multiline,
-    with_input_states, InputState,
+    with_input_states, with_input_states_current, InputState,
 };
 pub use lsp::*;
 pub use popup::*;
@@ -53,6 +53,16 @@ pub use state::{
     set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake, set_viewport,
     statusline_replaces, statusline_zones, take_messages, take_ui_requests,
     unregister_component_state,
+};
+// **L3 过渡入口**:helix-term 的"无宿主分支"与 `Drop` 实现拿不到 `&HostState` ⇒
+// 这些 `*_current` 是同一批访问器的隐式版本。它们**只**给 helix-term 的边界用,
+// L4 删 `ACTIVE` 前必须逐个消灭(`grep -rn "_current(" helix-js/src helix-term/src`)。
+pub use state::{
+    cache_buffers_current, cache_diagnostics_current, cache_layout_current,
+    cache_pane_mode_current, cache_panes_current, clear_command_args_current,
+    register_component_state_current, set_command_args_current, set_layouts_dir_current,
+    set_plugin_roots_current, set_runtime_dirs_current, statusline_replaces_current,
+    statusline_zones_current, unregister_component_state_current,
 };
 // 插件配置合并(纯函数):schema 注册表 + 已缓存用户覆盖 → 合并 JSON。
 // 插件 load/reload 之后必须重建一次(见 helix-term `refresh_plugin_configs`)。

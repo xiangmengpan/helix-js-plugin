@@ -40,8 +40,8 @@ pub(crate) fn event_whitelist() -> Vec<&'static str> {
 }
 
 use crate::state::{
-    with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_registry,
-    with_script_exports, with_statusline_hook, UI_REQUESTS,
+    with_engine, with_event_handlers, with_last_export, with_registry, with_script_exports,
+    UI_REQUESTS,
 };
 
 use crate::types::*;
@@ -63,7 +63,9 @@ pub(crate) fn js_register_command(
     if let Some(doc_arg) = args.get(2) {
         if !doc_arg.is_null_or_undefined() {
             let doc: String = doc_arg.try_js_into(context)?;
-            crate::state::with_command_docs(|d| d.insert(name.clone(), doc));
+            crate::state::with_command_docs(crate::host::host_state(context), |d| {
+                d.insert(name.clone(), doc)
+            });
         }
     }
     // C-2 归属:命令→属主插件(注册期绑定,这是唯一可靠的时刻)。
@@ -80,7 +82,7 @@ pub(crate) fn js_register_command(
 /// 设置插件目录（js_load 相对名解析用）。OnceLock 只生效一次：helix-term 启动时调用。
 pub fn set_plugins_dir(dir: PathBuf) {
     // 单一目录 = 只有一个根(保留这个入口:测试与旧调用点都用它)
-    crate::state::set_plugin_roots(vec![dir]);
+    crate::host::with_state_or_init(|st| crate::state::set_plugin_roots(st, vec![dir]));
 }
 
 /// helix.load(name)：从插件目录加载脚本（相对名或绝对路径），返回其 helix.export 的值；
@@ -389,7 +391,8 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         let deps =
             crate::state::with_last_plugin_deps(crate::host::host_state(ctx), std::mem::take);
         // 先取外层 export（递归依赖 eval 会覆盖 LAST_EXPORT，外层 export 必须提前保存）
-        let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
+        let export = with_last_export(crate::host::host_state(ctx), |l| l.take())
+            .unwrap_or(JsValue::undefined());
         for dep in &deps {
             load_script_checked(ctx, dep)?;
         }
@@ -637,7 +640,7 @@ pub(crate) fn js_export(
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let arg = args.first().cloned().unwrap_or(JsValue::undefined());
-    with_last_export(|l| {
+    crate::state::with_last_export_current(|l| {
         *l = if arg.is_null_or_undefined() {
             None
         } else {
@@ -1040,8 +1043,8 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
         crate::permissions::set_current_owner(crate::permissions::command_owner(name).as_deref());
     // 命令开始时清空编辑队列，避免跨命令残留
     crate::state::with_edits_current(|c| c.clear());
-    crate::state::with_decoration_requests(|c| c.clear());
-    crate::state::with_cursor_requests(|c| c.clear());
+    crate::state::with_decoration_requests_current(|c| c.clear());
+    crate::state::with_cursor_requests_current(|c| c.clear());
     // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth_current(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次命令生命周期）
@@ -1075,7 +1078,7 @@ pub fn command_names() -> Vec<String> {
 /// 插件命令说明（未注册返回 None）
 pub fn command_doc(name: &str) -> Option<String> {
     // 查询:不需要宿主(表在 thread_local 里)⇒ **不得** init()(那会建整个引擎)
-    crate::state::with_command_docs(|d| d.get(name).cloned())
+    crate::state::with_command_docs_current(|d| d.get(name).cloned())
 }
 
 pub(crate) fn js_on(
@@ -1224,8 +1227,8 @@ fn emit_event_impl(
 ) -> Result<()> {
     crate::init();
     crate::state::with_edits_current(|c| c.clear());
-    crate::state::with_decoration_requests(|c| c.clear());
-    crate::state::with_cursor_requests(|c| c.clear());
+    crate::state::with_decoration_requests_current(|c| c.clear());
+    crate::state::with_cursor_requests_current(|c| c.clear());
     // 复位事务深度：上一命令/事件未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth_current(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次事件生命周期）
@@ -1317,8 +1320,8 @@ fn emit_event_impl(
             args.push(payload.clone());
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
                 crate::state::with_edits_current(|c: &mut Vec<crate::types::Edit>| c.clear());
-                crate::state::with_decoration_requests(|c| c.clear());
-                crate::state::with_cursor_requests(|c| c.clear());
+                crate::state::with_decoration_requests_current(|c| c.clear());
+                crate::state::with_cursor_requests_current(|c| c.clear());
                 crate::host::with_state_or_init(|st| crate::state::with_txn_depth(st, |d| *d = 0)); // 与正常入口复位一致:错误路径也恢复事务深度
                 anyhow!("event '{name}' handler failed: {e}")
             })?;
@@ -1880,7 +1883,9 @@ pub(crate) fn js_set_cursor(
         .get(1)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
-    crate::state::with_cursor_requests(|c| c.push(CursorRequest::SetCursor { row, col }));
+    crate::state::with_cursor_requests(crate::host::host_state(context), |c| {
+        c.push(CursorRequest::SetCursor { row, col })
+    });
     Ok(JsValue::undefined())
 }
 
@@ -1907,7 +1912,7 @@ pub(crate) fn js_set_selection(
                 let head = parse_sel_pos(&el.get(JsString::from("head"), context)?, context)?;
                 selections.push((anchor, head));
             }
-            crate::state::with_cursor_requests(|c| {
+            crate::state::with_cursor_requests(crate::host::host_state(context), |c| {
                 c.push(CursorRequest::SetSelections(selections))
             });
             return Ok(JsValue::undefined());
@@ -1929,7 +1934,7 @@ pub(crate) fn js_set_selection(
         .get(3)
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
-    crate::state::with_cursor_requests(|c| {
+    crate::state::with_cursor_requests(crate::host::host_state(context), |c| {
         c.push(CursorRequest::SetSelection {
             anchor: (ar, ac),
             head: (hr, hc),
@@ -2170,7 +2175,7 @@ pub(crate) fn js_set_virtual_text(
             style,
         }
     };
-    crate::state::with_decoration_requests(|c| {
+    crate::state::with_decoration_requests(crate::host::host_state(context), |c| {
         c.push(DecorationRequest {
             doc: Some(canonical),
             kind,
@@ -2214,7 +2219,7 @@ pub(crate) fn js_set_highlight(
         Some(v) if !v.is_null_or_undefined() => Some(v.try_js_into(context)?),
         _ => None,
     };
-    crate::state::with_decoration_requests(|c| {
+    crate::state::with_decoration_requests(crate::host::host_state(context), |c| {
         c.push(DecorationRequest {
             doc: Some(canonical),
             kind: DecorationKind::Highlight {
@@ -2247,7 +2252,7 @@ pub fn take_decorations() -> Vec<DecorationRequest> {
     if crate::state::with_txn_depth_current(|d| *d > 0) {
         return Vec::new();
     }
-    crate::state::with_decoration_requests(std::mem::take)
+    crate::state::with_decoration_requests_current(std::mem::take)
 }
 
 /// 声明批量编辑事务开始:期间编辑积压,end 后合并取走(一次撤销)
@@ -2274,7 +2279,7 @@ pub(crate) fn js_end_edit(
 pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Result<()> {
     crate::init();
     let result = crate::state::with_engine(|engine| {
-        let handlers = crate::state::with_node_handlers(|h| {
+        let handlers = crate::state::with_node_handlers_current(|h| {
             h.get(&(view_id, node_id.to_string()))
                 .cloned()
                 .map(|hd| NodeHandlers {
@@ -2354,7 +2359,7 @@ pub fn focusable_node_ids(node: &CompNode, out: &mut Vec<String>) {
 /// 取走并清空光标/选区请求队列（helix-term 消费）
 pub fn take_cursor_requests() -> Vec<CursorRequest> {
     crate::init();
-    crate::state::with_cursor_requests(std::mem::take)
+    crate::state::with_cursor_requests_current(std::mem::take)
 }
 
 /// 求值一段插件脚本（无名字，用于测试/内联）；脚本里可调用 `helix.register_command` / `helix.echo`
@@ -2374,7 +2379,7 @@ fn eval_wrapped(engine: &mut boa_engine::Context, src: &str) -> boa_engine::JsRe
 pub fn load_script_named(name: &str, src: &str) -> Result<()> {
     crate::init();
     // 脚本(重)加载不继承旧装饰:全局 Clear(term 侧 doc: None = 清空所有 doc)
-    crate::state::with_decoration_requests(|c| {
+    crate::state::with_decoration_requests_current(|c| {
         c.push(DecorationRequest {
             doc: None,
             kind: DecorationKind::Clear,
@@ -2434,21 +2439,21 @@ fn reset_plugin_state() {
     crate::state::with_event_handlers_current(|h| h.clear());
     crate::host::with_state_or_init(|st| crate::state::with_popups(st, |p| p.clear()));
     crate::host::with_state_or_init(|st| crate::state::with_edits(st, |c| c.clear()));
-    crate::state::with_decoration_requests(|c| c.clear());
-    crate::state::with_cursor_requests(|c| c.clear());
+    crate::state::with_decoration_requests_current(|c| c.clear());
+    crate::state::with_cursor_requests_current(|c| c.clear());
     crate::host::with_state_or_init(|st| crate::state::with_txn_depth(st, |d| *d = 0));
-    with_buffer_icon_hook(|h| *h = None);
-    with_statusline_hook(|h| *h = None);
+    crate::state::with_buffer_icon_hook_current(|h| *h = None);
+    crate::state::with_statusline_hook_current(|h| *h = None);
     crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));
-    crate::state::with_command_docs(|d| d.clear());
+    crate::state::with_command_docs_current(|d| d.clear());
     // 导出缓存与 pending 导出随插件状态重置（reload 后按名重读磁盘重跑）
     with_script_exports(|m| m.clear());
     // 加载栈防御性清空（正常路径已 pop；防止异常残留影响后续 reload）
     crate::state::with_load_stack_current(|s: &mut Vec<String>| s.clear());
     crate::host::with_state_or_init(crate::state::clear_load_roots);
-    with_last_export(|l| *l = None);
+    crate::state::with_last_export_current(|l| *l = None);
     // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
-    crate::state::with_theme_overrides(|o| o.clear());
+    crate::state::with_theme_overrides_current(|o| o.clear());
     crate::host::with_state_or_init(crate::state::mark_theme_dirty);
 }
 
@@ -2475,7 +2480,7 @@ pub fn reload_all() -> Result<()> {
     reset_plugin_state();
     // 装饰不随 reload 继承:全局 Clear(term 侧 doc: None = 清空所有 doc;泵循环下一帧应用)。
     // 必须放在 reset 之后(reset 清空队列);脚本重跑 eval 不 push 装饰,队列里只有这一个 Clear。
-    crate::state::with_decoration_requests(|c| {
+    crate::state::with_decoration_requests_current(|c| {
         c.push(DecorationRequest {
             doc: None,
             kind: DecorationKind::Clear,
