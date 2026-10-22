@@ -618,7 +618,10 @@ impl Compositor {
         self.main_tree.render(tree_area, surface, cx);
         // 首帧/窗口缩放后几何才可知 ⇒ 这里补一次 pane 快照(只在真的变过时写)
         if self.main_tree.take_rects_dirty() {
-            self.sync_panes_cache();
+            match cx.js.as_deref_mut() {
+                Some(host) => self.sync_panes_cache(Some(host)),
+                None => self.sync_panes_cache(None),
+            }
         }
         // 瞬态覆盖层（弹窗/菜单/提示）渲染在主区域之上；
         // 底部 UI 层用缩一行的区域（commandline 画在状态栏上一行，不重叠）
@@ -1303,7 +1306,9 @@ impl Compositor {
             })
             .collect();
         let json = serde_json::json!({ "mode": name, "keys": keys }).to_string();
-        helix_js::cache_pane_mode_current(&json);
+        if let Some(host) = js.as_deref() {
+            helix_js::cache_pane_mode(host.state(), &json);
+        }
         match js {
             Some(host) => host.emit_pane_mode_change(name),
             None => helix_js::emit_pane_mode_change(name),
@@ -1649,7 +1654,7 @@ impl Compositor {
     /// 与 `sync_layout_cache` 拆开:几何在**渲染后**才知道(`leaf_rects`),而渲染不是
     /// 布局变更 ⇒ 若只在变更点同步,启动后第一次 `pane.list()` 会是空数组。
     /// 这里只写快照、**不发事件**,所以可以在渲染后按需调用而不惊动插件。
-    fn sync_panes_cache(&self) {
+    fn sync_panes_cache(&self, js: Option<&mut helix_js::host::JsHost>) {
         let active = self.main_tree.active();
         let leafs = self.main_tree.dump().leafs;
         // 把树叶子与浮窗统一成"pane"视角(place/focused/pinned)。
@@ -1694,14 +1699,22 @@ impl Compositor {
                 "area": { "x": r.x, "y": r.y, "w": r.width, "h": r.height },
             }));
         }
-        helix_js::cache_panes_current(&serde_json::json!({ "panes": panes }).to_string());
+        // 没有宿主 ⇒ 没有 JS 读者 ⇒ 跳过(不为不存在的读者做序列化)
+        if let Some(host) = js {
+            helix_js::cache_panes(
+                host.state(),
+                &serde_json::json!({ "panes": panes }).to_string(),
+            );
+        }
     }
 
-    pub(crate) fn sync_layout_cache(&mut self, js: Option<&mut helix_js::host::JsHost>) {
-        self.sync_panes_cache();
+    pub(crate) fn sync_layout_cache(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
+        self.sync_panes_cache(js.as_deref_mut());
         let dump = self.main_tree.dump();
         let json = serde_json::to_string(&dump).unwrap_or_default();
-        helix_js::cache_layout_current(&json);
+        if let Some(st) = js.as_deref().map(|h| h.state()) {
+            helix_js::cache_layout(st, &json);
+        }
         // `layout-change` 事件:两种投递模式(默认逐点,**可配置**切批量)。
         //
         // 逐点(默认):当场发 ⇒ 处理器看到**该变更点当时**的布局(插件侧更可信的契约);

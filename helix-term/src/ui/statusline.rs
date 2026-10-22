@@ -180,6 +180,12 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         Some(host) => host.statusline_parts(&js_ctx),
         None => helix_js::statusline_parts(&js_ctx),
     };
+    // ⚠️ L4-③ 的**未完成点**:`RenderContext` 可以被**手工构造**成 `js: None`
+    // (集成测试 `plugin_statusline_*` 就是这么做的 —— 它们直接 `statusline::render`
+    // 而不经 compositor),而生产路径(`Compositor::render`)总会给 `cx.js`。
+    // 实测:改成"无宿主 ⇒ 默认 false"会让这两条用例红(JS 的 replace/zones 被忽略)⇒
+    // 退回 `_current`。彻底做法是给 `RenderContext` 加 `state: Option<&HostState>` 字段,
+    // 由**构造处**捕获(测试也照传),属于"UI 闭包捕获状态"那一档的后续工作。
     let js_replace = helix_js::statusline_replaces_current();
 
     if js_replace {
