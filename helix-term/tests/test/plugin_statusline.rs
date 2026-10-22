@@ -48,7 +48,8 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
                         "editor",
                         None,
                         None,
-                    );
+                    )
+                    .with_state(helix_js::host::state_handle());
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
                     assert!(
@@ -109,7 +110,8 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
             "editor",
             None,
             None,
-        );
+        )
+        .with_state(helix_js::host::state_handle());
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row0: String = buf
@@ -192,7 +194,8 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
             "editor",
             None,
             None,
-        );
+        )
+        .with_state(helix_js::host::state_handle());
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -246,7 +249,8 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
             "editor",
             None,
             None,
-        );
+        )
+        .with_state(helix_js::host::state_handle());
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
@@ -293,7 +297,8 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                         "editor",
                         None, // window_mode=true
                         None,
-                    );
+                    )
+                    .with_state(helix_js::host::state_handle());
                     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
                     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
                     assert!(
@@ -342,7 +347,8 @@ async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
         "editor",
         Some("/tmp/a.rs".to_string()),
         None,
-    );
+    )
+    .with_state(helix_js::host::state_handle());
     helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     let rendered: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
     assert!(
@@ -398,7 +404,8 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
             "editor",
             None,
             None,
-        );
+        )
+        .with_state(helix_js::host::state_handle());
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
 

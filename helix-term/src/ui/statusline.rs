@@ -30,6 +30,12 @@ pub struct RenderContext<'a> {
     /// D-2/D-3:宿主(状态栏是**每帧**钩子,是重入面最大的一条路径)。
     /// 没有宿主(`None`)时退回 legacy 隐式解析 —— 语义相同,区别只在排他性可否证明。
     pub js: Option<&'a mut helix_js::host::JsHost>,
+    /// **L4-③**:构造时捕获的宿主状态(与 `js` 指向同一个宿主)。
+    ///
+    /// 为什么单独存一份 `Rc`:`js` 是 `&mut JsHost`(泵钩子需要独占),而读状态只需要
+    /// `&HostState` —— 两者不能同时从同一个宿主借出来。捕获一份 `Rc` 既避开借用冲突,
+    /// 又让本上下文**不依赖隐式宿主**(`None` 时给默认值,不再去猜"当前宿主是谁")。
+    pub state: Option<std::rc::Rc<helix_js::host::HostState>>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -57,8 +63,16 @@ impl<'a> RenderContext<'a> {
             active_leaf_type,
             active_leaf_path,
             parts: RenderBuffer::default(),
+            // 捕获点:构造时从同一宿主取一份 `Rc<HostState>`(见字段注释)
+            state: js.as_deref().map(|h| std::rc::Rc::clone(h.state_rc())),
             js,
         }
+    }
+
+    /// **L4-③ 测试/手工构造用**:在没有 `js` 的情况下补上状态(集成测试直接 `render` 时用)。
+    pub fn with_state(mut self, state: Option<std::rc::Rc<helix_js::host::HostState>>) -> Self {
+        self.state = state;
+        self
     }
 }
 
@@ -180,17 +194,18 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         Some(host) => host.statusline_parts(&js_ctx),
         None => helix_js::statusline_parts(&js_ctx),
     };
-    // ⚠️ L4-③ 的**未完成点**:`RenderContext` 可以被**手工构造**成 `js: None`
-    // (集成测试 `plugin_statusline_*` 就是这么做的 —— 它们直接 `statusline::render`
-    // 而不经 compositor),而生产路径(`Compositor::render`)总会给 `cx.js`。
-    // 实测:改成"无宿主 ⇒ 默认 false"会让这两条用例红(JS 的 replace/zones 被忽略)⇒
-    // 退回 `_current`。彻底做法是给 `RenderContext` 加 `state: Option<&HostState>` 字段,
-    // 由**构造处**捕获(测试也照传),属于"UI 闭包捕获状态"那一档的后续工作。
-    let js_replace = helix_js::statusline_replaces_current();
+    // L4-③:用**构造时捕获**的状态(不再摸隐式宿主)。无状态 ⇒ 没有 JS 替换模式。
+    let js_replace = match context.state.as_deref() {
+        Some(st) => helix_js::statusline_replaces(st),
+        None => false,
+    };
 
     if js_replace {
         // 全替换模式：按 zones 比例分左/中/右三区，每区段间 1 空格 gap
-        let [zl, zc, zr] = helix_js::statusline_zones_current();
+        let [zl, zc, zr] = match context.state.as_deref() {
+            Some(st) => helix_js::statusline_zones(st),
+            None => [1, 1, 1],
+        };
         let sum = (zl + zc + zr).max(1) as u32;
         let w = viewport.width as u32;
         let left_w = (w * zl as u32 / sum) as u16;

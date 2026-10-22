@@ -458,9 +458,9 @@ impl JsHost {
         &self.state
     }
 
-    /// 状态的 `Rc`(测试把裸 `Context` 接到当前宿主时用;生产路径不需要克隆)
-    #[cfg(test)]
-    pub(crate) fn state_rc(&self) -> &Rc<HostState> {
+    /// 状态的 `Rc`(**L4-③ 的捕获点**):UI 闭包/渲染上下文在**创建时**克隆一份,
+    /// 之后用显式访问器 `fn xxx(&HostState, …)`,不再摸隐式宿主。
+    pub fn state_rc(&self) -> &Rc<HostState> {
         &self.state
     }
 
@@ -874,6 +874,16 @@ pub(crate) fn with_state_or_init<T>(f: impl FnOnce(&HostState) -> T) -> T {
 
 /// 当前宿主状态的 `Rc`(测试用:把它们**自己的** `Context::default()` 接到当前宿主,
 /// 这样 `host_state(ctx)` 能取到真实状态 —— 单测不再需要伪造一份)。
+/// **L4-③ 捕获入口**:把"当前宿主的状态"克隆一份给 UI/闭包持有。
+///
+/// 为什么需要它:`RenderContext`、picker 的格式化闭包、`Drop` 这类地方**结构上**拿不到
+/// `&mut JsHost`;但它们在**创建时**是可以的 —— 在那里捕获 `Rc<HostState>`,之后只用
+/// 显式访问器(`fn xxx(&HostState, …)`)。这样隐式解析点从"每次访问"收敛成"每次构造",
+/// 且 L4 删 `ACTIVE` 时只需盯这一个函数。
+pub fn state_handle() -> Option<Rc<HostState>> {
+    try_with_host_ref(|h| Rc::clone(h.state_rc()))
+}
+
 #[cfg(test)]
 pub(crate) fn current_state_rc() -> Rc<HostState> {
     with_host_ref_or_init(|h| Rc::clone(h.state_rc()))
