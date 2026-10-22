@@ -257,6 +257,49 @@ assert_eq!(*state.hits.borrow(), 2);     // ✓ 实测通过
 - **`with_engine` 的 63 处**：它们是"需要引擎"的调用点，不能靠 `get_data` 解决
   （原生回调里引擎已借出）⇒ 这些函数继续接收 `&mut JsHost`，属于 3a/3b 已铺好的路。
 
+### L3 完成情况（2026-10-22，五个提交）
+
+| 批次 | 提交 | 内容 |
+|---|---|---|
+| 1 | `b71c2ff9d` | state.rs 24 个访问器显式化 + 调用点两种形态（`host_state(ctx)` / `with_state_or_init`） |
+| 2a | `b8995086c` | `with_registry` / `with_load_stack` / `with_async_promises` + `_current` shim 模式 |
+| 2b | `e2f174014` | `with_event_handlers` / `with_popups` / `with_edits` / `with_txn_depth` |
+| 2c | `ba3f87474` | 其余可机械迁移的 22 个（快照 / 队列 / 组件状态 / input / lsp / setter） |
+
+**度量（可复跑）**：
+
+```bash
+grep -rhoE "fn [a-z_]+\(\s*st: &HostState" helix-js/src/*.rs | wc -l   # 40 个显式访问器
+grep -rhoE "fn [a-z_]+_current" helix-js/src/*.rs | wc -l             # 43 个过渡 shim
+grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*_current" | wc -l  # 106 处调用
+```
+
+**仍是隐式的 23 个**（L4 的待办）：`try_with_*` 查询族（5）、快照 JSON getter（7：
+`buffers_json` / `layout_json` / `panes_json` / `pane_mode_json` / `diagnostics_json` /
+`snapshot_stats` / `snapshot_wanted`）、`with_messages` / `with_script_exports` /
+`with_loaded_scripts` / `with_open_panels`（4），以及 infra 自身
+（`with_host_ref_or_init` / `with_state_or_init` / `with_engine` / `current_state_rc` / `editor_version`）。
+
+### L4 的**真实**阻塞点（实测，不是估算）
+
+`ACTIVE` + `DEFAULT_HOST` 之所以还不能删，是因为下面这些调用点**结构上拿不到宿主**：
+
+1. **`Drop` 实现**（`ui/plugin_terminal.rs`：杀 pty / 注销组件状态）—— `Drop::drop(&mut self)`
+   没有参数，只能靠环境句柄；
+2. **`Send` 闭包 / worker 完成回调**（异步完成、`term-title`、watch 事件）—— 跨线程，
+   `Rc<HostState>` 不 `Send`；
+3. **每帧 UI 渲染路径**（`ui/statusline.rs` 读 zones/replaces、`ui/picker.rs` 格式化闭包）——
+   闭包存在 picker 里、比 `cx` 活得久；
+4. 少数 **Rust 侧入口**（`reload_all` 等，已在 L3 用 `with_state_or_init` 过渡）。
+
+⇒ L4 的正确形态不是"删 `ACTIVE`"，而是**把这四类改造成显式持有状态**：
+① `Drop` 路径改为"注册到宿主的生命周期回调"（或由 `Application` 在 drop 前后统一清理）；
+② 跨线程路径传 `Arc<HostState>`（需把 `RefCell` 换成 `Mutex`/`RwLock`，影响面大）；
+③ 每帧 UI 闭包在创建时捕获 `Rc<HostState>`；
+④ Rust 侧入口继续 `with_state_or_init`，直到调用链上能拿到宿主。
+这是**另一次独立重构**（规模 ≥ 3b）：建议单独开一轮，**先做 ③**（收益最大、风险最小）。
+
+
 ### 建议
 
 值得做，但**别和 3b 混在一轮**。如果要做，按 L1→L4 走，L1 单独提交（它已经把机制
