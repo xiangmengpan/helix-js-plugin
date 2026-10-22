@@ -2277,7 +2277,13 @@ fn vsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
         // 叶=窗口:无参分裂 → 在活动叶旁开同 doc 新叶(不再走 core view-tree 分裂)
         crate::job::dispatch_blocking(move |editor, compositor, mut _js| {
             if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
-                compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::H, false, _js.as_deref_mut());
+                compositor.open_buffer_leaf(
+                    editor,
+                    doc_id,
+                    crate::ui::layout::SplitDir::H,
+                    false,
+                    _js,
+                );
             }
         });
     } else {
@@ -2296,7 +2302,13 @@ fn hsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
         // 叶=窗口:无参分裂 → 下侧同 doc 新叶
         crate::job::dispatch_blocking(move |editor, compositor, mut _js| {
             if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
-                compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::V, false, _js.as_deref_mut());
+                compositor.open_buffer_leaf(
+                    editor,
+                    doc_id,
+                    crate::ui::layout::SplitDir::V,
+                    false,
+                    _js,
+                );
             }
         });
     } else {
@@ -4567,7 +4579,7 @@ pub(crate) fn emit_plugin_event(editor: &mut Editor, name: &str, extra: Option<&
 /// `doc-change` 的**逐文档**入口：`doc_id` 进 payload，`path`/`text` 是该文档自身的快照
 /// （不是当前 view 的）。后台 buffer 被 `by_path` 改写时用这个。
 pub(crate) fn emit_plugin_doc_change_for(
-    mut js: Option<&mut helix_js::host::JsHost>,
+    js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
     doc_id: u64,
     path: Option<String>,
@@ -4589,7 +4601,7 @@ pub(crate) fn emit_plugin_doc_change_for(
 /// `cwd-change` 专用入口：**只在真 chdir 成功后**调（见 `apply_directory_change`）。
 /// 与 `emit_plugin_event_with` 同一形状（`js` 为宿主，无宿主时传 `None`）。
 pub(crate) fn emit_plugin_cwd_change(
-    mut js: Option<&mut helix_js::host::JsHost>,
+    js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
     prev: &Path,
     cwd: &Path,
@@ -4607,7 +4619,7 @@ pub(crate) fn emit_plugin_cwd_change(
 /// D-2：**有宿主**的入口 —— 事件发射走 `&mut JsHost`（泵方法，独占借用 ⇒ 重入是编译错）。
 /// 没有宿主的调用点仍走上面的同名旧入口（legacy 隐式解析），两者语义一致。
 pub(crate) fn emit_plugin_event_with(
-    mut js: Option<&mut helix_js::host::JsHost>,
+    js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
     name: &str,
     extra: Option<&str>,
@@ -4653,7 +4665,7 @@ pub(crate) fn command_context(editor: &mut Editor) -> CommandContext {
 }
 
 fn emit_plugin_event_impl(
-    mut js: Option<&mut helix_js::host::JsHost>,
+    js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
     name: &str,
     extra: Option<&str>,
@@ -4671,7 +4683,7 @@ fn emit_plugin_event_impl(
 /// 能分辨；`doc_override` 提供该文档的 path/text（后台文档没有光标 ⇒ cursor/selection 记 0）。
 #[allow(clippy::too_many_arguments)]
 fn emit_plugin_event_impl_ctx(
-    mut js: Option<&mut helix_js::host::JsHost>,
+    js: Option<&mut helix_js::host::JsHost>,
     editor: &mut Editor,
     name: &str,
     extra: Option<&str>,
@@ -4995,11 +5007,13 @@ pub(crate) fn apply_ui_requests(
             // 热重载排到 job 队列 ⇒ 在**命令边界**跑，不与当前 JS 栈重入（`reload_plugins`
             // 会在 boa 上重跑全部脚本，同步跑必 panic）。`None` 走的是同一条自由函数
             // 路径（`JsHost::reload_all` 只是 `pump(reload_all)` 的排他性包装）。
-            helix_js::UiRequest::ReloadPlugins => job::dispatch_blocking(|editor, _compositor, mut _js| {
-                if let Err(e) = reload_plugins(None, editor) {
-                    editor.set_error(format!("reload_plugins: {e}"));
-                }
-            }),
+            helix_js::UiRequest::ReloadPlugins => {
+                job::dispatch_blocking(|editor, _compositor, mut _js| {
+                    if let Err(e) = reload_plugins(None, editor) {
+                        editor.set_error(format!("reload_plugins: {e}"));
+                    }
+                })
+            }
             helix_js::UiRequest::ClosePanel(req) => dispatch(pane::handle_close_panel(req)?),
             helix_js::UiRequest::ClosePopup(req) => popup::handle_close_popup(req)?,
             helix_js::UiRequest::OpenScratchFile(req) => doc::handle_open_scratch_file(req)?,

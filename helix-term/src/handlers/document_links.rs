@@ -104,7 +104,8 @@ fn request_document_links(editor: &mut Editor, doc_id: DocumentId) {
             }
         }
 
-        job::dispatch(move |editor, _, mut _js| attach_document_links(editor, doc_id, all_links)).await;
+        job::dispatch(move |editor, _, mut _js| attach_document_links(editor, doc_id, all_links))
+            .await;
     });
 }
 

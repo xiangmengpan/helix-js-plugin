@@ -222,43 +222,45 @@ pub fn drain_lsp_results() -> Vec<LspResult> {
 pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()> {
     crate::init();
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::lsp_promise(id), || {
-    crate::state::with_engine(|engine| {
-        let resolving = crate::state::with_lsp_promises(|m| m.remove(&id));
-        let Some(resolving) = resolving else {
-            return Ok(());
-        };
-        let undefined = JsValue::undefined();
-        let outcome = match result {
-            Ok(Some(json)) => match crate::layout_api::js_json_parse(json, engine, "lsp result") {
-                Ok(parsed) => resolving
+        crate::state::with_engine(|engine| {
+            let resolving = crate::state::with_lsp_promises(|m| m.remove(&id));
+            let Some(resolving) = resolving else {
+                return Ok(());
+            };
+            let undefined = JsValue::undefined();
+            let outcome = match result {
+                Ok(Some(json)) => {
+                    match crate::layout_api::js_json_parse(json, engine, "lsp result") {
+                        Ok(parsed) => resolving
+                            .resolve
+                            .call(&undefined, &[parsed], engine)
+                            .map(|_| ()),
+                        Err(e) => {
+                            // 服务端响应畸形 → 走 reject，promise 不能悬空
+                            let err = JsNativeError::error()
+                                .with_message(e.to_string())
+                                .into_opaque(engine);
+                            resolving
+                                .reject
+                                .call(&undefined, &[err.into()], engine)
+                                .map(|_| ())
+                        }
+                    }
+                }
+                Ok(None) => resolving
                     .resolve
-                    .call(&undefined, &[parsed], engine)
+                    .call(&undefined, &[JsValue::null()], engine)
                     .map(|_| ()),
                 Err(e) => {
-                    // 服务端响应畸形 → 走 reject，promise 不能悬空
-                    let err = JsNativeError::error()
-                        .with_message(e.to_string())
-                        .into_opaque(engine);
+                    let err = JsNativeError::error().with_message(e).into_opaque(engine);
                     resolving
                         .reject
                         .call(&undefined, &[err.into()], engine)
                         .map(|_| ())
                 }
-            },
-            Ok(None) => resolving
-                .resolve
-                .call(&undefined, &[JsValue::null()], engine)
-                .map(|_| ()),
-            Err(e) => {
-                let err = JsNativeError::error().with_message(e).into_opaque(engine);
-                resolving
-                    .reject
-                    .call(&undefined, &[err.into()], engine)
-                    .map(|_| ())
-            }
-        };
-        outcome.map_err(|e| anyhow!("lsp {id} settle failed: {e}"))
-    })
+            };
+            outcome.map_err(|e| anyhow!("lsp {id} settle failed: {e}"))
+        })
     })
 }
 

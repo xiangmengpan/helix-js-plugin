@@ -448,7 +448,7 @@ pub(crate) fn js_run_async(
     // C-2 检查点:异步起进程同属 `process`(与 helix.run 同一能力)
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
-    let id = crate::state::next_term_id();
+    let id = crate::state::next_term_id(crate::host::host_state(context));
     crate::permissions::bind_callback(crate::permissions::CbKey::term(id));
     crate::state::with_term_promises(|m| {
         m.insert(id, resolving);
@@ -489,7 +489,7 @@ pub(crate) fn js_spawn(
                 .map_err(|_| crate::js_err("helix.spawn: 'pty' must be a boolean"))?
         }
     };
-    let id = crate::state::next_term_id();
+    let id = crate::state::next_term_id(crate::host::host_state(ctx));
     with_terms(|m| m.insert(id, TermCallbacks { on_chunk, on_exit }));
     let (tx, rx) = std::sync::mpsc::channel();
     crate::state::with_term_workers(|m| m.insert(id, tx));
@@ -558,7 +558,7 @@ pub(crate) fn js_term_kill(
 /// 未知 id / worker 已退出 → Err。Kill 后 worker 的 Exit 事件照常发（回调幂等）。
 /// 不调 init()：可能从命令执行（CONTEXT 已借用）里触发，且 TERM_WORKERS 是普通 thread_local。
 pub fn term_kill(id: u64) -> Result<()> {
-    crate::state::unregister_term(id);
+    crate::host::with_state_or_init(|st| crate::state::unregister_term(st, id));
     let sender = crate::state::with_term_workers(|m| m.remove(&id))
         .ok_or_else(|| anyhow!("term_kill: unknown id"))?;
     sender
@@ -899,81 +899,81 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
     }
     // 终端/进程回调(含 run_async 的 .then)执行时的属主
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::term(id), || {
-    crate::state::with_engine(|engine| {
-        // run_async 的 promise 分支：resolve/reject 后立即清理并返回（无 TermCallbacks 注册）
-        if let Some(resolving) = crate::state::with_term_promises(|m| m.remove(&id)) {
-            match event {
-                TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
-                TermEvent::Exit(_, code, stdout) => {
-                    let out = stdout.unwrap_or_default();
-                    let f = if code == 0 {
-                        &resolving.resolve
-                    } else {
-                        &resolving.reject
-                    };
-                    let args: Vec<JsValue> = if code == 0 {
-                        vec![JsValue::from(JsString::from(out))]
-                    } else {
-                        // 截断到 200 字符(防失败命令巨量输出膨胀 e.message,与 js_run 截断风格一致)
-                        let out = out.trim();
-                        let mut msg: String = out.chars().take(200).collect();
-                        if out.chars().count() > 200 {
-                            msg.push_str("…(truncated)");
-                        }
-                        let err = JsNativeError::error()
-                            .with_message(format!("exit {code}: {msg}"))
-                            .into_opaque(engine);
-                        vec![err.into()]
-                    };
-                    let _: JsValue = f
-                        .call(&JsValue::undefined(), &args, engine)
-                        .map_err(|e| anyhow!("term {id} promise settle failed: {e}"))?;
+        crate::state::with_engine(|engine| {
+            // run_async 的 promise 分支：resolve/reject 后立即清理并返回（无 TermCallbacks 注册）
+            if let Some(resolving) = crate::state::with_term_promises(|m| m.remove(&id)) {
+                match event {
+                    TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
+                    TermEvent::Exit(_, code, stdout) => {
+                        let out = stdout.unwrap_or_default();
+                        let f = if code == 0 {
+                            &resolving.resolve
+                        } else {
+                            &resolving.reject
+                        };
+                        let args: Vec<JsValue> = if code == 0 {
+                            vec![JsValue::from(JsString::from(out))]
+                        } else {
+                            // 截断到 200 字符(防失败命令巨量输出膨胀 e.message,与 js_run 截断风格一致)
+                            let out = out.trim();
+                            let mut msg: String = out.chars().take(200).collect();
+                            if out.chars().count() > 200 {
+                                msg.push_str("…(truncated)");
+                            }
+                            let err = JsNativeError::error()
+                                .with_message(format!("exit {code}: {msg}"))
+                                .into_opaque(engine);
+                            vec![err.into()]
+                        };
+                        let _: JsValue = f
+                            .call(&JsValue::undefined(), &args, engine)
+                            .map_err(|e| anyhow!("term {id} promise settle failed: {e}"))?;
+                    }
                 }
-            }
-            crate::state::with_term_workers(|m| m.remove(&id));
-            #[cfg(unix)]
-            crate::state::with_term_masters(|m| m.remove(&id));
-            return Ok(());
-        }
-        let callbacks = with_terms(|m| {
-            m.get(&id).map(|c| TermCallbacks {
-                on_chunk: c.on_chunk.clone(),
-                on_exit: c.on_exit.clone(),
-            })
-        });
-        let Some(callbacks) = callbacks else {
-            return Ok(());
-        };
-        let undefined = JsValue::undefined();
-        match event {
-            TermEvent::Chunk(_, chunk) => {
-                let func = callbacks
-                    .on_chunk
-                    .as_callable()
-                    .and_then(JsFunction::from_object)
-                    .ok_or_else(|| anyhow!("term {id} onChunk not callable"))?;
-                let _: JsValue = func
-                    .call(&undefined, &[JsValue::from(JsString::from(chunk))], engine)
-                    .map_err(|e| anyhow!("term {id} onChunk failed: {e}"))?;
-            }
-            TermEvent::Exit(_, code, _stdout) => {
-                if let Some(on_exit) = callbacks.on_exit {
-                    let func = on_exit
-                        .as_callable()
-                        .and_then(JsFunction::from_object)
-                        .ok_or_else(|| anyhow!("term {id} onExit not callable"))?;
-                    let _: JsValue = func
-                        .call(&undefined, &[JsValue::from(code)], engine)
-                        .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
-                }
-                with_terms(|m| m.remove(&id));
                 crate::state::with_term_workers(|m| m.remove(&id));
                 #[cfg(unix)]
                 crate::state::with_term_masters(|m| m.remove(&id));
+                return Ok(());
             }
-        }
-        Ok(())
-    })
+            let callbacks = with_terms(|m| {
+                m.get(&id).map(|c| TermCallbacks {
+                    on_chunk: c.on_chunk.clone(),
+                    on_exit: c.on_exit.clone(),
+                })
+            });
+            let Some(callbacks) = callbacks else {
+                return Ok(());
+            };
+            let undefined = JsValue::undefined();
+            match event {
+                TermEvent::Chunk(_, chunk) => {
+                    let func = callbacks
+                        .on_chunk
+                        .as_callable()
+                        .and_then(JsFunction::from_object)
+                        .ok_or_else(|| anyhow!("term {id} onChunk not callable"))?;
+                    let _: JsValue = func
+                        .call(&undefined, &[JsValue::from(JsString::from(chunk))], engine)
+                        .map_err(|e| anyhow!("term {id} onChunk failed: {e}"))?;
+                }
+                TermEvent::Exit(_, code, _stdout) => {
+                    if let Some(on_exit) = callbacks.on_exit {
+                        let func = on_exit
+                            .as_callable()
+                            .and_then(JsFunction::from_object)
+                            .ok_or_else(|| anyhow!("term {id} onExit not callable"))?;
+                        let _: JsValue = func
+                            .call(&undefined, &[JsValue::from(code)], engine)
+                            .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
+                    }
+                    with_terms(|m| m.remove(&id));
+                    crate::state::with_term_workers(|m| m.remove(&id));
+                    #[cfg(unix)]
+                    crate::state::with_term_masters(|m| m.remove(&id));
+                }
+            }
+            Ok(())
+        })
     })
 }
 
@@ -1030,82 +1030,82 @@ pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
     crate::init();
     // .then/.catch 的续体在 `resolve` 里跑 ⇒ 属主必须是**注册这个 promise 的插件**
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::async_promise(id), || {
-    crate::state::with_engine(|engine| {
-        let resolving = with_async_promises(|m| m.remove(&id));
-        let Some(resolving) = resolving else {
-            return Ok(());
-        }; // 已 resolve / 未知 id → no-op（幂等）
-        let undefined = JsValue::undefined();
-        let result: Result<(), JsError> = match event {
-            AsyncEvent::FsRead(_, Ok(content)) => resolving
-                .resolve
-                .call(
-                    &undefined,
-                    &[JsValue::from(JsString::from(content))],
-                    engine,
-                )
-                .map(|_| ()),
-            AsyncEvent::FsRead(_, Err(e)) => reject_msg(&resolving, &e, engine),
-            AsyncEvent::FsWrite(_, Ok(())) => {
-                resolving.resolve.call(&undefined, &[], engine).map(|_| ())
-            }
-            AsyncEvent::FsWrite(_, Err(e)) => reject_msg(&resolving, &e, engine),
-            AsyncEvent::FsStat(_, Ok(st)) => resolving
-                .resolve
-                .call(
-                    &undefined,
-                    &[stat_to_js(&st, engine)
-                        .map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?],
-                    engine,
-                )
-                .map(|_| ()),
-            AsyncEvent::FsStat(_, Err(e)) => reject_msg(&resolving, &e, engine),
-            AsyncEvent::FsGlob(_, Ok(paths)) => {
-                let arr = paths
-                    .iter()
-                    .map(|p| JsValue::from(JsString::from(p.clone())))
-                    .collect::<Vec<_>>();
-                let js_arr = JsArray::from_iter(arr, engine);
-                resolving
+        crate::state::with_engine(|engine| {
+            let resolving = with_async_promises(|m| m.remove(&id));
+            let Some(resolving) = resolving else {
+                return Ok(());
+            }; // 已 resolve / 未知 id → no-op（幂等）
+            let undefined = JsValue::undefined();
+            let result: Result<(), JsError> = match event {
+                AsyncEvent::FsRead(_, Ok(content)) => resolving
                     .resolve
-                    .call(&undefined, &[js_arr.into()], engine)
-                    .map(|_| ())
-            }
-            AsyncEvent::FsGlob(_, Err(e)) => reject_msg(&resolving, &e, engine),
-            AsyncEvent::FsTree(_, Ok(entries)) => {
-                let arr = entries
-                    .into_iter()
-                    .map(|(name, is_dir, path)| {
-                        let obj = ObjectInitializer::new(engine)
-                            .property(
-                                JsString::from("name"),
-                                JsValue::from(JsString::from(name)),
-                                Attribute::all(),
-                            )
-                            .property(
-                                JsString::from("is_dir"),
-                                JsValue::from(is_dir),
-                                Attribute::all(),
-                            )
-                            .property(
-                                JsString::from("path"),
-                                JsValue::from(JsString::from(path)),
-                                Attribute::all(),
-                            )
-                            .build();
-                        JsValue::from(obj)
-                    })
-                    .collect::<Vec<_>>();
-                let js_arr = JsArray::from_iter(arr, engine);
-                resolving
+                    .call(
+                        &undefined,
+                        &[JsValue::from(JsString::from(content))],
+                        engine,
+                    )
+                    .map(|_| ()),
+                AsyncEvent::FsRead(_, Err(e)) => reject_msg(&resolving, &e, engine),
+                AsyncEvent::FsWrite(_, Ok(())) => {
+                    resolving.resolve.call(&undefined, &[], engine).map(|_| ())
+                }
+                AsyncEvent::FsWrite(_, Err(e)) => reject_msg(&resolving, &e, engine),
+                AsyncEvent::FsStat(_, Ok(st)) => resolving
                     .resolve
-                    .call(&undefined, &[js_arr.into()], engine)
-                    .map(|_| ())
-            }
-            AsyncEvent::FsTree(_, Err(e)) => reject_msg(&resolving, &e, engine),
-        };
-        result.map_err(|e| anyhow!("async fs {id} settle failed: {e}"))
-    })
+                    .call(
+                        &undefined,
+                        &[stat_to_js(&st, engine)
+                            .map_err(|e| anyhow!("async fs {id} stat result failed: {e}"))?],
+                        engine,
+                    )
+                    .map(|_| ()),
+                AsyncEvent::FsStat(_, Err(e)) => reject_msg(&resolving, &e, engine),
+                AsyncEvent::FsGlob(_, Ok(paths)) => {
+                    let arr = paths
+                        .iter()
+                        .map(|p| JsValue::from(JsString::from(p.clone())))
+                        .collect::<Vec<_>>();
+                    let js_arr = JsArray::from_iter(arr, engine);
+                    resolving
+                        .resolve
+                        .call(&undefined, &[js_arr.into()], engine)
+                        .map(|_| ())
+                }
+                AsyncEvent::FsGlob(_, Err(e)) => reject_msg(&resolving, &e, engine),
+                AsyncEvent::FsTree(_, Ok(entries)) => {
+                    let arr = entries
+                        .into_iter()
+                        .map(|(name, is_dir, path)| {
+                            let obj = ObjectInitializer::new(engine)
+                                .property(
+                                    JsString::from("name"),
+                                    JsValue::from(JsString::from(name)),
+                                    Attribute::all(),
+                                )
+                                .property(
+                                    JsString::from("is_dir"),
+                                    JsValue::from(is_dir),
+                                    Attribute::all(),
+                                )
+                                .property(
+                                    JsString::from("path"),
+                                    JsValue::from(JsString::from(path)),
+                                    Attribute::all(),
+                                )
+                                .build();
+                            JsValue::from(obj)
+                        })
+                        .collect::<Vec<_>>();
+                    let js_arr = JsArray::from_iter(arr, engine);
+                    resolving
+                        .resolve
+                        .call(&undefined, &[js_arr.into()], engine)
+                        .map(|_| ())
+                }
+                AsyncEvent::FsTree(_, Err(e)) => reject_msg(&resolving, &e, engine),
+            };
+            result.map_err(|e| anyhow!("async fs {id} settle failed: {e}"))
+        })
     })
 }
 

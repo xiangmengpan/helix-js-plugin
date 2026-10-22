@@ -2,7 +2,7 @@
 //!
 //! 从 `typed.rs` 的 `apply_ui_requests` 拆出(G7):每个 arm 变成一个 handler。
 //! G12 起 handler 不再自己 `job::dispatch_blocking`,而是返回
-//! [`ui_op::UiOp`](super::ui_op::UiOp) 描述 —— 参数映射可单测,执行收敛在
+//! `ui_op::UiOp` 描述 —— 参数映射可单测,执行收敛在
 //! `UiOp::apply` 一处。函数体里的 `bail!` 与参数白名单**未改**。
 
 use super::*;

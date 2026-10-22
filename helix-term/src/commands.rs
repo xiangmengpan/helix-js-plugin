@@ -6047,7 +6047,13 @@ fn hsplit(_cx: &mut Context) {
     // 叶=窗口:无参分裂 → 下侧同 doc 新叶
     crate::job::dispatch_blocking(move |editor, compositor, mut _js| {
         if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
-            compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::V, false, None);
+            compositor.open_buffer_leaf(
+                editor,
+                doc_id,
+                crate::ui::layout::SplitDir::V,
+                false,
+                None,
+            );
         }
     });
 }
@@ -6060,7 +6066,13 @@ fn vsplit(_cx: &mut Context) {
     // 叶=窗口:无参分裂 → 右侧同 doc 新叶
     crate::job::dispatch_blocking(move |editor, compositor, mut _js| {
         if let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) {
-            compositor.open_buffer_leaf(editor, doc_id, crate::ui::layout::SplitDir::H, false, None);
+            compositor.open_buffer_leaf(
+                editor,
+                doc_id,
+                crate::ui::layout::SplitDir::H,
+                false,
+                None,
+            );
         }
     });
 }

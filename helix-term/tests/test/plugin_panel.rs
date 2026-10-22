@@ -15,7 +15,12 @@ async fn panel_lives_in_layout_tree_not_layers() -> anyhow::Result<()> {
     let side = helix_term::ui::plugin_panel::PanelSide::Left;
     let leaf = app
         .compositor
-        .register_panel(helix_term::ui::PluginPanel::new(7, side, false), side, 20, None)
+        .register_panel(
+            helix_term::ui::PluginPanel::new(7, side, false),
+            side,
+            20,
+            None,
+        )
         .expect("register_panel 应返回叶子 id");
 
     // 在布局树里(rail 叶子),不在 compositor.layers
@@ -90,7 +95,8 @@ async fn rail_panel_can_move_to_other_side() -> anyhow::Result<()> {
             PanelSide::Bottom,
             false,
         )),
-     None);
+        None,
+    );
     if let Some(plain) = plain {
         assert!(
             !app.compositor.set_panel_side(9, PanelSide::Right, None),

@@ -621,7 +621,6 @@ pub(crate) fn reset_for_test() {
     });
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -410,7 +410,9 @@ pub fn symbol_picker(cx: &mut Context) {
                 Err(err) => log::error!("Error requesting document symbols: {err}"),
             }
         }
-        let call = move |_editor: &mut Editor, compositor: &mut Compositor, _js: Option<&mut helix_js::host::JsHost>| {
+        let call = move |_editor: &mut Editor,
+                         compositor: &mut Compositor,
+                         _js: Option<&mut helix_js::host::JsHost>| {
             let columns = [
                 ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
                     display_symbol_kind(item.symbol.kind).into()
@@ -644,7 +646,9 @@ pub fn code_action(cx: &mut Context) {
         // `lsp_code_action_priority` for how LSP actions are ranked.
         actions.sort_by_key(|action| std::cmp::Reverse(action.priority));
 
-        let call = move |editor: &mut Editor, compositor: &mut Compositor, _js: Option<&mut helix_js::host::JsHost>| {
+        let call = move |editor: &mut Editor,
+                         compositor: &mut Compositor,
+                         _js: Option<&mut helix_js::host::JsHost>| {
             if actions.is_empty() {
                 editor.set_error("No code actions available");
                 return;
@@ -992,7 +996,9 @@ where
                 Err(err) => log::error!("Error requesting locations: {err}"),
             }
         }
-        let call = move |editor: &mut Editor, compositor: &mut Compositor, _js: Option<&mut helix_js::host::JsHost>| {
+        let call = move |editor: &mut Editor,
+                         compositor: &mut Compositor,
+                         _js: Option<&mut helix_js::host::JsHost>| {
             if locations.is_empty() {
                 editor.set_error(match feature {
                     LanguageServerFeature::GotoDeclaration => "No declaration found.",
@@ -1075,7 +1081,9 @@ pub fn goto_reference(cx: &mut Context) {
                 Err(err) => log::error!("Error requesting references: {err}"),
             }
         }
-        let call = move |editor: &mut Editor, compositor: &mut Compositor, _js: Option<&mut helix_js::host::JsHost>| {
+        let call = move |editor: &mut Editor,
+                         compositor: &mut Compositor,
+                         _js: Option<&mut helix_js::host::JsHost>| {
             if locations.is_empty() {
                 editor.set_error("No references found.");
             } else {
@@ -1133,7 +1141,9 @@ pub fn hover(cx: &mut Context) {
             }
         }
 
-        let call = move |editor: &mut Editor, compositor: &mut Compositor, _js: Option<&mut helix_js::host::JsHost>| {
+        let call = move |editor: &mut Editor,
+                         compositor: &mut Compositor,
+                         _js: Option<&mut helix_js::host::JsHost>| {
             if hovers.is_empty() {
                 editor.set_status("No hover results available.");
                 return;

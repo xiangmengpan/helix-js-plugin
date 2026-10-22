@@ -642,7 +642,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     fn get_preview<'picker, 'editor>(
         &'picker mut self,
         editor: &'editor Editor,
-        mut js: Option<&mut helix_js::host::JsHost>,
+        js: Option<&mut helix_js::host::JsHost>,
     ) -> Option<(Preview<'picker, 'editor>, Option<(usize, usize)>)> {
         let current = self.selection()?;
         let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, js, current)?;

@@ -127,7 +127,7 @@ pub(crate) fn js_set_theme(
         }
     }
     with_theme_overrides(|o| *o = overrides);
-    mark_theme_dirty();
+    mark_theme_dirty(crate::host::host_state(ctx));
     Ok(JsValue::undefined())
 }
 
@@ -138,7 +138,7 @@ pub(crate) fn js_reset_theme(
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     with_theme_overrides(|o| o.clear());
-    mark_theme_dirty();
+    crate::host::with_state_or_init(mark_theme_dirty);
     Ok(JsValue::undefined())
 }
 
@@ -146,13 +146,13 @@ pub(crate) fn js_reset_theme(
 pub fn reset_theme() {
     crate::init();
     with_theme_overrides(|o| o.clear());
-    mark_theme_dirty();
+    crate::host::with_state_or_init(mark_theme_dirty);
 }
 
 /// 覆盖集是否自上次 drain 后变化（helix-term 读取并清位）
 pub fn take_theme_dirty() -> bool {
     crate::init();
-    take_theme_dirty_flag()
+    crate::host::with_state_or_init(take_theme_dirty_flag)
 }
 
 /// 当前主题覆盖集快照（scope → 覆盖样式；helix-term 合并进基准主题）

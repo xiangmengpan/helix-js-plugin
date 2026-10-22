@@ -537,7 +537,7 @@ fn term_exit_hook_via_resolve() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
     load_script(r#"helix.on("term-exit", (id, code) => helix.echo("exit:" + code));"#).unwrap();
-    let id = crate::state::next_term_id();
+    let id = crate::host::with_state_or_init(crate::state::next_term_id);
     // 注册回调(否则 resolve 直接 return)
     crate::state::with_terms(|m| {
         m.insert(

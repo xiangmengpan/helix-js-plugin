@@ -225,10 +225,7 @@ async fn plugin_without_permissions_is_denied() -> anyhow::Result<()> {
                 }),
             ),
             // 显式授权后可用(存量插件的升级路径)
-            (
-                Some(":js-permission allow perm-legacy process<ret>"),
-                None,
-            ),
+            (Some(":js-permission allow perm-legacy process<ret>"), None),
             (
                 Some(":perm-legacy-run<ret>"),
                 Some(&|app| {

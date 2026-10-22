@@ -96,7 +96,8 @@ fn request_document_colors(editor: &mut Editor, doc_id: DocumentId) {
                 None => return,
             }
         }
-        job::dispatch(move |editor, _, mut _js| attach_document_colors(editor, doc_id, all_colors)).await;
+        job::dispatch(move |editor, _, mut _js| attach_document_colors(editor, doc_id, all_colors))
+            .await;
     });
 }
 

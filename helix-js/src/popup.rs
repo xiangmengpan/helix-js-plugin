@@ -224,7 +224,7 @@ pub(crate) fn js_open_popup(
         (None, None) => (None, None, None),
     };
 
-    let id = crate::state::next_popup_id();
+    let id = crate::state::next_popup_id(crate::host::host_state(ctx));
     // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
     crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
     with_popups(|p| {
@@ -384,8 +384,8 @@ pub(crate) fn js_open_panel(
             .map_err(|_| crate::js_err("open_panel: 'rail' must be a boolean"))?,
     };
 
-    let id = crate::state::next_popup_id();
-    crate::state::set_last_panel_id(Some(id));
+    let id = crate::state::next_popup_id(crate::host::host_state(ctx));
+    crate::state::set_last_panel_id(crate::host::host_state(ctx), Some(id));
     crate::state::with_open_panels(|p| p.push(id));
     // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
     crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
@@ -428,9 +428,12 @@ pub(crate) fn js_close_panel(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(_ctx)
         .map_err(|_| crate::js_err("close_panel: id must be a number"))?;
-    if crate::state::last_panel_id() == Some(id) {
-        crate::state::set_last_panel_id(None);
-    };
+    // L3:本函数没有 `ctx`(`_ctx` 是 boa 回调的引擎借用,不是宿主入口)⇒ 过渡包装一次性取态
+    crate::host::with_state_or_init(|st| {
+        if crate::state::last_panel_id(st) == Some(id) {
+            crate::state::set_last_panel_id(st, None);
+        }
+    });
     crate::state::with_open_panels(|p| p.retain(|x| *x != id));
     UI_REQUESTS
         .get()
@@ -494,7 +497,7 @@ pub(crate) fn js_open_terminal(
     #[cfg(unix)]
     {
         // view_id 只在 unix 分支用 ⇒ 在这里分配(非 unix 直接报错,不必消耗 id)
-        let view_id = crate::state::next_terminal_view_id();
+        let view_id = crate::state::next_terminal_view_id(crate::host::host_state(ctx));
         // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
         let factory = ctx
             .eval(Source::from_bytes(
@@ -510,9 +513,9 @@ pub(crate) fn js_open_terminal(
             .call(&undefined, &[JsValue::from(view_id)], ctx)
             .map_err(|e| crate::js_err(format!("open_terminal: bridge: {e}")))?;
         // spawn pty（与 js_spawn 的 pty 路径同款）：注册回调/worker/master → 起 worker
-        let pty_id = crate::state::next_term_id();
+        let pty_id = crate::state::next_term_id(crate::host::host_state(ctx));
         // 注册表键用 pty_id（term_kill 按 pty_id 清理）；view_id 是 UI 层/JS 侧句柄
-        crate::state::register_term(pty_id, view_id, cmd.clone());
+        crate::state::register_term(crate::host::host_state(ctx), pty_id, view_id, cmd.clone());
         with_terms(|m| {
             m.insert(
                 pty_id,
@@ -1275,11 +1278,11 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
             Some(f) => JsValue::from(JsString::from(f.to_string())),
             None => JsValue::null(),
         };
-        let value: JsValue = crate::permissions::with_callback_owner(
-            &crate::permissions::CbKey::popup(id),
-            || func.call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine),
-        )
-        .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
+        let value: JsValue =
+            crate::permissions::with_callback_owner(&crate::permissions::CbKey::popup(id), || {
+                func.call(&undefined, &[focus_arg, JsValue::from(ctx_obj)], engine)
+            })
+            .map_err(|e| anyhow!("popup {id} render failed: {e}"))?;
 
         // 脏渲染协议(插件声明式):返回**显式 `null`** = "自上次以来无变化" ⇒ 复用上次解析好的
         // Content,跳过本次转换与分配。**由插件决定何时脏**,所以不存在"宿主按输入猜测导致 UI
@@ -1669,11 +1672,11 @@ pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<Popup
             .build();
         let doc = doc_to_js(ctx, engine).map_err(|e| anyhow!("failed to build popup doc: {e}"))?;
         let undefined = JsValue::undefined();
-        let value: JsValue = crate::permissions::with_callback_owner(
-            &crate::permissions::CbKey::popup(id),
-            || func.call(&undefined, &[JsValue::from(key_obj), doc], engine),
-        )
-        .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
+        let value: JsValue =
+            crate::permissions::with_callback_owner(&crate::permissions::CbKey::popup(id), || {
+                func.call(&undefined, &[JsValue::from(key_obj), doc], engine)
+            })
+            .map_err(|e| anyhow!("popup {id} onKey failed: {e}"))?;
         let s: Option<String> = value.try_js_into(engine).ok();
         Ok(match s.as_deref() {
             Some("close") => PopupKeyResult::Close,
@@ -1728,23 +1731,28 @@ pub fn close_popup(id: u64) -> Result<()> {
 pub fn close_panel_state(id: u64) {
     let _ = close_popup(id);
     crate::state::with_open_panels(|p| p.retain(|x| *x != id));
-    if crate::state::last_panel_id() == Some(id) {
-        crate::state::set_last_panel_id(None);
-    }
+    // L3 过渡:Rust 侧入口(无 ctx)⇒ 一次性取态
+    crate::host::with_state_or_init(|st| {
+        if crate::state::last_panel_id(st) == Some(id) {
+            crate::state::set_last_panel_id(st, None);
+        }
+    });
 }
 
 /// 入队关闭最近一次 open_panel 的面板（:panel-close 用）；无面板时 Err
 pub fn close_last_panel() -> Result<()> {
     crate::init();
-    let id = crate::state::last_panel_id().ok_or_else(|| anyhow!("no panel open"))?;
-    crate::state::set_last_panel_id(None);
-    UI_REQUESTS
-        .get()
-        .unwrap()
-        .lock()
-        .unwrap()
-        .push(UiRequest::ClosePanel(ClosePanelReq { id }));
-    Ok(())
+    crate::host::with_state_or_init(|st| {
+        let id = crate::state::last_panel_id(st).ok_or_else(|| anyhow!("no panel open"))?;
+        crate::state::set_last_panel_id(st, None);
+        UI_REQUESTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .push(UiRequest::ClosePanel(ClosePanelReq { id }));
+        Ok(())
+    })
 }
 
 pub(crate) fn js_set_statusline(
@@ -1781,21 +1789,21 @@ pub(crate) fn js_set_statusline(
                     }
                 }
                 if ok {
-                    crate::state::set_statusline_zones(zones);
+                    crate::state::set_statusline_zones(crate::host::host_state(context), zones);
                 }
             }
         }
     }
     if arg.is_null_or_undefined() {
         with_statusline_hook(|h| *h = None);
-        crate::state::set_statusline_replace(false);
+        crate::state::set_statusline_replace(crate::host::host_state(context), false);
     } else if arg.as_callable().is_some() {
         // 注册期绑定属主(状态栏钩子在每帧路径上跑,属主必须是注册它的插件)
         crate::permissions::bind_callback(crate::permissions::CbKey::hook(
             crate::permissions::CB_HOOK_STATUSLINE,
         ));
         with_statusline_hook(|h| *h = Some(arg));
-        crate::state::set_statusline_replace(replace);
+        crate::state::set_statusline_replace(crate::host::host_state(context), replace);
     } else {
         return Err(crate::js_err(
             "helix.set_statusline: expected a function or null",
@@ -2130,7 +2138,7 @@ pub(crate) fn js_term_list(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
-    for (view_id, cmd) in crate::state::list_terms() {
+    for (view_id, cmd) in crate::state::list_terms(crate::host::host_state(ctx)) {
         let item = ObjectInitializer::new(ctx)
             .property(
                 JsString::from("view_id"),

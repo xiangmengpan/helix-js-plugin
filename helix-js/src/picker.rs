@@ -162,9 +162,10 @@ pub(crate) fn js_picker_run(
         .and_then(JsFunction::from_object)
         .ok_or_else(|| crate::js_err("picker.run: source has no callable items"))?;
     // 属主 = 该源的注册者(items 里可能起进程/读文件)
-    let result = crate::permissions::with_callback_owner(&crate::permissions::CbKey::picker(&name), || {
-        items_fn.call(&JsValue::undefined(), &[], context)
-    })?;
+    let result =
+        crate::permissions::with_callback_owner(&crate::permissions::CbKey::picker(&name), || {
+            items_fn.call(&JsValue::undefined(), &[], context)
+        })?;
     // 同步数组 → 立即 push；Promise → .then 续体里 push
     push_open_picker(&name, columns, result, context)?;
     Ok(JsValue::undefined())
@@ -204,9 +205,10 @@ pub fn invoke_action(source: &str, payload: &[String]) {
             return;
         };
         let arr = js_array_from_strings(payload, engine);
-        let _ = crate::permissions::with_callback_owner(&crate::permissions::CbKey::picker(source), || {
-            func.call(&JsValue::undefined(), &[arr], engine)
-        });
+        let _ = crate::permissions::with_callback_owner(
+            &crate::permissions::CbKey::picker(source),
+            || func.call(&JsValue::undefined(), &[arr], engine),
+        );
     });
 }
 

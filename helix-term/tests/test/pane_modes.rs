@@ -236,7 +236,8 @@ fn split_right_panel(app: &mut Application) {
         false,
         40,
         Box::new(PluginPanel::new(1, PanelSide::Right, false)),
-     None);
+        None,
+    );
     assert_eq!(
         app.compositor.layout_tree().active(),
         1,

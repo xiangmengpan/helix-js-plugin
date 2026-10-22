@@ -101,7 +101,7 @@ pub(crate) fn open_picker(
     // 没有宿主(测试/无 JS)退回 legacy 隐式解析。
     let picker = picker.with_preview(
         move |_editor: &helix_view::Editor,
-              mut js: Option<&mut helix_js::host::JsHost>,
+              js: Option<&mut helix_js::host::JsHost>,
               row: &PickerRow| {
             // 选中行：preview 回调 → {path, line}；未定义/返回 null → None（核心不显示预览）
             let invoked = match js {

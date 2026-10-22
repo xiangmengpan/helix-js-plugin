@@ -114,7 +114,7 @@ impl Jobs {
         &self,
         editor: &mut Editor,
         compositor: &mut Compositor,
-        mut js: Option<&mut helix_js::host::JsHost>,
+        js: Option<&mut helix_js::host::JsHost>,
         call: anyhow::Result<Option<Callback>>,
     ) -> Option<Job> {
         match call {

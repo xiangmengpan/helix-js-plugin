@@ -1411,11 +1411,7 @@ fn dep_library_inherits_parent_plugin_owner() {
     std::fs::create_dir_all(d.join("lib")).unwrap();
     std::fs::create_dir_all(d.join("dep")).unwrap();
     // 库的**顶层**就调受保护 API(读目录)
-    std::fs::write(
-        d.join("lib/x.js"),
-        r#"const seen = helix.read_dir(".");"#,
-    )
-    .unwrap();
+    std::fs::write(d.join("lib/x.js"), r#"const seen = helix.read_dir(".");"#).unwrap();
     std::fs::write(
         d.join("dep/plugin.js"),
         r#"helix.plugin("dep-owner", { deps: ["lib/x.js"], permissions: { fs_read: true } });"#,
@@ -1423,18 +1419,13 @@ fn dep_library_inherits_parent_plugin_owner() {
     .unwrap();
 
     // 父插件声明了 fs_read ⇒ 库的顶层调用放行
-    load_script(r#"helix.load("dep");"#)
-        .expect("库应继承父插件的 fs_read 能力");
+    load_script(r#"helix.load("dep");"#).expect("库应继承父插件的 fs_read 能力");
 
     // 反过来:父插件没声明 ⇒ 库也被拒(错误里要能看出是哪个能力)。
     // 用另一个库文件:同一个 key 已被上面的成功加载缓存(helix.load 的语义),不会重跑。
     crate::permissions::reset_for_test();
     std::fs::create_dir_all(d.join("dep2")).unwrap();
-    std::fs::write(
-        d.join("lib/y.js"),
-        r#"const seen = helix.read_dir(".");"#,
-    )
-    .unwrap();
+    std::fs::write(d.join("lib/y.js"), r#"const seen = helix.read_dir(".");"#).unwrap();
     std::fs::write(
         d.join("dep2/plugin.js"),
         r#"helix.plugin("dep-owner-2", { deps: ["lib/y.js"], permissions: {} });"#,

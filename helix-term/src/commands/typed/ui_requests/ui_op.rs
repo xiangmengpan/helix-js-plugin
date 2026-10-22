@@ -143,7 +143,13 @@ impl UiOp {
                         ui::PanelSide::Left => (SplitDir::H, true),
                         ui::PanelSide::Bottom => (SplitDir::V, false),
                     };
-                    let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(panel), js.as_deref_mut());
+                    let _ = compositor.split_leaf_with_ratio(
+                        dir,
+                        first,
+                        size,
+                        Box::new(panel),
+                        js.as_deref_mut(),
+                    );
                 }
             }
             UiOp::ClosePanel { id } => {
@@ -246,10 +252,15 @@ impl UiOp {
                     editor.set_error("layout_swap: 叶子不存在");
                 }
             }
-            UiOp::Minimize { id, minimized } => compositor.minimize_leaf(id, minimized, js.as_deref_mut()),
+            UiOp::Minimize { id, minimized } => {
+                compositor.minimize_leaf(id, minimized, js.as_deref_mut())
+            }
             UiOp::SetFixed { id, fixed } => compositor.set_leaf_fixed(id, fixed, js.as_deref_mut()),
             UiOp::FocusLeafDir { id, dir, first } => {
-                if compositor.focus_leaf_dir(id, dir, first, js.as_deref_mut()).is_none() {
+                if compositor
+                    .focus_leaf_dir(id, dir, first, js.as_deref_mut())
+                    .is_none()
+                {
                     editor.set_error("layout_focus: 该方向无邻居（边界）");
                 }
             }
@@ -259,7 +270,7 @@ impl UiOp {
                 }
             }
             UiOp::Equalize { id } => compositor.equalize_leaf(id, js.as_deref_mut()),
-            UiOp::FocusLeaf { id } => compositor.focus_leaf(id, js.as_deref_mut()),
+            UiOp::FocusLeaf { id } => compositor.focus_leaf(id, js),
             UiOp::RestoreLayout { json } => {
                 match serde_json::from_str::<serde_json::Value>(&json) {
                     Ok(v) => {

@@ -22,7 +22,8 @@ async fn panel_shrinks_editor() -> anyhow::Result<()> {
             helix_term::ui::PanelSide::Right,
             false,
         )),
-     None);
+        None,
+    );
 
     // 渲染 compositor 到 Buffer，断言编辑器区域被面板收缩：
     // - 面板区（右侧 20 列）被面板占据：焦点边框顶边在第 0 行，

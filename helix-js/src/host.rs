@@ -230,7 +230,6 @@ pub struct HostState {
     pub(crate) editor_version: RefCell<Option<String>>,
 }
 pub struct JsHost {
-
     /// **宿主状态**（4a）：由 `Rc` 持有并注入引擎，原生回调用 `host_state(ctx)` 取回。
     /// 逐层搬迁中——目前只放了 `next_map_id`，其余字段仍在本结构体上。
     state: Rc<HostState>,
@@ -394,8 +393,6 @@ pub(crate) fn install_default(host: JsHost) {
     DEFAULT_HOST.with(|h| *h.borrow_mut() = Some(Box::new(host)));
 }
 
-
-
 /// **接管**已有宿主(若有) —— `Application` 优先用它,而不是新建一个引擎。
 ///
 /// 为什么必要:集成测试每个用例都构造一个 `Application`。若每次新建引擎,
@@ -458,6 +455,12 @@ pub fn host_state(ctx: &Context) -> &HostState {
 impl JsHost {
     /// 显式路径：宿主状态（`&HostState` 足够，字段内部都是 `RefCell`/`Cell`）。
     pub fn state(&self) -> &HostState {
+        &self.state
+    }
+
+    /// 状态的 `Rc`(测试把裸 `Context` 接到当前宿主时用;生产路径不需要克隆)
+    #[cfg(test)]
+    pub(crate) fn state_rc(&self) -> &Rc<HostState> {
         &self.state
     }
 
@@ -857,6 +860,25 @@ impl JsHost {
 
 /// 同 [`with_host_ref`],但**没有宿主时先 `crate::init()`** —— 供 `set_*`/注册这类
 /// "可能早于初始化"的调用使用(与原来的 `current_host_key_or_init()` 语义一致)。
+/// **L3 过渡入口**:给"没有 `ctx`、但需要调显式访问器"的少数 Rust 侧 helper 用。
+///
+/// L3 把 24 个访问器改成 `fn xxx(st: &HostState, …)` 之后,真正有 `ctx` 的调用点直接传
+/// `host_state(ctx)`;剩下这些入口(`resolve_plugin_path` / `reset_plugin_state` /
+/// `take_theme_dirty` / `reload_all` …)拿不到引擎 ⇒ 在这里**一次性**解析宿主,
+/// 再把 `&HostState` 交给显式访问器。语义与旧的 `with_host_ref_or_init` 完全一致
+/// (必要时自动 init),但"隐式"被收敛到**一个可 grep 的名字**上 ——
+/// L4 删 `ACTIVE` 时照着 `with_state_or_init` 的调用点逐个消灭即可。
+pub(crate) fn with_state_or_init<T>(f: impl FnOnce(&HostState) -> T) -> T {
+    with_host_ref_or_init(|h| f(h.state()))
+}
+
+/// 当前宿主状态的 `Rc`(测试用:把它们**自己的** `Context::default()` 接到当前宿主,
+/// 这样 `host_state(ctx)` 能取到真实状态 —— 单测不再需要伪造一份)。
+#[cfg(test)]
+pub(crate) fn current_state_rc() -> Rc<HostState> {
+    with_host_ref_or_init(|h| Rc::clone(h.state_rc()))
+}
+
 pub(crate) fn with_host_ref_or_init<T>(f: impl FnOnce(&JsHost) -> T) -> T {
     if try_with_host_ref(|_| ()).is_none() {
         crate::init();
@@ -1468,14 +1490,16 @@ mod engine_ownership_tests {
         crate::init();
         crate::state::set_layouts_dir(std::path::PathBuf::from("/tmp/LAYOUTS-RED"));
         assert_eq!(
-            crate::state::layouts_dir().map(|p| p.to_string_lossy().to_string()),
+            crate::host::with_state_or_init(crate::state::layouts_dir)
+                .map(|p| p.to_string_lossy().to_string()),
             Some("/tmp/LAYOUTS-RED".to_string()),
             "本宿主应看到自己刚设的目录"
         );
 
         let got = std::thread::spawn(|| {
             crate::init(); // 该线程自建宿主
-            crate::state::layouts_dir().map(|p| p.to_string_lossy().to_string())
+            crate::host::with_state_or_init(crate::state::layouts_dir)
+                .map(|p| p.to_string_lossy().to_string())
         })
         .join()
         .expect("子线程不应 panic");

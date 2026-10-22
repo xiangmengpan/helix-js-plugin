@@ -95,7 +95,9 @@ impl helix_event::AsyncHook for SignatureHelpHandler {
         let invocation = self.trigger.take().unwrap();
         self.state = State::Pending;
         let handle = self.task_controller.restart();
-        job::dispatch_blocking(move |editor, _, mut _js| request_signature_help(editor, invocation, handle))
+        job::dispatch_blocking(move |editor, _, mut _js| {
+            request_signature_help(editor, invocation, handle)
+        })
     }
 }
 

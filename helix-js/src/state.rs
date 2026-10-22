@@ -1,6 +1,7 @@
 //! 全局状态：thread_local 引擎/注册表/队列 + 跨线程事件通道 + 访问器。
 //! 所有状态集中于此，其他模块经 `with_*` 访问器读写（thread_local 无法跨模块直接访问）。
 
+use crate::host::HostState;
 use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::JsValue;
 use std::cell::{Cell, RefCell};
@@ -96,11 +97,8 @@ pub(crate) fn with_last_export<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> 
 }
 
 /// 当前 eval 脚本声明的依赖（helix.plugin deps 累积处；load eval 后 take 递归加载）
-pub(crate) fn with_last_plugin_deps<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.last_plugin_deps;
-        f(&mut c.borrow_mut())
-    })
+pub(crate) fn with_last_plugin_deps<T>(st: &HostState, f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    f(&mut st.last_plugin_deps.borrow_mut())
 }
 
 /// 插件配置 schema 注册表(进程级,与 `CONFIGS` 同域)。
@@ -197,11 +195,8 @@ pub fn unregister_component_state(id: u64) {
 }
 
 /// 读取组件状态（JSON 字符串；未注册 → None）。
-pub(crate) fn get_component_state_json(id: u64) -> Option<String> {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.component_states;
-        s.borrow().get(&id).map(|f| f(id))
-    })
+pub(crate) fn get_component_state_json(st: &HostState, id: u64) -> Option<String> {
+    st.component_states.borrow().get(&id).map(|f| f(id))
 }
 
 /// 访问 POPUPS：同上（内容泄漏）
@@ -251,11 +246,8 @@ pub(crate) fn with_statusline_hook<T>(f: impl FnOnce(&mut Option<JsValue>) -> T)
     crate::host::with_host_ref_or_init(|h| f(&mut h.statusline_hook.borrow_mut()))
 }
 
-pub(crate) fn set_statusline_replace(v: bool) {
-    crate::host::with_host_ref_or_init(|h| {
-        let r = &h.statusline_replace;
-        r.set(v)
-    });
+pub(crate) fn set_statusline_replace(st: &HostState, v: bool) {
+    st.statusline_replace.set(v);
 }
 
 pub fn statusline_replaces() -> bool {
@@ -266,11 +258,8 @@ pub fn statusline_replaces() -> bool {
 }
 
 /// 设置 replace 模式区域比例 [左, 中, 右]（0 允许：该区不分配宽度）
-pub(crate) fn set_statusline_zones(zones: [u16; 3]) {
-    crate::host::with_host_ref_or_init(|h| {
-        let z = &h.statusline_zones;
-        *z.borrow_mut() = zones
-    });
+pub(crate) fn set_statusline_zones(st: &HostState, zones: [u16; 3]) {
+    *st.statusline_zones.borrow_mut() = zones;
 }
 
 /// replace 模式区域比例 [左, 中, 右]
@@ -318,19 +307,13 @@ pub(crate) fn with_decoration_requests<T>(f: impl FnOnce(&mut Vec<DecorationRequ
 }
 
 /// 写入其它已打开 buffer 快照（命令/事件入口调用，覆盖上次）
-pub(crate) fn set_doc_snapshots(docs: Vec<DocSnapshot>) {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.doc_snapshots;
-        s.replace(docs)
-    });
+pub(crate) fn set_doc_snapshots(st: &HostState, docs: Vec<DocSnapshot>) {
+    st.doc_snapshots.replace(docs);
 }
 
 /// 读取其它已打开 buffer 快照（by_path 查找）
-pub(crate) fn with_doc_snapshots<T>(f: impl FnOnce(&Vec<DocSnapshot>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.doc_snapshots;
-        f(&s.borrow())
-    })
+pub(crate) fn with_doc_snapshots<T>(st: &HostState, f: impl FnOnce(&Vec<DocSnapshot>) -> T) -> T {
+    f(&st.doc_snapshots.borrow())
 }
 
 /// 访问 CURSOR_REQUESTS（宿主字段;1b-3c 前为 thread_local）
@@ -357,40 +340,28 @@ pub(crate) fn with_load_stack<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     })
 }
 
-pub(crate) fn push_load_root(root: PathBuf) {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.load_roots;
-        s.borrow_mut().push(root)
-    });
+pub(crate) fn push_load_root(st: &HostState, root: PathBuf) {
+    st.load_roots.borrow_mut().push(root);
 }
 
-pub(crate) fn pop_load_root() {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.load_roots;
-        {
-            s.borrow_mut().pop();
-        }
-    });
+pub(crate) fn pop_load_root(st: &HostState) {
+    st.load_roots.borrow_mut().pop();
 }
 
-pub(crate) fn clear_load_roots() {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.load_roots;
-        s.borrow_mut().clear()
-    });
+pub(crate) fn clear_load_roots(st: &HostState) {
+    let s = &st.load_roots;
+    s.borrow_mut().clear()
 }
 
 /// 当前正在展开的插件由哪个根提供(无 → None)。**取栈顶**:嵌套加载时以最内层为准。
-pub(crate) fn current_load_root() -> Option<PathBuf> {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.load_roots;
-        {
-            s.borrow()
-                .last()
-                .filter(|p| !p.as_os_str().is_empty())
-                .cloned()
-        }
-    })
+pub(crate) fn current_load_root(st: &HostState) -> Option<PathBuf> {
+    let s = &st.load_roots;
+    {
+        s.borrow()
+            .last()
+            .filter(|p| !p.as_os_str().is_empty())
+            .cloned()
+    }
 }
 
 /// 访问 THEME_OVERRIDES（宿主字段;1b-3c 前为 thread_local）
@@ -404,30 +375,22 @@ pub(crate) fn with_theme_overrides<T>(
 }
 
 /// 置主题脏位（set/reset_theme 调用；helix-term drain 读取）
-pub(crate) fn mark_theme_dirty() {
-    crate::host::with_host_ref_or_init(|h| {
-        let d = &h.theme_dirty;
-        d.set(true)
-    });
+pub(crate) fn mark_theme_dirty(st: &HostState) {
+    let d = &st.theme_dirty;
+    d.set(true)
 }
 
 /// 读取并清主题脏位
-pub(crate) fn take_theme_dirty_flag() -> bool {
-    crate::host::with_host_ref_or_init(|h| {
-        let d = &h.theme_dirty;
-        d.replace(false)
-    })
+pub(crate) fn take_theme_dirty_flag(st: &HostState) -> bool {
+    let d = &st.theme_dirty;
+    d.replace(false)
 }
 
-pub(crate) fn next_popup_id() -> u64 {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.next_popup_id;
-        {
-            let v = c.get();
-            c.set(v + 1);
-            v
-        }
-    })
+pub(crate) fn next_popup_id(st: &HostState) -> u64 {
+    let c = &st.next_popup_id;
+    let v = c.get();
+    c.set(v + 1);
+    v
 }
 
 /// 下一个映射命令 id（4a L1：**显式**接收宿主状态，不再走隐式宿主）。
@@ -438,26 +401,18 @@ pub(crate) fn next_map_id(st: &crate::host::HostState) -> u64 {
     v
 }
 
-pub(crate) fn next_terminal_view_id() -> u64 {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.next_terminal_view_id;
-        {
-            let v = c.get();
-            c.set(v + 1);
-            v
-        }
-    })
+pub(crate) fn next_terminal_view_id(st: &HostState) -> u64 {
+    let c = &st.next_terminal_view_id;
+    let v = c.get();
+    c.set(v + 1);
+    v
 }
 
-pub(crate) fn next_term_id() -> u64 {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.next_term_id;
-        {
-            let v = c.get();
-            c.set(v + 1);
-            v
-        }
-    })
+pub(crate) fn next_term_id(st: &HostState) -> u64 {
+    let c = &st.next_term_id;
+    let v = c.get();
+    c.set(v + 1);
+    v
 }
 
 pub(crate) fn next_async_id() -> u64 {
@@ -468,18 +423,14 @@ pub(crate) fn next_async_id() -> u64 {
     })
 }
 
-pub(crate) fn last_panel_id() -> Option<u64> {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.last_panel_id;
-        c.get()
-    })
+pub(crate) fn last_panel_id(st: &HostState) -> Option<u64> {
+    let c = &st.last_panel_id;
+    c.get()
 }
 
-pub(crate) fn set_last_panel_id(v: Option<u64>) {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.last_panel_id;
-        c.set(v)
-    });
+pub(crate) fn set_last_panel_id(st: &HostState, v: Option<u64>) {
+    let c = &st.last_panel_id;
+    c.set(v)
 }
 
 /// 当前打开的面板 id 列表(reload 时全部关闭 —— 只关 last 会残留僵尸面板)。
@@ -546,8 +497,8 @@ pub fn set_plugin_roots(roots: Vec<PathBuf>) {
 
 /// 当前宿主的插件根;未设置 ⇒ 空切片(集成测试依赖这个语义)
 /// 当前宿主的插件根;未设置 ⇒ 空切片(集成测试依赖这个语义)
-pub(crate) fn plugin_roots() -> &'static [PathBuf] {
-    crate::host::with_host_ref_or_init(|h| *h.plugin_roots.borrow())
+pub(crate) fn plugin_roots(st: &HostState) -> &'static [PathBuf] {
+    *st.plugin_roots.borrow()
 }
 
 /// 某个提供根是不是"内置"(随软件分发的 runtime)。
@@ -562,7 +513,7 @@ pub(crate) fn is_builtin_root(root: &std::path::Path) -> bool {
     if root.as_os_str().is_empty() {
         return false;
     }
-    let roots = plugin_roots();
+    let roots = crate::host::with_state_or_init(plugin_roots);
     // 内置 = 提供根是**用户插件目录(末位)以外**的已知根(即随软件分发的 runtime roots)
     roots.len() > 1 && roots[..roots.len() - 1].iter().any(|r| r == root)
 }
@@ -571,7 +522,7 @@ pub(crate) fn is_builtin_root(root: &std::path::Path) -> bool {
 /// `manifest.json` 与插件文件都在这里 —— `:plugin` 管理器必需
 /// (此前 JS 侧**没有任何** config/插件目录访问器,实测 `config_dir`/`plugin_dir` 注册数为 0)。
 pub(crate) fn plugins_dir() -> Option<PathBuf> {
-    plugin_roots().last().cloned()
+    crate::host::with_state_or_init(|st| plugin_roots(st).last().cloned())
 }
 
 // ── 键入命令的参数通道(§12.0)──────────────────────────────────────
@@ -595,11 +546,9 @@ pub fn clear_command_args() {
 }
 
 /// 当前待处理参数(JS 侧 `helix.command_args()` 读它)
-pub(crate) fn command_args() -> Vec<String> {
-    crate::host::with_host_ref_or_init(|h| {
-        let a = &h.pending_command_args;
-        a.borrow().clone()
-    })
+pub(crate) fn command_args(st: &HostState) -> Vec<String> {
+    let a = &st.pending_command_args;
+    a.borrow().clone()
 }
 
 /// 设置 runtime 目录(同上:进宿主字段,`&'static` 签名不变)
@@ -610,8 +559,8 @@ pub fn set_runtime_dirs(dirs: Vec<PathBuf>) {
 
 /// 当前宿主的 runtime 目录(`runtime_path()` 的读取口);未设置 ⇒ 空切片
 /// 当前宿主的 runtime 目录(`runtime_path()` 的读取口);未设置 ⇒ 空切片
-pub(crate) fn runtime_dirs() -> &'static [PathBuf] {
-    crate::host::with_host_ref_or_init(|h| *h.runtime_dirs.borrow())
+pub(crate) fn runtime_dirs(st: &HostState) -> &'static [PathBuf] {
+    *st.runtime_dirs.borrow()
 }
 
 /// `name` → runtime 里的绝对路径(**按序取第一个存在的**)。
@@ -625,7 +574,7 @@ pub(crate) fn runtime_file_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 
 /// 给 JS 侧用的包装:`helix.runtime_path(name)`
 pub(crate) fn runtime_path(name: &str) -> Option<PathBuf> {
-    runtime_file_in(runtime_dirs(), name)
+    crate::host::with_state_or_init(|st| runtime_file_in(runtime_dirs(st), name))
 }
 
 /// 加载参数 → **候选 key(按序尝试)**。
@@ -712,7 +661,7 @@ pub(crate) fn remove_plugin_file_in(roots: &[PathBuf], rel: &str) -> Result<bool
 
 /// 用当前插件根
 pub(crate) fn remove_plugin_file(rel: &str) -> Result<bool, String> {
-    remove_plugin_file_in(plugin_roots(), rel)
+    crate::host::with_state_or_init(|st| remove_plugin_file_in(plugin_roots(st), rel))
 }
 
 // ── 插件文件写入(§12.2:`install` 需要)────────────────────────────
@@ -753,7 +702,7 @@ pub(crate) fn write_plugin_file_in(
 
 /// 用当前插件根
 pub(crate) fn write_plugin_file(rel: &str, text: &str) -> Result<PathBuf, String> {
-    write_plugin_file_in(plugin_roots(), rel, text)
+    crate::host::with_state_or_init(|st| write_plugin_file_in(plugin_roots(st), rel, text))
 }
 
 /// 相对名 → **(绝对路径, 提供它的根)**。从后往前找第一个存在的 = 后加的根覆盖先加的。
@@ -797,40 +746,35 @@ pub(crate) fn resolve_in_pref(
 /// 相对名 → 绝对路径(用当前插件根)
 pub(crate) fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
     // 目录级覆盖(§4-2):优先在"提供当前插件的那个根"内解析
-    let pref = current_load_root();
-    resolve_in_pref(plugin_roots(), key, pref.as_deref())
+    crate::host::with_state_or_init(|st| {
+        let pref = current_load_root(st);
+        resolve_in_pref(plugin_roots(st), key, pref.as_deref())
+    })
 }
 
 /// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: `{"<name>": {...}}`
 pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
-
 
 /// 终端实例注册表(pty_id → (view_id, cmd);`term_kill(pty_id)` 清理、`term_list` 查询)。
 /// 1b:存进宿主字段(这张表的键是 pty id,但状态本就属于某个宿主)。
 ///
 /// 非 unix 下没有 pty ⇒ 无人调用(但函数本身是跨平台注册表的一部分,不整个 cfg 掉)
 #[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) fn register_term(pty_id: u64, view_id: u64, cmd: String) {
-    crate::host::with_host_ref_or_init(|h| {
-        h.open_terms.borrow_mut().insert(pty_id, (view_id, cmd));
-    });
+pub(crate) fn register_term(st: &HostState, pty_id: u64, view_id: u64, cmd: String) {
+    st.open_terms.borrow_mut().insert(pty_id, (view_id, cmd));
 }
 
-pub(crate) fn unregister_term(pty_id: u64) {
-    crate::host::with_host_ref_or_init(|h| {
-        h.open_terms.borrow_mut().remove(&pty_id);
-    });
+pub(crate) fn unregister_term(st: &HostState, pty_id: u64) {
+    st.open_terms.borrow_mut().remove(&pty_id);
 }
 
 /// 当前打开的终端列表（view_id, cmd）。键是 pty_id：term_kill(pty_id) 能删对。
-pub(crate) fn list_terms() -> Vec<(u64, String)> {
-    crate::host::with_host_ref_or_init(|h| {
-        h.open_terms
-            .borrow()
-            .values()
-            .map(|(view_id, cmd)| (*view_id, cmd.clone()))
-            .collect()
-    })
+pub(crate) fn list_terms(st: &HostState) -> Vec<(u64, String)> {
+    st.open_terms
+        .borrow()
+        .values()
+        .map(|(view_id, cmd)| (*view_id, cmd.clone()))
+        .collect()
 }
 // 事件通道按线程存放：回调注册表（TERM_CALLBACKS）是线程本地的，通道也必须同线程配对——
 // 全局单通道会被并发测试的 render 泵互偷（别的线程 drain 后 resolve 时找不到本线程的回调，静默丢弃）。
@@ -949,8 +893,8 @@ pub fn set_layouts_dir(dir: PathBuf) {
 }
 
 /// 当前宿主的布局目录;未设置 ⇒ `None`
-pub(crate) fn layouts_dir() -> Option<&'static PathBuf> {
-    crate::host::with_host_ref_or_init(|h| *h.layouts_dir.borrow())
+pub(crate) fn layouts_dir(st: &HostState) -> Option<&'static PathBuf> {
+    *st.layouts_dir.borrow()
 }
 
 /// 读当前布局 dump(还没缓存过 → 空串)
@@ -988,7 +932,7 @@ pub(crate) fn pane_mode_json() -> String {
 /// 当前宿主的打开文档快照(还没缓存过 → 空串)。
 /// `helix.buffer.list()` / `helix.buffer.current()` 的**唯一读取口** ⇒ 分桶时只改这里。
 pub(crate) fn buffers_json() -> String {
-    note_snapshot_read(SnapshotKind::Buffers);
+    crate::host::with_state_or_init(|st| note_snapshot_read(st, SnapshotKind::Buffers));
     crate::host::with_host_ref(|h| h.buffers.borrow().clone())
 }
 
@@ -1016,7 +960,7 @@ pub fn cache_diagnostics(json: &str) {
 
 /// 诊断快照(还没缓存过 → 空串)。`helix.diagnostics()` 的唯一读取口。
 pub(crate) fn diagnostics_json() -> String {
-    note_snapshot_read(SnapshotKind::Diagnostics);
+    crate::host::with_state_or_init(|st| note_snapshot_read(st, SnapshotKind::Diagnostics));
     crate::host::with_host_ref(|h| h.diagnostics.borrow().clone())
 }
 
@@ -1039,10 +983,8 @@ impl SnapshotKind {
 
 /// 记下"有人读过这类快照"。**读点自己打标** —— 这是唯一不会漂的时刻
 /// (靠 helix-term 猜"哪些插件会读"必然漂,见 R3/R4)。
-pub(crate) fn note_snapshot_read(kind: SnapshotKind) {
-    crate::host::with_host_ref_or_init(|h| {
-        h.snapshot_reads.set(h.snapshot_reads.get() | kind.bit());
-    });
+pub(crate) fn note_snapshot_read(st: &HostState, kind: SnapshotKind) {
+    st.snapshot_reads.set(st.snapshot_reads.get() | kind.bit());
 }
 
 /// 这类快照有人读吗?(帧路径上每帧问一次;没人读 ⇒ 不序列化)
@@ -1062,13 +1004,11 @@ pub(crate) fn with_fuzzy_sessions<T>(f: impl FnOnce(&mut HashMap<u64, Vec<String
 }
 
 /// 取下一个会话 id（单调，避免 drop 之后复用造成"旧句柄命中新数据"）
-pub(crate) fn next_fuzzy_session_id() -> u64 {
-    crate::host::with_host_ref_or_init(|h| {
-        let c = &h.next_fuzzy_session;
-        let id = c.get();
-        c.set(id + 1);
-        id
-    })
+pub(crate) fn next_fuzzy_session_id(st: &HostState) -> u64 {
+    let c = &st.next_fuzzy_session;
+    let id = c.get();
+    c.set(id + 1);
+    id
 }
 
 /// 取走并清空 UI 请求队列
@@ -1240,18 +1180,17 @@ mod command_args_tests {
     /// 设 → 读 → **清空后必须为空**(防"粘到下一个命令")
     #[test]
     fn command_args_roundtrip_and_clear() {
+        // L3:`command_args` 现在显式要 `&HostState`;测试跑在默认宿主上 ⇒ 用过渡入口取态
+        let args = || crate::host::with_state_or_init(command_args);
         clear_command_args();
-        assert!(command_args().is_empty(), "初始为空");
+        assert!(args().is_empty(), "初始为空");
         set_command_args(vec!["save".into(), "dev".into()]);
-        assert_eq!(command_args(), vec!["save".to_string(), "dev".to_string()]);
+        assert_eq!(args(), vec!["save".to_string(), "dev".to_string()]);
         // 再设会整体替换(不是累加)
         set_command_args(vec!["list".into()]);
-        assert_eq!(command_args(), vec!["list".to_string()]);
+        assert_eq!(args(), vec!["list".to_string()]);
         clear_command_args();
-        assert!(
-            command_args().is_empty(),
-            "清空后为空 —— 否则会粘到下一个命令"
-        );
+        assert!(args().is_empty(), "清空后为空 —— 否则会粘到下一个命令");
     }
 }
 

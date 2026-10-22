@@ -20,7 +20,7 @@ use crate::DynError;
 /// `tasks/mod.rs` 的 `TASKS` 与这个数组里。
 pub fn run(args: Vec<String>) -> Result<(), DynError> {
     let _ = args; // 该任务不接参数
-    // 先把声明面导出成 JSON —— 三个脚本的唯一数据源（它们不再解析 Rust 源码）
+                  // 先把声明面导出成 JSON —— 三个脚本的唯一数据源（它们不再解析 Rust 源码）
     crate::tasks::api_describe::run(vec![])?;
     for script in [
         crate::path::plugin_api_surface_script(),

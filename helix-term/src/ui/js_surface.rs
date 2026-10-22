@@ -10,7 +10,7 @@
 //!   面板的 `focusable` 开关、弹窗的 layer 语义。
 //!
 //! 设计约束:**这一层不实现 `Component`**,也不写 `if 是面板 / 是弹窗` —— 差异一律由
-//! [`SurfaceOpts`] 或调用方显式传入。这样加第四个 JS 组件时,复制的是"调用顺序",不是 200 行。
+//! `SurfaceOpts` 或调用方显式传入。这样加第四个 JS 组件时,复制的是"调用顺序",不是 200 行。
 
 use helix_view::graphics::Rect;
 

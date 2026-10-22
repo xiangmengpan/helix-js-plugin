@@ -237,7 +237,10 @@ pub(crate) fn js_command_args(
     ctx: &mut boa_engine::Context,
 ) -> boa_engine::JsResult<JsValue> {
     let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
-    for (i, a) in crate::state::command_args().iter().enumerate() {
+    for (i, a) in crate::state::command_args(crate::host::host_state(ctx))
+        .iter()
+        .enumerate()
+    {
         let _ = arr.set(i, JsValue::from(JsString::from(a.as_str())), false, ctx);
     }
     Ok(arr.into())
@@ -307,7 +310,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     // 加载参数 → 候选 key:裸名先找 `<name>/plugin.js`(插件布局约定),再回退 `<name>.js`。
     // 选中"第一个**能解析到文件**的候选",以此作为缓存/依赖/循环检测的 key(必须稳定)。
     let candidates = crate::state::entry_keys(name);
-    let roots = crate::state::plugin_roots();
+    let roots = crate::state::plugin_roots(crate::host::host_state(ctx));
     // 选中候选的**同时**记下"由哪个根提供"(§4-2 目录级覆盖:该插件自身的相对加载
     // 会优先在这个根内解析,避免造出"用户的 plugin.js + 内置的同名 sibling"的混合体)
     let (key, providing_root) = candidates
@@ -337,16 +340,16 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     // §4-2 的关键一步:prefer 的对象是**父插件的根**,不是本文件自己的根
     // (自己的根是"这次加载的结果",拿它做 prefer 只会查回同一个文件,等于没生效 ——
     //  这正是上一版没起作用的原因)。所以**先取父根**,再 push 自己。
-    let parent_root = crate::state::current_load_root();
+    let parent_root = crate::state::current_load_root(crate::host::host_state(ctx));
     crate::state::with_load_stack(|s| s.push(key.clone()));
     // 与 key **同一处** push/pop,两栈因此始终等长(见 state::LOAD_ROOTS 注释)
-    crate::state::push_load_root(providing_root.clone());
+    crate::state::push_load_root(crate::host::host_state(ctx), providing_root.clone());
     let result = (|| -> boa_engine::JsResult<JsValue> {
         let path = if Path::new(&key).is_absolute() {
             PathBuf::from(&key)
         } else {
             crate::state::resolve_in_pref(
-                crate::state::plugin_roots(),
+                crate::state::plugin_roots(crate::host::host_state(ctx)),
                 &key,
                 parent_root.as_deref(),
             )
@@ -355,7 +358,9 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         let src = std::fs::read_to_string(&path)
             .map_err(|e| crate::js_err(format!("helix.load('{key}'): {e}")))?;
         // eval 前清空依赖记录，脚本内 helix.plugin 累积；eval 后 take 递归加载
-        crate::state::with_last_plugin_deps(|d| d.clear());
+        crate::state::with_last_plugin_deps(crate::host::host_state(ctx), |d: &mut Vec<String>| {
+            d.clear()
+        });
         // C-1/C-2:同一时刻清空"本次 eval 声明过 manifest 吗"的标记
         crate::permissions::begin_manifest();
         // C-3 加载期属主:<name>/plugin.js ⇒ name;其它脚本(init.js / deps 的 lib)
@@ -379,7 +384,8 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         if let Some(name) = crate::permissions::last_declared() {
             crate::permissions::mark_builtin(&name, crate::state::is_builtin_root(&providing_root));
         }
-        let deps = crate::state::with_last_plugin_deps(std::mem::take);
+        let deps =
+            crate::state::with_last_plugin_deps(crate::host::host_state(ctx), std::mem::take);
         // 先取外层 export（递归依赖 eval 会覆盖 LAST_EXPORT，外层 export 必须提前保存）
         let export = with_last_export(|l| l.take()).unwrap_or(JsValue::undefined());
         for dep in &deps {
@@ -400,7 +406,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     crate::state::with_load_stack(|s| {
         s.pop();
     });
-    crate::state::pop_load_root();
+    crate::state::pop_load_root(crate::host::host_state(ctx));
     // 加载树结束(最外层)⇒ 脚本里的 define_config 已注册 schema,重建配置缓存。
     // 嵌套依赖不重复重建:外层结束前它们的 define_config 都跑完了。
     if result.is_ok() && crate::state::with_load_stack(|s| s.is_empty()) {
@@ -495,7 +501,9 @@ pub(crate) fn js_plugin(
             });
         }
     }
-    crate::state::with_last_plugin_deps(|d| d.extend(manifest.deps.clone()));
+    crate::state::with_last_plugin_deps(crate::host::host_state(ctx), |d| {
+        d.extend(manifest.deps.clone())
+    });
     crate::permissions::record_manifest(manifest);
     Ok(JsValue::undefined())
 }
@@ -957,7 +965,9 @@ pub(crate) fn js_by_path(
     let canonical = helix_stdx::path::canonicalize(&path)
         .to_string_lossy()
         .into_owned();
-    let hit = crate::state::with_doc_snapshots(|s| s.iter().find(|d| d.path == canonical).cloned());
+    let hit = crate::state::with_doc_snapshots(crate::host::host_state(context), |s| {
+        s.iter().find(|d| d.path == canonical).cloned()
+    });
     let Some(hit) = hit else {
         return Ok(JsValue::null());
     };
@@ -1029,7 +1039,7 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次命令生命周期）
-    crate::state::set_doc_snapshots(ctx.docs.clone());
+    crate::host::with_state_or_init(|st| crate::state::set_doc_snapshots(st, ctx.docs.clone()));
     let func = with_registry(|r| r.get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
@@ -1211,7 +1221,7 @@ fn emit_event_impl(
     // 复位事务深度：上一命令/事件未配对的 begin 在此丢弃（积压编辑随队列清空）
     crate::state::with_txn_depth(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次事件生命周期）
-    crate::state::set_doc_snapshots(ctx.docs.clone());
+    crate::host::with_state_or_init(|st| crate::state::set_doc_snapshots(st, ctx.docs.clone()));
     let handlers = with_event_handlers(|h| h.get(name).cloned());
     let Some(handlers) = handlers else {
         return Ok(());
@@ -2281,11 +2291,10 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
                         .as_callable()
                         .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("node {node_id} onPress not callable"))?;
-                    let _: JsValue =
-                        crate::permissions::with_callback_owner(&cb_key, || {
-                            func.call(&undefined, &[], engine)
-                        })
-                        .map_err(|e| anyhow!("node {node_id} onPress failed: {e}"))?;
+                    let _: JsValue = crate::permissions::with_callback_owner(&cb_key, || {
+                        func.call(&undefined, &[], engine)
+                    })
+                    .map_err(|e| anyhow!("node {node_id} onPress failed: {e}"))?;
                 }
             }
             Some(k) => {
@@ -2295,15 +2304,14 @@ pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Re
                         .as_callable()
                         .and_then(JsFunction::from_object)
                         .ok_or_else(|| anyhow!("node {node_id} onKey not callable"))?;
-                    let _: JsValue =
-                        crate::permissions::with_callback_owner(&cb_key, || {
-                            func.call(
-                                &undefined,
-                                &[JsValue::from(JsString::from(k.to_string()))],
-                                engine,
-                            )
-                        })
-                        .map_err(|e| anyhow!("node {node_id} onKey failed: {e}"))?;
+                    let _: JsValue = crate::permissions::with_callback_owner(&cb_key, || {
+                        func.call(
+                            &undefined,
+                            &[JsValue::from(JsString::from(k.to_string()))],
+                            engine,
+                        )
+                    })
+                    .map_err(|e| anyhow!("node {node_id} onKey failed: {e}"))?;
                 }
             }
         }
@@ -2423,17 +2431,17 @@ fn reset_plugin_state() {
     crate::state::with_txn_depth(|d| *d = 0);
     with_buffer_icon_hook(|h| *h = None);
     with_statusline_hook(|h| *h = None);
-    crate::state::set_last_panel_id(None);
+    crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));
     crate::state::with_command_docs(|d| d.clear());
     // 导出缓存与 pending 导出随插件状态重置（reload 后按名重读磁盘重跑）
     with_script_exports(|m| m.clear());
     // 加载栈防御性清空（正常路径已 pop；防止异常残留影响后续 reload）
     crate::state::with_load_stack(|s| s.clear());
-    crate::state::clear_load_roots();
+    crate::host::with_state_or_init(crate::state::clear_load_roots);
     with_last_export(|l| *l = None);
     // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
     crate::state::with_theme_overrides(|o| o.clear());
-    crate::state::mark_theme_dirty();
+    crate::host::with_state_or_init(crate::state::mark_theme_dirty);
 }
 
 /// 热重载：清空状态后按加载顺序重跑全部脚本。
@@ -2454,7 +2462,7 @@ pub fn reload_all() -> Result<()> {
             .unwrap()
             .push(UiRequest::ClosePanel(ClosePanelReq { id: panel_id }));
     }
-    crate::state::set_last_panel_id(None);
+    crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());
     reset_plugin_state();
     // 装饰不随 reload 继承:全局 Clear(term 侧 doc: None = 清空所有 doc;泵循环下一帧应用)。

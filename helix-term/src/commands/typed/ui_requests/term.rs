@@ -43,7 +43,7 @@ pub(crate) fn handle_open_terminal(
             crate::ui::plugin_panel::PanelSide::Left => (SplitDir::H, true),
             crate::ui::plugin_panel::PanelSide::Bottom => (SplitDir::V, false),
         };
-        let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal), _js.as_deref_mut());
+        let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal), _js);
     });
     Ok(())
 }
@@ -67,7 +67,7 @@ pub(crate) fn handle_term_mode(TermModeReq { view_id, mode }: TermModeReq) -> an
                 (crate::ui::plugin_terminal::TermMode::Floating, Some(id)) => {
                     compositor.set_float(id, _js.as_deref_mut());
                 }
-                _ => compositor.unfloat(_js.as_deref_mut()),
+                _ => compositor.unfloat(_js),
             }
         }
     });
@@ -85,7 +85,7 @@ pub(crate) fn handle_term_close(TermCloseReq { view_id }: TermCloseReq) -> anyho
             // 这一臂此前**漏了** sync ⇒ 关终端时 JS 侧快照会陈旧、layout-change 也不发 ✗
             // （与另 9 个臂对齐；关闭终端同样改变了布局）
             compositor.set_layout_change_kind("close");
-            compositor.sync_layout_cache(_js.as_deref_mut());
+            compositor.sync_layout_cache(_js);
         }
     });
     Ok(())

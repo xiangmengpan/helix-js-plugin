@@ -35,7 +35,7 @@ pub(crate) fn js_split(
         .as_object()
         .ok_or_else(|| crate::js_err("helix.split: opts object required"))?;
     // 新叶子预分配 id（面板回调注册在 POPUPS 下）
-    let id = crate::state::next_terminal_view_id();
+    let id = crate::state::next_terminal_view_id(crate::host::host_state(ctx));
     let (kind, cmd, size) =
         if let Some(term) = opts.get(JsString::from("terminal"), ctx)?.as_object() {
             let cmd: String = term.get(JsString::from("cmd"), ctx)?.try_js_into(ctx)?;
@@ -789,7 +789,8 @@ pub(crate) fn js_get_component_state(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("get_component_state: id must be a number"))?;
-    let Some(json) = crate::state::get_component_state_json(id) else {
+    let Some(json) = crate::state::get_component_state_json(crate::host::host_state(ctx), id)
+    else {
         return Ok(JsValue::null());
     };
     js_json_parse(json, ctx, "get_component_state")
@@ -882,7 +883,7 @@ fn layout_delete_in(dir: &std::path::Path, name: &str) -> Result<bool, String> {
 }
 
 fn want_dir() -> Result<&'static std::path::Path, JsError> {
-    crate::state::layouts_dir()
+    crate::host::with_state_or_init(crate::state::layouts_dir)
         .map(|p| p.as_path())
         .ok_or_else(|| js_err("布局目录未设置(helix-term 启动时应设置)"))
 }
@@ -934,7 +935,7 @@ pub(crate) fn js_layout_list(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let names = match crate::state::layouts_dir() {
+    let names = match crate::state::layouts_dir(crate::host::host_state(ctx)) {
         Some(dir) => layout_list_in(dir),
         None => Vec::new(),
     };

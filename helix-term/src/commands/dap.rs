@@ -284,11 +284,12 @@ pub fn dap_launch(cx: &mut Context) {
                 let completions = template.completion.clone();
                 let name = template.name.clone();
                 let callback = Box::pin(async move {
-                    let call: Callback =
-                        Callback::EditorCompositor(Box::new(move |_editor, compositor, mut _js| {
+                    let call: Callback = Callback::EditorCompositor(Box::new(
+                        move |_editor, compositor, mut _js| {
                             let prompt = debug_parameter_prompt(completions, name, Vec::new());
                             compositor.push(Box::new(prompt));
-                        }));
+                        },
+                    ));
                     Ok(call)
                 });
                 cx.jobs.callback(callback);
@@ -378,11 +379,12 @@ fn debug_parameter_prompt(
                 let config_name = config_name.clone();
                 let params = params.clone();
                 let callback = Box::pin(async move {
-                    let call: Callback =
-                        Callback::EditorCompositor(Box::new(move |_editor, compositor, mut _js| {
+                    let call: Callback = Callback::EditorCompositor(Box::new(
+                        move |_editor, compositor, mut _js| {
                             let prompt = debug_parameter_prompt(completions, config_name, params);
                             compositor.push(Box::new(prompt));
-                        }));
+                        },
+                    ));
                     Ok(call)
                 });
                 cx.jobs.callback(callback);
@@ -658,35 +660,37 @@ pub fn dap_edit_condition(cx: &mut Context) {
             return;
         };
         let callback = Box::pin(async move {
-            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor, mut _js| {
-                let mut prompt = Prompt::new(
-                    "condition:".into(),
-                    None,
-                    ui::completers::none,
-                    move |cx, input: &str, event: PromptEvent| {
-                        if event != PromptEvent::Validate {
-                            return;
-                        }
+            let call: Callback =
+                Callback::EditorCompositor(Box::new(move |editor, compositor, mut _js| {
+                    let mut prompt = Prompt::new(
+                        "condition:".into(),
+                        None,
+                        ui::completers::none,
+                        move |cx, input: &str, event: PromptEvent| {
+                            if event != PromptEvent::Validate {
+                                return;
+                            }
 
-                        let breakpoints = &mut cx.editor.breakpoints.get_mut(&path).unwrap();
-                        breakpoints[pos].condition = match input {
-                            "" => None,
-                            input => Some(input.to_owned()),
-                        };
+                            let breakpoints = &mut cx.editor.breakpoints.get_mut(&path).unwrap();
+                            breakpoints[pos].condition = match input {
+                                "" => None,
+                                input => Some(input.to_owned()),
+                            };
 
-                        let debugger = debugger!(cx.editor);
+                            let debugger = debugger!(cx.editor);
 
-                        if let Err(e) = breakpoints_changed(debugger, path.clone(), breakpoints) {
-                            cx.editor
-                                .set_error(format!("Failed to set breakpoints: {}", e));
-                        }
-                    },
-                );
-                if let Some(condition) = breakpoint.condition {
-                    prompt.insert_str(&condition, editor)
-                }
-                compositor.push(Box::new(prompt));
-            }));
+                            if let Err(e) = breakpoints_changed(debugger, path.clone(), breakpoints)
+                            {
+                                cx.editor
+                                    .set_error(format!("Failed to set breakpoints: {}", e));
+                            }
+                        },
+                    );
+                    if let Some(condition) = breakpoint.condition {
+                        prompt.insert_str(&condition, editor)
+                    }
+                    compositor.push(Box::new(prompt));
+                }));
             Ok(call)
         });
         cx.jobs.callback(callback);
@@ -699,34 +703,36 @@ pub fn dap_edit_log(cx: &mut Context) {
             return;
         };
         let callback = Box::pin(async move {
-            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor, mut _js| {
-                let mut prompt = Prompt::new(
-                    "log-message:".into(),
-                    None,
-                    ui::completers::none,
-                    move |cx, input: &str, event: PromptEvent| {
-                        if event != PromptEvent::Validate {
-                            return;
-                        }
+            let call: Callback =
+                Callback::EditorCompositor(Box::new(move |editor, compositor, mut _js| {
+                    let mut prompt = Prompt::new(
+                        "log-message:".into(),
+                        None,
+                        ui::completers::none,
+                        move |cx, input: &str, event: PromptEvent| {
+                            if event != PromptEvent::Validate {
+                                return;
+                            }
 
-                        let breakpoints = &mut cx.editor.breakpoints.get_mut(&path).unwrap();
-                        breakpoints[pos].log_message = match input {
-                            "" => None,
-                            input => Some(input.to_owned()),
-                        };
+                            let breakpoints = &mut cx.editor.breakpoints.get_mut(&path).unwrap();
+                            breakpoints[pos].log_message = match input {
+                                "" => None,
+                                input => Some(input.to_owned()),
+                            };
 
-                        let debugger = debugger!(cx.editor);
-                        if let Err(e) = breakpoints_changed(debugger, path.clone(), breakpoints) {
-                            cx.editor
-                                .set_error(format!("Failed to set breakpoints: {}", e));
-                        }
-                    },
-                );
-                if let Some(log_message) = breakpoint.log_message {
-                    prompt.insert_str(&log_message, editor);
-                }
-                compositor.push(Box::new(prompt));
-            }));
+                            let debugger = debugger!(cx.editor);
+                            if let Err(e) = breakpoints_changed(debugger, path.clone(), breakpoints)
+                            {
+                                cx.editor
+                                    .set_error(format!("Failed to set breakpoints: {}", e));
+                            }
+                        },
+                    );
+                    if let Some(log_message) = breakpoint.log_message {
+                        prompt.insert_str(&log_message, editor);
+                    }
+                    compositor.push(Box::new(prompt));
+                }));
             Ok(call)
         });
         cx.jobs.callback(callback);

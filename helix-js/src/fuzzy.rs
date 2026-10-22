@@ -63,7 +63,7 @@ pub(crate) fn js_fuzzy_session(
         values.push(s);
     }
 
-    let id = crate::state::next_fuzzy_session_id();
+    let id = crate::state::next_fuzzy_session_id(crate::host::host_state(ctx));
     crate::state::with_fuzzy_sessions(|m| {
         m.insert(id, values);
     });
@@ -79,8 +79,7 @@ pub(crate) fn js_fuzzy_run(
     let id = args
         .first()
         .and_then(|v| v.as_number())
-        .ok_or_else(|| crate::js_err("helix.fuzzy.run: id must be a number"))?
-        as u64;
+        .ok_or_else(|| crate::js_err("helix.fuzzy.run: id must be a number"))? as u64;
     let query: String = args
         .get(1)
         .unwrap_or(&JsValue::undefined())
@@ -118,9 +117,7 @@ pub(crate) fn js_fuzzy_run(
     // ⚠ **借着打分，不要克隆**：5000 条 String 的克隆本身是 0.2ms 量级（实测），
     // 而打分函数不碰宿主状态 ⇒ 可以在借用里跑完。
     let hits = crate::state::with_fuzzy_sessions(|m| {
-        let Some(items) = m.get(&id) else {
-            return None;
-        };
+        let items = m.get(&id)?;
         let mut hits = score(&query, items, case);
         hits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         if limit > 0 {
@@ -210,23 +207,25 @@ mod tests {
     fn session_roundtrip_and_drop() {
         crate::init();
         let ctx = &mut boa_engine::Context::default();
+        // L3:裸 `Context::default()` 里没有宿主状态 ⇒ `host_state(ctx)` 会明确 panic。
+        // 把**当前宿主**的状态接进来(测试辅助),两侧看到同一份数据。
+        ctx.insert_data(crate::host::current_state_rc());
         let items = JsArray::new(ctx).unwrap();
         for s in ["a_b_c", "abc", "zzz"] {
             items.push(JsString::from(s), ctx).unwrap();
         }
-        let id = js_fuzzy_session(
-            &JsValue::undefined(),
-            &[JsValue::from(items)],
-            ctx,
-        )
-        .unwrap()
-        .as_number()
-        .unwrap() as u64;
+        let id = js_fuzzy_session(&JsValue::undefined(), &[JsValue::from(items)], ctx)
+            .unwrap()
+            .as_number()
+            .unwrap() as u64;
         assert!(crate::state::with_fuzzy_sessions(|m| m.contains_key(&id)));
 
         let hits = js_fuzzy_run(
             &JsValue::undefined(),
-            &[JsValue::from(id as f64), JsValue::from(JsString::from("abc"))],
+            &[
+                JsValue::from(id as f64),
+                JsValue::from(JsString::from("abc")),
+            ],
             ctx,
         )
         .unwrap();
