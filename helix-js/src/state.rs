@@ -80,7 +80,20 @@ thread_local! {}
 pub(crate) use crate::host::with_engine;
 
 /// 访问 REGISTRY：首次触达惰性 Box::leak 创建；线程退出时内容泄漏（见上）
-pub(crate) fn with_registry<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
+/// 命令注册表访问器。**显式**取态(L3):有 `ctx` 的调用点传 `host_state(ctx)`。
+pub(crate) fn with_registry<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, JsValue>) -> T,
+) -> T {
+    f(&mut st.registry.borrow_mut())
+}
+
+/// **L3 过渡 shim**:给还拿不到宿主的调用点(async/send 闭包、`reload_all` 这类 Rust 侧入口)。
+///
+/// 为什么要有它:这些入口没有 `ctx`,而把 `&HostState` 沿它们传下去是 L3 第三批的设计活。
+/// 有了这个**独立名字**,隐式取态点从"每个访问器"收敛成"少数 `*_current` 调用" ——
+/// `grep -rn "_current(" helix-js/src` 就是 L4 的待办清单。
+pub(crate) fn with_registry_current<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.registry.borrow_mut()))
 }
 
@@ -333,7 +346,13 @@ pub(crate) fn with_command_docs<T>(f: impl FnOnce(&mut HashMap<String, String>) 
 }
 
 /// 访问 LOAD_STACK（加载中的脚本 key 栈；普通 Vec，随线程 drop）
-pub(crate) fn with_load_stack<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+/// 加载栈访问器。**显式**取态(L3)
+pub(crate) fn with_load_stack<T>(st: &HostState, f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    f(&mut st.load_stack.borrow_mut())
+}
+
+/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
+pub(crate) fn with_load_stack_current<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| {
         let s = &h.load_stack;
         f(&mut s.borrow_mut())
@@ -867,7 +886,16 @@ pub(crate) fn with_term_promises<T>(
 }
 
 /// 访问 ASYNC_PROMISES（异步 fs 的 promise 解析函数注册表）：同上（内容泄漏）
+/// 异步 Promise 表访问器。**显式**取态(L3)
 pub(crate) fn with_async_promises<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
+    f(&mut st.async_promises.borrow_mut())
+}
+
+/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
+pub(crate) fn with_async_promises_current<T>(
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.async_promises.borrow_mut()))

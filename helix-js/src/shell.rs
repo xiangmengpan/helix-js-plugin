@@ -719,7 +719,7 @@ pub(crate) fn js_read_file_async(
     let id = crate::state::next_async_id();
     // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
     crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
-    with_async_promises(|m| {
+    with_async_promises(crate::host::host_state(context), |m| {
         m.insert(id, resolving);
     });
     spawn_async_op(
@@ -752,7 +752,7 @@ pub(crate) fn js_write_file_async(
     let id = crate::state::next_async_id();
     // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
     crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
-    with_async_promises(|m| {
+    with_async_promises(crate::host::host_state(context), |m| {
         m.insert(id, resolving);
     });
     spawn_async_op(
@@ -780,7 +780,7 @@ pub(crate) fn js_stat_async(
     let id = crate::state::next_async_id();
     // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
     crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
-    with_async_promises(|m| {
+    with_async_promises(crate::host::host_state(context), |m| {
         m.insert(id, resolving);
     });
     spawn_async_op(
@@ -821,7 +821,7 @@ pub(crate) fn js_glob_async(
     let id = crate::state::next_async_id();
     // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
     crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
-    with_async_promises(|m| {
+    with_async_promises(crate::host::host_state(context), |m| {
         m.insert(id, resolving);
     });
     spawn_async_op(id, move || glob_matches(&pattern), AsyncEvent::FsGlob);
@@ -851,7 +851,9 @@ pub(crate) fn js_read_tree(
     let id = crate::state::next_async_id();
     // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
     crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
-    crate::state::with_async_promises(|m| m.insert(id, resolving));
+    crate::state::with_async_promises(crate::host::host_state(context), |m| {
+        m.insert(id, resolving)
+    });
     spawn_async_op(id, move || tree_matches(&path, depth), AsyncEvent::FsTree);
     Ok(promise.into())
 }
@@ -1031,7 +1033,7 @@ pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
     // .then/.catch 的续体在 `resolve` 里跑 ⇒ 属主必须是**注册这个 promise 的插件**
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::async_promise(id), || {
         crate::state::with_engine(|engine| {
-            let resolving = with_async_promises(|m| m.remove(&id));
+            let resolving = crate::state::with_async_promises_current(|m| m.remove(&id));
             let Some(resolving) = resolving else {
                 return Ok(());
             }; // 已 resolve / 未知 id → no-op（幂等）

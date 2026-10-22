@@ -73,7 +73,7 @@ pub(crate) fn js_register_command(
     } else if let Some(owner) = crate::permissions::current_declared() {
         crate::permissions::bind_command_owner(&name, &owner);
     }
-    with_registry(|r| r.insert(name, func));
+    with_registry(crate::host::host_state(context), |r| r.insert(name, func));
     Ok(JsValue::undefined())
 }
 
@@ -324,8 +324,10 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     if let Some(cached) = with_script_exports(|m| m.get(&key).cloned()) {
         return Ok(cached);
     }
-    if crate::state::with_load_stack(|s| s.iter().any(|k| k == &key)) {
-        let chain = crate::state::with_load_stack(|s| {
+    if crate::state::with_load_stack(crate::host::host_state(ctx), |s| {
+        s.iter().any(|k| k == &key)
+    }) {
+        let chain = crate::state::with_load_stack(crate::host::host_state(ctx), |s| {
             s.iter()
                 .chain([&key])
                 .cloned()
@@ -341,7 +343,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
     // (自己的根是"这次加载的结果",拿它做 prefer 只会查回同一个文件,等于没生效 ——
     //  这正是上一版没起作用的原因)。所以**先取父根**,再 push 自己。
     let parent_root = crate::state::current_load_root(crate::host::host_state(ctx));
-    crate::state::with_load_stack(|s| s.push(key.clone()));
+    crate::state::with_load_stack(crate::host::host_state(ctx), |s| s.push(key.clone()));
     // 与 key **同一处** push/pop,两栈因此始终等长(见 state::LOAD_ROOTS 注释)
     crate::state::push_load_root(crate::host::host_state(ctx), providing_root.clone());
     let result = (|| -> boa_engine::JsResult<JsValue> {
@@ -403,13 +405,15 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         }
         Ok(export)
     })();
-    crate::state::with_load_stack(|s| {
+    crate::state::with_load_stack(crate::host::host_state(ctx), |s| {
         s.pop();
     });
     crate::state::pop_load_root(crate::host::host_state(ctx));
     // 加载树结束(最外层)⇒ 脚本里的 define_config 已注册 schema,重建配置缓存。
     // 嵌套依赖不重复重建:外层结束前它们的 define_config 都跑完了。
-    if result.is_ok() && crate::state::with_load_stack(|s| s.is_empty()) {
+    if result.is_ok()
+        && crate::state::with_load_stack(crate::host::host_state(ctx), |s| s.is_empty())
+    {
         refresh_configs_after_load();
     }
     result
@@ -690,7 +694,7 @@ pub(crate) fn js_lazy(
                 ctx,
             )
             .map_err(|e| crate::js_err(format!("helix.lazy: {e}")))?;
-        with_registry(|r| r.insert(cmd, closure));
+        with_registry(crate::host::host_state(ctx), |r| r.insert(cmd, closure));
     }
     Ok(JsValue::undefined())
 }
@@ -800,7 +804,7 @@ pub(crate) fn js_run_command(
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("helix.run_command: name must be a string"))?;
     let command_ctx = parse_command_ctx(args.get(1).unwrap_or(&JsValue::undefined()), ctx)?;
-    let func = with_registry(|r| r.get(&name).cloned())
+    let func = with_registry(crate::host::host_state(ctx), |r| r.get(&name).cloned())
         .ok_or_else(|| crate::js_err(format!("helix.run_command: '{name}' is not registered")))?;
     let func = func
         .as_callable()
@@ -844,7 +848,9 @@ pub(crate) fn js_map(
         // 4a L1：宿主状态从**引擎**取回（原生回调拿不到 &mut JsHost）
         let id = crate::state::next_map_id(crate::host::host_state(context));
         let name = format!("__mapped_{id}");
-        with_registry(|r| r.insert(name.clone(), command_arg));
+        with_registry(crate::host::host_state(context), |r| {
+            r.insert(name.clone(), command_arg)
+        });
         // C-2 归属:映射函数是**命令**形态执行的(`run_command`),所以按命令绑定属主。
         // 不绑 ⇒ 这个隐藏命令没有属主 ⇒ 权限判定退到"加载期最后声明的插件"。
         if let Some(owner) = crate::permissions::current_owner() {
@@ -1040,7 +1046,7 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     crate::state::with_txn_depth(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次命令生命周期）
     crate::host::with_state_or_init(|st| crate::state::set_doc_snapshots(st, ctx.docs.clone()));
-    let func = with_registry(|r| r.get(name).cloned());
+    let func = crate::state::with_registry_current(|r| r.get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
     let func = func
@@ -2422,7 +2428,7 @@ pub fn loaded_scripts() -> Vec<String> {
 /// 清空所有插件状态（热重载用；id 计数器保留保证唯一性）。
 /// 注意：UI_REQUESTS/MESSAGES 不清——它们是命令边界 drain 的队列。
 fn reset_plugin_state() {
-    with_registry(|r| r.clear());
+    crate::state::with_registry_current(|r| r.clear());
     with_event_handlers(|h| h.clear());
     with_popups(|p| p.clear());
     crate::state::with_edits(|c| c.clear());
@@ -2436,7 +2442,7 @@ fn reset_plugin_state() {
     // 导出缓存与 pending 导出随插件状态重置（reload 后按名重读磁盘重跑）
     with_script_exports(|m| m.clear());
     // 加载栈防御性清空（正常路径已 pop；防止异常残留影响后续 reload）
-    crate::state::with_load_stack(|s| s.clear());
+    crate::state::with_load_stack_current(|s: &mut Vec<String>| s.clear());
     crate::host::with_state_or_init(crate::state::clear_load_roots);
     with_last_export(|l| *l = None);
     // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
