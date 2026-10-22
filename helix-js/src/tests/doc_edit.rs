@@ -312,7 +312,7 @@ fn batch_edit_transaction() {
     load_script(r#"helix.register_command("noop", () => {});"#).unwrap();
 
     // 1. 未开启事务:编辑入队后可取走
-    crate::state::with_edits(|e| {
+    crate::state::with_edits_current(|e: &mut Vec<crate::types::Edit>| {
         e.push(crate::types::Edit {
             doc: None,
             start: (0, 0),
@@ -324,7 +324,7 @@ fn batch_edit_transaction() {
 
     // 2. begin 后编辑入队,take_edits 返回空(积压)
     load_script("helix.begin_edit();").unwrap();
-    crate::state::with_edits(|e| {
+    crate::state::with_edits_current(|e: &mut Vec<crate::types::Edit>| {
         e.push(crate::types::Edit {
             doc: None,
             start: (0, 0),
@@ -365,7 +365,7 @@ fn batch_edit_transaction() {
 
     // 5. 嵌套 begin/end:深度计数,内层 end 不释放外层
     load_script("helix.begin_edit(); helix.begin_edit();").unwrap();
-    crate::state::with_edits(|e| {
+    crate::state::with_edits_current(|e: &mut Vec<crate::types::Edit>| {
         e.push(crate::types::Edit {
             doc: None,
             start: (0, 0),
@@ -383,7 +383,7 @@ fn batch_edit_transaction() {
 
     // 6. 多余 end:深度 0 饱和,不吞后续编辑
     load_script("helix.end_edit(); helix.end_edit(); helix.end_edit();").unwrap();
-    crate::state::with_edits(|e| {
+    crate::state::with_edits_current(|e: &mut Vec<crate::types::Edit>| {
         e.push(crate::types::Edit {
             doc: None,
             start: (0, 0),
@@ -410,11 +410,11 @@ fn batch_edit_transaction() {
     // 下一命令入口应复位 txn 深度并清队列(丢弃积压编辑)
     assert!(run_command("noop", &ctx).unwrap());
     assert_eq!(
-        crate::state::with_txn_depth(|d| *d),
+        crate::state::with_txn_depth_current(|d: &mut usize| *d),
         0,
         "命令入口应复位 txn 深度"
     );
-    crate::state::with_edits(|e| {
+    crate::state::with_edits_current(|e: &mut Vec<crate::types::Edit>| {
         e.push(crate::types::Edit {
             doc: None,
             start: (0, 0),

@@ -176,7 +176,18 @@ pub fn cache_configs(json: &str) {
 }
 
 /// 访问 EVENT_HANDLERS：同上（内容泄漏）
-pub(crate) fn with_event_handlers<T>(f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T) -> T {
+/// 事件处理器表访问器。**显式**取态(L3)
+pub(crate) fn with_event_handlers<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T,
+) -> T {
+    f(&mut st.event_handlers.borrow_mut())
+}
+
+/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
+pub(crate) fn with_event_handlers_current<T>(
+    f: impl FnOnce(&mut HashMap<String, Vec<JsValue>>) -> T,
+) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.event_handlers.borrow_mut()))
 }
 
@@ -213,7 +224,16 @@ pub(crate) fn get_component_state_json(st: &HostState, id: u64) -> Option<String
 }
 
 /// 访问 POPUPS：同上（内容泄漏）
-pub(crate) fn with_popups<T>(f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -> T) -> T {
+/// 弹窗/面板回调注册表。**显式**取态(L3)
+pub(crate) fn with_popups<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -> T,
+) -> T {
+    f(&mut st.popups.borrow_mut())
+}
+
+/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
+pub(crate) fn with_popups_current<T>(f: impl FnOnce(&mut HashMap<u64, PopupCallbacks>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.popups.borrow_mut()))
 }
 
@@ -291,20 +311,34 @@ pub(crate) fn with_node_handlers<T>(
 }
 
 /// 访问批量编辑事务深度(普通 usize,随线程 drop)
-pub(crate) fn with_txn_depth<T>(f: impl FnOnce(&mut usize) -> T) -> T {
+/// 编辑事务深度。**显式**取态(L3)
+pub(crate) fn with_txn_depth<T>(st: &HostState, f: impl FnOnce(&mut usize) -> T) -> T {
+    let d = &st.edit_txn_depth;
+    let mut v = d.get();
+    let out = f(&mut v);
+    d.set(v);
+    out
+}
+
+/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
+pub(crate) fn with_txn_depth_current<T>(f: impl FnOnce(&mut usize) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| {
         let d = &h.edit_txn_depth;
-        {
-            let mut v = d.get();
-            let out = f(&mut v);
-            d.set(v);
-            out
-        }
+        let mut v = d.get();
+        let out = f(&mut v);
+        d.set(v);
+        out
     })
 }
 
 /// 访问 CURRENT_EDITS（宿主字段;1b-3c 前为 thread_local）
-pub(crate) fn with_edits<T>(f: impl FnOnce(&mut Vec<Edit>) -> T) -> T {
+/// 待应用编辑队列。**显式**取态(L3)
+pub(crate) fn with_edits<T>(st: &HostState, f: impl FnOnce(&mut Vec<Edit>) -> T) -> T {
+    f(&mut st.current_edits.borrow_mut())
+}
+
+/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
+pub(crate) fn with_edits_current<T>(f: impl FnOnce(&mut Vec<Edit>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| {
         let e = &h.current_edits;
         f(&mut e.borrow_mut())

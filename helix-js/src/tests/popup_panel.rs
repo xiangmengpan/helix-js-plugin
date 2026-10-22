@@ -155,7 +155,10 @@ fn popup_exists_reports_live_layers() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
     load_script(r#"helix.open_popup({ render: () => [{ text: "x" }] });"#).unwrap();
-    let id = crate::state::with_popups(|p| p.keys().copied().max()).expect("open_popup 应登记一层");
+    let id = crate::host::with_state_or_init(|st| {
+        crate::state::with_popups(st, |p| p.keys().copied().max())
+    })
+    .expect("open_popup 应登记一层");
     assert!(crate::popup::popup_exists(id), "刚打开的层必须存在");
 
     // JS 侧读到的结论必须与 Rust 一致(用 throw 让不一致变成 Result::Err)

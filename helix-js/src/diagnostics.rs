@@ -5,7 +5,7 @@
 use boa_engine::object::builtins::JsFunction;
 use boa_engine::{Context, JsValue};
 
-use crate::state::{diagnostics_json, with_engine, with_event_handlers};
+use crate::state::{diagnostics_json, with_engine};
 
 /// 当前文档诊断:helix.diagnostics() → [{line, message, severity, code, source}]
 /// （只读快照；helix-term 只在**有人读**时写入（兴趣标记）；无缓存 → null）
@@ -26,7 +26,7 @@ pub(crate) fn js_diagnostics(
 /// 无 handler 时零开销返回（不碰 engine）。
 pub fn emit_lsp_diagnostics(doc_id: u64, diags_json: &str) {
     crate::init();
-    let handlers = with_event_handlers(|h| h.get("lsp-diagnostics").cloned());
+    let handlers = crate::state::with_event_handlers_current(|h| h.get("lsp-diagnostics").cloned());
     let Some(handlers) = handlers else { return };
     if handlers.is_empty() {
         return;

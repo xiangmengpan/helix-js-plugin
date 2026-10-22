@@ -227,7 +227,7 @@ pub(crate) fn js_open_popup(
     let id = crate::state::next_popup_id(crate::host::host_state(ctx));
     // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
     crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
-    with_popups(|p| {
+    with_popups(crate::host::host_state(ctx), |p| {
         p.insert(
             id,
             PopupCallbacks {
@@ -260,7 +260,7 @@ pub(crate) fn js_open_popup(
 /// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。
 pub fn unregister_component_render(id: u64) {
     crate::init();
-    crate::state::with_popups(|p| {
+    crate::state::with_popups_current(|p| {
         p.remove(&id);
     });
 }
@@ -307,7 +307,7 @@ pub(crate) fn js_set_component_render(
     }
     // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
     crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
-    with_popups(|p| {
+    with_popups(crate::host::host_state(ctx), |p| {
         p.insert(
             id,
             PopupCallbacks {
@@ -389,7 +389,7 @@ pub(crate) fn js_open_panel(
     crate::state::with_open_panels(|p| p.push(id));
     // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
     crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
-    with_popups(|p| {
+    with_popups(crate::host::host_state(ctx), |p| {
         p.insert(
             id,
             PopupCallbacks {
@@ -1210,7 +1210,7 @@ pub fn render_component_cached(
     signature: &str,
 ) -> Result<Content> {
     crate::init();
-    let pure = crate::state::with_popups(|p| p.get(&id).map(|cb| cb.pure).unwrap_or(false));
+    let pure = crate::state::with_popups_current(|p| p.get(&id).map(|cb| cb.pure).unwrap_or(false));
     if !pure {
         return render_component(id, width, height, focus);
     }
@@ -1220,7 +1220,7 @@ pub fn render_component_cached(
         "{width}x{height}{SEP}{}{SEP}{signature}",
         focus.unwrap_or("")
     );
-    let hit = crate::state::with_popups(|p| {
+    let hit = crate::state::with_popups_current(|p| {
         p.get(&id).and_then(|cb| match (&cb.last_key, &cb.last) {
             (Some(k), Some(c)) if k == &key => Some(c.clone()),
             _ => None,
@@ -1230,7 +1230,7 @@ pub fn render_component_cached(
         return Ok(content);
     }
     let content = render_popup(id, width, height, focus)?;
-    crate::state::with_popups(|p| {
+    crate::state::with_popups_current(|p| {
         if let Some(cb) = p.get_mut(&id) {
             cb.last_key = Some(key);
             cb.last = Some(content.clone());
@@ -1262,7 +1262,7 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
     // 上一次 render 忘调 `done()` / 画完又返回别的内容 ⇒ 脏 op 不能跨帧
     crate::draw::reset();
     crate::state::with_engine(|engine| {
-        let render = with_popups(|p| p.get(&id).map(|cb| cb.render.clone()))
+        let render = crate::state::with_popups_current(|p| p.get(&id).map(|cb| cb.render.clone()))
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
         let ctx_obj = ObjectInitializer::new(engine)
             .property(JsString::from("width"), width, Attribute::all())
@@ -1290,7 +1290,10 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
         // ⚠️ 只认 `null`:`undefined`(例如插件忘了 `return`)仍按原样报错 —— 否则"忘记返回"
         //    这类真 bug 会退化成**静默的陈旧 UI**,比报错难查得多。
         if value.is_null() {
-            return with_popups(|p| p.get(&id).and_then(|cb| cb.last.clone())).ok_or_else(|| {
+            return crate::host::with_state_or_init(|st| {
+                crate::state::with_popups(st, |p| p.get(&id).and_then(|cb| cb.last.clone()))
+            })
+            .ok_or_else(|| {
                 anyhow!(
                     "popup {id} render returned null, but there is no previous content \
                      to reuse —— 脏协议里 null 意为\"无变化\",首次(或内容被清空后)必须真的给出内容"
@@ -1298,10 +1301,12 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
             });
         }
         let content = content_from_value(&value, engine, id, &format!("popup {id}"))?;
-        with_popups(|p| {
-            if let Some(cb) = p.get_mut(&id) {
-                cb.last = Some(content.clone());
-            }
+        crate::host::with_state_or_init(|st| {
+            crate::state::with_popups(st, |p| {
+                if let Some(cb) = p.get_mut(&id) {
+                    cb.last = Some(content.clone());
+                }
+            })
         });
         Ok(content)
     })
@@ -1647,8 +1652,8 @@ fn parse_children(
 pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<PopupKeyResult> {
     crate::init();
     crate::state::with_engine(|engine| {
-        let callbacks =
-            with_popups(|p| p.get(&id).cloned()).ok_or_else(|| anyhow!("popup {id} not open"))?;
+        let callbacks = crate::state::with_popups_current(|p| p.get(&id).cloned())
+            .ok_or_else(|| anyhow!("popup {id} not open"))?;
         let Some(on_key) = callbacks.on_key else {
             return Ok(if key.name == "Esc" {
                 PopupKeyResult::Close
@@ -1691,7 +1696,7 @@ pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<Popup
 /// 无 onKey 的面板缺省全 Ignore（事件穿透），不调 popup_key（其缺省 Esc→Close 语义不适用于面板）。
 pub fn panel_has_onkey(id: u64) -> bool {
     crate::init();
-    with_popups(|p| p.get(&id).map(|cb| cb.on_key.is_some()).unwrap_or(false))
+    crate::state::with_popups_current(|p| p.get(&id).map(|cb| cb.on_key.is_some()).unwrap_or(false))
 }
 
 /// 面板/弹窗是否在 JS 注册表（存在但无 onKey 与完全丢失区分：僵尸面板检测用）
@@ -1705,7 +1710,7 @@ pub fn close_popup(id: u64) -> Result<()> {
     crate::init();
     crate::input::clear_popup_inputs(id);
     crate::state::with_engine(|engine| {
-        let callbacks = with_popups(|p| p.remove(&id));
+        let callbacks = crate::state::with_popups_current(|p| p.remove(&id));
         let Some(callbacks) = callbacks else {
             return Ok(());
         };

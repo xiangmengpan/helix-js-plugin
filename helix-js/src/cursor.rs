@@ -8,14 +8,14 @@ use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsString, JsValue};
 
-use crate::state::{with_engine, with_event_handlers};
+use crate::state::with_engine;
 use crate::types::{BusHeader, CursorMovePayload, EventPayload, SelectionChangePayload};
 
 /// 构造 {row, col, mode} 对象调用 "cursor-move" handler(参数 [docId, ev])。
 /// 返回 true=有 handler 被调用;false=无 handler/空(零开销,无副作用)。
 pub fn emit_cursor_move(doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
     crate::init();
-    let handlers = with_event_handlers(|h| h.get("cursor-move").cloned());
+    let handlers = crate::state::with_event_handlers_current(|h| h.get("cursor-move").cloned());
     let Some(handlers) = handlers else {
         return false;
     };
@@ -59,7 +59,8 @@ pub fn emit_selection_change(
     primary_col: usize,
 ) -> bool {
     crate::init();
-    let handlers = with_event_handlers(|h| h.get("selection-change").cloned());
+    let handlers =
+        crate::state::with_event_handlers_current(|h| h.get("selection-change").cloned());
     let Some(handlers) = handlers else {
         return false;
     };

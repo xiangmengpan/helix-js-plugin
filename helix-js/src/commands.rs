@@ -40,8 +40,8 @@ pub(crate) fn event_whitelist() -> Vec<&'static str> {
 }
 
 use crate::state::{
-    with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_popups,
-    with_registry, with_script_exports, with_statusline_hook, UI_REQUESTS,
+    with_buffer_icon_hook, with_engine, with_event_handlers, with_last_export, with_registry,
+    with_script_exports, with_statusline_hook, UI_REQUESTS,
 };
 
 use crate::types::*;
@@ -1039,11 +1039,11 @@ pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
     let prev_owner =
         crate::permissions::set_current_owner(crate::permissions::command_owner(name).as_deref());
     // 命令开始时清空编辑队列，避免跨命令残留
-    crate::state::with_edits(|c| c.clear());
+    crate::state::with_edits_current(|c| c.clear());
     crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
     // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
-    crate::state::with_txn_depth(|d| *d = 0);
+    crate::state::with_txn_depth_current(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次命令生命周期）
     crate::host::with_state_or_init(|st| crate::state::set_doc_snapshots(st, ctx.docs.clone()));
     let func = crate::state::with_registry_current(|r| r.get(name).cloned());
@@ -1100,7 +1100,9 @@ pub(crate) fn js_on(
     } else if let Some(owner) = crate::permissions::current_declared() {
         crate::permissions::bind_handler_owner(&name, &owner);
     }
-    with_event_handlers(|h| h.entry(name).or_default().push(handler));
+    with_event_handlers(crate::host::host_state(context), |h| {
+        h.entry(name).or_default().push(handler)
+    });
     Ok(JsValue::undefined())
 }
 
@@ -1221,14 +1223,14 @@ fn emit_event_impl(
     doc_id: Option<u64>,
 ) -> Result<()> {
     crate::init();
-    crate::state::with_edits(|c| c.clear());
+    crate::state::with_edits_current(|c| c.clear());
     crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
     // 复位事务深度：上一命令/事件未配对的 begin 在此丢弃（积压编辑随队列清空）
-    crate::state::with_txn_depth(|d| *d = 0);
+    crate::state::with_txn_depth_current(|d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次事件生命周期）
     crate::host::with_state_or_init(|st| crate::state::set_doc_snapshots(st, ctx.docs.clone()));
-    let handlers = with_event_handlers(|h| h.get(name).cloned());
+    let handlers = crate::state::with_event_handlers_current(|h| h.get(name).cloned());
     let Some(handlers) = handlers else {
         return Ok(());
     };
@@ -1314,10 +1316,10 @@ fn emit_event_impl(
             };
             args.push(payload.clone());
             let _: JsValue = func.call(&undefined, &args, engine).map_err(|e| {
-                crate::state::with_edits(|c| c.clear());
+                crate::state::with_edits_current(|c: &mut Vec<crate::types::Edit>| c.clear());
                 crate::state::with_decoration_requests(|c| c.clear());
                 crate::state::with_cursor_requests(|c| c.clear());
-                crate::state::with_txn_depth(|d| *d = 0); // 与正常入口复位一致:错误路径也恢复事务深度
+                crate::host::with_state_or_init(|st| crate::state::with_txn_depth(st, |d| *d = 0)); // 与正常入口复位一致:错误路径也恢复事务深度
                 anyhow!("event '{name}' handler failed: {e}")
             })?;
             crate::permissions::restore_owner(prev_owner);
@@ -1527,7 +1529,7 @@ pub fn emit_hook(name: &str, args: &[JsValue]) -> Option<JsValue> {
 /// 钩子调用的公共实现(B-1 后):`payload` 为 Some 时,它就是**追加在位置参数后的最后一个参数**。
 fn emit_hook_args(name: &str, args: &[JsValue], payload: Option<&EventPayload>) -> Option<JsValue> {
     crate::init();
-    let handlers = with_event_handlers(|h| h.get(name).cloned())?;
+    let handlers = crate::state::with_event_handlers_current(|h| h.get(name).cloned())?;
     if handlers.is_empty() {
         return None;
     }
@@ -1579,7 +1581,7 @@ pub fn emit_term_key(
     alt: bool,
 ) -> Option<TermKeyDecision> {
     crate::init();
-    let handlers = with_event_handlers(|h| h.get("term-key").cloned())?;
+    let handlers = crate::state::with_event_handlers_current(|h| h.get("term-key").cloned())?;
     if handlers.is_empty() {
         return None;
     }
@@ -1721,7 +1723,7 @@ pub fn emit_term_title(pty_id: u64, title: &str) {
 /// 组件事件(鼠标点击/滚动等):构造 {kind, x, y} 对象;插件返回 true → 消费该事件。
 pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
     crate::init();
-    let handlers = with_event_handlers(|h| h.get("component-event").cloned());
+    let handlers = crate::state::with_event_handlers_current(|h| h.get("component-event").cloned());
     let Some(handlers) = handlers else {
         return false;
     };
@@ -2039,7 +2041,7 @@ pub(crate) fn js_doc_insert(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
     let doc = edit_target(_this, context)?;
-    crate::state::with_edits(|c| {
+    crate::state::with_edits(crate::host::host_state(context), |c| {
         c.push(Edit {
             doc,
             start: (row, col),
@@ -2076,7 +2078,7 @@ pub(crate) fn js_doc_replace(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
     let doc = edit_target(_this, context)?;
-    crate::state::with_edits(|c| {
+    crate::state::with_edits(crate::host::host_state(context), |c| {
         c.push(Edit {
             doc,
             start: (sr, sc),
@@ -2109,7 +2111,7 @@ pub(crate) fn js_doc_delete(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(context)?;
     let doc = edit_target(_this, context)?;
-    crate::state::with_edits(|c| {
+    crate::state::with_edits(crate::host::host_state(context), |c| {
         c.push(Edit {
             doc,
             start: (sr, sc),
@@ -2230,19 +2232,19 @@ pub(crate) fn js_set_highlight(
 /// 取走并清空编辑队列（helix-term 在命令返回后消费）；事务开启时积压不消费
 pub fn take_edits() -> Vec<Edit> {
     crate::init();
-    if crate::state::with_txn_depth(|d| *d > 0) {
+    if crate::state::with_txn_depth_current(|d| *d > 0) {
         // 事务打开:积压不消费。未配对的 begin(不 end)在下一命令/事件入口
         // 随深度一起清队列,积压编辑丢弃(不崩),见规格 §4
         return Vec::new();
     }
-    crate::state::with_edits(std::mem::take)
+    crate::state::with_edits_current(std::mem::take)
 }
 
 /// 取走并清空装饰请求队列（helix-term 在命令返回后消费）；事务开启时积压不消费。
 /// 与 take_edits 同构：未配对的 begin 在下一命令/事件入口随队列清空丢弃。
 pub fn take_decorations() -> Vec<DecorationRequest> {
     crate::init();
-    if crate::state::with_txn_depth(|d| *d > 0) {
+    if crate::state::with_txn_depth_current(|d| *d > 0) {
         return Vec::new();
     }
     crate::state::with_decoration_requests(std::mem::take)
@@ -2254,7 +2256,7 @@ pub(crate) fn js_begin_edit(
     _args: &[JsValue],
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    crate::state::with_txn_depth(|d| *d += 1);
+    crate::state::with_txn_depth_current(|d| *d += 1);
     Ok(JsValue::undefined())
 }
 
@@ -2264,7 +2266,7 @@ pub(crate) fn js_end_edit(
     _args: &[JsValue],
     _ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    crate::state::with_txn_depth(|d| *d = d.saturating_sub(1));
+    crate::state::with_txn_depth_current(|d| *d = d.saturating_sub(1));
     Ok(JsValue::undefined())
 }
 
@@ -2429,12 +2431,12 @@ pub fn loaded_scripts() -> Vec<String> {
 /// 注意：UI_REQUESTS/MESSAGES 不清——它们是命令边界 drain 的队列。
 fn reset_plugin_state() {
     crate::state::with_registry_current(|r| r.clear());
-    with_event_handlers(|h| h.clear());
-    with_popups(|p| p.clear());
-    crate::state::with_edits(|c| c.clear());
+    crate::state::with_event_handlers_current(|h| h.clear());
+    crate::host::with_state_or_init(|st| crate::state::with_popups(st, |p| p.clear()));
+    crate::host::with_state_or_init(|st| crate::state::with_edits(st, |c| c.clear()));
     crate::state::with_decoration_requests(|c| c.clear());
     crate::state::with_cursor_requests(|c| c.clear());
-    crate::state::with_txn_depth(|d| *d = 0);
+    crate::host::with_state_or_init(|st| crate::state::with_txn_depth(st, |d| *d = 0));
     with_buffer_icon_hook(|h| *h = None);
     with_statusline_hook(|h| *h = None);
     crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));

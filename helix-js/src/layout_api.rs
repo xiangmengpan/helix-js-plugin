@@ -50,7 +50,7 @@ pub(crate) fn js_split(
             }
             let on_key = panel.get(JsString::from("onKey"), ctx)?;
             let size: u16 = obj_opt_u16(&panel, "size", ctx, "helix.split")?.unwrap_or(30);
-            with_popups(|p| {
+            with_popups(crate::host::host_state(ctx), |p| {
                 p.insert(
                     id,
                     PopupCallbacks {
