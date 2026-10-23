@@ -465,10 +465,16 @@ impl JsHost {
     }
 
     /// 在 `self` 上执行 `f`,期间 `self` 是活动宿主(嵌套时恢复)。
-    fn pump<R>(&mut self, f: impl FnOnce() -> R) -> R {
+    /// 在 `self` 上执行 `f`,期间 `self` 是活动宿主(嵌套时恢复)。
+    ///
+    /// **L4 最后一档**:闭包拿得到 `&HostState` —— 泵方法应优先用它调**显式**访问器,
+    /// 只有"引擎已借出、必须走隐式解析"的原生回调才依赖作用域内的 `ACTIVE`。
+    /// 这一步把"隐式解析"从"函数级"收敛到"泵作用域级",并为将来删 `ACTIVE`
+    /// (跨线程那部分改用 `Arc<HostState>`)留下单一改造点。
+    fn pump<R>(&mut self, f: impl FnOnce(&HostState) -> R) -> R {
         let prev = ACTIVE.with(|a| a.replace(Some(NonNull::from(&mut *self))));
         let _guard = ActiveGuard { prev };
-        f()
+        f(self.state())
     }
 
     /// 泵入口·运行插件命令(`helix.register_command` 注册的命令)
@@ -477,12 +483,12 @@ impl JsHost {
         name: &str,
         ctx: &crate::types::CommandContext,
     ) -> anyhow::Result<bool> {
-        self.pump(|| crate::commands::run_command(name, ctx))
+        self.pump(|_st| crate::commands::run_command(name, ctx))
     }
 
     /// 泵入口·兑现已就绪的 Promise 续体(`.then`/`.catch`)
     pub fn pump_jobs(&mut self) -> anyhow::Result<()> {
-        self.pump(crate::shell::pump_jobs)
+        self.pump(|_st| crate::shell::pump_jobs())
     }
 
     /// 泵入口·通知型事件(save / buffer-open / mode-change / theme-change …)
@@ -492,7 +498,7 @@ impl JsHost {
         ctx: &crate::types::CommandContext,
         extra: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_event(name, ctx, extra))
+        self.pump(|_st| crate::commands::emit_event(name, ctx, extra))
     }
 
     /// 泵入口·`cwd-change`（工作目录**真的**变了；见 `apply_directory_change`）
@@ -502,7 +508,7 @@ impl JsHost {
         prev: Option<&std::path::Path>,
         cwd: &std::path::Path,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_cwd_change(ctx, prev, cwd))
+        self.pump(|_st| crate::commands::emit_cwd_change(ctx, prev, cwd))
     }
 
     /// 泵入口·`doc-change`(带防抖窗口内合并的范围)
@@ -511,7 +517,7 @@ impl JsHost {
         ctx: &crate::types::CommandContext,
         changes: &[crate::types::DocChange],
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_doc_change(ctx, changes))
+        self.pump(|_st| crate::commands::emit_doc_change(ctx, changes))
     }
 
     /// 泵入口·`doc-change` 的**逐文档**版(显式带 doc id;后台 buffer 变更用)
@@ -521,7 +527,7 @@ impl JsHost {
         doc_id: u64,
         changes: &[crate::types::DocChange],
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_doc_change_for(ctx, doc_id, changes))
+        self.pump(|_st| crate::commands::emit_doc_change_for(ctx, doc_id, changes))
     }
 
     /// 泵入口·`startup`;`ctx` 是**启动后的当前 buffer**(处理器据此判断"有没有打开文件")
@@ -530,7 +536,7 @@ impl JsHost {
         ctx: &crate::types::CommandContext,
         open_paths: usize,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_startup(ctx, open_paths))
+        self.pump(|_st| crate::commands::emit_startup(ctx, open_paths))
     }
 
     /// 泵入口·`layout-change`;`kind` 是变更种类(`None` = 不携带)。
@@ -539,7 +545,7 @@ impl JsHost {
     /// 默认的**逐点**模式不用它 —— 变更点在 27 个布局原语里,拿不到宿主 ⇒ 走隐式解析
     /// (见 `with_host_ref` 的分类文档)。
     pub fn emit_layout_change(&mut self, kind: Option<&'static str>) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::emit_layout_change_kind(kind))
+        self.pump(|_st| crate::commands::emit_layout_change_kind(kind))
     }
 
     /// 泵入口·渲染组件(返回 `Content`)
@@ -587,7 +593,7 @@ impl JsHost {
         height: u16,
         focus: Option<&str>,
     ) -> anyhow::Result<crate::types::Content> {
-        self.pump(|| crate::popup::render_component(id, width, height, focus))
+        self.pump(|_st| crate::popup::render_component(id, width, height, focus))
     }
 
     /// 泵入口·带输入签名缓存的组件渲染
@@ -599,7 +605,7 @@ impl JsHost {
         focus: Option<&str>,
         sig: &str,
     ) -> anyhow::Result<crate::types::Content> {
-        self.pump(|| crate::popup::render_component_cached(id, width, height, focus, sig))
+        self.pump(|_st| crate::popup::render_component_cached(id, width, height, focus, sig))
     }
 
     /// 泵入口·渲染弹窗
@@ -610,7 +616,7 @@ impl JsHost {
         height: u16,
         focus: Option<&str>,
     ) -> anyhow::Result<crate::types::Content> {
-        self.pump(|| crate::popup::render_popup(id, width, height, focus))
+        self.pump(|_st| crate::popup::render_popup(id, width, height, focus))
     }
 
     /// 泵入口·把按键送给节点回调(`onKey`)
@@ -620,7 +626,7 @@ impl JsHost {
         node_id: &str,
         key: &str,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::input::dispatch_input_key(popup_id, node_id, key))
+        self.pump(|_st| crate::input::dispatch_input_key(popup_id, node_id, key))
     }
 
     /// 泵入口·把粘贴文本送给节点回调
@@ -630,7 +636,7 @@ impl JsHost {
         node_id: &str,
         text: &str,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::input::dispatch_input_paste(popup_id, node_id, text))
+        self.pump(|_st| crate::input::dispatch_input_paste(popup_id, node_id, text))
     }
 
     /// 泵入口·把节点事件(`onPress`/`onChange`)送给回调
@@ -640,7 +646,7 @@ impl JsHost {
         node_id: &str,
         key: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::dispatch_node_event(view_id, node_id, key))
+        self.pump(|_st| crate::commands::dispatch_node_event(view_id, node_id, key))
     }
 
     /// 泵入口·弹窗/面板节点按键(`onKey` + 节点路由),返回插件决定
@@ -650,12 +656,12 @@ impl JsHost {
         key: &crate::types::PluginKey,
         ctx: &crate::types::CommandContext,
     ) -> anyhow::Result<crate::types::PopupKeyResult> {
-        self.pump(|| crate::popup::popup_key(id, key, ctx))
+        self.pump(|_st| crate::popup::popup_key(id, key, ctx))
     }
 
     /// 泵入口·组件节点上的鼠标/输入事件;返回 true = 插件消费了该事件
     pub fn emit_component_event(&mut self, id: u64, kind: &str, x: u16, y: u16) -> bool {
-        self.pump(|| crate::commands::emit_component_event(id, kind, x, y))
+        self.pump(|_st| crate::commands::emit_component_event(id, kind, x, y))
     }
 
     /// 泵入口·终端按键钩子(`term-key`),返回决策
@@ -667,27 +673,27 @@ impl JsHost {
         ctrl: bool,
         alt: bool,
     ) -> Option<crate::commands::TermKeyDecision> {
-        self.pump(|| crate::commands::emit_term_key(pty_id, code, shift, ctrl, alt))
+        self.pump(|_st| crate::commands::emit_term_key(pty_id, code, shift, ctrl, alt))
     }
 
     /// 泵入口·终端显示模式通知(`term-mode-change`)
     pub fn emit_term_mode(&mut self, pty_id: u64, mode: &str) {
-        self.pump(|| crate::commands::emit_term_mode(pty_id, mode))
+        self.pump(|_st| crate::commands::emit_term_mode(pty_id, mode))
     }
 
     /// 泵入口·终端尺寸通知(`term-resize`)
     pub fn emit_term_resize(&mut self, pty_id: u64, rows: u16, cols: u16) {
-        self.pump(|| crate::commands::emit_term_resize(pty_id, rows, cols))
+        self.pump(|_st| crate::commands::emit_term_resize(pty_id, rows, cols))
     }
 
     /// 泵入口·终端标题通知(`term-title`)
     pub fn emit_term_title(&mut self, pty_id: u64, title: &str) {
-        self.pump(|| crate::commands::emit_term_title(pty_id, title))
+        self.pump(|_st| crate::commands::emit_term_title(pty_id, title))
     }
 
     /// 泵入口·终端开门通知(`term-open`)
     pub fn emit_term_open(&mut self, pty_id: u64, cmd: &str) {
-        self.pump(|| crate::commands::emit_term_open(pty_id, cmd))
+        self.pump(|_st| crate::commands::emit_term_open(pty_id, cmd))
     }
 
     /// 泵入口·兑现 term 事件(worker 回投)对应的 Promise
@@ -696,7 +702,7 @@ impl JsHost {
         id: u64,
         event: crate::types::TermEvent,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::shell::resolve_term_event(id, event))
+        self.pump(|_st| crate::shell::resolve_term_event(id, event))
     }
 
     /// 泵入口·兑现异步 fs 事件对应的 Promise
@@ -705,7 +711,7 @@ impl JsHost {
         id: u64,
         event: crate::types::AsyncEvent,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::shell::resolve_async_event(id, event))
+        self.pump(|_st| crate::shell::resolve_async_event(id, event))
     }
 
     /// 泵入口·兑现 LSP 请求对应的 Promise
@@ -714,7 +720,7 @@ impl JsHost {
         id: u64,
         result: Result<Option<String>, String>,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::lsp::resolve_lsp(id, result))
+        self.pump(|_st| crate::lsp::resolve_lsp(id, result))
     }
 
     /// 泵入口·按**源码**加载脚本(启动引导 `init.js` 用)
@@ -723,27 +729,27 @@ impl JsHost {
     /// 它**不能**收宿主 —— 它是在引擎已借出、正在执行 JS 的时候被调用的(那正是
     /// "重入拿不到 `&mut JsHost`"的设计后果)。所以宿主显式只覆盖**Rust 侧**的加载入口。
     pub fn load_script(&mut self, src: &str) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::load_script(src))
+        self.pump(|_st| crate::commands::load_script(src))
     }
 
     /// 泵入口·按**名字**加载脚本(名字用于报错定位与热重载记录)
     pub fn load_script_named(&mut self, name: &str, src: &str) -> anyhow::Result<()> {
-        self.pump(|| crate::commands::load_script_named(name, src))
+        self.pump(|_st| crate::commands::load_script_named(name, src))
     }
 
     /// 泵入口·`pane-mode-change`(平级模式切换;与 `helix.pane_mode.*` 快照同一来源)
     pub fn emit_pane_mode_change(&mut self, mode: &str) {
-        self.pump(|| crate::commands::emit_pane_mode_change(mode));
+        self.pump(|_st| crate::commands::emit_pane_mode_change(mode));
     }
 
     /// 泵入口·缓冲区行图标(`helix.set_bufferline_icon`;返回值给渲染用)
     pub fn bufferline_icon(&mut self, path: Option<&str>) -> Option<String> {
-        self.pump(|| crate::popup::bufferline_icon(path))
+        self.pump(|_st| crate::popup::bufferline_icon(path))
     }
 
     /// 泵入口·光标移动事件(`cursor-move`)
     pub fn emit_cursor_move(&mut self, doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
-        self.pump(|| crate::cursor::emit_cursor_move(doc_id, row, col, mode))
+        self.pump(|_st| crate::cursor::emit_cursor_move(doc_id, row, col, mode))
     }
 
     /// 泵入口·选区变化事件(`selection-change`)
@@ -754,7 +760,9 @@ impl JsHost {
         primary_row: usize,
         primary_col: usize,
     ) -> bool {
-        self.pump(|| crate::cursor::emit_selection_change(doc_id, count, primary_row, primary_col))
+        self.pump(|_st| {
+            crate::cursor::emit_selection_change(doc_id, count, primary_row, primary_col)
+        })
     }
 
     // ── 快照/配置写入（P4-1：显式宿主；原先只能走 `with_host_ref_or_init`）──
@@ -797,7 +805,7 @@ impl JsHost {
 
     /// 泵入口·热重载:重跑已加载的全部脚本(`:plugin-reload` / `:plugin reload`)
     pub fn reload_all(&mut self) -> anyhow::Result<()> {
-        self.pump(crate::commands::reload_all)
+        self.pump(|_st| crate::commands::reload_all())
     }
 
     // 注意:这里**没有** `picker_invoke_action` 的泵版本。
@@ -812,7 +820,7 @@ impl JsHost {
         source: &str,
         payload: &[String],
     ) -> Option<(String, usize)> {
-        self.pump(|| crate::picker::invoke_preview(source, payload))
+        self.pump(|_st| crate::picker::invoke_preview(source, payload))
     }
 
     /// 泵入口·picker `onKey` 钩子;返回 true = 插件消费了该键
@@ -827,7 +835,9 @@ impl JsHost {
         query: &str,
         selected: i64,
     ) -> bool {
-        self.pump(|| crate::picker::picker_key_hook(source, key, ctrl, alt, shift, query, selected))
+        self.pump(|_st| {
+            crate::picker::picker_key_hook(source, key, ctrl, alt, shift, query, selected)
+        })
     }
 
     /// 泵入口·把 `helix.server.rows` 的行数据回投给 JS 回调
@@ -836,17 +846,17 @@ impl JsHost {
         id: u64,
         rows: Vec<crate::types::ServerRow>,
     ) -> anyhow::Result<()> {
-        self.pump(|| crate::server_rows::deliver(id, rows))
+        self.pump(|_st| crate::server_rows::deliver(id, rows))
     }
 
     /// 泵入口·兑现 fs-watcher 事件对应的 JS 回调(`watch::resolve_watch_events`)
     pub fn resolve_watch_events(&mut self) -> anyhow::Result<()> {
-        self.pump(crate::watch::resolve_watch_events)
+        self.pump(|_st| crate::watch::resolve_watch_events())
     }
 
     /// 泵入口·兑现 server 后台任务事件对应的 JS 回调(`server_tasks::resolve_events`)
     pub fn resolve_server_task_events(&mut self) -> anyhow::Result<()> {
-        self.pump(crate::server_tasks::resolve_events)
+        self.pump(|_st| crate::server_tasks::resolve_events())
     }
 
     /// 泵入口·状态栏插件钩子(`helix.set_statusline`)
@@ -854,7 +864,7 @@ impl JsHost {
         &mut self,
         ctx: &crate::types::StatuslineCtx,
     ) -> Option<Vec<crate::types::StatuslinePart>> {
-        self.pump(|| crate::popup::statusline_parts(ctx))
+        self.pump(|_st| crate::popup::statusline_parts(ctx))
     }
 }
 
