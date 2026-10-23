@@ -1,3 +1,4 @@
+use crate::host::HostState;
 use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::{JsObject, ObjectInitializer};
@@ -259,6 +260,13 @@ pub(crate) fn js_open_popup(
 pub fn unregister_component_render(id: u64) {
     crate::init();
     crate::state::with_popups_current(|p| {
+        p.remove(&id);
+    });
+}
+
+/// **显式变体**(L4-③):调用方自带 `&HostState`。
+pub fn unregister_component_render_with(st: &HostState, id: u64) {
+    crate::state::with_popups(st, |p| {
         p.remove(&id);
     });
 }

@@ -1,3 +1,4 @@
+use crate::host::HostState;
 use anyhow::{anyhow, Result};
 use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::object::builtins::{JsArray, JsFunction, JsPromise};
@@ -560,7 +561,12 @@ pub(crate) fn js_term_kill(
 /// 未知 id / worker 已退出 → Err。Kill 后 worker 的 Exit 事件照常发（回调幂等）。
 /// 不调 init()：可能从命令执行（CONTEXT 已借用）里触发，且 TERM_WORKERS 是普通 thread_local。
 pub fn term_kill(id: u64) -> Result<()> {
-    crate::host::with_state_or_init(|st| crate::state::unregister_term(st, id));
+    crate::host::with_state_or_init(|st| term_kill_with(st, id))
+}
+
+/// **显式变体**(L4-③):调用方自己有 `&HostState`(如 `PluginTerminal` 在构造时捕获的)。
+pub fn term_kill_with(st: &HostState, id: u64) -> Result<()> {
+    crate::state::unregister_term(st, id);
     let sender = crate::state::with_term_workers(|m| m.remove(&id))
         .ok_or_else(|| anyhow!("term_kill: unknown id"))?;
     sender

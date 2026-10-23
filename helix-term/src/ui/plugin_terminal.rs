@@ -950,9 +950,19 @@ impl PluginTerminal {
 impl Drop for PluginTerminal {
     fn drop(&mut self) {
         // 关闭面板（Esc/层移除）→ 杀 pty；未知 id（已退出）静默
-        let _ = helix_js::term_kill(self.pty_id);
-        helix_js::unregister_component_state_current(self.view_id);
-        helix_js::unregister_component_render(self.view_id);
+        //
+        // L4-③ 的**例外**,而且原因很硬:`PluginTerminal` 在 `job::dispatch_blocking` 的
+        // **`Send` 闭包**里构造 ⇒ 它必须 `Send`;而"构造期捕获 `Rc<HostState>`"会让它
+        // 变成 `!Send`(实测编译错误:`Rc<HostState> cannot be sent between threads safely`)。
+        // ⇒ `Drop` 里改用 **L4-③ 的唯一捕获入口** `state_handle()` 取一份状态,
+        // 再走**显式**访问器。这样这一处不再是"随手摸 `ACTIVE`",而是"在一个命名入口
+        // 捕获一次,然后用显式 API"—— 与 UI 上下文的做法同源,只是捕获时机推迟到 drop。
+        let Some(st) = helix_js::host::state_handle() else {
+            return; // 没有宿主 ⇒ 也没有 JS 侧登记需要撤销
+        };
+        let _ = helix_js::term_kill_with(&st, self.pty_id);
+        helix_js::unregister_component_state(&st, self.view_id);
+        helix_js::unregister_component_render_with(&st, self.view_id);
     }
 }
 
@@ -988,7 +998,10 @@ impl Component for PluginTerminal {
             "scroll_offset": self.grid.scroll_offset(),
         })
         .to_string();
-        helix_js::register_component_state_current(self.view_id, move |_| snap.clone());
+        // L4-③:render 有 `cx` ⇒ 显式取态(没有宿主就没人读这个快照)
+        if let Some(st) = cx.js.as_deref().map(|h| h.state()) {
+            helix_js::register_component_state(st, self.view_id, move |_| snap.clone());
+        }
         // 标题条：JS 视图回调优先(顶部 1 行,网格下移);无回调 → 无标题条(现状)
         let has_view = helix_js::has_component_render(self.view_id);
         if has_view {
