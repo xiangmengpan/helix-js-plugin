@@ -4481,15 +4481,21 @@ pub(crate) fn run_plugin_command(
 
     // §12.0:把键入参数交给 JS 命令(独立通道,不动 CommandContext)。
     // **先取结果再清空** —— 这样即使下面各分支 early return,也不会漏清。
-    helix_js::set_command_args_current(args.to_vec());
-    // D-2 **泵入口**:有宿主就走 `&mut JsHost`(泵方法拿独占借用 ⇒ 重入 = 编译错),
-    // 没有宿主才退回那层唯一的 legacy 隐式解析。两者语义相同(后者靠 ACTIVE 找到
-    // 同一个宿主),区别只在“库层面能不能证明排他”。
+    // L4-③:参数通道也走**显式**宿主(`cx.js` 就在手边)。
+    if let Some(st) = cx.js.as_deref().map(|h| h.state()) {
+        helix_js::set_command_args(st, args.to_vec());
+    }
+    // D-2 **泵入口**:有宿主就走 `&mut JsHost`。
+    // **没有宿主 ⇒ 没有 JS 命令可派发** ⇒ `Ok(false)`(调用方据此报 "no such command")。
+    // 早先这里退回隐式 `helix_js::run_command`:那条路会**顺手建一个空宿主**,
+    // 却永远跑不到任何已注册命令 —— 纯属噪声,现已删掉。
     let res = match cx.with_js(|host| host.run_command(name, &ctx)) {
         Some(res) => res,
-        None => helix_js::run_command(name, &ctx),
+        None => Ok(false),
     };
-    helix_js::clear_command_args_current();
+    if let Some(st) = cx.js.as_deref().map(|h| h.state()) {
+        helix_js::clear_command_args(st);
+    }
     match res {
         Ok(true) => {
             let msgs = helix_js::take_messages();
@@ -5380,11 +5386,11 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         return Err(anyhow!("usage: plugin-load <path>"));
     };
     let src = std::fs::read_to_string(path).map_err(|e| anyhow!("failed to read '{path}': {e}"))?;
-    // D-2 收尾:加载脚本**就是执行 JS** ⇒ 有宿主走泵入口(独占借用),无宿主退回 legacy
-    let loaded = match cx.with_js(|host| host.load_script_named(path, &src)) {
-        Some(r) => r,
-        None => helix_js::load_script_named(path, &src),
-    };
+    // D-2 收尾:加载脚本**就是执行 JS** ⇒ 有宿主走泵入口(独占借用)。
+    // 没有宿主 ⇒ 没有地方执行脚本 ⇒ 明确报错(不再退回隐式路径,那会顺手建一个空宿主)。
+    let loaded = cx
+        .with_js(|host| host.load_script_named(path, &src))
+        .ok_or_else(|| anyhow!("plugin-load: 需要 JS 宿主"))?;
     loaded.map_err(|e| anyhow!("plugin-load: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
@@ -5542,10 +5548,10 @@ fn term_native(
             helix.term_feed(tid, "hello from pty");
         });
     "#;
-    let loaded = match cx.with_js(|host| host.load_script_named("term-native.js", src)) {
-        Some(r) => r,
-        None => helix_js::load_script_named("term-native.js", src),
-    };
+    // 没有宿主 ⇒ 连脚本都没处加载(这个演示命令依赖 JS 路径)
+    let loaded = cx
+        .with_js(|host| host.load_script_named("term-native.js", src))
+        .ok_or_else(|| anyhow!("term-native: 需要 JS 宿主"))?;
     loaded.map_err(|e| anyhow!("term-native: {e}"))?;
     let ctx = CommandContext {
         docs: vec![],
@@ -5554,7 +5560,9 @@ fn term_native(
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    helix_js::run_command("__term_native", &ctx).map_err(|e| anyhow!("term-native: {e}"))?;
+    cx.with_js(|host| host.run_command("__term_native", &ctx))
+        .ok_or_else(|| anyhow!("term-native: 需要 JS 宿主"))?
+        .map_err(|e| anyhow!("term-native: {e}"))?;
     let msgs = helix_js::take_messages();
     if !msgs.is_empty() {
         cx.editor.set_status(msgs.join(" "));

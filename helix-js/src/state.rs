@@ -1472,51 +1472,6 @@ pub fn register_component_state_current(id: u64, f: impl Fn(u64) -> String + 'st
     }
 }
 
-pub fn set_command_args_current(args: Vec<String>) {
-    {
-        crate::host::with_host_ref_or_init(|h| {
-            let a = &h.pending_command_args;
-            *a.borrow_mut() = args
-        });
-    }
-}
-
-pub fn clear_command_args_current() {
-    {
-        crate::host::with_host_ref_or_init(|h| {
-            let a = &h.pending_command_args;
-            a.borrow_mut().clear()
-        });
-    }
-}
-
-pub fn cache_layout_current(json: &str) {
-    {
-        crate::host::with_host_ref_or_init(|h| *h.layout.borrow_mut() = json.to_string());
-    }
-}
-
-pub fn cache_pane_mode_current(json: &str) {
-    {
-        crate::host::with_host_ref_or_init(|h| *h.pane_mode.borrow_mut() = json.to_string());
-    }
-}
-
-pub fn cache_panes_current(json: &str) {
-    {
-        crate::host::with_host_ref_or_init(|h| *h.panes.borrow_mut() = json.to_string());
-    }
-}
-
-pub fn statusline_replaces_current() -> bool {
-    {
-        crate::host::with_host_ref_or_init(|h| h.statusline_replace.get())
-    }
-}
-
-pub fn statusline_zones_current() -> [u16; 3] {
-    crate::host::with_host_ref_or_init(|h| *h.statusline_zones.borrow())
-}
 pub fn set_plugin_roots_current(roots: Vec<PathBuf>) {
     crate::host::with_host_ref_or_init(|h| {
         let leaked: &'static [PathBuf] = Box::leak(roots.into_boxed_slice());
