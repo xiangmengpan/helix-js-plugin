@@ -307,25 +307,34 @@ grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*
 ⇒ 改成在 `Drop` 里用 **`host::state_handle()`**（L4-③ 的唯一捕获入口）取一份状态，
 再走**显式**访问器。机制同源，只是捕获时机推迟到 drop。
 
-#### 剩下的：`pump()` 作用域（L4 最后一档）
+#### ② 跨线程这一档：**实测不需要 `Arc<HostState>` + `Mutex` 化**（2026-10-22 评估）
 
-`helix_js::run_command` 等自由函数仍在用隐式解析，但它们的**唯一入口是 `JsHost::pump()`** ——
-`pump` 把 `ACTIVE` 设为**该次调用作用域内**有效。也就是说这部分隐式解析**不是全局的**，
-而是"泵作用域内的实现细节"。
+先前的估计（"跨线程路径要 `Arc<HostState>`，`RefCell` 得换 `Mutex`"）**不成立**。实测：
 
-要把它也显式化，做法是把 `pump` 的签名从
+| 测量项 | 结果 |
+|---|---|
+| `thread::spawn` 闭包总数（helix-js 生产代码） | **9** |
+| 其中**体内触达 `HostState`** 的 | **0**（另 2 处命中在 `host.rs` 的 `#[cfg(test)]` 里） |
+| worker 线程实际用到的东西 | `js_dbg`（env + `eprintln`）、线程局部通道 `TERM_EVENTS` / `TERM_WORKERS` / `NEXT_ASYNC_ID` / `ASYNC_EVENTS` / `LSP_RESULTS`、以及**构造时传入的 `mpsc::Sender/Receiver`** |
+| promise / 回调表（`async_promises` / `term_promises` / `lsp_promises` / watch / server rows） | 只在**主线程**读写：注册在 `js_*` 入口，兑现在泵循环的 `resolve_*` |
 
-```rust
-fn pump<R>(&mut self, f: impl FnOnce() -> R) -> R
-```
-改成
-```rust
-fn pump<R>(&mut self, f: impl FnOnce(&HostState) -> R) -> R
-```
-（`ACTIVE` 仍保留给**引擎已借出**的原生回调），然后把 37 个泵方法里"只读状态"的那批
-（`take_lsp_requests` / `snapshot_wanted` / `snapshot_stats` / `cache_*` …）改成用传入的
-`&HostState` 调显式访问器。**跨线程通道 / `Send` 闭包**（worker 完成回调、`term-title`）
-无论如何都需要 `Arc<HostState>` + `Mutex` 化，属于另一档。
+结论：跨线程通信**已经**是 `mpsc` 通道 + 进程级 thread_local，**不经过 `HostState`**。
+所以 ② 的工程量 ≈ **0**；顺带也免掉了"`RefCell` 换 `Mutex` 会把重入 panic 变成死锁"这个风险
+（那才是这一档原本最贵的地方）。
+
+#### 剩下的唯一一档：`pump()` 作用域（④）
+
+`pump()` 已把 `&HostState` 交给闭包（`8e145dc17`）。剩下要做的是**callee 先行**：
+
+| 测量项 | 结果 |
+|---|---|
+| `pump` 里调用的 callee | **35** 个 |
+| 这些 callee 体内**直接的隐式访问点**（`*_current` / `with_state_or_init` / `host_state`） | **32** 处 |
+| 集中度 | `commands::run_command` **6** · `popup::render_component_cached` **3** · `popup::render_popup` **3** · `shell::resolve_term_event` **3** · 其余 1–2 |
+
+即：把 `pump` 的 `_st` 换成 `st` 之前，先给这 35 个 callee 各加一个 `(st: &HostState, …)` 变体，
+再逐个把泵方法从 `|_st|` 改成 `|st|`。按 32 个访问点算，这是**一批可完成的机械改造**
+（比 3b 的 140 处、L3 的 213 处都小），做完之后 `ACTIVE` 就只剩"引擎已借出的原生回调"这一个用途。
 
 ### 建议
 
