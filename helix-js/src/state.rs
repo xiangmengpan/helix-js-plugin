@@ -978,22 +978,12 @@ pub(crate) fn with_terms<T>(
     f(&mut st.terms.borrow_mut())
 }
 
-pub(crate) fn with_terms_current<T>(f: impl FnOnce(&mut HashMap<u64, TermCallbacks>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.terms.borrow_mut()))
-}
-
 /// 访问 TERM_PROMISES（run_async 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_term_promises<T>(
     st: &HostState,
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
     f(&mut st.term_promises.borrow_mut())
-}
-
-pub(crate) fn with_term_promises_current<T>(
-    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
-) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.term_promises.borrow_mut()))
 }
 
 /// 访问 ASYNC_PROMISES（异步 fs 的 promise 解析函数注册表）：同上（内容泄漏）

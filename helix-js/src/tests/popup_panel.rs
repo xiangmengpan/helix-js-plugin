@@ -223,7 +223,7 @@ fn popup_lifecycle() {
     };
     assert_eq!(id, 1); // 自增从 1 开始
 
-    let lines = render_popup(id, 40, 10, None).unwrap();
+    let lines = crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap();
     assert_eq!(
         lines,
         Content::Lines(vec![
@@ -257,7 +257,8 @@ fn popup_lifecycle() {
 
     close_popup(id).unwrap();
     assert_eq!(take_messages(), vec!["closed:null"]);
-    assert!(render_popup(id, 40, 10, None).is_err()); // 已关闭，注册表移除
+    assert!(crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).is_err());
+    // 已关闭，注册表移除
 }
 
 #[test]
@@ -299,7 +300,7 @@ fn popup_default_keys_and_validation() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
         _ => unreachable!("expected OpenPopup"),
     };
-    assert!(render_popup(id, 40, 10, None).is_err());
+    assert!(crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).is_err());
     close_popup(id).unwrap();
 
     // 参数缺失/类型错误 → JS 报错
@@ -370,7 +371,7 @@ fn popup_styled_lines() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
         _ => unreachable!("expected OpenPopup"),
     };
-    let lines = render_popup(id, 40, 10, None).unwrap();
+    let lines = crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap();
     assert_eq!(
         lines,
         Content::Lines(vec![
@@ -386,7 +387,7 @@ fn popup_styled_lines() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
         _ => unreachable!("expected OpenPopup"),
     };
-    assert!(render_popup(id, 40, 10, None).is_err());
+    assert!(crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).is_err());
     close_popup(id).unwrap();
 }
 
@@ -595,7 +596,8 @@ fn node_events_and_focusables() {
         other => panic!("expected OpenPopup, got {other:?}"),
     };
     // render 传 focus → JS render(focus, ctx) 收到（focus 样式分支由 JS 处理，这里验证渲染不崩 + focusables 收集）
-    let content = render_popup(id, 60, 20, Some("btn1")).unwrap();
+    let content =
+        crate::host::with_state_or_init(|st| render_popup(st, id, 60, 20, Some("btn1"))).unwrap();
     let mut focusables = Vec::new();
     if let Content::Tree(node) = &content {
         focusable_node_ids(node, &mut focusables);
@@ -652,7 +654,7 @@ fn component_nodes() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => *id,
         _ => unreachable!("expected OpenPopup"),
     };
-    match render_popup(id, 40, 10, None).unwrap() {
+    match crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap() {
         Content::Tree(root) => {
             assert!(matches!(&root, CompNode::Col { .. }));
             match &root {
@@ -676,7 +678,7 @@ fn component_nodes() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
         _ => unreachable!("expected OpenPopup"),
     };
-    assert!(render_popup(id, 40, 10, None).is_err());
+    assert!(crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).is_err());
     close_popup(id).unwrap();
 }
 
@@ -705,7 +707,7 @@ fn el_new_opts_parse() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => *id,
         _ => unreachable!("expected OpenPopup"),
     };
-    match render_popup(id, 40, 10, None).unwrap() {
+    match crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap() {
         Content::Tree(CompNode::Col { children, .. }) => {
             assert_eq!(children.len(), 6);
             assert!(matches!(
@@ -755,7 +757,7 @@ fn el_new_opts_parse() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
         _ => unreachable!("expected OpenPopup"),
     };
-    assert!(render_popup(id, 40, 10, None).is_err());
+    assert!(crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).is_err());
     close_popup(id).unwrap();
     // 类型错误：wrap 传数字 → Err
     load_script(r#"helix.open_popup({ render: () => helix.el("text", "x", { wrap: 1 }) });"#)
@@ -764,7 +766,7 @@ fn el_new_opts_parse() {
         UiRequest::OpenPopup(OpenPopupReq { id, .. }) => id,
         _ => unreachable!("expected OpenPopup"),
     };
-    assert!(render_popup(id, 40, 10, None).is_err());
+    assert!(crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).is_err());
     close_popup(id).unwrap();
 }
 
@@ -798,12 +800,12 @@ out.push(line);
     .unwrap();
     let (w, h) = (80u16, 30u16);
     for _ in 0..30 {
-        let _ = render_component(0, w, h, None);
+        let _ = crate::host::with_state_or_init(|st| render_component(st, 0, w, h, None));
     }
     const N: u32 = 300;
     let t0 = std::time::Instant::now();
     for _ in 0..N {
-        let c = render_component(0, w, h, None).unwrap();
+        let c = crate::host::with_state_or_init(|st| render_component(st, 0, w, h, None)).unwrap();
         std::hint::black_box(&c);
     }
     let el = t0.elapsed();
@@ -915,7 +917,8 @@ fn component_render_registration() {
     // 注册后 render_component 可读
     load_script(r#"helix.set_component_render(3, () => [{ type: "text", text: "hi-view" }]);"#)
         .unwrap();
-    let content = render_component(3, 10, 1, None).unwrap();
+    let content =
+        crate::host::with_state_or_init(|st| render_component(st, 3, 10, 1, None)).unwrap();
     // 数组返回 → Lines;组件树对象 → Tree;两种都支持(与 popup render 同语义)
     let joined = match &content {
         Content::Lines(lines) => lines
@@ -927,11 +930,11 @@ fn component_render_registration() {
     };
     assert_eq!(joined, "hi-view", "set_component_render 回调内容可读");
     // 未注册 → Err
-    assert!(render_component(999, 10, 1, None).is_err());
+    assert!(crate::host::with_state_or_init(|st| render_component(st, 999, 10, 1, None)).is_err());
 }
 
 /// `has_component_render` 是给"每帧问一句有没有渲染器"用的 ⇒ 它**不得调用 JS 回调**
-/// (旧做法 `render_component(id,1,1,None).is_ok()` 会真的渲染一次)。这里用副作用计数器钉死。
+/// (旧做法 `crate::host::with_state_or_init(|st| render_component(st, id,1,1,None)).is_ok()` 会真的渲染一次)。这里用副作用计数器钉死。
 #[test]
 fn has_component_render_probes_without_calling_js() {
     let _g = crate::tests::TEST_LOCK
@@ -1020,26 +1023,38 @@ fn pure_component_render_skips_js_when_inputs_unchanged() {
         })
     };
 
-    let _ = crate::render_component_cached(93, 10, 3, None, "sig-A").unwrap();
-    let _ = crate::render_component_cached(93, 10, 3, None, "sig-A").unwrap();
+    let _ =
+        crate::host::with_state_or_init(|st| render_component_cached(st, 93, 10, 3, None, "sig-A"))
+            .unwrap();
+    let _ =
+        crate::host::with_state_or_init(|st| render_component_cached(st, 93, 10, 3, None, "sig-A"))
+            .unwrap();
     assert_eq!(
         count("globalThis.__pure_calls"),
         1.0,
         "同一签名第二次应命中缓存(不调 JS)"
     );
 
-    let _ = crate::render_component_cached(93, 10, 3, None, "sig-B").unwrap();
+    let _ =
+        crate::host::with_state_or_init(|st| render_component_cached(st, 93, 10, 3, None, "sig-B"))
+            .unwrap();
     assert_eq!(count("globalThis.__pure_calls"), 2.0, "签名变化应重新渲染");
 
-    let _ = crate::render_component_cached(93, 11, 3, None, "sig-B").unwrap();
+    let _ =
+        crate::host::with_state_or_init(|st| render_component_cached(st, 93, 11, 3, None, "sig-B"))
+            .unwrap();
     assert_eq!(
         count("globalThis.__pure_calls"),
         3.0,
         "尺寸变化也是输入变化"
     );
 
-    let _ = crate::render_component_cached(94, 10, 3, None, "sig-A").unwrap();
-    let _ = crate::render_component_cached(94, 10, 3, None, "sig-A").unwrap();
+    let _ =
+        crate::host::with_state_or_init(|st| render_component_cached(st, 94, 10, 3, None, "sig-A"))
+            .unwrap();
+    let _ =
+        crate::host::with_state_or_init(|st| render_component_cached(st, 94, 10, 3, None, "sig-A"))
+            .unwrap();
     assert_eq!(
         count("globalThis.__impure_calls"),
         2.0,
@@ -1064,8 +1079,10 @@ fn component_render_supports_dirty_null_reuse() {
     )
     .unwrap();
 
-    let first = crate::render_component(88, 10, 3, None).expect("首帧应有内容");
-    let second = crate::render_component(88, 10, 3, None).expect("null 应复用上次内容");
+    let first = crate::host::with_state_or_init(|st| render_component(st, 88, 10, 3, None))
+        .expect("首帧应有内容");
+    let second = crate::host::with_state_or_init(|st| render_component(st, 88, 10, 3, None))
+        .expect("null 应复用上次内容");
     assert_eq!(first, second, "null 之后应拿到**同一份**内容");
 
     let calls = crate::host::with_engine(|e| {
@@ -1079,12 +1096,13 @@ fn component_render_supports_dirty_null_reuse() {
     // `undefined`(忘了 return)仍是**错误** —— 不能退化成静默陈旧
     load_script(r#"helix.set_component_render(90, () => {});"#).unwrap();
     assert!(
-        crate::render_component(90, 10, 3, None).is_err(),
+        crate::host::with_state_or_init(|st| render_component(st, 90, 10, 3, None)).is_err(),
         "undefined 应仍按原样报错(不是'无变化')"
     );
 
     load_script(r#"helix.set_component_render(89, () => null);"#).unwrap();
-    let err = crate::render_component(89, 10, 3, None).expect_err("首次返回 null 应报错");
+    let err = crate::host::with_state_or_init(|st| render_component(st, 89, 10, 3, None))
+        .expect_err("首次返回 null 应报错");
     assert!(
         format!("{err}").contains("无变化"),
         "错误信息应点明脏协议语义: {err}"

@@ -85,8 +85,11 @@ impl JsSurface {
     /// 用**环境宿主**刷新(无 `Context` 的路径:`Component::required_size` 在布局期被调用,
     /// 拿不到 `&mut Context`,只能走全局解析)。
     pub fn refresh_global(&mut self, viewport: (u16, u16), opts: SurfaceOpts) {
+        // L4-④:布局期没有 `&mut Context` ⇒ 用**过渡捕获入口**(无宿主时先 `init`,
+        // 与旧行为一致 —— 以前 `render_popup` 自己会 `init()` 装一个默认宿主)。
+        let st = helix_js::host::state_handle_or_init();
         let rendered =
-            helix_js::render_popup(self.id, viewport.0, viewport.1, self.focus.as_deref());
+            helix_js::render_popup(&st, self.id, viewport.0, viewport.1, self.focus.as_deref());
         self.apply_content(rendered.map_err(|e| e.to_string()), viewport, opts);
     }
 

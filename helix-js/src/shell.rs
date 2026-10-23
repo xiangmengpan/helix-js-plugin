@@ -901,8 +901,8 @@ pub fn drain_term_events() -> Vec<TermEvent> {
 /// 把一条进程事件投递到对应 id 的 JS 回调。
 /// Chunk → onChunk(chunk)；Exit → spawn 调 onExit(code)；run_async 调 promise resolve/reject；
 /// 进程结束（Exit）后清理回调/worker 注册，防止重复回调。
-pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
-    crate::init();
+/// **L4-④**:状态由调用方给出(`JsHost::resolve_term_event` 经 `pump` 传入)。
+pub fn resolve_term_event(st: &HostState, id: u64, event: TermEvent) -> Result<()> {
     // term-exit 钩子在 engine 上下文之外触发（emit_hook 自带 with_engine，避免 RefCell 嵌套）
     if let TermEvent::Exit(_, code, _) = &event {
         emit_term_exit(id, *code);
@@ -911,7 +911,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::term(id), || {
         crate::state::with_engine(|engine| {
             // run_async 的 promise 分支：resolve/reject 后立即清理并返回（无 TermCallbacks 注册）
-            if let Some(resolving) = crate::state::with_term_promises_current(|m| m.remove(&id)) {
+            if let Some(resolving) = crate::state::with_term_promises(st, |m| m.remove(&id)) {
                 match event {
                     TermEvent::Chunk(..) => {} // run_async 只关心 Exit,忽略
                     TermEvent::Exit(_, code, stdout) => {
@@ -945,7 +945,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                 crate::state::with_term_masters(|m| m.remove(&id));
                 return Ok(());
             }
-            let callbacks = crate::state::with_terms_current(|m| {
+            let callbacks = crate::state::with_terms(st, |m| {
                 m.get(&id).map(|c| TermCallbacks {
                     on_chunk: c.on_chunk.clone(),
                     on_exit: c.on_exit.clone(),
@@ -976,7 +976,7 @@ pub fn resolve_term_event(id: u64, event: TermEvent) -> Result<()> {
                             .call(&undefined, &[JsValue::from(code)], engine)
                             .map_err(|e| anyhow!("term {id} onExit failed: {e}"))?;
                     }
-                    crate::state::with_terms_current(|m| m.remove(&id));
+                    crate::state::with_terms(st, |m| m.remove(&id));
                     crate::state::with_term_workers(|m| m.remove(&id));
                     #[cfg(unix)]
                     crate::state::with_term_masters(|m| m.remove(&id));

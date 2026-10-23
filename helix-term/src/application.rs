@@ -544,9 +544,10 @@ impl Application {
                 helix_js::TermEvent::Chunk(id, _) | helix_js::TermEvent::Exit(id, _, _) => *id,
             };
             // D-2:兑现 worker 回投的 Promise = 进 JS ⇒ 走泵入口
+            // 没有宿主 ⇒ 没有 JS 侧 promise 要兑现(worker 事件本身已消费)
             let resolved = match self.js_host.as_deref_mut() {
                 Some(host) => host.resolve_term_event(id, event),
-                None => helix_js::resolve_term_event(id, event),
+                None => Ok(()),
             };
             if let Err(err) = resolved {
                 error = Some(err);

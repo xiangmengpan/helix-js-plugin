@@ -1198,8 +1198,14 @@ fn content_from_value(
 /// ctx 对象 { width, height }。
 /// 通用组件渲染入口:与 render_popup 同一实现(panel/popup/任意组件共用注册表),
 /// 命名语义化——JS 视图层渲染任意已注册组件。
-pub fn render_component(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
-    render_popup(id, width, height, focus)
+pub fn render_component(
+    st: &HostState,
+    id: u64,
+    width: u16,
+    height: u16,
+    focus: Option<&str>,
+) -> Result<Content> {
+    render_popup(st, id, width, height, focus)
 }
 
 /// 同 [`render_component`],但**允许命中"跳过 JS 调用"的缓存** —— 仅当该 id 注册时声明过
@@ -1209,16 +1215,16 @@ pub fn render_component(id: u64, width: u16, height: u16, focus: Option<&str>) -
 /// 宿主另把 `width/height/focus` 一起算进键。命中 ⇒ 直接返回上次解析好的 Content,**不调 JS**。
 /// 未声明 `pure` ⇒ 退化为逐帧真渲染(与 `render_component` 完全一致)。
 pub fn render_component_cached(
+    st: &HostState,
     id: u64,
     width: u16,
     height: u16,
     focus: Option<&str>,
     signature: &str,
 ) -> Result<Content> {
-    crate::init();
-    let pure = crate::state::with_popups_current(|p| p.get(&id).map(|cb| cb.pure).unwrap_or(false));
+    let pure = crate::state::with_popups(st, |p| p.get(&id).map(|cb| cb.pure).unwrap_or(false));
     if !pure {
-        return render_component(id, width, height, focus);
+        return render_component(st, id, width, height, focus);
     }
     // 键 = 尺寸 + focus + 调用方签名;分隔符用 \u{1}(普通 `|` 可能出现在签名里)
     const SEP: char = '\u{1}';
@@ -1226,7 +1232,7 @@ pub fn render_component_cached(
         "{width}x{height}{SEP}{}{SEP}{signature}",
         focus.unwrap_or("")
     );
-    let hit = crate::state::with_popups_current(|p| {
+    let hit = crate::state::with_popups(st, |p| {
         p.get(&id).and_then(|cb| match (&cb.last_key, &cb.last) {
             (Some(k), Some(c)) if k == &key => Some(c.clone()),
             _ => None,
@@ -1235,8 +1241,8 @@ pub fn render_component_cached(
     if let Some(content) = hit {
         return Ok(content);
     }
-    let content = render_popup(id, width, height, focus)?;
-    crate::state::with_popups_current(|p| {
+    let content = render_popup(st, id, width, height, focus)?;
+    crate::state::with_popups(st, |p| {
         if let Some(cb) = p.get_mut(&id) {
             cb.last_key = Some(key);
             cb.last = Some(content.clone());
@@ -1248,7 +1254,7 @@ pub fn render_component_cached(
 /// 该 id 是否注册了渲染回调(**只查注册表,不调 JS**)。
 ///
 /// 为什么需要:UI 常要"问一句有没有渲染器"再决定要不要构造载荷 —— 此前是用
-/// `render_component(id, 1, 1, None).is_ok()` 当探针,那会**每帧真的调一次 JS 回调**
+/// `crate::host::with_state_or_init(|st| render_component(st, id, 1, 1, None)).is_ok()` 当探针,那会**每帧真的调一次 JS 回调**
 /// (渲染器存在时),只为拿一个布尔。这里直接查注册表:零 JS 调用、零转换、零分配。
 ///
 /// 语义差异(有意):渲染器**存在但抛错**时,本函数仍返回 true(旧探针返回 false)。
@@ -1263,12 +1269,19 @@ pub fn has_component_render(id: u64) -> bool {
     .unwrap_or(false)
 }
 
-pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Result<Content> {
+pub fn render_popup(
+    st: &HostState,
+    id: u64,
+    width: u16,
+    height: u16,
+    focus: Option<&str>,
+) -> Result<Content> {
+    // 通道/draw 队列的惰性初始化(与旧行为一致:`render_popup` 本来就会先 `init()`)
     crate::init();
     // 上一次 render 忘调 `done()` / 画完又返回别的内容 ⇒ 脏 op 不能跨帧
     crate::draw::reset();
     crate::state::with_engine(|engine| {
-        let render = crate::state::with_popups_current(|p| p.get(&id).map(|cb| cb.render.clone()))
+        let render = crate::state::with_popups(st, |p| p.get(&id).map(|cb| cb.render.clone()))
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
         let ctx_obj = ObjectInitializer::new(engine)
             .property(JsString::from("width"), width, Attribute::all())
@@ -1296,23 +1309,19 @@ pub fn render_popup(id: u64, width: u16, height: u16, focus: Option<&str>) -> Re
         // ⚠️ 只认 `null`:`undefined`(例如插件忘了 `return`)仍按原样报错 —— 否则"忘记返回"
         //    这类真 bug 会退化成**静默的陈旧 UI**,比报错难查得多。
         if value.is_null() {
-            return crate::host::with_state_or_init(|st| {
-                crate::state::with_popups(st, |p| p.get(&id).and_then(|cb| cb.last.clone()))
-            })
-            .ok_or_else(|| {
-                anyhow!(
-                    "popup {id} render returned null, but there is no previous content \
+            return crate::state::with_popups(st, |p| p.get(&id).and_then(|cb| cb.last.clone()))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "popup {id} render returned null, but there is no previous content \
                      to reuse —— 脏协议里 null 意为\"无变化\",首次(或内容被清空后)必须真的给出内容"
-                )
-            });
+                    )
+                });
         }
         let content = content_from_value(&value, engine, id, &format!("popup {id}"))?;
-        crate::host::with_state_or_init(|st| {
-            crate::state::with_popups(st, |p| {
-                if let Some(cb) = p.get_mut(&id) {
-                    cb.last = Some(content.clone());
-                }
-            })
+        crate::state::with_popups(st, |p| {
+            if let Some(cb) = p.get_mut(&id) {
+                cb.last = Some(content.clone());
+            }
         });
         Ok(content)
     })

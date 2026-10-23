@@ -404,7 +404,7 @@ mod tests {
         // 未渲染的 input：无状态（任务 3 按键路由据此判断）
         assert!(!input_has_state(id, "q"));
         // 首次渲染：JS 传 value 初始化 InputStates
-        match render_popup(id, 40, 10, None).unwrap() {
+        match crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap() {
             Content::Tree(CompNode::Col { children, .. }) => {
                 assert!(matches!(&children[0], CompNode::Input { value, cursor, .. }
                     if value == "a" && *cursor == 1));
@@ -416,7 +416,7 @@ mod tests {
         dispatch_input_key(id, "q", "b").unwrap();
         assert_eq!(take_messages(), vec!["chg:ab"]);
         // 引擎状态覆盖 JS 传值：再渲染仍是引擎里的 "ab"
-        match render_popup(id, 40, 10, None).unwrap() {
+        match crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap() {
             Content::Tree(CompNode::Col { children, .. }) => {
                 assert!(matches!(&children[0], CompNode::Input { value, cursor, .. }
                     if value == "ab" && *cursor == 2));
@@ -433,7 +433,7 @@ mod tests {
         });
         // set_input_value：JS 强制改值，cursor 置末尾
         load_script(&format!("helix.set_input_value({id}, \"q\", \"setval\");")).unwrap();
-        match render_popup(id, 40, 10, None).unwrap() {
+        match crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap() {
             Content::Tree(CompNode::Col { children, .. }) => {
                 assert!(matches!(&children[0], CompNode::Input { value, cursor, .. }
                     if value == "setval" && *cursor == 6));

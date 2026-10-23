@@ -593,7 +593,7 @@ impl JsHost {
         height: u16,
         focus: Option<&str>,
     ) -> anyhow::Result<crate::types::Content> {
-        self.pump(|_st| crate::popup::render_component(id, width, height, focus))
+        self.pump(|st| crate::popup::render_component(st, id, width, height, focus))
     }
 
     /// 泵入口·带输入签名缓存的组件渲染
@@ -605,7 +605,7 @@ impl JsHost {
         focus: Option<&str>,
         sig: &str,
     ) -> anyhow::Result<crate::types::Content> {
-        self.pump(|_st| crate::popup::render_component_cached(id, width, height, focus, sig))
+        self.pump(|st| crate::popup::render_component_cached(st, id, width, height, focus, sig))
     }
 
     /// 泵入口·渲染弹窗
@@ -616,7 +616,7 @@ impl JsHost {
         height: u16,
         focus: Option<&str>,
     ) -> anyhow::Result<crate::types::Content> {
-        self.pump(|_st| crate::popup::render_popup(id, width, height, focus))
+        self.pump(|st| crate::popup::render_popup(st, id, width, height, focus))
     }
 
     /// 泵入口·把按键送给节点回调(`onKey`)
@@ -702,7 +702,7 @@ impl JsHost {
         id: u64,
         event: crate::types::TermEvent,
     ) -> anyhow::Result<()> {
-        self.pump(|_st| crate::shell::resolve_term_event(id, event))
+        self.pump(|st| crate::shell::resolve_term_event(st, id, event))
     }
 
     /// 泵入口·兑现异步 fs 事件对应的 Promise
@@ -892,6 +892,15 @@ pub(crate) fn with_state_or_init<T>(f: impl FnOnce(&HostState) -> T) -> T {
 /// 且 L4 删 `ACTIVE` 时只需盯这一个函数。
 pub fn state_handle() -> Option<Rc<HostState>> {
     try_with_host_ref(|h| Rc::clone(h.state_rc()))
+}
+
+/// 同 [`state_handle`],但**没有宿主时先 `init()`**(= 旧的隐式语义:`init` 会装一个默认宿主)。
+///
+/// 只给"结构上没有 `Context`、历史上就靠环境宿主工作"的路径用 —— 目前是
+/// `ui/js_surface.rs::refresh_global`(面板在**布局期**渲染,`required_size` 拿不到 `&mut Context`)。
+/// 新代码请用 [`state_handle`] + 显式访问器;本函数是 L4 收尾阶段的**过渡入口**,与 `ACTIVE` 同命运。
+pub fn state_handle_or_init() -> Rc<HostState> {
+    with_host_ref_or_init(|h| Rc::clone(h.state_rc()))
 }
 
 #[cfg(test)]

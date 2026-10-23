@@ -88,7 +88,10 @@ impl Context<'_> {
     ) -> anyhow::Result<helix_js::Content> {
         match self.with_js(|h| h.render_component(id, width, height, focus)) {
             Some(r) => r,
-            None => helix_js::render_component(id, width, height, focus),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::render_component(&st, id, width, height, focus)
+            }
         }
     }
 
@@ -103,7 +106,10 @@ impl Context<'_> {
     ) -> anyhow::Result<helix_js::Content> {
         match self.with_js(|h| h.render_component_cached(id, width, height, focus, sig)) {
             Some(r) => r,
-            None => helix_js::render_component_cached(id, width, height, focus, sig),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::render_component_cached(&st, id, width, height, focus, sig)
+            }
         }
     }
 
@@ -117,7 +123,10 @@ impl Context<'_> {
     ) -> anyhow::Result<helix_js::Content> {
         match self.with_js(|h| h.render_popup(id, width, height, focus)) {
             Some(r) => r,
-            None => helix_js::render_popup(id, width, height, focus),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::render_popup(&st, id, width, height, focus)
+            }
         }
     }
 
@@ -606,7 +615,10 @@ impl Compositor {
             let rendered =
                 match cx.with_js(|host| host.render_component(TABBAR_ID, area.width, 1, None)) {
                     Some(r) => r,
-                    None => helix_js::render_component(TABBAR_ID, area.width, 1, None),
+                    None => {
+                        let st = helix_js::host::state_handle_or_init();
+                        helix_js::render_component(&st, TABBAR_ID, area.width, 1, None)
+                    }
                 };
             if let Ok(content) = rendered {
                 let lines = crate::ui::comp_layout::render(content, (area.width, 1));

@@ -57,7 +57,7 @@ fn draw_render_produces_ops() {
     });
     "#,
     );
-    let content = render_popup(id, 8, 3, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 8, 3, None)).unwrap();
     let Content::Ops(ops) = &content else {
         panic!("expected Ops, got {content:?}")
     };
@@ -90,7 +90,9 @@ fn hand_made_draw_sentinel_without_done_errors() {
     helix.open_popup({ render: () => ({ type: "draw" }) });
     "#,
     );
-    let err = render_popup(id, 10, 3, None).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| render_popup(st, id, 10, 3, None))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("helix.draw.done()"), "错误应指向 done():{err}");
 }
 
@@ -110,7 +112,7 @@ fn drawing_without_done_returns_lines_and_ops_do_not_leak() {
     "#,
     );
     assert_eq!(
-        render_popup(id, 10, 2, None).unwrap(),
+        crate::host::with_state_or_init(|st| render_popup(st, id, 10, 2, None)).unwrap(),
         Content::Lines(vec![StyledLine::plain("plain")])
     );
 }
@@ -132,9 +134,9 @@ fn ops_do_not_leak_across_frames() {
     });
     "#,
     );
-    let first = render_popup(id, 6, 3, None).unwrap();
+    let first = crate::host::with_state_or_init(|st| render_popup(st, id, 6, 3, None)).unwrap();
     assert_eq!(rows(&first, 6, 3)[0], "┌──┐");
-    let second = render_popup(id, 6, 3, None).unwrap();
+    let second = crate::host::with_state_or_init(|st| render_popup(st, id, 6, 3, None)).unwrap();
     let Content::Ops(ops) = &second else {
         panic!("expected Ops")
     };
@@ -160,7 +162,7 @@ fn fill_and_hline_vline_from_js() {
     });
     "#,
     );
-    let content = render_popup(id, 5, 4, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 5, 4, None)).unwrap();
     let Content::Ops(ops) = &content else {
         panic!("expected Ops")
     };
@@ -221,7 +223,7 @@ fn bad_args_are_tolerated() {
     });
     "#,
     );
-    let content = render_popup(id, 4, 2, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 4, 2, None)).unwrap();
     // 唯一有效的就是那条 hline(缺省字符 ─)
     assert_eq!(rows(&content, 4, 2), vec!["──", ""]);
     // 不认识的 border ⇒ 明确报错(不是静默画错)
@@ -230,7 +232,9 @@ fn bad_args_are_tolerated() {
     helix.open_popup({ render: () => { helix.draw.rect(0,0,2,2,{border:"wavy"}); return helix.draw.done(); } });
     "#,
     );
-    let err = render_popup(id2, 4, 2, None).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| render_popup(st, id2, 4, 2, None))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("plain|round|double|thick|none"), "{err}");
 }
 
@@ -250,7 +254,7 @@ fn el_box_parses_into_comp_node() {
     });
     "#,
     );
-    let content = render_popup(id, 20, 10, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 20, 10, None)).unwrap();
     let Content::Tree(CompNode::Box {
         border,
         title,
@@ -275,7 +279,9 @@ fn el_box_parses_into_comp_node() {
     helix.open_popup({ render: () => helix.el("box", [], { border: "wavy" }) });
     "#,
     );
-    let err = render_popup(id2, 10, 3, None).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| render_popup(st, id2, 10, 3, None))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("plain|round|double|thick|none"), "{err}");
 }
 
@@ -296,7 +302,7 @@ fn js_braille_plots_half_pixels() {
     });
     "#,
     );
-    let content = render_popup(id, 6, 1, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 6, 1, None)).unwrap();
     // 前两列点 = 一格 ⠉;后两列点 = 下一格 ⠉
     assert_eq!(rows(&content, 6, 1), vec!["⠉⠉"]);
     let Content::Ops(ops) = &content else {
@@ -318,7 +324,9 @@ fn js_braille_plots_half_pixels() {
     });
     "#,
     );
-    let Content::Ops(ops) = render_popup(id2, 4, 1, None).unwrap() else {
+    let Content::Ops(ops) =
+        crate::host::with_state_or_init(|st| render_popup(st, id2, 4, 1, None)).unwrap()
+    else {
         panic!("expected Ops")
     };
     let DrawOp::Braille { pts, .. } = &ops[0] else {
@@ -350,7 +358,7 @@ fn js_clip_region_wraps_ops() {
     });
     "#,
     );
-    let content = render_popup(id, 12, 2, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 12, 2, None)).unwrap();
     let Content::Ops(ops) = &content else {
         panic!("expected Ops")
     };
@@ -396,7 +404,7 @@ fn unclosed_clip_is_closed_at_done() {
     });
     "#,
     );
-    let content = render_popup(id, 8, 1, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 8, 1, None)).unwrap();
     let Content::Ops(ops) = &content else {
         panic!("expected Ops")
     };
@@ -410,7 +418,9 @@ fn unclosed_clip_is_closed_at_done() {
         "裁剪区 4 列 ⇒ 只留 4 个横线"
     );
     // 下一帧没画东西:既没有残留 op,也没有残留 clip 栈
-    let Content::Ops(next) = render_popup(id, 8, 1, None).unwrap() else {
+    let Content::Ops(next) =
+        crate::host::with_state_or_init(|st| render_popup(st, id, 8, 1, None)).unwrap()
+    else {
         panic!("expected Ops")
     };
     assert!(next.is_empty(), "clip 栈不能跨帧残留: {next:?}");
@@ -438,7 +448,7 @@ fn js_scroll_container_translates_and_clips() {
     });
     "#,
     );
-    let content = render_popup(id, 8, 2, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 8, 2, None)).unwrap();
     assert_eq!(rows(&content, 8, 2), vec!["line0", "line1"]);
     let Content::Ops(ops) = &content else {
         panic!("expected Ops")
@@ -459,7 +469,7 @@ fn js_scroll_container_translates_and_clips() {
 
     // 滚动 = 只改 dy(内容 op 一条都不用改)
     crate::host::with_state_or_init(|st| run_command(st, "scroll-down", &ctx())).unwrap();
-    let content = render_popup(id, 8, 2, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 8, 2, None)).unwrap();
     assert_eq!(rows(&content, 8, 2), vec!["line2", "line3"]);
 }
 
@@ -483,7 +493,7 @@ fn js_mixed_clip_and_scroll_nesting() {
     });
     "#,
     );
-    let content = render_popup(id, 8, 1, None).unwrap();
+    let content = crate::host::with_state_or_init(|st| render_popup(st, id, 8, 1, None)).unwrap();
     // 期望:scroll 里的内容 = 内容 x=1..5 的 "1234" 落在屏幕 0..4;然后 "ZZ" 盖到 x=2..4
     assert_eq!(rows(&content, 8, 1), vec!["12ZZ"]);
     let Content::Ops(ops) = &content else {

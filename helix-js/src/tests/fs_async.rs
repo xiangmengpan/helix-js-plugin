@@ -186,7 +186,10 @@ fn async_run_and_spawn() {
         unreachable!()
     };
     assert_eq!(*code, 0);
-    resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
+    crate::host::with_state_or_init(|st| {
+        resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+    })
+    .unwrap();
     pump_jobs().unwrap();
     assert_eq!(take_messages(), vec!["cb:ok:async-hello"]);
 
@@ -204,7 +207,10 @@ fn async_run_and_spawn() {
         unreachable!()
     };
     assert_ne!(*code2, 0);
-    resolve_term_event(*id2, TermEvent::Exit(*id2, *code2, None)).unwrap();
+    crate::host::with_state_or_init(|st| {
+        resolve_term_event(st, *id2, TermEvent::Exit(*id2, *code2, None))
+    })
+    .unwrap();
     pump_jobs().unwrap();
     let msgs = take_messages();
     assert!(msgs[0].contains("raerr:"), "{msgs:?}");
@@ -236,7 +242,10 @@ fn async_run_and_spawn() {
     let TermEvent::Chunk(id, chunk) = ev else {
         unreachable!()
     };
-    resolve_term_event(*id, TermEvent::Chunk(*id, chunk.clone())).unwrap();
+    crate::host::with_state_or_init(|st| {
+        resolve_term_event(st, *id, TermEvent::Chunk(*id, chunk.clone()))
+    })
+    .unwrap();
     assert!(take_messages().contains(&format!("chunk:{chunk}")));
 
     // 流式 **stderr**：单线程 poll 必须把两条流都读出来（改前各有读线程，改后共用一个循环）
@@ -261,7 +270,10 @@ fn async_run_and_spawn() {
     assert!(joined.contains("ERR"), "stderr 流式输出: {joined}");
     for e in &events {
         if let TermEvent::Chunk(id, c) = e {
-            resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap();
+            crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Chunk(*id, c.clone()))
+            })
+            .unwrap();
         }
     }
     let _ = take_messages();
@@ -282,7 +294,10 @@ fn async_run_and_spawn() {
         unreachable!()
     };
     assert!(*code != 0, "killed process should have non-zero exit");
-    resolve_term_event(*id, TermEvent::Exit(*id, *code, None)).unwrap();
+    crate::host::with_state_or_init(|st| {
+        resolve_term_event(st, *id, TermEvent::Exit(*id, *code, None))
+    })
+    .unwrap();
     assert!(take_messages()[0].starts_with("killed:"));
 
     // 类型校验：run_async/spawn 参数错误在 load 时即报错
@@ -334,7 +349,10 @@ fn async_utf8_across_chunks() {
     );
     for ev in &events {
         if let TermEvent::Exit(id, code, stdout) = ev {
-            resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
+            crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+            })
+            .unwrap();
         }
     }
     pump_jobs().unwrap();
@@ -374,10 +392,16 @@ fn async_utf8_across_chunks() {
     for ev in &events {
         match ev {
             TermEvent::Chunk(id, chunk) => {
-                resolve_term_event(*id, TermEvent::Chunk(*id, chunk.clone())).unwrap();
+                crate::host::with_state_or_init(|st| {
+                    resolve_term_event(st, *id, TermEvent::Chunk(*id, chunk.clone()))
+                })
+                .unwrap();
             }
             TermEvent::Exit(id, code, stdout) => {
-                resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap();
+                crate::host::with_state_or_init(|st| {
+                    resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+                })
+                .unwrap();
             }
         }
     }

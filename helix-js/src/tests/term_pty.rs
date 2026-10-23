@@ -116,7 +116,7 @@ fn pty_bash_interactive_no_error() {
                 TermEvent::Chunk(id, _) => *id,
                 TermEvent::Exit(id, _, _) => *id,
             };
-            let _ = resolve_term_event(eid, ev);
+            let _ = crate::host::with_state_or_init(|st| resolve_term_event(st, eid, ev));
         }
         for req in take_ui_requests() {
             if let UiRequest::TermFeed(TermFeedReq { chunk, .. }) = req {
@@ -134,7 +134,7 @@ fn pty_bash_interactive_no_error() {
     let _ = term_kill(pty_id);
     // 消费 Exit 事件，清理回调注册
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !crate::state::with_terms_current(|m| m.is_empty())
+    while !crate::host::with_state_or_init(|st| crate::state::with_terms(st, |m| m.is_empty()))
         && std::time::Instant::now() < deadline
     {
         let _ = drain_term_events();
@@ -180,7 +180,7 @@ fn open_terminal_after_kill_repro() {
     term_kill(pty_id).unwrap();
     // 消费 Exit 事件（worker 退出回调），与事件循环 drain 一致
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !crate::state::with_terms_current(|m| m.is_empty())
+    while !crate::host::with_state_or_init(|st| crate::state::with_terms(st, |m| m.is_empty()))
         && std::time::Instant::now() < deadline
     {
         let _ = drain_term_events();
@@ -341,12 +341,14 @@ fn pty_spawn() {
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
         match ev {
-            TermEvent::Chunk(id, c) => {
-                resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap()
-            }
-            TermEvent::Exit(id, code, stdout) => {
-                resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
-            }
+            TermEvent::Chunk(id, c) => crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Chunk(*id, c.clone()))
+            })
+            .unwrap(),
+            TermEvent::Exit(id, code, stdout) => crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+            })
+            .unwrap(),
         }
     }
     assert!(
@@ -359,12 +361,14 @@ fn pty_spawn() {
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
         match ev {
-            TermEvent::Chunk(id, c) => {
-                resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap()
-            }
-            TermEvent::Exit(id, code, stdout) => {
-                resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
-            }
+            TermEvent::Chunk(id, c) => crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Chunk(*id, c.clone()))
+            })
+            .unwrap(),
+            TermEvent::Exit(id, code, stdout) => crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+            })
+            .unwrap(),
         }
     }
     assert!(
@@ -383,7 +387,7 @@ fn pty_spawn() {
             let id = match &e {
                 TermEvent::Chunk(id, _) | TermEvent::Exit(id, _, _) => *id,
             };
-            let _ = resolve_term_event(id, e);
+            let _ = crate::host::with_state_or_init(|st| resolve_term_event(st, id, e));
             if is_exit {
                 got_exit = true;
             }
@@ -435,12 +439,14 @@ fn pty_resize() {
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
         match ev {
-            TermEvent::Chunk(id, c) => {
-                resolve_term_event(*id, TermEvent::Chunk(*id, c.clone())).unwrap()
-            }
-            TermEvent::Exit(id, code, stdout) => {
-                resolve_term_event(*id, TermEvent::Exit(*id, *code, stdout.clone())).unwrap()
-            }
+            TermEvent::Chunk(id, c) => crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Chunk(*id, c.clone()))
+            })
+            .unwrap(),
+            TermEvent::Exit(id, code, stdout) => crate::host::with_state_or_init(|st| {
+                resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+            })
+            .unwrap(),
         }
     }
     let msgs = take_messages();
@@ -538,7 +544,7 @@ fn term_state_persist_roundtrip() {
     drop(dir);
 }
 
-/// term-exit 钩子:resolve_term_event(Exit) → emit_term_exit(消息)
+/// term-exit 钩子:crate::host::with_state_or_init(|st| resolve_term_event(st, Exit)) → emit_term_exit(消息)
 #[test]
 fn term_exit_hook_via_resolve() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -546,16 +552,21 @@ fn term_exit_hook_via_resolve() {
     load_script(r#"helix.on("term-exit", (id, code) => helix.echo("exit:" + code));"#).unwrap();
     let id = crate::host::with_state_or_init(crate::state::next_term_id);
     // 注册回调(否则 resolve 直接 return)
-    crate::state::with_terms_current(|m| {
-        m.insert(
-            id,
-            crate::types::TermCallbacks {
-                on_chunk: JsValue::undefined(),
-                on_exit: None,
-            },
-        )
+    crate::host::with_state_or_init(|st| {
+        crate::state::with_terms(st, |m| {
+            m.insert(
+                id,
+                crate::types::TermCallbacks {
+                    on_chunk: JsValue::undefined(),
+                    on_exit: None,
+                },
+            )
+        })
     });
-    crate::shell::resolve_term_event(id, crate::types::TermEvent::Exit(id, 3, None)).unwrap();
+    crate::host::with_state_or_init(|st| {
+        resolve_term_event(st, id, crate::types::TermEvent::Exit(id, 3, None))
+    })
+    .unwrap();
     let msgs = take_messages();
     assert!(
         msgs.iter().any(|m| m == "exit:3"),
