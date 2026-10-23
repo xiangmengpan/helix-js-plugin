@@ -280,25 +280,52 @@ grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*
 `with_loaded_scripts` / `with_open_panels`（4），以及 infra 自身
 （`with_host_ref_or_init` / `with_state_or_init` / `with_engine` / `current_state_rc` / `editor_version`）。
 
-### L4 的**真实**阻塞点（实测，不是估算）
+### L4 进展（2026-10-22，五个提交）
 
-`ACTIVE` + `DEFAULT_HOST` 之所以还不能删，是因为下面这些调用点**结构上拿不到宿主**：
+L4-③（"闭包在创建时捕获状态"）**已在 helic-term 侧做完**，生产代码里不再有 `*_current` 调用：
 
-1. **`Drop` 实现**（`ui/plugin_terminal.rs`：杀 pty / 注销组件状态）—— `Drop::drop(&mut self)`
-   没有参数，只能靠环境句柄；
-2. **`Send` 闭包 / worker 完成回调**（异步完成、`term-title`、watch 事件）—— 跨线程，
-   `Rc<HostState>` 不 `Send`；
-3. **每帧 UI 渲染路径**（`ui/statusline.rs` 读 zones/replaces、`ui/picker.rs` 格式化闭包）——
-   闭包存在 picker 里、比 `cx` 活得久；
-4. 少数 **Rust 侧入口**（`reload_all` 等，已在 L3 用 `with_state_or_init` 过渡）。
+| 提交 | 内容 |
+|---|---|
+| `81048ee9c` | 渲染路径的面板/布局快照改显式（`sync_panes_cache` 带 `js`，无宿主即跳过） |
+| `00444497d` | `RenderContext` 构造时捕获 `Rc<HostState>`；状态栏两个读取点改显式；**新增唯一捕获入口 `host::state_handle()`** |
+| `c0bed9b39` | `RestoreLayout::apply` 带宿主（布局缓存写入从"翻译期"搬到"执行期"），`handle_cache_layout` 变纯 |
+| `ea4cc87f5` | 参数通道 + 命令回落改显式；删掉 7 个无调用者的 `_current` shim |
+| `1e9d949a4` | `Drop` 例外收口（见下）+ 组件状态快照改显式 |
 
-⇒ L4 的正确形态不是"删 `ACTIVE`"，而是**把这四类改造成显式持有状态**：
-① `Drop` 路径改为"注册到宿主的生命周期回调"（或由 `Application` 在 drop 前后统一清理）；
-② 跨线程路径传 `Arc<HostState>`（需把 `RefCell` 换成 `Mutex`/`RwLock`，影响面大）；
-③ 每帧 UI 闭包在创建时捕获 `Rc<HostState>`；
-④ Rust 侧入口继续 `with_state_or_init`，直到调用链上能拿到宿主。
-这是**另一次独立重构**（规模 ≥ 3b）：建议单独开一轮，**先做 ③**（收益最大、风险最小）。
+**度量**：
 
+```bash
+grep -rn "_current(" helix-term/src --include=*.rs | grep "helix_js::" | grep -v tests | wc -l   # → 0
+grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*_current" | wc -l  # → 82（全在 helix-js 内部）
+```
+
+#### `Drop` 这一档的结论（原阻塞点①）
+
+"构造期捕获 `Rc<HostState>`"**不可行**，有编译错误作证：`PluginTerminal` 在
+`job::dispatch_blocking` 的 **`Send` 闭包**里构造，加 `Rc` 字段会让它 `!Send`
+（`error[E0277]: Rc<HostState> cannot be sent between threads safely`）。
+⇒ 改成在 `Drop` 里用 **`host::state_handle()`**（L4-③ 的唯一捕获入口）取一份状态，
+再走**显式**访问器。机制同源，只是捕获时机推迟到 drop。
+
+#### 剩下的：`pump()` 作用域（L4 最后一档）
+
+`helix_js::run_command` 等自由函数仍在用隐式解析，但它们的**唯一入口是 `JsHost::pump()`** ——
+`pump` 把 `ACTIVE` 设为**该次调用作用域内**有效。也就是说这部分隐式解析**不是全局的**，
+而是"泵作用域内的实现细节"。
+
+要把它也显式化，做法是把 `pump` 的签名从
+
+```rust
+fn pump<R>(&mut self, f: impl FnOnce() -> R) -> R
+```
+改成
+```rust
+fn pump<R>(&mut self, f: impl FnOnce(&HostState) -> R) -> R
+```
+（`ACTIVE` 仍保留给**引擎已借出**的原生回调），然后把 37 个泵方法里"只读状态"的那批
+（`take_lsp_requests` / `snapshot_wanted` / `snapshot_stats` / `cache_*` …）改成用传入的
+`&HostState` 调显式访问器。**跨线程通道 / `Send` 闭包**（worker 完成回调、`term-title`）
+无论如何都需要 `Arc<HostState>` + `Mutex` 化，属于另一档。
 
 ### 建议
 
