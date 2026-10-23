@@ -25,7 +25,7 @@ fn pane_list_api_reads_snapshot() {
     "#,
     )
     .unwrap();
-    assert!(run_command("pl0", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pl0", &ctx)).unwrap());
     assert_eq!(take_messages()[0], "n:0");
 
     // 推入一份含浮窗的快照后应能读到 place/pinned/focused
@@ -51,7 +51,7 @@ fn pane_list_api_reads_snapshot() {
     "#,
     )
     .unwrap();
-    assert!(run_command("pl1", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pl1", &ctx)).unwrap());
     assert_eq!(
         take_messages()[0],
         "n:2 p:float pin:true foc:true tx:tiled k:PluginTerminal/EditorView"
@@ -81,7 +81,7 @@ fn pane_float_and_embed_push_requests() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("pf", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pf", &ctx)).unwrap());
     let reqs = take_ui_requests();
     assert!(
         matches!(&reqs[0], UiRequest::PaneFloat(PaneFloatReq { id }) if *id == 3),
@@ -124,7 +124,7 @@ fn pane_namespace_is_wired() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("pn", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pn", &ctx)).unwrap());
     let msgs = take_messages();
     assert_eq!(msgs[0], "missing:", "pane.* 名字必须齐全");
     assert_eq!(
@@ -169,7 +169,7 @@ fn pane_info_reads_same_snapshot_as_list() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("pi", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pi", &ctx)).unwrap());
     let m = take_messages();
     assert_eq!(m[0], "k:PluginTerminal place:float z:2");
     assert_eq!(m[1], "ed:EditorView");
@@ -202,7 +202,7 @@ fn pane_raise_and_pin_push_requests() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("pr", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pr", &ctx)).unwrap());
     let reqs = take_ui_requests();
     assert!(
         matches!(&reqs[0], UiRequest::PaneRaise(PaneRaiseReq { id }) if *id == 7),
@@ -255,7 +255,7 @@ fn stack_list_groups_and_dedupes_by_anchor() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("sl", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "sl", &ctx)).unwrap());
     let m = take_messages();
     assert_eq!(m[0], "n:1", "两个成员只应产出**一组**(按锚去重)");
     assert_eq!(m[1], "a:0 m:0,1", "锚 = members[0](= 当前显示的那个)");
@@ -292,7 +292,7 @@ fn stack_namespace_and_write_ops() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("sw", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "sw", &ctx)).unwrap());
     let m = take_messages();
     assert_eq!(m[0], "missing:", "四个名字必须齐全");
     assert_eq!(m[1], "add:undefined", "**没有 add** —— 2 人组的模型约束");

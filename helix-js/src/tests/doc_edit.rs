@@ -24,7 +24,7 @@ fn open_file_scratch_routes_to_scratch_request() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("ofs", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "ofs", &ctx)).unwrap());
     let reqs = take_ui_requests();
     assert!(
         matches!(&reqs[0], UiRequest::OpenFile(OpenFileReq { path, .. }) if path == "/tmp/plain.txt"),
@@ -57,7 +57,7 @@ fn doc_edits_queue() {
         cursor: (1, 2),
         selection: ((0, 0), (0, 0)),
     };
-    run_command("edit", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "edit", &ctx)).unwrap();
     let edits = take_edits();
     assert_eq!(
         edits,
@@ -106,15 +106,15 @@ fn doc_edit_validation() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("bad1", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad1", &ctx)).is_err());
     assert!(take_edits().is_empty());
-    assert!(run_command("bad2", &ctx).is_err());
-    assert!(run_command("bad3", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad2", &ctx)).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad3", &ctx)).is_err());
     assert!(take_edits().is_empty());
     // 正常命令运行后队列仍有值（供 helix-term 消费）
     load_script(r#"helix.register_command("ok", (ctx) => { ctx.doc.insert(0, 0, "z"); });"#)
         .unwrap();
-    run_command("ok", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "ok", &ctx)).unwrap();
     assert_eq!(take_edits().len(), 1);
 }
 
@@ -143,7 +143,7 @@ fn by_path_reads_other_buffer() {
             text: "other text".into(),
         }],
     };
-    run_command("read-other", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "read-other", &ctx)).unwrap();
 }
 
 #[test]
@@ -173,11 +173,11 @@ fn by_path_edits_target_other_buffer() {
             text: "other text".into(),
         }],
     };
-    run_command("edit-other", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "edit-other", &ctx)).unwrap();
     let edits = take_edits();
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].doc.as_deref(), Some("/tmp/other.rs"));
-    run_command("edit-current", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "edit-current", &ctx)).unwrap();
     let edits = take_edits();
     assert_eq!(edits[0].doc, None, "ctx.doc 编辑仍指向当前 buffer");
 }
@@ -257,7 +257,7 @@ fn selection_and_cursor() {
         selection: ((0, 1), (0, 5)),
         docs: vec![],
     };
-    assert!(run_command("selcmd", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "selcmd", &ctx)).unwrap());
     let reqs = take_cursor_requests();
     assert_eq!(
         reqs,
@@ -274,7 +274,7 @@ fn selection_and_cursor() {
     // 类型错误 → 命令失败（run_command 返回 Err），请求队列被清空
     load_script(r#"helix.register_command("badsel", (ctx) => { helix.set_cursor("x", 0); });"#)
         .unwrap();
-    assert!(run_command("badsel", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "badsel", &ctx)).is_err());
     assert!(take_cursor_requests().is_empty());
 }
 
@@ -358,7 +358,7 @@ fn batch_edit_transaction() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("be", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "be", &ctx)).unwrap());
     let edits = take_edits();
     assert_eq!(edits.len(), 1, "begin/end 包住的编辑合并取走");
     assert_eq!(edits[0].insert, "c");
@@ -405,10 +405,10 @@ fn batch_edit_transaction() {
     "#,
     )
     .unwrap();
-    assert!(run_command("leak", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "leak", &ctx)).unwrap());
     assert!(take_edits().is_empty(), "未配对事务:编辑积压");
     // 下一命令入口应复位 txn 深度并清队列(丢弃积压编辑)
-    assert!(run_command("noop", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "noop", &ctx)).unwrap());
     assert_eq!(
         crate::state::with_txn_depth_current(|d: &mut usize| *d),
         0,

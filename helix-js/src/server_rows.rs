@@ -201,7 +201,9 @@ mod tests {
             cursor: (0, 0),
             selection: ((0, 0), (0, 0)),
         };
-        assert!(crate::run_command("sm-rows", &ctx).unwrap());
+        assert!(
+            crate::host::with_state_or_init(|st| crate::run_command(st, "sm-rows", &ctx)).unwrap()
+        );
         let reqs = take_ui_requests();
         let id = match &reqs[0] {
             UiRequest::ServerListRows(ServerListRowsReq { id }) => *id,

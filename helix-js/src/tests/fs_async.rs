@@ -81,7 +81,7 @@ fn fs_read_covers_stat_glob_tree_and_watch() {
     // ① 只声明 process(没有 fs_read)⇒ 四个入口**全部**被拒,并各自记入 (fs-sib, fs_read)
     load_script(&plugin_src("process: true")).unwrap();
     for cmd in ["sib-glob", "sib-stat", "sib-tree", "sib-watch"] {
-        let err = run_command(cmd, &ctx)
+        let err = crate::host::with_state_or_init(|st| run_command(st, cmd, &ctx))
             .expect_err(&format!("{cmd} 未声明 fs_read 时应被拒"))
             .to_string();
         assert!(
@@ -100,7 +100,7 @@ fn fs_read_covers_stat_glob_tree_and_watch() {
     load_script(&plugin_src("fs_read: true")).unwrap();
     for cmd in ["sib-glob", "sib-stat", "sib-tree", "sib-watch"] {
         assert!(
-            run_command(cmd, &ctx).unwrap_or(false),
+            crate::host::with_state_or_init(|st| run_command(st, cmd, &ctx)).unwrap_or(false),
             "{cmd} 声明 fs_read 后应放行"
         );
     }
@@ -120,19 +120,21 @@ fn shell_run() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("r1", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "r1", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["hi\n"]);
 
     // 非零退出码 → 错误
     load_script(r#"helix.register_command("r2", () => { helix.run("echo boom >&2; exit 3"); });"#)
         .unwrap();
-    let err = run_command("r2", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "r2", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("command failed"), "err: {err}");
     assert!(err.contains("boom"), "stderr should be included: {err}");
 
     // 类型错误
     load_script(r#"helix.register_command("r3", () => { helix.run(42); });"#).unwrap();
-    assert!(run_command("r3", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "r3", &ctx)).is_err());
 
     // 截断：输出超限 → 返回长度 ≤ 65536
     load_script(
@@ -144,7 +146,7 @@ fn shell_run() {
     "#,
     )
     .unwrap();
-    assert!(run_command("r4", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "r4", &ctx)).unwrap());
     let msg = take_messages();
     assert!(
         msg[0].contains("tail:(truncated)"),
@@ -224,7 +226,7 @@ fn async_run_and_spawn() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("sp", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "sp", &ctx)).unwrap());
     let events =
         wait_for_term_event(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("hello-term")));
     let ev = events
@@ -246,7 +248,7 @@ fn async_run_and_spawn() {
     "#,
     )
     .unwrap();
-    assert!(run_command("se", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "se", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Chunk(_, c) if c.contains("LAST")));
     let joined: String = events
         .iter()
@@ -274,7 +276,7 @@ fn async_run_and_spawn() {
     "#,
     )
     .unwrap();
-    assert!(run_command("kp", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "kp", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     let TermEvent::Exit(id, code, _) = &events[0] else {
         unreachable!()
@@ -290,7 +292,7 @@ fn async_run_and_spawn() {
                                                                     // term_write 未知 id 在 load 时不会执行（命令体），须放进命令里跑
     load_script(r#"helix.register_command("badid", () => { helix.term_write(999, "x"); });"#)
         .unwrap();
-    assert!(run_command("badid", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "badid", &ctx)).is_err());
 }
 
 #[test]
@@ -366,7 +368,7 @@ fn async_utf8_across_chunks() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("spcjk", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "spcjk", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     // 按序 resolve：先 Chunk 后 Exit，JS 的 parts 才能拼全
     for ev in &events {
@@ -446,7 +448,7 @@ fn async_fs() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("fsd", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "fsd", &ctx)).unwrap());
     // 轮询 drain_async_events 直到四个回调都到（wait_for_async 辅助，仿 wait_for_term_event）
     let mut events = Vec::new();
     wait_for_async(&mut events, |e| matches!(e, AsyncEvent::FsRead(_, _)));
@@ -493,7 +495,7 @@ fn async_fs() {
         dir = dir.display()
     ))
     .unwrap();
-    assert!(run_command("fsd2", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "fsd2", &ctx)).unwrap());
     let mut g2 = Vec::new();
     wait_for_async(&mut g2, |e| matches!(e, AsyncEvent::FsGlob(_, _)));
     for ev in g2 {
@@ -525,7 +527,7 @@ fn async_fs() {
         dir = dir.display()
     ))
     .unwrap();
-    assert!(run_command("fsbad", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "fsbad", &ctx)).unwrap());
     let mut bad = Vec::new();
     wait_for_async(&mut bad, |e| matches!(e, AsyncEvent::FsRead(_, _)));
     // resolve → 断言

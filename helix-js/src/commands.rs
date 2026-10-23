@@ -1,3 +1,4 @@
+use crate::host::HostState;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
@@ -1036,20 +1037,23 @@ fn ctx_to_js(ctx: &CommandContext, engine: &mut Context) -> boa_engine::JsResult
 }
 
 /// 运行插件命令。返回 Ok(true) 表示已运行，Ok(false) 表示未注册
-pub fn run_command(name: &str, ctx: &CommandContext) -> Result<bool> {
-    crate::init();
+/// 运行插件命令。返回 Ok(true) 表示已运行，Ok(false) 表示未注册。
+///
+/// **L4-④**:状态由调用方给出(`JsHost::run_command` 经 `pump` 传入),本函数不再摸隐式宿主;
+/// 只有 `with_engine` 仍走隐式 —— 那是"引擎已借出"的那一类(原生回调),不在本档范围。
+pub fn run_command(st: &HostState, name: &str, ctx: &CommandContext) -> Result<bool> {
     // C-2 归属:命令的属主(注册期绑定);执行完恢复上一个(嵌套 run_command 也正确)
     let prev_owner =
         crate::permissions::set_current_owner(crate::permissions::command_owner(name).as_deref());
     // 命令开始时清空编辑队列，避免跨命令残留
-    crate::state::with_edits_current(|c| c.clear());
-    crate::state::with_decoration_requests_current(|c| c.clear());
-    crate::state::with_cursor_requests_current(|c| c.clear());
+    crate::state::with_edits(st, |c| c.clear());
+    crate::state::with_decoration_requests(st, |c| c.clear());
+    crate::state::with_cursor_requests(st, |c| c.clear());
     // 复位事务深度：上一命令未配对的 begin 在此丢弃（积压编辑随队列清空）
-    crate::state::with_txn_depth_current(|d| *d = 0);
+    crate::state::with_txn_depth(st, |d| *d = 0);
     // 携带其它已打开 buffer 快照（by_path 读取；本次命令生命周期）
-    crate::host::with_state_or_init(|st| crate::state::set_doc_snapshots(st, ctx.docs.clone()));
-    let func = crate::state::with_registry_current(|r| r.get(name).cloned());
+    crate::state::set_doc_snapshots(st, ctx.docs.clone());
+    let func = crate::state::with_registry(st, |r| r.get(name).cloned());
     let Some(func) = func else { return Ok(false) };
 
     let func = func

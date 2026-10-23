@@ -458,7 +458,7 @@ fn js_scroll_container_translates_and_clips() {
     );
 
     // 滚动 = 只改 dy(内容 op 一条都不用改)
-    run_command("scroll-down", &ctx()).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "scroll-down", &ctx())).unwrap();
     let content = render_popup(id, 8, 2, None).unwrap();
     assert_eq!(rows(&content, 8, 2), vec!["line2", "line3"]);
 }

@@ -498,7 +498,7 @@ fn keymap_registration() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command(&command, &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, &command, &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["cb"]);
 
     // 校验失败
@@ -644,7 +644,7 @@ fn component_nodes() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("tree", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "tree", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["type:text text:hello w:10"]);
 
     let reqs = take_ui_requests();
@@ -1182,7 +1182,7 @@ fn decorations_queue_and_take() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    run_command("dec1", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "dec1", &ctx)).unwrap();
     let reqs = take_decorations();
     assert_eq!(reqs.len(), 3);
     // 路径已 canonicalize(相对→绝对:用绝对路径输入,断言原样)
@@ -1242,12 +1242,12 @@ fn decorations_txn_holds_and_reset() {
         docs: vec![],
     };
     // 命令内 begin/end 包住:命令返回后取到(证明 end 后放行)
-    run_command("dec-txn", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "dec-txn", &ctx)).unwrap();
     assert_eq!(take_decorations().len(), 1);
     // 类型校验:path 非字符串 → 命令失败
-    assert!(run_command("dec-bad", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "dec-bad", &ctx)).is_err());
     // 给了坐标却缺 text → 报错而非静默 Clear(避免误清空;清除 = 只传 path)
-    assert!(run_command("dec-bad2", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "dec-bad2", &ctx)).is_err());
     // 命令开始复位:上一命令残留不跨命令(dec-bad 报错后队列也应被清)
     assert!(take_decorations().is_empty());
 }

@@ -483,7 +483,7 @@ impl JsHost {
         name: &str,
         ctx: &crate::types::CommandContext,
     ) -> anyhow::Result<bool> {
-        self.pump(|_st| crate::commands::run_command(name, ctx))
+        self.pump(|st| crate::commands::run_command(st, name, ctx))
     }
 
     /// 泵入口·兑现已就绪的 Promise 续体(`.then`/`.catch`)
@@ -1313,7 +1313,7 @@ mod engine_ownership_tests {
             cursor: (0, 0),
             selection: ((0, 0), (0, 0)),
         };
-        let r = crate::run_command("cross-probe", &ctx);
+        let r = crate::host::with_state_or_init(|st| crate::run_command(st, "cross-probe", &ctx));
         assert!(
             r.is_ok(),
             "跨引擎调用目前是**可用**的(负结果;若某天 boa 收紧,这条会红)"

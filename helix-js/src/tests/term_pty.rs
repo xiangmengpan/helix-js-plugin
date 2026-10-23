@@ -29,7 +29,7 @@ fn term_wake_fires_on_event() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("wk", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "wk", &ctx)).unwrap());
     // 20s(同 wait_for_term_event 的理由:并行 CI 下 5s 会假红)
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while !fired.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < deadline {
@@ -64,7 +64,7 @@ fn open_terminal_api() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("ot", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "ot", &ctx)).unwrap());
     assert!(take_messages()[0].starts_with("pid:"));
     let reqs = take_ui_requests();
     assert!(
@@ -99,7 +99,7 @@ fn pty_bash_interactive_no_error() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("bi", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bi", &ctx)).unwrap());
     let _ = take_messages();
     let pty_id = match &take_ui_requests()[0] {
         UiRequest::OpenTerminal(OpenTerminalReq { pty_id, .. }) => *pty_id,
@@ -167,7 +167,10 @@ fn open_terminal_after_kill_repro() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("t3", &ctx).unwrap(), "第一次 open_terminal");
+    assert!(
+        crate::host::with_state_or_init(|st| run_command(st, "t3", &ctx)).unwrap(),
+        "第一次 open_terminal"
+    );
     let _ = take_messages();
     let pty_id = match &take_ui_requests()[0] {
         UiRequest::OpenTerminal(OpenTerminalReq { pty_id, .. }) => *pty_id,
@@ -184,7 +187,7 @@ fn open_terminal_after_kill_repro() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(
-        run_command("t3", &ctx).unwrap(),
+        crate::host::with_state_or_init(|st| run_command(st, "t3", &ctx)).unwrap(),
         "kill 后再 open_terminal 应成功"
     );
     let _ = take_messages();
@@ -227,7 +230,7 @@ fn sidecar_apis() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("sc", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "sc", &ctx)).unwrap());
     let msgs = take_messages();
     assert!(msgs[0].starts_with("count:3 sorted:true"), "{msgs:?}");
     assert_eq!(msgs[1], "dirs:1:sub");
@@ -248,9 +251,9 @@ fn sidecar_apis() {
     "#,
     )
     .unwrap();
-    assert!(run_command("bad1", &ctx).is_err());
-    assert!(run_command("bad2", &ctx).is_err());
-    assert!(run_command("bad3", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad1", &ctx)).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad2", &ctx)).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad3", &ctx)).is_err());
 }
 
 #[test]
@@ -276,7 +279,7 @@ fn terminal_modes_api() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("tm", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "tm", &ctx)).unwrap());
     let reqs = take_ui_requests();
     assert!(matches!(
         &reqs[0],
@@ -298,7 +301,7 @@ fn terminal_modes_api() {
         r#"helix.register_command("tm-bad2", () => { helix.set_terminal_mode(1, "sideways"); });"#,
     )
     .unwrap();
-    assert!(run_command("tm-bad2", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "tm-bad2", &ctx)).is_err());
     // 类型校验（load 时即报错）
     assert!(load_script(r#"helix.term_clear("x");"#).is_err());
     assert!(load_script(r#"helix.resize_term(1, "wide");"#).is_err());
@@ -334,7 +337,7 @@ fn pty_spawn() {
     };
 
     // tty：stdin 是 pty → 输出 /dev/pts/N（CRLF 行尾，用 contains 断言）
-    assert!(run_command("pty-tty", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pty-tty", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
         match ev {
@@ -352,7 +355,7 @@ fn pty_spawn() {
     );
 
     // stty size：默认 winsize 24×80（输出顺序 rows cols）
-    assert!(run_command("pty-size", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pty-size", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
         match ev {
@@ -371,7 +374,7 @@ fn pty_spawn() {
 
     // 写 master → 子进程 stdin：cat 回显；raw mode 下 \u{4} 非 EOF——onChunk 里 kill。
     // 轮询 drain + resolve（让 onChunk 的 kill 生效）直到 Exit。
-    assert!(run_command("pty-cat", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pty-cat", &ctx)).unwrap());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut got_exit = false;
     while !got_exit && std::time::Instant::now() < deadline {
@@ -402,7 +405,7 @@ fn pty_spawn() {
 
     // 校验：pty 非布尔 / resize 未知 id → 报错
     assert!(load_script(r#"helix.spawn({ pty: "yes", cmd: "tty", onChunk: () => {} });"#).is_err());
-    assert!(run_command("pty-badresize", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pty-badresize", &ctx)).is_err());
 }
 
 /// spawn 后立即 term_resize → 子进程 stty size 读到新值。
@@ -428,7 +431,7 @@ fn pty_resize() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("pty-resize", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pty-resize", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
         match ev {

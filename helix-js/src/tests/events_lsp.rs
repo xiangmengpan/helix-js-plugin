@@ -203,8 +203,8 @@ fn lsp_enhance_request_shapes() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("ren-bad", &ctx).is_err());
-    assert!(run_command("exec-bad", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "ren-bad", &ctx)).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "exec-bad", &ctx)).is_err());
     assert!(take_lsp_requests_current().is_empty(), "校验失败不应入队");
     // 合法调用 → 请求形态正确(同步命令:四个调用都同步入队)
     load_script(
@@ -218,7 +218,7 @@ fn lsp_enhance_request_shapes() {
     "#,
     )
     .unwrap();
-    run_command("ren-ok", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "ren-ok", &ctx)).unwrap();
     let reqs = take_lsp_requests_current();
     assert_eq!(reqs.len(), 4);
     assert!(matches!(reqs[0].method, crate::lsp::LspMethod::Rename));

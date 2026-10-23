@@ -107,11 +107,11 @@ fn register_and_run_command() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("where", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "where", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["cursor: 1,2"]);
 
     // 未注册的命令返回 false
-    assert!(!run_command("nope", &ctx).unwrap());
+    assert!(!crate::host::with_state_or_init(|st| run_command(st, "nope", &ctx)).unwrap());
     // 非法命令名（含空白）注册时报错
     assert!(load_script(r#"helix.register_command("bad name", () => {});"#).is_err());
 }
@@ -199,7 +199,9 @@ fn permission_check_ask_then_decide() {
         selection: ((0, 0), (0, 0)),
     };
     // 未声明 process ⇒ 被拒(并把请求记入待授权)
-    let err = run_command("ask-run", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "ask-run", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("未声明能力"), "{err}");
     assert!(
         pending_permissions()
@@ -210,11 +212,13 @@ fn permission_check_ask_then_decide() {
     );
     // 授权后直接放行
     decide_permission("asker", "process", true);
-    assert!(run_command("ask-run", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "ask-run", &ctx)).unwrap());
     assert!(pending_permissions().is_empty(), "决定后应移出待授权");
     // 未声明的另一项仍要问;拒绝后一直拒
     decide_permission("asker", "fs_write", false);
-    let err = run_command("ask-write", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "ask-write", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("已被拒绝"), "{err}");
 }
 
@@ -246,7 +250,9 @@ fn open_terminal_needs_process_capability() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    let err = run_command("term-cap-go", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "term-cap-go", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("未声明能力") && err.contains("process"),
         "{err}"
@@ -292,7 +298,9 @@ fn server_apis_require_process_capability() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    let err = run_command("srv-cap-go", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "srv-cap-go", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("process"),
         "server.list 未声明 process 时必须被拒,且报错要指名能力;err={err}"
@@ -304,7 +312,7 @@ fn server_apis_require_process_capability() {
 
     // 用户允许后放行(不再询问)
     crate::permissions::decide("srv-cap", "process", true);
-    run_command("srv-cap-go", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "srv-cap-go", &ctx)).unwrap();
     assert!(
         !crate::state::take_ui_requests().is_empty(),
         "授权后应正常入队 ServerOp"
@@ -341,7 +349,7 @@ fn builtin_plugin_is_grandfathered() {
         selection: ((0, 0), (0, 0)),
     };
     assert!(
-        run_command("core-run", &ctx).unwrap(),
+        crate::host::with_state_or_init(|st| run_command(st, "core-run", &ctx)).unwrap(),
         "内置插件不该被能力检查拦住"
     );
     assert!(
@@ -457,7 +465,9 @@ fn remove_plugin_file_needs_fs_write() {
         "#,
     )
     .unwrap();
-    let err = run_command("rm-go", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "rm-go", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("未声明能力") && err.contains("fs_write"),
         "{err}"
@@ -473,7 +483,7 @@ fn remove_plugin_file_needs_fs_write() {
         "#,
     )
     .unwrap();
-    assert!(run_command("rm-go", &ctx).unwrap_or(false));
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "rm-go", &ctx)).unwrap_or(false));
     assert_eq!(take_messages(), vec!["rm:false"], "幂等删除应返回 false");
 }
 
@@ -498,7 +508,7 @@ fn js_permissions_query() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    run_command("caps-report", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "caps-report", &ctx)).unwrap();
     let msg = take_messages();
     let v: serde_json::Value = serde_json::from_str(&msg[0]).expect("permissions() 应返回对象");
     assert_eq!(v["process"], serde_json::json!(true), "已声明 ⇒ 放行");
@@ -506,7 +516,7 @@ fn js_permissions_query() {
     assert_eq!(v["fs_write"], serde_json::json!(false));
     // 记住一个"允许"之后 ⇒ 查询跟着变(true)
     crate::permissions::decide("caps", "fs_read", true);
-    run_command("caps-report", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "caps-report", &ctx)).unwrap();
     let msg = take_messages();
     let v: serde_json::Value = serde_json::from_str(&msg[0]).unwrap();
     assert_eq!(v["fs_read"], serde_json::json!(true), "决定后查询应为 true");
@@ -520,7 +530,7 @@ fn js_permissions_query() {
         "#,
     )
     .unwrap();
-    run_command("legacy-report", &ctx).unwrap();
+    crate::host::with_state_or_init(|st| run_command(st, "legacy-report", &ctx)).unwrap();
     let msg = take_messages();
     let v: serde_json::Value = serde_json::from_str(&msg[0]).unwrap();
     assert_eq!(
@@ -595,13 +605,15 @@ fn capability_covers_sibling_apis() {
         selection: ((0, 0), (0, 0)),
     };
     // process 已声明 ⇒ spawn 放行(不再被拒)
-    assert!(run_command("cap-spawn", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "cap-spawn", &ctx)).unwrap());
     assert!(
         pending_permissions().is_empty(),
         "process 已声明,不该产生待授权"
     );
     // fs_read 未声明 ⇒ read_dir 走询问(同族:read_file/read_file_async/read_dir 同一能力)
-    let err = run_command("cap-read", &ctx).unwrap_err().to_string();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "cap-read", &ctx))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("fs_read"), "{err}");
     assert!(
         pending_permissions()
@@ -651,13 +663,13 @@ fn plugin_reload() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("reload-cmd", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "reload-cmd", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["v1"]);
 
     // reload：清空状态后重跑全部已记录脚本
     reload_all().unwrap();
     assert!(has_handlers("save"), "handlers re-registered after reload");
-    assert!(run_command("reload-cmd", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "reload-cmd", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["v1"]);
     let _ = take_ui_requests(); // 清 reload_all 入队的 ClosePanel
 }
@@ -741,13 +753,13 @@ fn reload_keeps_plugins_with_deps_and_hooks() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("ft", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "ft", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["ft-ok"]);
     let _ = take_ui_requests();
     // reload:重跑全部(init.js + features/*)
     reload_all().unwrap();
     assert!(
-        run_command("ft", &ctx).unwrap(),
+        crate::host::with_state_or_init(|st| run_command(st, "ft", &ctx)).unwrap(),
         "filetree 命令 reload 后仍可用"
     );
     assert_eq!(take_messages(), vec!["ft-ok"]);
@@ -811,7 +823,7 @@ fn reload_after_init_midway_failure_keeps_dependent_plugins() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("pa", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pa", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["pa:icons"]);
     let _ = take_ui_requests();
     // 磁盘 bad 改坏版 → reload:init.js 在 bad 处失败,plugin_a 单独 eval
@@ -825,7 +837,7 @@ fn reload_after_init_midway_failure_keeps_dependent_plugins() {
     let _ = take_messages();
     let _ = take_ui_requests();
     assert!(
-        run_command("pa", &ctx).is_ok(),
+        crate::host::with_state_or_init(|st| run_command(st, "pa", &ctx)).is_ok(),
         "plugin_a 命令 reload 后应可调用"
     );
     let msgs = take_messages();
@@ -891,7 +903,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         docs: vec![],
     };
     assert!(
-        run_command("filetree", &ctx).is_ok(),
+        crate::host::with_state_or_init(|st| run_command(st, "filetree", &ctx)).is_ok(),
         "用户 filetree 命令 reload 后应可调用"
     );
 }
@@ -949,7 +961,7 @@ fn reload_missing_relative_load_then_dependent_pollution() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("pa", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pa", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["pa:icons"]);
     let _ = take_ui_requests();
     // reload 前删 terminal.js(用户"禁用"= 删文件但 init.js 留着 load)→ reload 重跑 init.js 失败
@@ -962,7 +974,7 @@ fn reload_missing_relative_load_then_dependent_pollution() {
     let _ = take_messages();
     let _ = take_ui_requests();
     // plugin_a 单独 eval(init.js 中断后)命令回调应完好
-    assert!(run_command("pa", &ctx).is_ok());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "pa", &ctx)).is_ok());
     let msgs = take_messages();
     assert_eq!(
         msgs.first().map(|s| s.as_str()),
@@ -1010,7 +1022,7 @@ fn reload_failed_script_does_not_block_others() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("good", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "good", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["still-here"]);
     // 坏脚本名:bad.js(相对名判断用;磁盘读按绝对路径)
     std::fs::write(
@@ -1027,7 +1039,7 @@ fn reload_failed_script_does_not_block_others() {
     assert!(err.to_string().contains("bad.js"), "错误含脚本名: {err}");
     let _ = take_ui_requests();
     assert!(
-        run_command("good", &ctx).is_ok(),
+        crate::host::with_state_or_init(|st| run_command(st, "good", &ctx)).is_ok(),
         "good 脚本 reload 后仍可用(不被 bad 阻塞)"
     );
 }
@@ -1120,7 +1132,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
         docs: vec![],
     };
     assert!(
-        run_command("filetree", &ctx).is_ok(),
+        crate::host::with_state_or_init(|st| run_command(st, "filetree", &ctx)).is_ok(),
         "filetree 命令 reload 后应可调用"
     );
 }
@@ -1191,7 +1203,7 @@ fn reload_closes_open_panel_layer() {
         selection: ((0, 0), (0, 0)),
         docs: vec![],
     };
-    assert!(run_command("open-panel", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "open-panel", &ctx)).unwrap());
     assert!(matches!(
         take_ui_requests()[0],
         UiRequest::OpenPanel(OpenPanelReq { .. })
@@ -1228,7 +1240,7 @@ fn plugin_reload_top_level_const() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("ccmd", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "ccmd", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["ok"]);
 }
 
@@ -1280,7 +1292,7 @@ fn plugin_deps_auto_load() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("deps-run", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "deps-run", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["feat:feat icons:icons same:true"]);
 
     // 循环依赖：a deps b，b deps a → 报错
@@ -1304,7 +1316,7 @@ fn plugin_deps_auto_load() {
         a = a_abs,
     );
     load_script_named("cyc.js", &cyc_script).unwrap();
-    assert!(run_command("cyc-run", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "cyc-run", &ctx)).unwrap());
     assert!(
         take_messages()[0].contains("circular dependency"),
         "循环依赖应报错"
@@ -1354,9 +1366,9 @@ fn entry_load_export_lazy() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert!(run_command("load-exp", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "load-exp", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["a:1 b:x"]);
-    assert!(run_command("load-cached", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "load-cached", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["same:true"]);
 
     // lazy：桩首次调用时加载 + 转执行
@@ -1366,7 +1378,7 @@ fn entry_load_export_lazy() {
     )
     .unwrap();
     load_script_named("lazy-driver.js", r#"helix.lazy("lazy.js", "lazy-cmd");"#).unwrap();
-    assert!(run_command("lazy-cmd", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "lazy-cmd", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["lazy-ran"]);
 
     // run_command 带 ctx：命令读 ctx.cursor
@@ -1382,7 +1394,7 @@ fn entry_load_export_lazy() {
         r#"helix.register_command("call-where", () => { helix.run_command("where", { cursor: { row: 3, col: 7 } }); });"#,
     )
     .unwrap();
-    assert!(run_command("call-where", &ctx).unwrap());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "call-where", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["at:3,7"]);
 
     // 校验：未知文件 → 抛错
@@ -1391,7 +1403,7 @@ fn entry_load_export_lazy() {
         r#"helix.register_command("bad-load", () => { helix.load("nope.js"); });"#,
     )
     .unwrap();
-    assert!(run_command("bad-load", &ctx).is_err());
+    assert!(crate::host::with_state_or_init(|st| run_command(st, "bad-load", &ctx)).is_err());
 
     std::mem::forget(dir);
 }

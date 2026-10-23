@@ -424,7 +424,9 @@ mod tests {
             cursor: (0, 0),
             selection: ((0, 0), (0, 0)),
         };
-        assert!(crate::run_command("sm-task", &ctx).unwrap());
+        assert!(
+            crate::host::with_state_or_init(|st| crate::run_command(st, "sm-task", &ctx)).unwrap()
+        );
         // 取第一个 ServerTask 请求(其余测试可能并发残留其它请求,find 而非下标 0)
         let reqs = take_ui_requests();
         let (tid, items) = reqs
