@@ -272,6 +272,11 @@ impl UiOp {
             UiOp::Equalize { id } => compositor.equalize_leaf(id, js.as_deref_mut()),
             UiOp::FocusLeaf { id } => compositor.focus_leaf(id, js),
             UiOp::RestoreLayout { json } => {
+                // 缓存与重建**同一处**写:有宿主就显式写缓存(无宿主 ⇒ 没有 JS 读者);
+                // 随后按 dump 真重建树(已不存在的叶子收敛掉)。
+                if let Some(st) = js.as_deref().map(|h| h.state()) {
+                    helix_js::cache_layout(st, &json);
+                }
                 match serde_json::from_str::<serde_json::Value>(&json) {
                     Ok(v) => {
                         if let Err(e) = compositor.layout_tree().restore(&v) {

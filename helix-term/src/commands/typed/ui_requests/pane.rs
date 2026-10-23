@@ -200,8 +200,8 @@ pub(crate) fn handle_focus_leaf(FocusLeafReq { id }: FocusLeafReq) -> anyhow::Re
 pub(crate) fn handle_cache_layout(
     CacheLayoutReq { text: json }: CacheLayoutReq,
 ) -> anyhow::Result<Option<UiOp>> {
-    helix_js::cache_layout_current(&json);
-    // restore_layout 的「接线」:不只写缓存,真按 dump 重建树
-    // (复用已有组件;已不存在的叶子收敛掉) —— 真正重建在 `UiOp::RestoreLayout::apply`
+    // **纯翻译**:这里没有宿主(L4-③ 收口后不再摸隐式宿主)。
+    // 缓存写入与重建树一起放到 `UiOp::RestoreLayout::apply` —— 那里 `js` 是显式形参,
+    // 且两件事在同一个阻塞任务里做,时序比"翻译期写缓存"更一致。
     Ok(Some(UiOp::RestoreLayout { json }))
 }
