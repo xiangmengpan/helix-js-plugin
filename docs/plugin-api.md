@@ -69,7 +69,7 @@
 `helix.define_config(name, {key: {type, default, doc}})`(脚本加载时声明)、`helix.get_config(name)`(默认值 + 用户 `[plugins.<name>]` 覆盖,只读)、`helix.get_config_docs(name)`(键/类型/默认值/说明,自建设置面板用)。类型只有 `boolean`/`number`/`string`/`enum`;写错回退默认值并报错,**拼错的键也报错**(不静默)。
 
 - 优点:声明式 + 类型校验;插件 load / reload / 懒加载后自动重建(装完插件不会读到 null);用户覆盖只走 `config.toml`,不用改插件。
-- 局限:只支持标量(无嵌套对象/数组);只读、无写入 API(改了走 `:config-reload`);`[plugins]` 顶层键暂无读取入口;filetree/tabbar 声明的键插件侧尚未接线。
+- 局限:只支持标量(无嵌套对象/数组);只读、无写入 API(改了走 `:config-reload`);`[plugins]` 顶层键暂无读取入口。
 
 → 详细见 [`api/config.md`](api/config.md)
 
@@ -116,10 +116,11 @@
 **图标(`helix.icons.*`)**:`file(path)` / `dir(expanded)` / `mode(mode)` / `diagnostic(sev)` /
 `git(status)` / `completion(kind)` / `enabled(on?)`。图标表在**核心**(`helix-js/src/icons.rs`,7 组 145 条),
 所以**所有插件零依赖可用** —— 不需要再声明 `deps: ["lib/icons.js"]`(那 4 处已删)。
-`enabled(false)` 一处降级:文件类图标变空、目录回退 `▸/▾`,或写 `config.toml` 的
-`[icons] nerd_font = false`。**已知时序**:该配置在 `plugins/lib/icons.js` 加载时应用一次,
-`:config-reload` 不重推(再 `:plugin-reload` 即可);终态是把 `[icons]` 收进 `helix-view`
-的 Config、启动时由 Rust 直接设置,届时那个薄壳与 init 里的显式加载都可删。
+`enabled(false)` 一处降级:文件类图标变空、目录回退 `▸/▾`,或在 `config.toml` 里写
+**`[plugins.icons] nerd_font = false`**(方案 C 的段名;**`[icons]` 是旧写法,写了会让
+config 加载报 `unknown field`**)。**已知时序**:该配置在 `plugins/icons/plugin.js` 加载时
+应用一次,`:config-reload` 不重推(再 `:plugin-reload` 即可);终态是把这段收进 `helix-view`
+的 Config、启动时由 Rust 直接设置,届时那个薄壳与 init 里的显式加载都可删。见 [`api/config.md`](api/config.md)。
 
 `helix.picker.define/run`(定义数据源,调起**原生 Picker**:nucleo 模糊匹配/滚动/预览/核心键位(插件可用源的 onKey 认领**核心不认识的**键);行格式数组或 `{cells, payload}` 分离;四个常用源 files/grep/buffers/symbols **本身就是 JS**(`plugins/examples/picker.js` 用 `helix.picker.define` 定义);核心只提供**注册表 + 分发**与**原生 UI**(nucleo 模糊匹配/滚动/预览/键位));`helix.set_theme`(scope 级实时覆盖)/`reset_theme`/`get_style`/`theme_info`/`set_theme_name`/`on("theme-change")`。
 
@@ -142,7 +143,7 @@
 `:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源;**实现全在 JS 侧** `plugins/plugin/plugin.js`);JS API `helix.plugin(name, {deps})`(加载期依赖,核心)+ `helix.plugin.install/update/remove`(**该插件挂上的**兼容层)。
 
 - 优点:来源追踪(manifest:source/kind/installed_at/pinned/commit/files);卸载/更新闭环;写/删走核心的**限域**文件 API(相对路径 + 拒 `..` + 必须在插件根内)。
-- 局限:JS API fire-and-forget(结果看状态栏);git 操作同步阻塞;装完不自动加载(需 `:plugin-reload`);**安装期依赖解析(git 仓库 `plugin.json` 递归)已删除**,只剩加载期 `deps`;`:plugin reload` 仍是提示用 `:plugin-reload` 的桩。
+- 局限:JS API fire-and-forget(结果看状态栏);git 操作同步阻塞;装完不自动加载(需 `:plugin-reload`);**安装期依赖解析(git 仓库 `plugin.json` 递归)已删除**,只剩加载期 `deps`;`:plugin reload` **已实装**(2026-10-19):走 `helix.reload_plugins()` 入队、命令边界执行,与 `:plugin-reload` 同一实现。
 
 → 详细见 [`api/plugin.md`](api/plugin.md)
 
@@ -262,7 +263,7 @@ helix.term_kill(id)
 helix.term_list()                        // [{view_id, cmd}] 当前终端
 helix.term_close(view_id)                // 按 id 关闭终端
 helix.term_resize(id, rows, cols)               // pty TIOCSWINSZ,Unix
-helix.on(event, fn)                             // 20 个事件见下方"命名空间与事件索引"
+helix.on(event, fn)                             // 21 个事件见下方"命名空间与事件索引"
 helix.map(mode, key, commandOrFn)
 helix.set_cursor(row, col)
 helix.set_selection(ar, ac, hr, hc)
@@ -408,8 +409,8 @@ helix.text.*   pad, truncate, width
 (`plugins/tools/check_capability_surface.mjs`:上面那张"能力 ↔ API"表的**机械版本**,
 漏检查/换错能力都会红)。本文件这一半的三个判据:
 ① 本文件里出现的 `helix.X` / `helix.ns.X` 都必须在注册表(或**插件补的名字**白名单)里;
-② 注册表 134 个成员每个都要有条目(全名或出现在上面的命名空间索引块里);
-③ 20 个事件都要出现。漂移 ⇒ 退出码 1 ⇒ CI 红。
+② 注册表 154 个成员每个都要有条目(全名或出现在上面的命名空间索引块里);
+③ 21 个事件都要出现。漂移 ⇒ 退出码 1 ⇒ CI 红。
 
 所以**改 API 时请顺手跑一次 `cargo xtask api-check`**;新增"插件补的名字"时,把它加进
 `check_doc_surface.mjs` 的 `PLUGIN_PROVIDED` 白名单(那是文档有权提到、注册表里没有的

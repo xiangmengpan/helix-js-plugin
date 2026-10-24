@@ -175,7 +175,7 @@ section("── ③ 事件(EventName ↔ EVENT_WHITELIST)──");
 
 section("── 汇总 ──");
 console.log(
-  `  注册表:${flat.size + qualified.size} 个成员 / ${namespaces.size - 1} 个命名空间 · ${events.size} 个事件`,
+  `  注册表:${flat.size + qualified.size} 个成员 / ${namespaces.size - 1} 个命名空间(不含根) · ${events.size} 个事件`,
 );
 if (problems.length) {
   console.log(`\n✗ 有漂移(${problems.length} 处):${DOC} 与注册表不一致`);

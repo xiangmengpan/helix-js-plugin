@@ -113,7 +113,7 @@ helix.buffer.list(); helix.buffer.current(); helix.buffer.focus(id);
 helix.icons.file("src/main.rs"); helix.icons.dir(true); helix.icons.mode("normal");
 helix.icons.diagnostic("error"); helix.icons.git("M"); helix.icons.completion(3);
 helix.icons.enabled(false);  // 一处关掉全部 nerd font 图标
-                             //(或 config.toml 里 [icons] nerd_font = false)
+                             //(或 config.toml 里 [plugins.icons] nerd_font = false)
 helix.pane_mode.current(); helix.pane_mode.keymap();  // 当前模式 + 其键位表(唯一来源)
 ```
 
@@ -170,6 +170,40 @@ helix.set_keymap_hint((ctx) => ({
 }));
 // 返回 null 则不显示;未注册回调 → 内置 Info 兜底
 ```
+
+### 插件配置
+
+每个插件声明自己的配置项,用户在 `config.toml` 的 `[plugins.<name>]` 段覆盖;
+默认值合并、类型校验、重建都由核心负责 —— 插件不自己解析配置文件。
+
+```js
+// 插件侧:加载时声明一次
+helix.define_config("filetree", {
+  show_hidden: { type: "boolean", default: false, doc: "默认显示隐藏文件" },
+  position:    { type: "enum",    default: "left", options: ["left", "right"], doc: "面板贴哪边" },
+});
+const cfg = helix.get_config("filetree") || {};   // 默认值 + 用户覆盖(只读)
+helix.get_config_docs("filetree");                // [{key, type, default, doc}] 可自建设置面板
+```
+
+```toml
+# 用户侧
+[plugins.filetree]
+show_hidden = true
+
+[plugins.which-key]
+position = "center"
+```
+
+- 类型只有 `boolean` / `number` / `string` / `enum`(`options`);不支持嵌套对象/数组。
+- 类型写错:该键报错并回退默认值,其余键照常生效。
+  **拼错的键也会报**(`未在 define_config 中声明`),不会静默忽略。
+- 合并结果在启动、`:config-reload`、以及任何插件加载/重载后(`helix.load` / `:plugin-load` /
+  `:plugin-reload`)都会重建 —— 已加载插件的 `get_config` 不会是 `null`。
+- **现取**(写在 render / 命令回调里)⇒ `:config-reload` 立即生效;模块顶层缓存一份 ⇒
+  改完要 `:plugin-reload` 才看到新值。
+- 细节:[`docs/api/config.md`](docs/api/config.md);与 JS 键位的优先级:
+  [`docs/config-precedence.md`](docs/config-precedence.md)。
 
 ### 终端钩子
 
@@ -303,7 +337,7 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 | `which-key/` | 快捷键中文提示(位置可配置) |
 | `tabbar/` | 布局标签条示范(顶部槽位,点击聚焦) |
 | `arsenal/` | 浮层市场窗(`:arsenal`)—— 取代已废弃的 server-manager |
-| `icons/` | 只有 `[icons]` 配置;图标表本身在核心(`helix.icons.*`) |
+| `icons/` | 只有 `[plugins.icons]` 配置;图标表本身在核心(`helix.icons.*`) |
 | `tutor/` | `:tutor` 教程(**第一个从核心搬进插件的功能**;内容在 `runtime/tutor`,插件打开它且**不绑定路径**) |
 | `layout/` | `:layout save\|load\|list\|delete <name>` 命名布局的会话存取(**已从核心搬进插件**;数据 API `helix.layout.*` 在 `helix-js`) |
 | `plugin/` | `:plugin list\|install\|remove\|update\|pin\|unpin\|reload\|status` 插件管理器(**已从核心搬出**);并对外提供 `helix.plugin.*` API |

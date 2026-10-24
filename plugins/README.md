@@ -36,7 +36,7 @@ plugins/
 
 | 插件 | 提供 | 自带 `init.js` 自动加载? |
 |---|---|---|
-| `icons` | `[icons] nerd_font` 配置通道 + 6 个图标函数**兼容薄壳**(图标数据已收进核心 `helix.icons.*`,新代码零依赖直接用) | ✅ |
+| `icons` | `[plugins.icons] nerd_font` 配置通道 + 6 个图标函数**兼容薄壳**(图标数据已收进核心 `helix.icons.*`,新代码零依赖直接用) | ✅ |
 | `tutor` | `:tutor`(教程;打开随软件分发的内容,不绑定路径) | ✅ |
 | `layout` | `:layout save\|load\|list\|delete <name>`(命名布局会话) | ✅ |
 | `plugin` | `:plugin`(插件管理器的 JS 侧实现:list/install/update/remove/pin/status/reload) | ✅ |

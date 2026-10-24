@@ -122,7 +122,7 @@ helix.buffer.list(); helix.buffer.current(); helix.buffer.focus(id);
 helix.icons.file("src/main.rs"); helix.icons.dir(true); helix.icons.mode("normal");
 helix.icons.diagnostic("error"); helix.icons.git("M"); helix.icons.completion(3);
 helix.icons.enabled(false);  // turn all nerd-font icons off in one place
-                             // (or `[icons] nerd_font = false` in config.toml)
+                             // (or `[plugins.icons] nerd_font = false` in config.toml)
 helix.pane_mode.current(); helix.pane_mode.keymap();  // mode + its key table (single source)
 ```
 
@@ -179,6 +179,40 @@ helix.set_keymap_hint((ctx) => ({
 }));
 // Return null to hide; no callback registered → built-in Info fallback
 ```
+
+### Plugin configuration
+
+Every plugin declares its own options; users override them in `config.toml` under `[plugins.<name>]`.
+Core merges defaults, validates types and rebuilds the result — plugins never parse config files.
+
+```js
+// plugin side: declare once, at load time
+helix.define_config("filetree", {
+  show_hidden: { type: "boolean", default: false, doc: "show dotfiles by default" },
+  position:    { type: "enum",    default: "left", options: ["left", "right"], doc: "side" },
+});
+const cfg = helix.get_config("filetree") || {};   // defaults + user overrides (read-only)
+helix.get_config_docs("filetree");                // [{key, type, default, doc}] for settings UIs
+```
+
+```toml
+# user side
+[plugins.filetree]
+show_hidden = true
+
+[plugins.which-key]
+position = "center"
+```
+
+- Types: `boolean` / `number` / `string` / `enum` (`options`); no nested objects or arrays.
+- Wrong type → that key reports an error and falls back to its default, other keys still apply.
+  A **misspelled key is reported too** (`未在 define_config 中声明`), never silently ignored.
+- The merged result is rebuilt at startup, on `:config-reload`, and after any plugin load/reload
+  (`helix.load` / `:plugin-load` / `:plugin-reload`) — `get_config` is never `null` for a loaded plugin.
+- Read it per use (inside render / command callbacks) to pick up `:config-reload` immediately;
+  capture it at module level and you need `:plugin-reload` to see new values.
+- Details: [`docs/api/config.md`](docs/api/config.md) · precedence vs JS keymaps:
+  [`docs/config-precedence.md`](docs/config-precedence.md).
 
 ### Terminal hooks
 
@@ -321,7 +355,7 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 | `which-key/` | Keymap Chinese hints (configurable position) |
 | `tabbar/` | Layout tab bar demo (top slot, click to focus) |
 | `arsenal/` | Overlay marketplace window (`:arsenal`) — replaces the deprecated server-manager |
-| `icons/` | `[icons]` config only — the icon table itself lives in core (`helix.icons.*`) |
+| `icons/` | `[plugins.icons]` config only — the icon table itself lives in core (`helix.icons.*`) |
 | `tutor/` | `:tutor` — the tutorial (**the first feature moved out of core into a plugin**; content lives in `runtime/tutor`, the plugin opens it without binding a path) |
 | `layout/` | `:layout save\|load\|list\|delete <name>` — named layout sessions (**moved out of core into a plugin**; data API `helix.layout.*` lives in `helix-js`) |
 | `plugin/` | `:plugin list\|install\|remove\|update\|pin\|unpin\|reload\|status` — the plugin manager (**moved out of core**); it also provides the `helix.plugin.*` API |

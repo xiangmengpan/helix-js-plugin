@@ -314,9 +314,12 @@ grep -rn "_current(" helix-term/src --include=*.rs | grep "helix_js::" | grep -v
    让 callee 内部那些仍走隐式解析的路径（引擎相关）能工作。
 
 除这两类外，状态一律**显式传递**。少数"结构上没有 `Context`"的边界用**具名捕获入口**
-`host::state_handle()` / `state_handle_or_init()` —— 生产代码共 **32 处**
+`host::state_handle()` / `state_handle_or_init()` —— 生产代码共 **29 处调用**
 （`grep -rn "state_handle" helix-term/src helix-js/src | grep -v tests`），
-集中在 `application.rs`(12) 与 `compositor.rs`(10)，其余为零星 13 处 + 定义 2 处。
+集中在 `application.rs`(12) 与 `compositor.rs`(10)，其余 7 处（`typed.rs` / `ui/editor.rs` /
+`ui/js_picker.rs` / `ui/js_surface.rs` / `ui/plugin_terminal.rs` / `ui/statusline.rs` /
+`helix-js/src/commands.rs` 各 1），另有 `host.rs` 的 2 处定义。上面那条 grep 会把定义与注释
+一起数到 **34**，**调用点是 29**（2026-10-23 复核）。
 关键不在数量而在**形态**：全部是"一行捕获 + 显式 API"，没有一处是"在访问器里各自摸 state"。
 
 ### 踩过的坑（值得留给下一轮）

@@ -447,7 +447,8 @@ function main() {
   // ── 汇总 ──
   section("── 汇总 ──");
   const total = [...rust.members.values()].reduce((s, m) => s + m.size, 0);
-  console.log(`  注册表:${total} 个成员 / ${rust.members.size} 个命名空间 · ${rust.events.size} 个事件`);
+  // 命名空间数**不含根**（与 check_doc_surface.mjs 同一口径；`rust.members` 含根 `helix`）
+  console.log(`  注册表:${total} 个成员 / ${rust.members.size - 1} 个命名空间 · ${rust.events.size} 个事件`);
   for (const i of infos) console.log(`  ℹ ${i}`);
   if (problems.length) {
     console.log(`\n✗ 有漂移(${problems.length} 处):`);

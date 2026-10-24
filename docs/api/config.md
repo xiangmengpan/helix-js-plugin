@@ -54,6 +54,9 @@ const docs = helix.get_config_docs("filetree");   // [{key,type,default,doc}] | 
 ```
 
 - 每次调用返回**新对象**:改它不影响缓存,也不影响别的插件。
+- **脚本顶层读也有值**(2026-10-23):`define_config` 之后紧接着 `const CFG = helix.get_config(..)`
+  时缓存还没重建(重建发生在整段脚本跑完之后),`get_config` 会**就地按 schema + 用户覆盖算一次**
+  ⇒ 拿到的是默认值 + 覆盖,不是 `null`。
 - 没有声明过 `define_config` 的名字 → `null`(所以插件里习惯 `|| {}` 兜底)。
 - **只读**:没有写入 API;改配置走编辑 `config.toml` + `:config-reload`。
 - `get_config_docs` 是给**自建设置面板/帮助**用的原料(键名 + 类型 + 默认值 + 说明),不是现成的设置 UI。
@@ -85,19 +88,20 @@ schema 是在**插件脚本执行时**才注册的,所以"合并结果"必须在
 | 段 | 键 |
 |---|---|
 | `[plugins.dashboard]` | `enabled` / `logo` / `width` / `height` |
-| `[plugins.filetree]` | `show_hidden` / `refresh_ms`(⚠ 见 §7) |
+| `[plugins.filetree]` | `show_hidden` |
 | `[plugins.icons]` | `nerd_font` |
 | `[plugins.picker-ui]` | `max_items` / `width` / `height` |
 | `[plugins.statusline]` | `show_git_branch` / `show_diagnostics` |
-| `[plugins.tabbar]` | `show_dirty` / `max_labels`(⚠ 见 §7) |
+| `[plugins.tabbar]` | `max_labels` |
 | `[plugins.terminal]` | `shell` / `float_size` / `vterm_size` / `hterm_size` |
 | `[plugins.which-key]` | `position` / `show_docs` |
 
 ## 7. 已知限制
 
-- **filetree / tabbar 声明的键目前没有被插件读取**:两个插件取了 `CFG` 却没用在逻辑里
-  (`show_hidden` 走的是内部状态、`refresh_ms` 没有定时器),写进 `config.toml` 只会通过校验、
-  不会改变行为。要么插件侧接线,要么从 schema 里删掉 —— 两种都比"看起来能配"好。
+- **声明了却没人读的键已清零(2026-10-23)**:`filetree.show_hidden` 与 `tabbar.max_labels` 已接线;
+  另两个键**从 schema 删除**了,因为当前拿不到实现它们的数据 —— `filetree.refresh_ms`(boa 没有
+  定时器)与 `tabbar.show_dirty`(布局快照 `leafs` 里没有逐叶子的 buffer id)。写了会报
+  `未在 define_config 中声明（已忽略）`,不会静默生效。
 - 校验/告警一次只显示一条(见 §2)。
 - `[plugins]` 顶层键目前只被捕获、没有读取入口(不存在 `get_config("")` 这种用法)。
 - 不支持带点号的段(`[plugins.a.b]` 不是 `a` 的嵌套配置,`a` 只有 schema 时 `b` 会被当未知段忽略)。
@@ -107,7 +111,7 @@ schema 是在**插件脚本执行时**才注册的,所以"合并结果"必须在
 | 层 | 位置 |
 |---|---|
 | JS API(`define_config` / `get_config` / `get_config_docs` + 合并/校验) | `helix-js/src/config.rs` |
-| schema 注册表 / 用户覆盖 / 合并缓存(进程级) | `helix-js/src/state.rs` |
+| schema 注册表 / 用户覆盖 / 合并缓存(**按宿主**,`HostState` 字段) | `helix-js/src/host.rs`、`helix-js/src/state.rs` |
 | `[plugins]` TOML → JSON、启动与 `:config-reload` 时重建 | `helix-term/src/commands/typed.rs`(`build_plugin_configs`) |
 | 插件 load/reload 后重建 | `helix-term/src/commands/typed.rs`(`refresh_plugin_configs`)、`helix-js/src/commands.rs`(`refresh_configs_after_load`) |
 | 设计文档 | [`docs/superpowers/specs/2026-08-15-plugin-config-design.md`](../superpowers/specs/2026-08-15-plugin-config-design.md) |
