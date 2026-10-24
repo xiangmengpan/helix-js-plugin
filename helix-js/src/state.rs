@@ -555,7 +555,13 @@ pub(crate) fn set_last_panel_id(st: &HostState, v: Option<u64>) {
 
 /// 当前打开的面板 id 列表(reload 时全部关闭 —— 只关 last 会残留僵尸面板)。
 /// **按宿主分桶**(见 `host::with_open_panels`):并发测试各看各的桶,不再互相"抢面板"。
-pub(crate) fn with_open_panels<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
+/// 打开的面板 id 列表。**显式**取态(L4-④)
+pub(crate) fn with_open_panels<T>(st: &HostState, f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
+    f(&mut st.open_panels.borrow_mut())
+}
+
+/// 过渡 shim(见 `with_registry_current`)
+pub(crate) fn with_open_panels_current<T>(f: impl FnOnce(&mut Vec<u64>) -> T) -> T {
     crate::host::with_open_panels(f)
 }
 

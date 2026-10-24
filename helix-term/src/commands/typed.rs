@@ -5133,7 +5133,10 @@ fn reload_plugins(
     // D-2 收尾:重跑脚本同样是执行 JS ⇒ 有宿主走泵入口
     let reloaded = match js.as_mut() {
         Some(host) => host.reload_all(),
-        None => helix_js::reload_all(),
+        None => {
+            let st = helix_js::host::state_handle_or_init();
+            helix_js::reload_all(&st)
+        }
     };
     match reloaded {
         Ok(()) => {

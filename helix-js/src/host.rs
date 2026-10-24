@@ -626,7 +626,7 @@ impl JsHost {
         node_id: &str,
         key: &str,
     ) -> anyhow::Result<()> {
-        self.pump(|_st| crate::input::dispatch_input_key(popup_id, node_id, key))
+        self.pump(|st| crate::input::dispatch_input_key(st, popup_id, node_id, key))
     }
 
     /// 泵入口·把粘贴文本送给节点回调
@@ -636,7 +636,7 @@ impl JsHost {
         node_id: &str,
         text: &str,
     ) -> anyhow::Result<()> {
-        self.pump(|_st| crate::input::dispatch_input_paste(popup_id, node_id, text))
+        self.pump(|st| crate::input::dispatch_input_paste(st, popup_id, node_id, text))
     }
 
     /// 泵入口·把节点事件(`onPress`/`onChange`)送给回调
@@ -805,7 +805,7 @@ impl JsHost {
 
     /// 泵入口·热重载:重跑已加载的全部脚本(`:plugin-reload` / `:plugin reload`)
     pub fn reload_all(&mut self) -> anyhow::Result<()> {
-        self.pump(|_st| crate::commands::reload_all())
+        self.pump(crate::commands::reload_all)
     }
 
     // 注意:这里**没有** `picker_invoke_action` 的泵版本。
@@ -1491,11 +1491,11 @@ mod engine_ownership_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::init();
-        crate::state::with_open_panels(|p| p.push(42));
+        crate::state::with_open_panels_current(|p| p.push(42));
 
         let got = std::thread::spawn(|| {
             crate::init(); // 该线程自建宿主
-            crate::state::with_open_panels(|p| p.clone())
+            crate::state::with_open_panels_current(|p| p.clone())
         })
         .join()
         .expect("子线程不应 panic");
@@ -1504,7 +1504,9 @@ mod engine_ownership_tests {
             got.is_empty(),
             "面板清单应按宿主隔离,而不是进程级共享;实得 {got:?}"
         );
-        let _ = crate::state::with_open_panels(std::mem::take);
+        let _ = crate::host::with_state_or_init(|st| {
+            crate::state::with_open_panels(st, std::mem::take)
+        });
     }
 
     /// **布局目录也要按宿主隔离**(T5-a 的目标行为)。

@@ -392,7 +392,7 @@ pub(crate) fn js_open_panel(
 
     let id = crate::state::next_popup_id(crate::host::host_state(ctx));
     crate::state::set_last_panel_id(crate::host::host_state(ctx), Some(id));
-    crate::state::with_open_panels(|p| p.push(id));
+    crate::state::with_open_panels_current(|p| p.push(id));
     // 注册期绑定属主:render/onKey/onClose 执行时由 `with_callback_owner` 切回来
     crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
     with_popups(crate::host::host_state(ctx), |p| {
@@ -440,7 +440,7 @@ pub(crate) fn js_close_panel(
             crate::state::set_last_panel_id(st, None);
         }
     });
-    crate::state::with_open_panels(|p| p.retain(|x| *x != id));
+    crate::state::with_open_panels_current(|p| p.retain(|x| *x != id));
     UI_REQUESTS
         .get()
         .unwrap()
@@ -1751,7 +1751,7 @@ pub fn close_popup(id: u64) -> Result<()> {
 /// 面板状态清理（僵尸自愈等 Rust 侧路径）：清 JS 注册表 + OPEN_PANELS 列表
 pub fn close_panel_state(id: u64) {
     let _ = close_popup(id);
-    crate::state::with_open_panels(|p| p.retain(|x| *x != id));
+    crate::state::with_open_panels_current(|p| p.retain(|x| *x != id));
     // L3 过渡:Rust 侧入口(无 ctx)⇒ 一次性取态
     crate::host::with_state_or_init(|st| {
         if crate::state::last_panel_id(st) == Some(id) {

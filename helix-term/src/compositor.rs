@@ -139,7 +139,10 @@ impl Context<'_> {
     ) -> anyhow::Result<()> {
         match self.with_js(|h| h.dispatch_input_key(popup_id, node_id, key)) {
             Some(r) => r,
-            None => helix_js::dispatch_input_key(popup_id, node_id, key),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::dispatch_input_key(&st, popup_id, node_id, key)
+            }
         }
     }
 
@@ -152,7 +155,10 @@ impl Context<'_> {
     ) -> anyhow::Result<()> {
         match self.with_js(|h| h.dispatch_input_paste(popup_id, node_id, text)) {
             Some(r) => r,
-            None => helix_js::dispatch_input_paste(popup_id, node_id, text),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::dispatch_input_paste(&st, popup_id, node_id, text)
+            }
         }
     }
 

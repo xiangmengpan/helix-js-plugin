@@ -18,7 +18,9 @@ async fn reload_user_env_filetree_render() -> anyhow::Result<()> {
     let _ = helix_js::take_ui_requests();
 
     // 先 reload(用户场景:reload 后才坏)
-    let reload_err = helix_js::reload_all().err().map(|e| e.to_string());
+    let reload_err = helix_js::reload_all(&helix_js::host::state_handle_or_init())
+        .err()
+        .map(|e| e.to_string());
     let _ = helix_js::take_messages();
     let _ = helix_js::take_ui_requests();
     eprintln!("reload_err: {reload_err:?}");

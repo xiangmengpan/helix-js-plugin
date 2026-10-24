@@ -135,33 +135,35 @@ pub fn input_edit(state: &mut InputState, key: &str) -> Option<String> {
 
 /// 编辑键处理：查 InputStates → input_edit 转换 → 有变化则调 onChange(新值)。
 /// 供 helix-term 按键路由调用（任务 3）；返回 Err 仅当 onChange 回调抛错。
-pub fn dispatch_input_key(popup_id: u64, node_id: &str, key: &str) -> anyhow::Result<()> {
+/// **L4-④**:状态由调用方给出(`JsHost::dispatch_input_key` 经 `pump` 传入)。
+pub fn dispatch_input_key(
+    st: &HostState,
+    popup_id: u64,
+    node_id: &str,
+    key: &str,
+) -> anyhow::Result<()> {
     use anyhow::anyhow;
     use boa_engine::object::builtins::JsFunction;
 
     crate::init();
-    let changed = crate::host::with_state_or_init(|st| {
-        with_input_states(st, |m| {
-            let entry = m
-                .entry((popup_id, node_id.to_string()))
-                .or_insert_with(|| InputState {
-                    value: String::new(),
-                    cursor: 0,
-                    multiline: false,
-                });
-            input_edit(entry, key)
-        })
+    let changed = with_input_states(st, |m| {
+        let entry = m
+            .entry((popup_id, node_id.to_string()))
+            .or_insert_with(|| InputState {
+                value: String::new(),
+                cursor: 0,
+                multiline: false,
+            });
+        input_edit(entry, key)
     });
     let Some(new_value) = changed else {
         return Ok(());
     };
     // 调 onChange(若有)：注册在 NODE_HANDLERS，与 onKey 同机制
     crate::state::with_engine(|engine| {
-        let on_change = crate::host::with_state_or_init(|st| {
-            crate::state::with_node_handlers(st, |h| {
-                h.get(&(popup_id, node_id.to_string()))
-                    .and_then(|hd| hd.on_change.clone())
-            })
+        let on_change = crate::state::with_node_handlers(st, |h| {
+            h.get(&(popup_id, node_id.to_string()))
+                .and_then(|hd| hd.on_change.clone())
         });
         let Some(f) = on_change else { return Ok(()) };
         let func = f
@@ -192,30 +194,32 @@ pub(crate) fn input_insert_batch(state: &mut InputState, text: &str) -> String {
 }
 
 /// 粘贴处理：整段插入 + 一次 onChange（与 dispatch_input_key 同 onChange 机制）。
-pub fn dispatch_input_paste(popup_id: u64, node_id: &str, text: &str) -> anyhow::Result<()> {
+/// **L4-④**:同上。
+pub fn dispatch_input_paste(
+    st: &HostState,
+    popup_id: u64,
+    node_id: &str,
+    text: &str,
+) -> anyhow::Result<()> {
     use anyhow::anyhow;
     use boa_engine::object::builtins::JsFunction;
 
     crate::init();
-    let new_value = crate::host::with_state_or_init(|st| {
-        with_input_states(st, |m| {
-            let entry = m
-                .entry((popup_id, node_id.to_string()))
-                .or_insert_with(|| InputState {
-                    value: String::new(),
-                    cursor: 0,
-                    multiline: false,
-                });
-            input_insert_batch(entry, text)
-        })
+    let new_value = with_input_states(st, |m| {
+        let entry = m
+            .entry((popup_id, node_id.to_string()))
+            .or_insert_with(|| InputState {
+                value: String::new(),
+                cursor: 0,
+                multiline: false,
+            });
+        input_insert_batch(entry, text)
     });
     // 调 onChange(若有)：与 dispatch_input_key 同机制
     crate::state::with_engine(|engine| {
-        let on_change = crate::host::with_state_or_init(|st| {
-            crate::state::with_node_handlers(st, |h| {
-                h.get(&(popup_id, node_id.to_string()))
-                    .and_then(|hd| hd.on_change.clone())
-            })
+        let on_change = crate::state::with_node_handlers(st, |h| {
+            h.get(&(popup_id, node_id.to_string()))
+                .and_then(|hd| hd.on_change.clone())
         });
         let Some(f) = on_change else { return Ok(()) };
         let func = f
@@ -413,7 +417,7 @@ mod tests {
         }
         assert!(input_has_state(id, "q"));
         // 编辑键：改状态 + 触发 onChange（onChange 里 echo）
-        dispatch_input_key(id, "q", "b").unwrap();
+        crate::host::with_state_or_init(|st| dispatch_input_key(st, id, "q", "b")).unwrap();
         assert_eq!(take_messages(), vec!["chg:ab"]);
         // 引擎状态覆盖 JS 传值：再渲染仍是引擎里的 "ab"
         match crate::host::with_state_or_init(|st| render_popup(st, id, 40, 10, None)).unwrap() {
@@ -424,7 +428,7 @@ mod tests {
             _ => panic!("expected tree"),
         }
         // 非编辑键：不动状态、不触发 onChange（Left 只动光标）
-        dispatch_input_key(id, "q", "Left").unwrap();
+        crate::host::with_state_or_init(|st| dispatch_input_key(st, id, "q", "Left")).unwrap();
         assert!(take_messages().is_empty());
         crate::host::with_state_or_init(|st| {
             crate::input::with_input_states(st, |m| {

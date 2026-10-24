@@ -2465,12 +2465,13 @@ fn reset_plugin_state() {
 /// 脚本以 IIFE 包裹求值，每次重跑都是全新词法作用域——顶层 const/let/var 都不冲突，
 /// reload 必然成功（脚本不依赖其他脚本的状态，reload 会重新注册全部命令/处理器），
 /// 因此 Err 分支仅作防御（如脚本依赖被清空的全局状态），单测只覆盖成功路径。
-pub fn reload_all() -> Result<()> {
+/// **L4-④**:状态由调用方给出(`JsHost::reload_all` 经 `pump` 传入)。
+pub fn reload_all(st: &HostState) -> Result<()> {
     crate::init();
     // 面板层还挂在 compositor 上——入队 ClosePanel 让 plugin_reload 的 apply_ui_requests 移除它们，
     // 否则 reset_plugin_state 清掉 JS 注册表后这些层变成无法关闭的僵尸层（渲染报错 + 按键穿透）。
     // 只关 last_panel_id 会漏掉多面板场景，遍历全部。
-    let open_panels = crate::state::with_open_panels(std::mem::take);
+    let open_panels = crate::state::with_open_panels(st, std::mem::take);
     for panel_id in open_panels {
         UI_REQUESTS
             .get()

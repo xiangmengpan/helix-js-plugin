@@ -89,7 +89,8 @@ fn panel_api() {
         load_script(r#"helix.open_panel({ side: "right", size: "big", render: () => [] });"#)
             .is_err()
     );
-    crate::state::with_open_panels(|p| p.clear()); // 清 OPEN_PANELS，防污染后续测试
+    crate::host::with_state_or_init(|st| crate::state::with_open_panels(st, |p| p.clear()));
+    // 清 OPEN_PANELS，防污染后续测试
 }
 
 #[test]
@@ -142,7 +143,7 @@ fn panel_onkey() {
         unreachable!("expected OpenPanel")
     };
     assert!(!panel_has_onkey(id2));
-    crate::state::with_open_panels(|p| p.clear()); // 清 OPEN_PANELS（两个面板未 close），防污染
+    crate::host::with_state_or_init(|st| crate::state::with_open_panels(st, |p| p.clear())); // 清 OPEN_PANELS（两个面板未 close），防污染
     let _ = take_ui_requests();
 }
 

@@ -667,7 +667,7 @@ fn plugin_reload() {
     assert_eq!(take_messages(), vec!["v1"]);
 
     // reload：清空状态后重跑全部已记录脚本
-    reload_all().unwrap();
+    crate::host::with_state_or_init(reload_all).unwrap();
     assert!(has_handlers("save"), "handlers re-registered after reload");
     assert!(crate::host::with_state_or_init(|st| run_command(st, "reload-cmd", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["v1"]);
@@ -684,7 +684,7 @@ fn decorations_cleared_on_reload() {
     // load_script 自身会 push 一个全局 Clear(见 decorations_cleared_on_script_load),先取走
     assert_eq!(take_decorations().len(), 1);
     assert!(take_decorations().is_empty());
-    reload_all().unwrap();
+    crate::host::with_state_or_init(reload_all).unwrap();
     let reqs = take_decorations();
     assert!(
         reqs.iter()
@@ -757,7 +757,7 @@ fn reload_keeps_plugins_with_deps_and_hooks() {
     assert_eq!(take_messages(), vec!["ft-ok"]);
     let _ = take_ui_requests();
     // reload:重跑全部(init.js + features/*)
-    reload_all().unwrap();
+    crate::host::with_state_or_init(reload_all).unwrap();
     assert!(
         crate::host::with_state_or_init(|st| run_command(st, "ft", &ctx)).unwrap(),
         "filetree 命令 reload 后仍可用"
@@ -832,7 +832,7 @@ fn reload_after_init_midway_failure_keeps_dependent_plugins() {
         r#"helix.register_command("bad", () => { BAD SYNTAX"#,
     )
     .unwrap();
-    let err = reload_all().unwrap_err();
+    let err = crate::host::with_state_or_init(reload_all).unwrap_err();
     assert!(err.to_string().contains("failed"), "应有失败汇总: {err}");
     let _ = take_messages();
     let _ = take_ui_requests();
@@ -890,7 +890,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     }
     let _ = take_messages();
     let _ = take_ui_requests();
-    if let Err(e) = reload_all() {
+    if let Err(e) = crate::host::with_state_or_init(reload_all) {
         panic!("reload_all failed: {e}");
     }
     let _ = take_messages();
@@ -966,7 +966,7 @@ fn reload_missing_relative_load_then_dependent_pollution() {
     let _ = take_ui_requests();
     // reload 前删 terminal.js(用户"禁用"= 删文件但 init.js 留着 load)→ reload 重跑 init.js 失败
     std::fs::remove_file(d.join("features/terminal.js")).unwrap();
-    let err = reload_all().unwrap_err();
+    let err = crate::host::with_state_or_init(reload_all).unwrap_err();
     assert!(
         err.to_string().contains("terminal.js"),
         "应报 terminal.js 缺失: {err}"
@@ -1031,7 +1031,7 @@ fn reload_failed_script_does_not_block_others() {
     )
     .unwrap();
     // reload:bad 磁盘版失败,不中止 good
-    let err = reload_all().unwrap_err();
+    let err = crate::host::with_state_or_init(reload_all).unwrap_err();
     assert!(
         err.to_string().contains("1 plugin(s) failed"),
         "汇总错误: {err}"
@@ -1118,7 +1118,7 @@ helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     let _ = take_messages();
     let _ = take_ui_requests();
     // reload
-    if let Err(e) = reload_all() {
+    if let Err(e) = crate::host::with_state_or_init(reload_all) {
         panic!("reload_all failed: {e}");
     }
     let _ = take_messages();
@@ -1178,7 +1178,7 @@ fn reload_real_statusline_render_ok() {
         "reload 前 statusline 应有内容"
     );
     // reload
-    reload_all().unwrap();
+    crate::host::with_state_or_init(reload_all).unwrap();
     let _ = take_messages();
     let _ = take_ui_requests();
     // reload 后 render 应正常(非空,不抛错)
@@ -1210,7 +1210,7 @@ fn reload_closes_open_panel_layer() {
     ));
 
     // reload：面板层还挂在 compositor 上 → 必须入队 ClosePanel 供 apply_ui_requests 移除
-    reload_all().unwrap();
+    crate::host::with_state_or_init(reload_all).unwrap();
     let reqs = take_ui_requests();
     assert!(
         matches!(&reqs[0], UiRequest::ClosePanel(ClosePanelReq { .. })),
@@ -1232,7 +1232,7 @@ fn plugin_reload_top_level_const() {
     )
     .unwrap();
 
-    reload_all().unwrap();
+    crate::host::with_state_or_init(reload_all).unwrap();
     let ctx = CommandContext {
         docs: vec![],
         path: None,
