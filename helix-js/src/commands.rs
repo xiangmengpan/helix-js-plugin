@@ -509,6 +509,16 @@ pub(crate) fn js_plugin(
             });
         }
     }
+    // `onUnload`:卸载**前**跑一次(不能阻止卸载;错误只进消息队列)。
+    // 不放 manifest:`PluginManifest` 派生了 `PartialEq/Eq`,塞 `JsValue` 会破掉。
+    if let Some(f) = args
+        .get(1)
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get(JsString::from("onUnload"), ctx).ok())
+        .filter(|v| v.as_callable().is_some())
+    {
+        crate::state::set_unload_hook(crate::host::host_state(ctx), &name, f);
+    }
     crate::state::with_last_plugin_deps(crate::host::host_state(ctx), |d| {
         d.extend(manifest.deps.clone())
     });
@@ -873,6 +883,19 @@ pub(crate) fn js_map(
         .and_then(|v| v.as_boolean())
         .unwrap_or(false);
 
+    // 键位属主:按 (mode, key) 记,`:plugin-unload` 靠它对每条绑定入队解绑
+    let owner = crate::permissions::current_owner().or_else(crate::permissions::current_declared);
+    let st = crate::host::host_state(context);
+    let slot = (mode.clone(), key.clone());
+    crate::state::with_keymap_owners(st, |m| match (&owner, unbind) {
+        (Some(o), false) => {
+            m.insert(slot, o.clone());
+        }
+        (_, true) => {
+            m.remove(&slot);
+        }
+        _ => {}
+    });
     UI_REQUESTS
         .get()
         .unwrap()
@@ -2470,6 +2493,238 @@ fn reset_plugin_state() {
     crate::host::with_state_or_init(crate::state::mark_theme_dirty);
 }
 
+/// `:plugin-unload <name>` 的回收结果(状态栏显示用)
+#[derive(Debug, Default, Clone)]
+pub struct UnloadReport {
+    pub name: String,
+    pub commands: usize,
+    pub handlers: usize,
+    pub hooks: usize,
+    pub popups: usize,
+    pub panels: usize,
+    pub keymaps: usize,
+    pub themes: usize,
+    pub scripts: usize,
+}
+
+/// 由脚本 key 推出属主名(与 `reload_all` 同一规则:`a/plugin.js` → `a`,`x/y.js` → `y`)
+fn owner_of_script_key(key: &str) -> Option<String> {
+    crate::permissions::plugin_name_from_key(key).or_else(|| {
+        std::path::Path::new(key)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+    })
+}
+
+/// 卸载一个插件:先跑它的 `onUnload`,再**按属主**回收它注册的一切。
+///
+/// 清理面:命令(含 `helix.map` 生成的 `__mapped_N`)、事件处理器、单例钩子、
+/// 弹窗/面板、键位绑定、主题覆盖、picker 源、节点回调、watch、导出与加载清单。
+///
+/// **不做**的(写进文档,不假装做到):JS 全局变量/闭包(同一 Realm 无法回收)、插件自己
+/// 起的 pty 与外部资源 —— 那些请插件在 `onUnload` 里自己关。
+///
+/// 允许在**该插件自己的命令里**调用:命令是从注册表**克隆**出来执行的
+/// (`run_command` 先 `get().cloned()`),回收注册表不影响正在跑的那个函数。
+pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
+    crate::init();
+    let mut report = UnloadReport {
+        name: name.to_string(),
+        ..Default::default()
+    };
+
+    // 1) onUnload **先**跑:错误只记录,绝不中断后面的回收(半卸载比不卸载更难查)
+    if let Some(hook) = crate::state::take_unload_hook(st, name) {
+        if let Some(func) = hook.as_callable().and_then(JsFunction::from_object) {
+            let res = crate::state::with_engine(|engine| {
+                func.call(&JsValue::undefined(), &[], engine).map(|_| ())
+            });
+            if let Err(e) = res {
+                crate::host::push_message(format!("{name}: onUnload failed: {e}"));
+            }
+        }
+    }
+
+    // 2) 属主表:命令 / 事件处理器 / 其余回调
+    let cleanup = crate::permissions::take_owner_registrations(st, name);
+    report.commands = cleanup.commands.len();
+    report.handlers = cleanup.handlers;
+    if report.commands > 0 {
+        crate::state::with_registry(st, |r| {
+            for c in &cleanup.commands {
+                r.remove(c);
+            }
+        });
+        crate::state::with_command_docs(st, |d| {
+            for c in &cleanup.commands {
+                d.remove(c);
+            }
+        });
+    }
+
+    // 3) 回调:按种类分流(弹窗/面板要**入队关闭**,钩子清槽,源/节点表删除)
+    let open_panels = crate::state::with_open_panels(st, |p| p.clone());
+    for key in &cleanup.callbacks {
+        match key.kind() {
+            crate::permissions::CB_POPUP => {
+                let id = key.id();
+                let is_panel = open_panels.contains(&id);
+                if is_panel {
+                    crate::state::with_open_panels(st, |p| p.retain(|x| *x != id));
+                    if crate::state::last_panel_id(st) == Some(id) {
+                        crate::state::set_last_panel_id(st, None);
+                    }
+                    UI_REQUESTS
+                        .get()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .push(UiRequest::ClosePanel(ClosePanelReq { id }));
+                    report.panels += 1;
+                } else {
+                    UI_REQUESTS
+                        .get()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .push(UiRequest::ClosePopup(ClosePopupReq { id }));
+                    report.popups += 1;
+                }
+                crate::state::with_popups(st, |m| m.remove(&id));
+            }
+            crate::permissions::CB_HOOK_STATUSLINE => {
+                crate::state::with_statusline_hook(st, |h| *h = None);
+                crate::state::set_statusline_replace(st, false);
+                report.hooks += 1;
+            }
+            crate::permissions::CB_HOOK_BUFFER_ICON => {
+                crate::state::with_buffer_icon_hook(st, |h| *h = None);
+                report.hooks += 1;
+            }
+            crate::permissions::CB_HOOK_COMPLETION_ICON => {
+                crate::state::with_completion_icon_hook_current(|h| *h = None);
+                report.hooks += 1;
+            }
+            crate::permissions::CB_HOOK_COMPLETION_RENDER => {
+                crate::state::with_completion_render_hook_current(|h| *h = None);
+                report.hooks += 1;
+            }
+            crate::permissions::CB_HOOK_KEYMAP_HINT => {
+                crate::state::with_keymap_hint_hook_current(|h| *h = None);
+                report.hooks += 1;
+            }
+            crate::permissions::CB_NODE => {
+                crate::state::with_node_handlers(st, |m| {
+                    m.remove(&(key.id(), key.name().to_string()));
+                });
+            }
+            crate::permissions::CB_PICKER => {
+                crate::state::with_picker_sources(st, |m| {
+                    m.remove(key.name());
+                });
+            }
+            crate::permissions::CB_WATCH => {
+                UI_REQUESTS
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .push(UiRequest::Unwatch(UnwatchReq { id: key.id() }));
+            }
+            // 异步/LSP/终端/一次性行回调:只摘属主。资源(pty、promise)由插件在
+            // `onUnload` 里自己收;这里不猜。
+            _ => {}
+        }
+    }
+
+    // 4) 键位:该插件的每条绑定都入队解绑(term 侧 remove_binding 是真摘叶)
+    let keys: Vec<(String, String)> = crate::state::with_keymap_owners(st, |m| {
+        let mine: Vec<(String, String)> = m
+            .iter()
+            .filter(|(_, owner)| owner.as_str() == name)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in &mine {
+            m.remove(k);
+        }
+        mine
+    });
+    for (mode, key) in &keys {
+        UI_REQUESTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .push(UiRequest::MapKey(MapKeyReq {
+                mode: mode.clone(),
+                key: key.clone(),
+                command: String::new(),
+                unbind: true,
+            }));
+    }
+    report.keymaps = keys.len();
+
+    // 5) 主题覆盖:摘掉该插件的 scope 并置脏(下次 drain 还原基准主题)
+    let scopes: Vec<String> = crate::state::with_theme_owners(st, |m| {
+        let mine: Vec<String> = m
+            .iter()
+            .filter(|(_, owner)| owner.as_str() == name)
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &mine {
+            m.remove(s);
+        }
+        mine
+    });
+    if !scopes.is_empty() {
+        crate::state::with_theme_overrides(st, |o| {
+            for s in &scopes {
+                o.remove(s);
+            }
+        });
+        crate::state::mark_theme_dirty(st);
+    }
+    report.themes = scopes.len();
+
+    // 6) 导出与加载清单:按脚本 key 的派生名回收(manifest 名可能不同,两边都试)
+    let stale: Vec<String> = crate::host::with_loaded_scripts(|s| {
+        s.iter()
+            .filter(|(k, _)| {
+                let derived = owner_of_script_key(k);
+                derived.as_deref() == Some(name)
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    });
+    for k in &stale {
+        crate::host::with_loaded_scripts(|s| s.retain(|(n, _)| n != k));
+        crate::host::with_script_exports(|m| {
+            m.remove(k);
+        });
+    }
+    report.scripts = stale.len();
+
+    report
+}
+
+/// 对**当前已知的所有属主**逐个 `unload_plugin`(`reload_all` 复用同一份清理逻辑)。
+pub fn unload_all(st: &HostState) -> Vec<UnloadReport> {
+    let mut owners: Vec<String> = Vec::new();
+    for (key, _) in crate::host::with_loaded_scripts(|s| s.clone()) {
+        if let Some(o) = owner_of_script_key(&key) {
+            if !owners.contains(&o) {
+                owners.push(o);
+            }
+        }
+    }
+    for o in crate::permissions::manifest_names() {
+        if !owners.contains(&o) {
+            owners.push(o);
+        }
+    }
+    owners.into_iter().map(|o| unload_plugin(st, &o)).collect()
+}
+
 /// 热重载：清空状态后按加载顺序重跑全部脚本。
 /// 脚本以 IIFE 包裹求值，每次重跑都是全新词法作用域——顶层 const/let/var 都不冲突，
 /// reload 必然成功（脚本不依赖其他脚本的状态，reload 会重新注册全部命令/处理器），
@@ -2491,6 +2746,11 @@ pub fn reload_all(st: &HostState) -> Result<()> {
     }
     crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());
+    // 先**逐个属主走 unload**(onUnload 在 reload 时也要跑;清理逻辑与 :plugin-unload 同一份)
+    unload_all(st);
+    // reload 语义 = 全部重新加载 ⇒ 把加载清单恢复(unload 会按属主摘掉条目,下面要按它重跑)
+    crate::state::with_loaded_scripts(|s| *s = scripts.clone());
+    // 兜底:没有属主的注册(裸脚本/单测里的 eval)仍按老规矩整表清空
     reset_plugin_state();
     // 装饰不随 reload 继承:全局 Clear(term 侧 doc: None = 清空所有 doc;泵循环下一帧应用)。
     // 必须放在 reset 之后(reset 清空队列);脚本重跑 eval 不 push 装饰,队列里只有这一个 Clear。

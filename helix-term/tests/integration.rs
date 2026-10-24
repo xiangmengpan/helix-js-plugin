@@ -58,6 +58,7 @@ mod test {
     mod plugin_terminal_modes;
     mod plugin_terminal_view;
     mod plugin_theme;
+    mod plugin_unload;
     mod plugin_yank_error;
     mod server_manager;
     mod splits;

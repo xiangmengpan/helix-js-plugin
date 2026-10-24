@@ -4352,6 +4352,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature::DEFAULT,
     },
     TypableCommand {
+        name: "plugin-unload",
+        aliases: &[],
+        doc: "Unload a single JavaScript plugin (its commands/keymaps/hooks/theme overrides go away).",
+        fun: plugin_unload,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (1, Some(1)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
         name: "plugin-load",
         aliases: &[],
         doc: "Load a JavaScript plugin file.",
@@ -5411,6 +5419,50 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     // 运行时加载的插件可能刚用 define_config 注册了 schema ⇒ 重建配置缓存
     // (放在最后:校验错误不能被前面的 echo 状态盖掉)
     refresh_plugin_configs(cx.js.as_deref(), cx.editor);
+    Ok(())
+}
+
+/// `:plugin-unload <name>` —— 卸载**单个**插件:它注册的命令/键位/事件处理器/钩子/
+/// 主题覆盖/弹窗全部回收,其它插件不受影响。
+///
+/// 回收前会先跑 manifest 里的 `onUnload`(不能阻止卸载;错误只进消息队列)。
+/// **不做**:JS 全局变量(同 Realm 无法回收)、插件自己起的 pty/外部资源 —— 后者请在
+/// `onUnload` 里自己关。实现见 `helix_js::unload_plugin`(`reload_all` 复用同一份)。
+fn plugin_unload(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(name) = args.first() else {
+        return Err(anyhow!("usage: plugin-unload <name>"));
+    };
+    let report = match cx.js.as_deref() {
+        Some(host) => helix_js::unload_plugin(host.state(), name),
+        None => {
+            let st = helix_js::host::state_handle_or_init();
+            helix_js::unload_plugin(&st, name)
+        }
+    };
+    helix_js::host::push_message(format!(
+        "unloaded {}: {} commands / {} handlers / {} hooks / {} keys / {} themes / {} popups / {} panels",
+        report.name,
+        report.commands,
+        report.handlers,
+        report.hooks,
+        report.keymaps,
+        report.themes,
+        report.popups,
+        report.panels
+    ));
+    let msgs = helix_js::take_messages();
+    if !msgs.is_empty() {
+        cx.editor.set_status(msgs.join(" "));
+    }
+    // 解绑键位 / 关闭弹窗面板都走 UI 请求队列
+    apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
     Ok(())
 }
 

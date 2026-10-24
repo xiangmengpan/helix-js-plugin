@@ -34,6 +34,7 @@
 //! 两者之外的路径(裸脚本顶层代码)归属为"最后声明的插件名"(加载期语义,
 //! 与 `helix.plugin` 的调用顺序一致)。
 
+use crate::host::HostState;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -149,6 +150,15 @@ pub(crate) const CB_HOOK_COMPLETION_RENDER: u8 = 13;
 pub(crate) const CB_HOOK_KEYMAP_HINT: u8 = 14;
 
 impl CbKey {
+    pub(crate) fn kind(&self) -> u8 {
+        self.kind
+    }
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
     fn bare(kind: u8, id: u64) -> Self {
         Self {
             kind,
@@ -221,6 +231,11 @@ pub(crate) fn record_manifest(manifest: PluginManifest) {
     });
 }
 
+/// 已声明过 manifest 的插件名(卸载时按它逐个回收)
+pub(crate) fn manifest_names() -> Vec<String> {
+    with_state(|s| s.manifests.keys().cloned().collect())
+}
+
 /// 加载完成后标注"这个插件是不是内置的"(由 `load_script_checked` 在知道
 /// **提供根**时调用 —— 归属判据是根,不是名字)
 pub(crate) fn mark_builtin(name: &str, builtin: bool) {
@@ -288,6 +303,12 @@ pub(crate) fn forget_callback(key: &CbKey) {
     with_state(|s| {
         s.callback_owners.remove(key);
     });
+}
+
+/// 事件处理器属主表长度(测试断言"两张表等长"用)
+#[cfg(test)]
+pub(crate) fn handler_owner_len(event: &str) -> usize {
+    with_state(|s| s.handler_owners.get(event).map(|v| v.len()).unwrap_or(0))
 }
 
 /// 在"该回调的属主"作用域里执行 `f`。
@@ -378,6 +399,91 @@ pub(crate) fn plugin_name_from_key(key: &str) -> Option<String> {
     p.parent()
         .and_then(|d| d.file_name())
         .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// `unload_plugin` 从属主表里摘下来的东西(**不含** JS 注册表本身 —— 那在 `commands`/`state`)
+pub(crate) struct OwnerCleanup {
+    /// 属于该插件的命令名(调用方负责从 registry / command_docs 删)
+    pub(crate) commands: Vec<String>,
+    /// 属于该插件的回调键(弹窗/面板/节点/picker/钩子)
+    pub(crate) callbacks: Vec<CbKey>,
+    /// 被摘掉的事件处理器条数
+    pub(crate) handlers: usize,
+}
+
+/// 摘掉某个属主的全部注册期绑定(命令 / 事件处理器 / 其余回调 / 待授权 / manifest)。
+///
+/// **事件处理器的属主表按下标对齐** ⇒ 这里先把要删的下标算出来,再对
+/// `handler_owners` 与 `event_handlers` **同一组下标、倒序**删(绝不按值 retain 单边,
+/// 那会让后续下标错位 —— 卸 A 删掉 B)。
+pub(crate) fn take_owner_registrations(st: &HostState, owner: &str) -> OwnerCleanup {
+    with_state(|p| {
+        let commands: Vec<String> = p
+            .command_owners
+            .iter()
+            .filter(|(_, o)| o.as_str() == owner)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in &commands {
+            p.command_owners.remove(c);
+        }
+        let callbacks: Vec<CbKey> = p
+            .callback_owners
+            .iter()
+            .filter(|(_, o)| o.as_str() == owner)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in &callbacks {
+            p.callback_owners.remove(k);
+        }
+        // 事件:先算下标,双侧同步
+        let mut per_event: Vec<(String, Vec<usize>)> = Vec::new();
+        for (event, owners) in p.handler_owners.iter() {
+            let idxs: Vec<usize> = owners
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.as_str() == owner)
+                .map(|(i, _)| i)
+                .collect();
+            if !idxs.is_empty() {
+                per_event.push((event.clone(), idxs));
+            }
+        }
+        let mut handlers = 0usize;
+        for (event, idxs) in &per_event {
+            handlers += idxs.len();
+            crate::state::with_event_handlers(st, |m| {
+                if let Some(list) = m.get_mut(event) {
+                    for &i in idxs.iter().rev() {
+                        if i < list.len() {
+                            list.remove(i);
+                        }
+                    }
+                }
+            });
+            if let Some(owners) = p.handler_owners.get_mut(event) {
+                for &i in idxs.iter().rev() {
+                    if i < owners.len() {
+                        owners.remove(i);
+                    }
+                }
+            }
+        }
+        // 元数据:manifest / 待授权 / 加载期与运行期归属
+        p.manifests.remove(owner);
+        p.pending.retain(|(plugin, _)| plugin != owner);
+        if p.last_declared.as_deref() == Some(owner) {
+            p.last_declared = None;
+        }
+        if p.current.as_deref() == Some(owner) {
+            p.current = None;
+        }
+        OwnerCleanup {
+            commands,
+            callbacks,
+            handlers,
+        }
+    })
 }
 
 /// 放行/拒绝一次的判定(纯函数,便于单测直接打表)

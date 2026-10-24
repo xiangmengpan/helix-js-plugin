@@ -485,6 +485,32 @@ pub(crate) fn with_theme_overrides_current<T>(
     })
 }
 
+/// 主题覆盖属主(scope → 插件名;`helix.set_theme` 写,卸载读)
+pub(crate) fn with_theme_owners<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, String>) -> T,
+) -> T {
+    f(&mut st.theme_owners.borrow_mut())
+}
+
+/// 键位属主((mode,key) → 插件名;`helix.map` 写,卸载读)
+pub(crate) fn with_keymap_owners<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<(String, String), String>) -> T,
+) -> T {
+    f(&mut st.keymap_owners.borrow_mut())
+}
+
+/// 记录插件的 `onUnload`(manifest 解析后写)
+pub fn set_unload_hook(st: &HostState, plugin: &str, f: JsValue) {
+    st.unload_hooks.borrow_mut().insert(plugin.to_string(), f);
+}
+
+/// 取走插件的 `onUnload`(卸载时只跑一次)
+pub(crate) fn take_unload_hook(st: &HostState, plugin: &str) -> Option<JsValue> {
+    st.unload_hooks.borrow_mut().remove(plugin)
+}
+
 /// 置主题脏位（set/reset_theme 调用；helix-term drain 读取）
 pub(crate) fn mark_theme_dirty(st: &HostState) {
     let d = &st.theme_dirty;

@@ -126,6 +126,17 @@ pub(crate) fn js_set_theme(
             overrides.insert(scope, style);
         }
     }
+    // 主题覆盖属主:卸载时按 scope 摘掉该插件设的覆盖
+    let owner = crate::permissions::current_owner().or_else(crate::permissions::current_declared);
+    if let Some(owner) = owner {
+        let scopes: Vec<String> = overrides.keys().cloned().collect();
+        let st = crate::host::host_state(ctx);
+        crate::state::with_theme_owners(st, |m| {
+            for s in scopes {
+                m.insert(s, owner.clone());
+            }
+        });
+    }
     with_theme_overrides(crate::host::host_state(ctx), |o| *o = overrides);
     mark_theme_dirty(crate::host::host_state(ctx));
     Ok(JsValue::undefined())

@@ -1504,3 +1504,129 @@ fn dep_library_inherits_parent_plugin_owner() {
         .to_string();
     assert!(err.contains("fs_read"), "错误应指出缺的能力: {err}");
 }
+
+/// `:plugin-unload <name>` 的核心语义:**只**回收该插件注册的东西。
+///
+/// 两个插件同时在场(审查重点 1:属主判据写错就会误删另一个的键位/钩子),
+/// 并且 A 的产物覆盖全部六类(命令 / 事件 / 钩子 / 键位 / 主题 / 弹窗)。
+#[test]
+fn unload_removes_only_that_plugins_registrations() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    crate::permissions::reset_for_test();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(
+            st,
+            "a.js",
+            r##"helix.plugin("a", { onUnload: () => helix.echo("bye-a") });
+helix.register_command("a-cmd", () => { helix.echo("a"); });
+helix.register_command("a-cmd2", () => {});
+helix.on("mode-change", () => { helix.echo("a-event"); });
+helix.on("save", () => { helix.echo("a-save"); });
+helix.set_statusline(() => "A");
+helix.map("normal", "C-b", "a-cmd");
+helix.set_theme({ "ui.text": "#ff0000" });
+helix.open_popup({ render: () => ["popup"] });"##,
+        )
+        .unwrap()
+    });
+    crate::host::with_state_or_init(|st| {
+        load_script_named(
+            st,
+            "b.js",
+            r##"helix.plugin("b", {});
+helix.register_command("b-cmd", () => {});
+helix.on("mode-change", () => { helix.echo("b-event"); });
+helix.map("normal", "C-c", "b-cmd");
+helix.set_theme({ "ui.text.alt": "#00ff00" });"##,
+        )
+        .unwrap()
+    });
+    // popup 的 render 回调属主也绑上了
+    let popup_count =
+        crate::host::with_state_or_init(|st| crate::state::with_popups(st, |m| m.len()));
+    assert_eq!(popup_count, 1, "A 的弹窗注册在案");
+
+    let report = crate::host::with_state_or_init(|st| unload_plugin(st, "a"));
+
+    assert_eq!(report.commands, 2, "A 的两条命令");
+    assert_eq!(report.handlers, 2, "A 的两个事件处理器");
+    assert_eq!(report.hooks, 1, "A 的状态栏钩子");
+    assert_eq!(report.keymaps, 1, "A 的一条键位");
+    assert_eq!(report.themes, 1, "A 的一个主题 scope");
+    assert_eq!(report.popups, 1, "A 的弹窗");
+
+    // 1) onUnload 先跑(消息队列可见)
+    let msgs = take_messages();
+    assert!(
+        msgs.iter().any(|m| m == "bye-a"),
+        "onUnload 应被调用: {msgs:?}"
+    );
+
+    // 2) A 的东西没了,B 的都在(审查重点 1)
+    let names = command_names();
+    assert!(!names.contains(&"a-cmd".to_string()), "A 的命令应消失");
+    assert!(!names.contains(&"a-cmd2".to_string()));
+    assert!(names.contains(&"b-cmd".to_string()), "B 的命令必须还在");
+
+    // 3) 事件处理器:只剩 B 那个,且属主表与列表**等长**(没按下标删错)
+    let (handlers, owners) = crate::host::with_state_or_init(|st| {
+        (
+            crate::state::with_event_handlers(st, |m| {
+                m.get("mode-change").map(|v| v.len()).unwrap_or(0)
+            }),
+            crate::permissions::handler_owner_len("mode-change"),
+        )
+    });
+    assert_eq!(handlers, 1, "只剩 B 的 mode-change 处理器");
+    assert_eq!(owners, 1, "handler_owners 必须与处理器列表等长");
+    assert_eq!(
+        crate::permissions::handler_owner("mode-change", 0).as_deref(),
+        Some("b"),
+        "存活的处理器属主应是 B(删错人就会变成 a)"
+    );
+    assert_eq!(
+        crate::host::with_state_or_init(|st| {
+            crate::state::with_event_handlers(st, |m| m.get("save").map(|v| v.len()).unwrap_or(0))
+        }),
+        0,
+        "A 独占的 save 事件应清空"
+    );
+
+    // 4) 钩子:状态栏槽(A 独占)已清空,属主也摘了
+    assert!(
+        crate::host::with_state_or_init(|st| {
+            crate::state::with_statusline_hook(st, |h| h.is_none())
+        }),
+        "A 的状态栏钩子应被清空"
+    );
+    assert_eq!(
+        crate::permissions::callback_owner(&crate::permissions::CbKey::hook(
+            crate::permissions::CB_HOOK_STATUSLINE
+        )),
+        None,
+        "钩子的属主条目也应摘掉"
+    );
+
+    // 5) 键位/主题:只回收 A 的
+    assert_eq!(
+        crate::host::with_state_or_init(|st| crate::state::with_keymap_owners(st, |m| m.len())),
+        1,
+        "A 的键位摘掉后只剩 B 的一条"
+    );
+    let ov = theme_overrides();
+    assert!(ov.contains_key("ui.text.alt"), "B 的主题覆盖还在");
+    assert!(!ov.contains_key("ui.text"), "A 的主题覆盖已摘");
+
+    // 6) 入队:一条解绑 + 一条关闭弹窗
+    let reqs = take_ui_requests();
+    assert!(
+        reqs.iter()
+            .any(|r| matches!(r, UiRequest::MapKey(m) if m.unbind && m.key == "C-b")),
+        "A 的键位应入队解绑"
+    );
+    assert!(
+        reqs.iter().any(|r| matches!(r, UiRequest::ClosePopup(_))),
+        "A 的弹窗应入队关闭"
+    );
+}

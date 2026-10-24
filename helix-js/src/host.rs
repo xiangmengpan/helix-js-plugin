@@ -93,6 +93,16 @@ pub struct HostState {
     /// 合并后的插件配置缓存(JSON `{"<name>": {...}}`)。**按宿主**(同上)。
     pub(crate) configs: RefCell<String>,
 
+    /// 主题覆盖的属主(scope → 插件名)。`:plugin-unload` 按它回收该插件的覆盖。
+    pub(crate) theme_owners: RefCell<HashMap<String, String>>,
+
+    /// 键位绑定的属主((mode, key) → 插件名)。卸载时对每条入队 `MapKey{unbind}`。
+    pub(crate) keymap_owners: RefCell<HashMap<(String, String), String>>,
+
+    /// manifest 的 `onUnload` 回调(插件名 → 函数)。**不放进 `PluginManifest`**:那个结构体
+    /// 派生了 `PartialEq/Eq`,塞 `JsValue` 会破掉(`JsValue` 无 `Eq`)。
+    pub(crate) unload_hooks: RefCell<HashMap<String, JsValue>>,
+
     /// `helix.fuzzy.session` 的条目快照（id → 字符串数组）。按宿主隔离。
     pub(crate) fuzzy_sessions: RefCell<HashMap<u64, Vec<String>>>,
 
@@ -280,6 +290,9 @@ impl JsHost {
             config_schemas: RefCell::new(HashMap::new()),
             config_overrides: RefCell::new(String::new()),
             configs: RefCell::new(String::new()),
+            theme_owners: RefCell::new(HashMap::new()),
+            keymap_owners: RefCell::new(HashMap::new()),
+            unload_hooks: RefCell::new(HashMap::new()),
             fuzzy_sessions: RefCell::new(HashMap::new()),
             next_fuzzy_session: Cell::new(1),
             snapshot_reads: Cell::new(0),

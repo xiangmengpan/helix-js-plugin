@@ -587,6 +587,12 @@ interface HelixPlugin {
       };
       /** 贡献点(命令/事件/配置名;只记录,供 `:js-permission list` 展示) */
       contributes?: string[];
+      /**
+       * 卸载钩子:`:plugin-unload <name>` 与 `:plugin-reload` **回收前**跑一次。
+       * 用来收自己起的 pty/watcher/定时器(内核不做猜测性清理)。
+       * **不能阻止卸载**,抛错只记进状态栏;JS 全局变量在同 Realm 里回收不了。
+       */
+      onUnload?: () => void;
     },
   ): void;
 }
