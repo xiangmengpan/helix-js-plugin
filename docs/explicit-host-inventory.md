@@ -1,7 +1,10 @@
-# 隐式宿主调用点清点（P4-1 任务 1）
+# "隐式宿主"重构总结（P4-1：3a / 3b / 4a L1–L4）
 
-> 2026-10-22。计划见 `docs/superpowers/plans/2026-10-22-explicit-host.md`。
-> **临时产物**：任务 4 完成（隐式层删除）后删除本文件；结论并入 `helix-js/src/host.rs` 模块头。
+> 2026-10-22 起，2026-10-22 收口。计划见 `docs/superpowers/plans/2026-10-22-explicit-host.md`。
+>
+> 本文原是一份**清点表**（"哪些地方在摸隐式宿主"）。重构做完后改成**总结**：
+> 目标、分层、每层的实测数字、剩下的边界、以及踩过的坑。
+> **仍然有存活价值的判据是每节的"可复跑度量"** —— 后续改动请照它们复核。
 
 ## 数字（脚本统计，非手抄）
 
@@ -247,6 +250,9 @@ assert_eq!(*state.hits.borrow(), 2);     // ✓ 实测通过
    每批 15–20 个；每批跑 `cargo test -p helix-js --lib`。
 4. **L4 删 `ACTIVE`**：`DEFAULT_HOST`/`set_active`/`clear_active`/`park_or_forget` 全部删除；
    8 处单测改成 `JsHost::new()`（它自己会 `insert_data`）。
+   > **实际执行结果见文末「总结」**：L4 没有照这条删 thread_local ——
+   > ①`Drop`/跨线程/每帧 UI 这三类**结构上**需要环境句柄，实测它们的正确形态是
+   > "具名捕获入口 + 显式 API"而不是删除；②跨线程那批**根本不需要** `Arc`/`Mutex` 化。
 
 ### 风险（比 3b 高的地方）
 
@@ -257,86 +263,87 @@ assert_eq!(*state.hits.borrow(), 2);     // ✓ 实测通过
 - **`with_engine` 的 63 处**：它们是"需要引擎"的调用点，不能靠 `get_data` 解决
   （原生回调里引擎已借出）⇒ 这些函数继续接收 `&mut JsHost`，属于 3a/3b 已铺好的路。
 
-### L3 完成情况（2026-10-22，五个提交）
+---
 
-| 批次 | 提交 | 内容 |
+## 总结（重构完成）
+
+### 一句话
+
+原来"引擎"是一段 thread_local 状态（`ACTIVE` + `DEFAULT_HOST`），**没有名字、无法指名、
+无法多份**；重构后它是一个**显式对象** `JsHost { engine, state: Rc<HostState> }`，
+状态由 `&HostState` / `&mut JsHost` 传递，thread_local 只剩两个**受控**用途。
+
+### 分层与提交
+
+| 层 | 内容 | 代表提交 |
 |---|---|---|
-| 1 | `b71c2ff9d` | state.rs 24 个访问器显式化 + 调用点两种形态（`host_state(ctx)` / `with_state_or_init`） |
-| 2a | `b8995086c` | `with_registry` / `with_load_stack` / `with_async_promises` + `_current` shim 模式 |
-| 2b | `e2f174014` | `with_event_handlers` / `with_popups` / `with_edits` / `with_txn_depth` |
-| 2c | `ba3f87474` | 其余可机械迁移的 22 个（快照 / 队列 / 组件状态 / input / lsp / setter） |
+| **3a** | job 回调带上宿主（生产代码里不再有 `js: None`） | `5c229643d` |
+| **3b** | 布局路径四层：`sync_layout_cache(js)` → `UiOp::apply(js)` → 布局原语(js) → 帧首批量 | `adf0b6c1c` / `f115d6786` / `a0b99a8df` |
+| **4a L1** | 引入 `HostState` + `Context::insert_data` 注入引擎 + 迁一个访问器闭环 | `fa41a6bd2` |
+| **4a L2** | 61 个字段搬进 `HostState`（`JsHost` 只剩 `engine` + `state`） | `588291b2f` |
+| **4a L3** | 40 个访问器显式化（4 批），调用点分三种形态（`ctx` / `st` / 具名捕获） | `b71c2ff9d` … `ba3f87474` |
+| **4a L4-③** | UI 闭包捕获状态：`RenderContext.state`、渲染路径、`Drop` 例外 | `81048ee9c` … `1e9d949a4` |
+| **4a L4-④** | `pump()` 把 `&HostState` 交给闭包；34 个 pump callee 全部显式 | `8e145dc17` / `a076c3dbd` … `9441f3104` |
 
-**度量（可复跑）**：
-
-```bash
-grep -rhoE "fn [a-z_]+\(\s*st: &HostState" helix-js/src/*.rs | wc -l   # 40 个显式访问器
-grep -rhoE "fn [a-z_]+_current" helix-js/src/*.rs | wc -l             # 43 个过渡 shim
-grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*_current" | wc -l  # 106 处调用
-```
-
-**仍是隐式的 23 个**（L4 的待办）：`try_with_*` 查询族（5）、快照 JSON getter（7：
-`buffers_json` / `layout_json` / `panes_json` / `pane_mode_json` / `diagnostics_json` /
-`snapshot_stats` / `snapshot_wanted`）、`with_messages` / `with_script_exports` /
-`with_loaded_scripts` / `with_open_panels`（4），以及 infra 自身
-（`with_host_ref_or_init` / `with_state_or_init` / `with_engine` / `current_state_rc` / `editor_version`）。
-
-### L4 进展（2026-10-22，五个提交）
-
-L4-③（"闭包在创建时捕获状态"）**已在 helic-term 侧做完**，生产代码里不再有 `*_current` 调用：
-
-| 提交 | 内容 |
-|---|---|
-| `81048ee9c` | 渲染路径的面板/布局快照改显式（`sync_panes_cache` 带 `js`，无宿主即跳过） |
-| `00444497d` | `RenderContext` 构造时捕获 `Rc<HostState>`；状态栏两个读取点改显式；**新增唯一捕获入口 `host::state_handle()`** |
-| `c0bed9b39` | `RestoreLayout::apply` 带宿主（布局缓存写入从"翻译期"搬到"执行期"），`handle_cache_layout` 变纯 |
-| `ea4cc87f5` | 参数通道 + 命令回落改显式；删掉 7 个无调用者的 `_current` shim |
-| `1e9d949a4` | `Drop` 例外收口（见下）+ 组件状态快照改显式 |
-
-**度量**：
+### 收口数字（都可复跑）
 
 ```bash
-grep -rn "_current(" helix-term/src --include=*.rs | grep "helix_js::" | grep -v tests | wc -l   # → 0
-grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*_current" | wc -l  # → 82（全在 helix-js 内部）
+# ① helix-term 生产代码里还有多少"隐式取态"调用 ⇒ 0
+grep -rn "_current(" helix-term/src --include=*.rs | grep "helix_js::" | grep -v tests | wc -l
+
+# ② pump 作用域内还有多少隐式访问(遍历 34 个 callee 体内的 *_current/with_state_or_init/host_state)⇒ 0
+#    (脚本见 `9441f3104` 的提交正文)
+
+# ③ 跨线程路径是否触达 HostState ⇒ 0(9 个 thread::spawn 闭包,生产代码)
 ```
 
-#### `Drop` 这一档的结论（原阻塞点①）
+| 指标 | 重构前 | 重构后 |
+|---|---|---|
+| `JsHost` 上的状态字段 | 61 | **0**(全在 `HostState`) |
+| 显式访问器 `fn xxx(st: &HostState, …)` | 0 | **84** |
+| helix-term 生产代码隐式取态 | 197 处调用(其中 40 处双路径) | **0** |
+| pump 作用域内隐式访问 | 32 | **0** |
+| 跨线程触达宿主的 spawn 闭包 | 0(评估确认无需改造) | 0 |
 
-"构造期捕获 `Rc<HostState>`"**不可行**，有编译错误作证：`PluginTerminal` 在
-`job::dispatch_blocking` 的 **`Send` 闭包**里构造，加 `Rc` 字段会让它 `!Send`
-（`error[E0277]: Rc<HostState> cannot be sent between threads safely`）。
-⇒ 改成在 `Drop` 里用 **`host::state_handle()`**（L4-③ 的唯一捕获入口）取一份状态，
-再走**显式**访问器。机制同源，只是捕获时机推迟到 drop。
+### `ACTIVE` / `DEFAULT_HOST` 现在只剩什么用
 
-#### ② 跨线程这一档：**实测不需要 `Arc<HostState>` + `Mutex` 化**（2026-10-22 评估）
+1. **引擎已借出的原生回调**：boa 的回调签名是
+   `fn(&JsValue, &[JsValue], &mut Context)`，`Context` 从宿主里借出 ⇒ 回调里拿不到
+   `&mut JsHost`。这类地方走 `with_engine(…)` / `host_state(ctx)`。
+2. **`pump()` 自身的作用域**：把 `ACTIVE` 设为该次调用内有效（嵌套时恢复），
+   让 callee 内部那些仍走隐式解析的路径（引擎相关）能工作。
 
-先前的估计（"跨线程路径要 `Arc<HostState>`，`RefCell` 得换 `Mutex`"）**不成立**。实测：
+除这两类外，状态一律**显式传递**。少数"结构上没有 `Context`"的边界用**具名捕获入口**
+`host::state_handle()` / `state_handle_or_init()` —— 生产代码共 **32 处**
+（`grep -rn "state_handle" helix-term/src helix-js/src | grep -v tests`），
+集中在 `application.rs`(12) 与 `compositor.rs`(10)，其余为零星 13 处 + 定义 2 处。
+关键不在数量而在**形态**：全部是"一行捕获 + 显式 API"，没有一处是"在访问器里各自摸 state"。
 
-| 测量项 | 结果 |
-|---|---|
-| `thread::spawn` 闭包总数（helix-js 生产代码） | **9** |
-| 其中**体内触达 `HostState`** 的 | **0**（另 2 处命中在 `host.rs` 的 `#[cfg(test)]` 里） |
-| worker 线程实际用到的东西 | `js_dbg`（env + `eprintln`）、线程局部通道 `TERM_EVENTS` / `TERM_WORKERS` / `NEXT_ASYNC_ID` / `ASYNC_EVENTS` / `LSP_RESULTS`、以及**构造时传入的 `mpsc::Sender/Receiver`** |
-| promise / 回调表（`async_promises` / `term_promises` / `lsp_promises` / watch / server rows） | 只在**主线程**读写：注册在 `js_*` 入口，兑现在泵循环的 `resolve_*` |
+### 踩过的坑（值得留给下一轮）
 
-结论：跨线程通信**已经**是 `mpsc` 通道 + 进程级 thread_local，**不经过 `HostState`**。
-所以 ② 的工程量 ≈ **0**；顺带也免掉了"`RefCell` 换 `Mutex` 会把重入 panic 变成死锁"这个风险
-（那才是这一档原本最贵的地方）。
+1. **`Rc<HostState>` 不能塞进 `Send` 构造的组件**：`PluginTerminal` 在
+   `dispatch_blocking` 的 `Send` 闭包里构造 ⇒ 捕获 `Rc` 会让它 `!Send`（编译错误作证）。
+   ⇒ `Drop` 改用"drop 时捕获一次"。
+2. **`with_js` 返回 `None` ≠ "没有 JS"**：它只表示"当前 `Context` 没带宿主"，
+   环境宿主可能仍然存在（面板布局期渲染就是这一类）。把这些分支改成 `Err` 会让
+   `filetree_*` 等 5 条集成用例直接红。
+3. **批量正则改调用点会命中函数定义**：`pub fn xxx(` 里的 `xxx(` 会被同一条规则替换，
+   造成签名污染与括号失衡。**可靠做法**：先改签名 → 让编译器列出全部调用点 →
+   按行号逐个改（前几批用的就是这条）。
+4. **`RefCell` → `Mutex` 的诱惑**：曾担心"跨线程需要 `Arc<HostState>` + `Mutex` 化"，
+   实测**不需要**——worker 只用 `mpsc` 通道与线程局部表，从不碰 `HostState`。
+   顺手也免掉了"重入 panic 变静默死锁"这个更贵的风险。
+5. **同名方法/宏参数会误导脚本**：`LayoutTree` 有同名 `set_float`/`unzoom`；
+   测试宏里带 `st` 参数时批量替换尤其危险。
 
-#### ④ `pump()` 作用域：**已收口（2026-10-22）**
+### 仍然存在的边界（都不是"隐式"，是"没有 `Context`"）
 
-`pump()` 把 `&HostState` 交给闭包后，按"callee 先行"把 **34 个 pump callee** 逐个改成
-`fn xxx(st: &HostState, …)`；再回头把泵方法的 `|_st|` 换成 `|st|`。
+| 位置 | 为什么 | 用什么 |
+|---|---|---|
+| `ui/js_surface::refresh_global` | 布局期（`required_size`）拿不到 `&mut Context` | `state_handle_or_init()` |
+| `ui/plugin_terminal.rs::drop` | `Drop::drop(&mut self)` 无参数 | `state_handle()` |
+| helix-term `with_js` 的 `None` 分支 | 当前 `Context` 未带宿主 | `state_handle_or_init()` |
+| `helix_js::load_script` | 测试/内联入口，无宿主句柄 | `state_handle_or_init()` |
 
-**收口度量**：遍历 pump 里调用的 34 个 callee，统计其体内
-`*_current` / `with_state_or_init` / `host_state` 的出现次数 ⇒ **0**。
-
-**这一档之后 `ACTIVE` 的用途**：只剩"引擎已借出、必须走隐式解析"的原生回调
-（`with_engine`）与 `pump` 自身的作用域 —— 也就是文档最初设想的最终形态。
-少数边界仍走**具名捕获入口**（`host::state_handle_or_init()`）：
-`ui/js_surface::refresh_global`（布局期无 `&mut Context`）与 helix-term 里
-`with_js` 返回 `None` 的分支。
-
-### 建议
-
-值得做，但**别和 3b 混在一轮**。如果要做，按 L1→L4 走，L1 单独提交（它已经把机制
-放进生产代码，即使后面停下也不留半成品）。
+以上四类都是**单点捕获**（`grep state_handle` 一网打尽），而不是"每个访问器各自摸 state" ——
+这是重构真正的收益：**模糊的隐式解析被压缩成一个具名入口 + 两类受控 thread_local**。
