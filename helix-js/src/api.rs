@@ -1292,6 +1292,17 @@ pub static API: &[Entry] = &[
         &[],
     ),
     e_kind(Target::Ns("icons"), "enabled", 1, MemberKind::Dynamic, &[]),
+    // ── `helix.plugin.unload`：挂在**函数对象**上的原生成员(`plugin` 本身可调用，
+    //    所以不是普通命名空间对象；挂载见 `build_plugin`/`attach_plugin_members`)。
+    //    `.install/.update/.remove` 是 JS 侧挂的，不走这张表。
+    e(
+        Target::Ns("plugin"),
+        "unload",
+        1,
+        crate::commands::js_plugin_unload,
+        "js_plugin_unload",
+        &[],
+    ),
     // ── 根上的两个非表驱动成员：函数对象 `helix.plugin` 与常量 `helix.api_version`
     //    （挂载顺序见 `ATTACH`；这里只登记，供 describe()/dts 对账）
     e_kind(Target::Root, "plugin", 2, MemberKind::FunctionObject, &[]),
@@ -1362,13 +1373,39 @@ pub(crate) fn register_root(builder: &mut ObjectInitializer<'_>) {
 /// 命名空间之后的两个特殊成员
 pub(crate) fn build_plugin(engine: &mut Context) -> JsFunction {
     use boa_engine::{object::FunctionObjectBuilder, NativeFunction};
-    FunctionObjectBuilder::new(
+    let f = FunctionObjectBuilder::new(
         engine.realm(),
         NativeFunction::from_fn_ptr(crate::commands::js_plugin),
     )
     .name("plugin")
     .length(2)
-    .build()
+    .build();
+    attach_plugin_members(engine, &f);
+    f
+}
+
+/// 把表里 `Target::Ns("plugin")` 的原生成员挂到可调用对象 `helix.plugin` 上。
+///
+/// `helix.plugin` 是**函数对象**(可调用),不是普通命名空间对象 ⇒ 不走 `register_ns`。
+/// 属性可写:JS 侧还要往上挂 `.install/.update/.remove`(兼容层)。
+fn attach_plugin_members(engine: &mut Context, obj: &JsFunction) {
+    use boa_engine::property::PropertyDescriptor;
+    for (idx, entry) in API.iter().enumerate() {
+        if entry.target != Target::Ns("plugin") || entry.kind != MemberKind::Fn {
+            continue;
+        }
+        // NativeFunction → JsFunction(必须是真函数值:JS 侧要能调它,且可被覆盖)
+        let f = native(idx, entry).to_js_function(engine.realm());
+        let _ = obj.define_property_or_throw(
+            JsString::from(entry.name),
+            PropertyDescriptor::builder()
+                .value(JsValue::from(f))
+                .writable(true)
+                .enumerable(false)
+                .configurable(true),
+            engine,
+        );
+    }
 }
 
 /// 引擎全局量

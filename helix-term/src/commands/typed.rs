@@ -5028,6 +5028,37 @@ pub(crate) fn apply_ui_requests(
                     }
                 })
             }
+            // `helix.plugin.unload(name)` 走到这里:与 `:plugin-unload` 同一实现,
+            // 但必须**在 job 里**跑 —— 回收前的 `onUnload` 要再进引擎。
+            helix_js::UiRequest::UnloadPlugin(req) => {
+                job::dispatch_blocking(move |editor, _compositor, mut js| {
+                    let report = match js.as_deref_mut() {
+                        Some(host) => helix_js::unload_plugin(host.state(), &req.name),
+                        None => {
+                            let st = helix_js::host::state_handle_or_init();
+                            helix_js::unload_plugin(&st, &req.name)
+                        }
+                    };
+                    helix_js::host::push_message(format!(
+                        "unloaded {}: {} commands / {} handlers / {} hooks / {} keys / {} themes / {} popups / {} panels",
+                        report.name,
+                        report.commands,
+                        report.handlers,
+                        report.hooks,
+                        report.keymaps,
+                        report.themes,
+                        report.popups,
+                        report.panels
+                    ));
+                    for msg in helix_js::take_messages() {
+                        editor.set_status(msg);
+                    }
+                    // 解绑键位 / 关闭弹窗面板(与 :plugin-unload 同一条 drain)
+                    if let Err(e) = apply_ui_requests(js, helix_js::take_ui_requests()) {
+                        editor.set_error(format!("plugin.unload: {e}"));
+                    }
+                })
+            }
             helix_js::UiRequest::ClosePanel(req) => dispatch(pane::handle_close_panel(req)?),
             helix_js::UiRequest::ClosePopup(req) => popup::handle_close_popup(req)?,
             helix_js::UiRequest::OpenScratchFile(req) => doc::handle_open_scratch_file(req)?,

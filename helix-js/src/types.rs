@@ -44,6 +44,14 @@ pub struct OpenPanelReq {
     pub rail: bool,
 }
 
+/// `helix.plugin.unload(name)` —— 卸载单个插件。**入队**(命令边界执行):回收前要跑插件的
+/// `onUnload`,那是**再进引擎**,不能在 JS 回调里同步做(会撞 `engine used again` panic)。
+#[derive(Debug)]
+pub struct UnloadPluginReq {
+    pub name: String,
+}
+
+/// `helix.close_panel(id)` —— 关掉一个 JS 面板
 #[derive(Debug)]
 pub struct ClosePanelReq {
     pub id: u64,
@@ -339,6 +347,8 @@ pub enum UiRequest {
     /// `CONTEXT` panic(`commands.rs` 的 lazy 注释记过这个风险)。入队后由
     /// `apply_ui_requests` 在**命令边界**用 job 回调执行。
     ReloadPlugins,
+    /// 卸载单个插件(入队原因见 [`UnloadPluginReq`])
+    UnloadPlugin(UnloadPluginReq),
     ClosePanel(ClosePanelReq),
     /// `helix.close_popup(id)`
     ClosePopup(ClosePopupReq),

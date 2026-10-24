@@ -541,6 +541,14 @@ interface HelixPlugin {
    */
   remove(name: string): void;
   /**
+   * 卸载**单个**插件:它注册的命令/事件/钩子/键位/主题覆盖/弹窗全部回收,
+   * 其它插件不受影响;回收前会跑它的 `onUnload`。
+   * 与 `:plugin-unload <name>` 同一实现。**入队**:在命令边界执行
+   * (`onUnload` 要再进引擎,不能在当前回调里同步跑),所以返回值不代表已完成。
+   * 清理边界见 `docs/api/plugin.md`:JS 全局变量回收不了,自己起的 pty 请在 `onUnload` 里关。
+   */
+  unload(name: string): void;
+  /**
    * 当前插件**现在**能做什么(能力清单的查询面)。
    *
    * 语义 = "不问就放行吗":没声明 `permissions` / 内置插件 ⇒ 全 `true`(legacy 放行);

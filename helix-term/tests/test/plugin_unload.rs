@@ -92,3 +92,71 @@ helix.register_command("ub-b-cmd", () => { helix.echo("B"); });
     .await?;
     Ok(())
 }
+
+/// `helix.plugin.unload(name)`(JS 入口)走**入队 → 命令边界**这条链:
+/// 插件在自己的命令里调它,命令返回后被回收;另一个插件不受影响。
+#[tokio::test(flavor = "multi_thread")]
+async fn js_api_plugin_unload_reclaims_at_command_boundary() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("j.txt");
+    std::fs::write(&file, "x\n")?;
+    let a = dir.path().join("jsu-a.js");
+    std::fs::write(
+        &a,
+        r#"helix.plugin("jsu-a", { onUnload: () => { helix.echo("bye-jsu-a"); } });
+helix.register_command("jsu-a-cmd", () => { helix.echo("A"); });
+helix.register_command("jsu-unload-a", () => { helix.plugin.unload("jsu-a"); });
+"#,
+    )?;
+    let b = dir.path().join("jsu-b.js");
+    std::fs::write(
+        &b,
+        r#"helix.plugin("jsu-b", {});
+helix.register_command("jsu-b-cmd", () => { helix.echo("B"); });
+"#,
+    )?;
+
+    test_key_sequences(
+        &mut AppBuilder::new().with_file(file, None).build()?,
+        vec![
+            (Some(&format!(":plugin-load {}<ret>", a.display())), None),
+            (Some(&format!(":plugin-load {}<ret>", b.display())), None),
+            // 前置:A 的命令与它的 onUnload 都正常
+            (
+                Some(":jsu-a-cmd<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(status.as_ref(), "A", "前置:A 可用");
+                }),
+            ),
+            // 在 A 自己的命令里调 JS API:入队,命令边界执行
+            (Some(":jsu-unload-a<ret>"), None),
+            // 下一拍才会看到回收结果(job 在命令之后跑):这一拍顺带确认 B 不受影响
+            (
+                Some(":jsu-b-cmd<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert_eq!(
+                        status.as_ref(),
+                        "B",
+                        "回收发生在命令边界,且 B 不受影响: {status}"
+                    );
+                }),
+            ),
+            // A 的命令已经没了(证明 JS 入口真的完成了回收,不只是入队)
+            (
+                Some(":jsu-a-cmd<ret>"),
+                Some(&|app| {
+                    let (status, severity) = app.editor.get_status().unwrap();
+                    assert!(
+                        matches!(severity, helix_core::diagnostic::Severity::Error),
+                        "JS 入口回收后 A 的命令应报未知命令: {status}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

@@ -187,6 +187,33 @@ pub(crate) fn js_quit(
     Ok(JsValue::undefined())
 }
 
+/// `helix.plugin.unload(name)` —— 卸载**单个**插件(**入队**,命令边界执行)。
+///
+/// 为什么不能同步做:回收前要跑插件的 `onUnload`(再进 boa 引擎),而本函数本身正在
+/// JS 回调里 ⇒ 同一个 `Context` 二次借用会 panic。走 `UiRequest::UnloadPlugin`,
+/// 由 helix-term 在命令边界转成 `helix_js::unload_plugin`(与 `:plugin-unload` 同一实现)。
+pub(crate) fn js_plugin_unload(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err("plugin.unload: name must be a string"))?;
+    if name.is_empty() {
+        return Err(crate::js_err("plugin.unload: name must not be empty"));
+    }
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::UnloadPlugin(UnloadPluginReq { name }));
+    Ok(JsValue::undefined())
+}
+
 /// `helix.reload_plugins()` —— 热重载**入队**（命令边界执行，见 `UiRequest::ReloadPlugins`）。
 /// 语义与 `:plugin-reload` 完全一致（同一实现），返回 undefined。
 pub(crate) fn js_reload_plugins(

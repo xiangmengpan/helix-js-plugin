@@ -140,7 +140,7 @@ config 加载报 `unknown field`**)。**已知时序**:该配置在 `plugins/ico
 
 ### 插件管理
 
-`:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源;**实现全在 JS 侧** `plugins/plugin/plugin.js`)+ `:plugin-unload <name>`(单插件卸载,按属主回收;详见 [`api/plugin.md`](api/plugin.md#卸载一个插件plugin-unload-name));JS API `helix.plugin(name, {deps})`(加载期依赖,核心)+ `helix.plugin.install/update/remove`(**该插件挂上的**兼容层)。
+`:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源;**实现全在 JS 侧** `plugins/plugin/plugin.js`)+ `:plugin-unload <name>`(单插件卸载,按属主回收;详见 [`api/plugin.md`](api/plugin.md) 的「卸载一个插件」一节);JS API `helix.plugin(name, {deps, onUnload})`(加载期依赖 + 卸载钩子,核心)+ `helix.plugin.unload(name)`(单插件卸载,**入队**到命令边界)+ `helix.plugin.install/update/remove`(**该插件挂上的**兼容层)。
 
 - 优点:来源追踪(manifest:source/kind/installed_at/pinned/commit/files);卸载/更新闭环;写/删走核心的**限域**文件 API(相对路径 + 拒 `..` + 必须在插件根内)。
 - 局限:JS API fire-and-forget(结果看状态栏);git 操作同步阻塞;装完不自动加载(需 `:plugin-reload`);**安装期依赖解析(git 仓库 `plugin.json` 递归)已删除**,只剩加载期 `deps`;`:plugin reload` **已实装**(2026-10-19):走 `helix.reload_plugins()` 入队、命令边界执行,与 `:plugin-reload` 同一实现。
@@ -357,6 +357,7 @@ helix.plugin(name, { deps, version?, schema_version?, min_editor?, permissions?,
 helix.api_version                               // 边界协议版本(= 事件 payload 里的 api_version)
 helix.permissions()                             // 本插件**现在**能做什么(能力清单查询面)
 helix.plugin.install(arg) / update(name?) / remove(name)   // 管理(结果走状态栏)
+helix.plugin.unload(name)                       // 卸载**单个**插件(入队,命令边界回收;先跑 onUnload)
 // 实现位置:`plugins/plugin/plugin.js`(管理器本身是**内置插件**)。
 // 命令 `:plugin …` 与上面三个 API 共用同一份实现;该 API 的**错误语义**与旧核心一致
 // (例如"未安装"时 remove 抛 `failed to remove '<name>': not installed`)。

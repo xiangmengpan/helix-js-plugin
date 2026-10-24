@@ -50,6 +50,12 @@ helix.plugin("filetree", {
 });
 ```
 
+也可以从 JS 里触发(**入队**,命令边界执行;因为 `onUnload` 要再进引擎):
+
+```js
+helix.plugin.unload("filetree");   // 与 :plugin-unload 同一实现
+```
+
 `:plugin-unload <name>` 跑完状态栏报告计数
 (`unloaded filetree: 6 commands / 2 handlers / 1 hooks / 2 keys / 0 themes / 1 popups / 0 panels`)。
 
@@ -123,7 +129,10 @@ helix.plugin("my-plugin", {
   onUnload: () => { /* :plugin-unload / :plugin-reload 前跑一次;不能阻止卸载 */ },
 });
 
-// ② 内置插件 `plugin` 提供(兼容层):与 :plugin install|update|remove 是同一实现
+// ② 核心原生(挂在可调用对象上):卸载单个插件 —— 与 :plugin-unload 同一实现
+helix.plugin.unload("filetree");   // **入队**:命令边界回收(onUnload 要再进引擎)
+
+// ③ 内置插件 `plugin` 提供(兼容层):与 :plugin install|update|remove 是同一实现
 helix.plugin.install("<git-url>");
 helix.plugin.update();          // 不传 = 全部;可传单个 name
 helix.plugin.remove("name");    // 必须已在 manifest 里

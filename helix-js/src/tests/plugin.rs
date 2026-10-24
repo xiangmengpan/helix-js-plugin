@@ -1681,3 +1681,38 @@ helix.set_statusline(() => "owned");"#,
         "有主的状态栏钩子不该被清"
     );
 }
+
+/// `helix.plugin.unload(name)` —— **只入队**(不能同步回收:`onUnload` 要再进引擎)。
+/// 真正的回收在 helix-term 的命令边界走 `helix_js::unload_plugin`(与 `:plugin-unload` 同一实现)。
+#[test]
+fn js_plugin_unload_only_enqueues_a_request() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    crate::permissions::reset_for_test();
+    let _ = take_ui_requests(); // 清掉前面用例残留
+    load_script(
+        r#"helix.plugin("a", {});
+helix.register_command("a-cmd", () => {});
+helix.plugin.unload("a");"#,
+    )
+    .unwrap();
+
+    let reqs = take_ui_requests();
+    assert!(
+        reqs.iter()
+            .any(|r| matches!(r, UiRequest::UnloadPlugin(q) if q.name == "a")),
+        "应入队 UnloadPlugin(a)"
+    );
+    // 还没真的回收(命令仍在):回收发生在命令边界
+    assert!(command_names().contains(&"a-cmd".to_string()));
+
+    // 参数校验
+    assert!(
+        load_script(r#"helix.plugin.unload(42);"#).is_err(),
+        "非字符串应报错"
+    );
+    assert!(
+        load_script(r#"helix.plugin.unload("");"#).is_err(),
+        "空名应报错"
+    );
+}
