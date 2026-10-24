@@ -140,7 +140,7 @@ config 加载报 `unknown field`**)。**已知时序**:该配置在 `plugins/ico
 
 ### 插件管理
 
-`:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源;**实现全在 JS 侧** `plugins/plugin/plugin.js`);JS API `helix.plugin(name, {deps})`(加载期依赖,核心)+ `helix.plugin.install/update/remove`(**该插件挂上的**兼容层)。
+`:plugin install/update/pin/unpin/remove/list/status/reload`(manifest 来源追踪,本地/git 源;**实现全在 JS 侧** `plugins/plugin/plugin.js`)+ `:plugin-unload <name>`(单插件卸载,按属主回收;详见 [`api/plugin.md`](api/plugin.md#卸载一个插件plugin-unload-name));JS API `helix.plugin(name, {deps})`(加载期依赖,核心)+ `helix.plugin.install/update/remove`(**该插件挂上的**兼容层)。
 
 - 优点:来源追踪(manifest:source/kind/installed_at/pinned/commit/files);卸载/更新闭环;写/删走核心的**限域**文件 API(相对路径 + 拒 `..` + 必须在插件根内)。
 - 局限:JS API fire-and-forget(结果看状态栏);git 操作同步阻塞;装完不自动加载(需 `:plugin-reload`);**安装期依赖解析(git 仓库 `plugin.json` 递归)已删除**,只剩加载期 `deps`;`:plugin reload` **已实装**(2026-10-19):走 `helix.reload_plugins()` 入队、命令边界执行,与 `:plugin-reload` 同一实现。
@@ -232,6 +232,7 @@ helix.register_command("filetree", () => {
 | **无多光标编辑** | `helix.set_selection` **支持多选区数组形态**(`[{anchor, head}, …]`;按 range 起点排序,主光标 = 排序后末位,与原生多光标一致)。缺的是**逐光标各自的编辑** —— 编辑队列只有一份快照坐标(实测 2026-10-10) |
 | **Unix-only** | `helix.run`/`spawn`/PTY 依赖 `sh` 与 libc openpty(Windows 不可用) |
 | **键位不持久** | `helix.map` 绑定重启失效(插件启动时重新注册) |
+| **卸载不回收 JS 全局变量** | `:plugin-unload <name>` 按属主回收命令/事件/钩子/键位/主题/弹窗,并先跑 manifest 的 `onUnload`;但**同一 Realm 里的全局变量与闭包回收不了**(顶层 `const`/`let` 仍在),插件自己起的 pty/外部资源要在 `onUnload` 里自己关。详见 [`api/plugin.md`](api/plugin.md) |
 | **插件间无共享状态** | 每个插件独立 IIFE 作用域;共享需通过 `helix.*` API 或外部文件 |
 | **嵌套 load 污染风险(已修复)** | boa 0.21 的嵌套 eval 破坏外层闭包绑定(`typeof` 变 object、函数不可调用,实测 2026-08-26;DefInitVar 越界 panic)。**boa 0.22 升级后验证修复**(2026-08-31 复现测试通过);防御(icons.js 工具函数 `|| {}` 兜底)保留作双保险。旧建议(依赖用 `helix.plugin` deps 声明、回调不放嵌套 load 后)仍是最佳实践 |
 

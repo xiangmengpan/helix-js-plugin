@@ -30,12 +30,61 @@
 | `status` | `"{N} plugins loaded from {dir}, {M} installed ({G} git, {P} pinned)"`(集成测试按此文案断言,勿轻易改)|
 | `reload` | ✅ 调 `helix.reload_plugins()`（**入队**，命令边界重跑全部脚本；与 `:plugin-reload` 同一实现）|
 
-另有两个独立命令:
+另有三个独立命令:
 
 ```
 :plugin-load <path>     # 手动加载任意 .js 文件(开发用;不写 manifest)
 :plugin-reload          # 热重载:重读磁盘 + 重置插件状态(Rust 侧实现,真正生效的是它)
+:plugin-unload <name>   # 卸载**单个**插件:按属主回收它注册的一切(见下节)
 ```
+
+## 卸载一个插件(`:plugin-unload <name>`)
+
+2026-10-23 起支持**单插件**回收 —— 在这之前只有"全部重载"(`:plugin-reload` 会把所有插件
+一起重新 eval,丢掉它们的运行时状态)。
+
+```js
+// 插件侧:卸载前想自己收资源(pty/watch/定时器)就在这里做
+helix.plugin("filetree", {
+  onUnload: () => { /* 关掉自己起的进程 / 退订 watch */ },
+});
+```
+
+`:plugin-unload <name>` 跑完状态栏报告计数
+(`unloaded filetree: 6 commands / 2 handlers / 1 hooks / 2 keys / 0 themes / 1 popups / 0 panels`)。
+
+**按属主回收的产物**(属主 = 注册期绑定的插件名,与权限同一套判据):
+
+| 产物 | 怎么收 |
+|---|---|
+| 命令(含 `helix.map` 生成的 `__mapped_N`) | 从注册表/命令说明里删 |
+| 事件处理器 | 按**下标**双侧同步删(`handler_owners` 与处理器列表,绝不单边 retain) |
+| 单例钩子(状态栏/图标/补全/键位提示) | 属主是该插件 ⇒ 清槽(状态栏还要复位 replace) |
+| 弹窗 / 面板 | 入队 `ClosePopup` / `ClosePanel`,并从 `popups` 表摘掉 |
+| 键位(`helix.map`) | 每条入队 `MapKey{unbind}` → 核心 `remove_binding`(真摘叶) |
+| 主题覆盖(`helix.set_theme`) | 摘掉该插件的 scope + 置脏(下次 drain 还原基准主题) |
+| picker 源 / 节点回调 / watch | 从对应表删 / 入队 `Unwatch` |
+| 导出与加载清单 | 从 `script_exports` / `loaded_scripts` 摘掉 |
+
+**做不到的**(不假装做到):
+
+- **JS 全局变量与闭包**:同一 boa Realm 里无法回收(顶层的 `const`/`let` 仍在)。
+  卸载后重新加载同名插件时,新脚本有独立的 IIFE 作用域,但**它看到的全局仍带着旧值**。
+- **插件自己起的 pty / 外部资源**:不做猜测性清理 ⇒ 请在 `onUnload` 里自己关。
+- **异步 promise / LSP 请求的后续回调**:只摘属主;晚到的回调会按"无属主"fail-closed
+  (报"未声明能力"),不会静默跑到别的插件名下。
+
+**与 `:plugin-reload` 的差别**:
+
+| | `:plugin-unload <name>` | `:plugin-reload` |
+|---|---|---|
+| 范围 | 单个插件 | 全部 |
+| 其它插件的运行时状态 | **保留** | 丢失(全部重新 eval) |
+| `onUnload` | 跑 | 跑(每个属主都跑一遍) |
+| 之后重新加载 | 不会(用 `:plugin-load` / `:plugin-reload`) | 会(重读磁盘) |
+
+实现:**一份**清理逻辑(`helix_js::unload_plugin`),`reload_all` 就是"对每个已知属主调它,
+再按老的规矩兜底清一次没有属主的注册"。
 
 ## 存储与来源追踪
 
@@ -65,8 +114,12 @@
 ## JS API
 
 ```js
-// ① 核心提供:声明加载期依赖(deps 用插件名;拓扑加载 + 循环检测)
-helix.plugin("my-plugin", { deps: ["icons"], version: "1.0" });
+// ① 核心提供:声明加载期依赖(deps 用插件名;拓扑加载 + 循环检测)+ 卸载钩子
+helix.plugin("my-plugin", {
+  deps: ["icons"],
+  version: "1.0",
+  onUnload: () => { /* :plugin-unload / :plugin-reload 前跑一次;不能阻止卸载 */ },
+});
 
 // ② 内置插件 `plugin` 提供(兼容层):与 :plugin install|update|remove 是同一实现
 helix.plugin.install("<git-url>");
