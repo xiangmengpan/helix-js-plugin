@@ -106,7 +106,10 @@ pub(crate) fn open_picker(
             // 选中行：preview 回调 → {path, line}；未定义/返回 null → None（核心不显示预览）
             let invoked = match js {
                 Some(host) => host.picker_invoke_preview(&preview_src, &row.payload),
-                None => helix_js::picker::invoke_preview(&preview_src, &row.payload),
+                None => {
+                    let st = helix_js::host::state_handle_or_init();
+                    helix_js::picker::invoke_preview(&st, &preview_src, &row.payload)
+                }
             };
             let (path, line) = invoked?;
             let path: &'static Path = PREVIEW_PATH.with(|slot| {

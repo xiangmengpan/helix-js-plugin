@@ -248,6 +248,14 @@ pub(crate) fn try_with_popups<T>(
     crate::host::try_with_host_ref(|h| f(&mut h.popups.borrow_mut()))
 }
 
+pub(crate) fn with_buffer_icon_hook<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut Option<JsValue>) -> T,
+) -> T {
+    f(&mut st.buffer_icon_hook.borrow_mut())
+}
+
+/// 过渡 shim
 pub(crate) fn with_buffer_icon_hook_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.buffer_icon_hook.borrow_mut()))
 }
@@ -327,12 +335,6 @@ pub(crate) fn with_node_handlers<T>(
     f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T,
 ) -> T {
     f(&mut st.node_handlers.borrow_mut())
-}
-
-pub(crate) fn with_node_handlers_current<T>(
-    f: impl FnOnce(&mut HashMap<(u64, String), NodeHandlers>) -> T,
-) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.node_handlers.borrow_mut()))
 }
 
 /// 访问批量编辑事务深度(普通 usize,随线程 drop)
@@ -1001,25 +1003,12 @@ pub(crate) fn with_async_promises<T>(
     f(&mut st.async_promises.borrow_mut())
 }
 
-/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
-pub(crate) fn with_async_promises_current<T>(
-    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
-) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.async_promises.borrow_mut()))
-}
-
 /// 访问 LSP_PROMISES（helix.lsp.* 的 promise 解析函数注册表）：同上（内容泄漏）
 pub(crate) fn with_lsp_promises<T>(
     st: &HostState,
     f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
 ) -> T {
     f(&mut st.lsp_promises.borrow_mut())
-}
-
-pub(crate) fn with_lsp_promises_current<T>(
-    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
-) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.lsp_promises.borrow_mut()))
 }
 
 /// 取走并清空 echo 消息队列

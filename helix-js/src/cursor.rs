@@ -3,6 +3,7 @@
 //   cursor-move:      (docId, { row, col, mode })
 //   selection-change: (docId, { count, primary: {row, col} })
 
+use crate::host::HostState;
 use boa_engine::object::builtins::JsFunction;
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
@@ -13,9 +14,9 @@ use crate::types::{BusHeader, CursorMovePayload, EventPayload, SelectionChangePa
 
 /// 构造 {row, col, mode} 对象调用 "cursor-move" handler(参数 [docId, ev])。
 /// 返回 true=有 handler 被调用;false=无 handler/空(零开销,无副作用)。
-pub fn emit_cursor_move(doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
+pub fn emit_cursor_move(st: &HostState, doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
     crate::init();
-    let handlers = crate::state::with_event_handlers_current(|h| h.get("cursor-move").cloned());
+    let handlers = crate::state::with_event_handlers(st, |h| h.get("cursor-move").cloned());
     let Some(handlers) = handlers else {
         return false;
     };
@@ -140,7 +141,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(emit_cursor_move(7, 3, 11, "insert"));
+        crate::host::with_state_or_init(|st| assert!(emit_cursor_move(st, 7, 3, 11, "insert")));
         assert_eq!(take_messages(), vec!["m:7:3:11:insert"]);
     }
 
@@ -165,7 +166,7 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // 未注册任何 handler:直接返回 false,不 panic、无消息
-        assert!(!emit_cursor_move(1, 0, 0, "normal"));
+        crate::host::with_state_or_init(|st| assert!(!emit_cursor_move(st, 1, 0, 0, "normal")));
         assert!(!emit_selection_change(1, 1, 0, 0));
         assert!(take_messages().is_empty());
     }

@@ -1036,12 +1036,12 @@ fn stat_to_js(st: &FsStat, ctx: &mut Context) -> boa_engine::JsResult<JsValue> {
 /// 把一条异步 fs 事件投递到对应 id 的 promise（resolve/reject）。
 /// 成功 resolve 值：read → content；write → undefined；stat → {size,is_dir,mtime}；glob → paths[]。
 /// 失败 reject Error 对象（e.message 可用）。一次性语义：settle 后从注册表移除。
-pub fn resolve_async_event(id: u64, event: AsyncEvent) -> Result<()> {
+pub fn resolve_async_event(st: &HostState, id: u64, event: AsyncEvent) -> Result<()> {
     crate::init();
     // .then/.catch 的续体在 `resolve` 里跑 ⇒ 属主必须是**注册这个 promise 的插件**
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::async_promise(id), || {
         crate::state::with_engine(|engine| {
-            let resolving = crate::state::with_async_promises_current(|m| m.remove(&id));
+            let resolving = crate::state::with_async_promises(st, |m| m.remove(&id));
             let Some(resolving) = resolving else {
                 return Ok(());
             }; // 已 resolve / 未知 id → no-op（幂等）

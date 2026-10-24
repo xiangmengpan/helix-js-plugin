@@ -12,8 +12,12 @@ async fn reload_user_env_filetree_render() -> anyhow::Result<()> {
     // 手动设置插件目录 + 加载用户 init.js(直接调 helix-js,不经 AppBuilder)
     helix_js::set_plugins_dir(config_dir.join("plugins"));
     let init_src = std::fs::read_to_string(&init_path)?;
-    helix_js::load_script_named(&init_path.display().to_string(), &init_src)
-        .map_err(|e| anyhow::anyhow!("init load: {e}"))?;
+    helix_js::load_script_named(
+        &helix_js::host::state_handle_or_init(),
+        &init_path.display().to_string(),
+        &init_src,
+    )
+    .map_err(|e| anyhow::anyhow!("init load: {e}"))?;
     let _ = helix_js::take_messages();
     let _ = helix_js::take_ui_requests();
 

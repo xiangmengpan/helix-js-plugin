@@ -1581,6 +1581,7 @@ pub enum TermKeyDecision {
 /// term-key 钩子：构造 { code, shift, ctrl, alt } 对象传给 handler；
 /// 返回 "pass" | "consume" | "minimize" | "close"（字符串）→ 对应决策；其他/无 handler → None（走默认）。
 pub fn emit_term_key(
+    st: &HostState,
     pty_id: u64,
     code: &str,
     shift: bool,
@@ -1588,7 +1589,7 @@ pub fn emit_term_key(
     alt: bool,
 ) -> Option<TermKeyDecision> {
     crate::init();
-    let handlers = crate::state::with_event_handlers_current(|h| h.get("term-key").cloned())?;
+    let handlers = crate::state::with_event_handlers(st, |h| h.get("term-key").cloned())?;
     if handlers.is_empty() {
         return None;
     }
@@ -1728,9 +1729,9 @@ pub fn emit_term_title(pty_id: u64, title: &str) {
     );
 }
 /// 组件事件(鼠标点击/滚动等):构造 {kind, x, y} 对象;插件返回 true → 消费该事件。
-pub fn emit_component_event(id: u64, kind: &str, x: u16, y: u16) -> bool {
+pub fn emit_component_event(st: &HostState, id: u64, kind: &str, x: u16, y: u16) -> bool {
     crate::init();
-    let handlers = crate::state::with_event_handlers_current(|h| h.get("component-event").cloned());
+    let handlers = crate::state::with_event_handlers(st, |h| h.get("component-event").cloned());
     let Some(handlers) = handlers else {
         return false;
     };
@@ -2280,10 +2281,15 @@ pub(crate) fn js_end_edit(
 }
 
 /// 触发节点事件（焦点路由）：onPress → 无参调用；onKey → 传键名
-pub fn dispatch_node_event(view_id: u64, node_id: &str, key: Option<&str>) -> Result<()> {
+pub fn dispatch_node_event(
+    st: &HostState,
+    view_id: u64,
+    node_id: &str,
+    key: Option<&str>,
+) -> Result<()> {
     crate::init();
     let result = crate::state::with_engine(|engine| {
-        let handlers = crate::state::with_node_handlers_current(|h| {
+        let handlers = crate::state::with_node_handlers(st, |h| {
             h.get(&(view_id, node_id.to_string()))
                 .cloned()
                 .map(|hd| NodeHandlers {
@@ -2366,9 +2372,11 @@ pub fn take_cursor_requests() -> Vec<CursorRequest> {
     crate::state::with_cursor_requests_current(std::mem::take)
 }
 
-/// 求值一段插件脚本（无名字，用于测试/内联）；脚本里可调用 `helix.register_command` / `helix.echo`
+/// 求值一段插件脚本（无名字）。**测试/内联专用** —— 没有宿主句柄 ⇒ 经**捕获入口**取态。
+/// 生产路径请用 [`load_script_named`](fn.load_script_named.html)。
 pub fn load_script(src: &str) -> Result<()> {
-    load_script_named("<anon>", src)
+    let st = crate::host::state_handle_or_init();
+    load_script_named(&st, "<anon>", src)
 }
 
 /// IIFE 包裹求值：每次求值（含 reload 重跑）都得到全新词法作用域，
@@ -2380,10 +2388,10 @@ fn eval_wrapped(engine: &mut boa_engine::Context, src: &str) -> boa_engine::JsRe
 }
 
 /// 求值并记录脚本（名字用于报错定位与热重载）
-pub fn load_script_named(name: &str, src: &str) -> Result<()> {
+pub fn load_script_named(st: &HostState, name: &str, src: &str) -> Result<()> {
     crate::init();
     // 脚本(重)加载不继承旧装饰:全局 Clear(term 侧 doc: None = 清空所有 doc)
-    crate::state::with_decoration_requests_current(|c| {
+    crate::state::with_decoration_requests(st, |c| {
         c.push(DecorationRequest {
             doc: None,
             kind: DecorationKind::Clear,

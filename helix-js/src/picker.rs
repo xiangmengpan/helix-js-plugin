@@ -2,6 +2,7 @@
 //! define 注册 {columns, items, ...} 到源表；run 取源调 items（同步数组或 Promise 续体），
 //! 把候选行经 UiRequest::OpenPicker 交给 helix-term 渲染。
 
+use crate::host::HostState;
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::FunctionObjectBuilder;
 use boa_engine::{Context, JsObject, JsString, JsValue, NativeFunction};
@@ -217,10 +218,10 @@ pub fn invoke_action(source: &str, payload: &[String]) {
 }
 
 /// 选中：调 JS preview(payload) → {path, line}；源未定义/preview 未定义/返回 null/缺 path/抛错 → None（无预览）
-pub fn invoke_preview(source: &str, payload: &[String]) -> Option<(String, usize)> {
+pub fn invoke_preview(st: &HostState, source: &str, payload: &[String]) -> Option<(String, usize)> {
     crate::init();
     with_engine(|engine| {
-        let config = crate::state::with_picker_sources_current(|m| m.get(source).cloned())?;
+        let config = crate::state::with_picker_sources(st, |m| m.get(source).cloned())?;
         let config = config.as_object()?;
         let preview = config.get(JsString::from("preview"), engine).ok()?;
         if !preview.is_callable() {
@@ -618,7 +619,7 @@ mod tests {
         .unwrap();
         // preview → {path, line}；line 缺省 0
         assert_eq!(
-            invoke_preview("f", &["a.rs".to_string()]),
+            crate::host::with_state_or_init(|st| invoke_preview(st, "f", &["a.rs".to_string()])),
             Some(("/tmp/a.rs".to_string(), 3))
         );
         // action 收到 payload 数组
@@ -630,9 +631,13 @@ mod tests {
         );
         // 未定义 preview/action → None / 不崩；未知源 → 不崩
         load_script(r#"helix.picker.define("g", { columns: ["n"], items: () => [] });"#).unwrap();
-        assert_eq!(invoke_preview("g", &["x".to_string()]), None);
+        crate::host::with_state_or_init(|st| {
+            assert_eq!(invoke_preview(st, "g", &["x".to_string()]), None)
+        });
         invoke_action("g", &["x".to_string()]);
         invoke_action("nope", &["x".to_string()]);
-        assert_eq!(invoke_preview("nope", &["x".to_string()]), None);
+        crate::host::with_state_or_init(|st| {
+            assert_eq!(invoke_preview(st, "nope", &["x".to_string()]), None)
+        });
     }
 }

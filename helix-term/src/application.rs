@@ -564,7 +564,10 @@ impl Application {
             };
             let resolved = match self.js_host.as_deref_mut() {
                 Some(host) => host.resolve_async_event(id, event),
-                None => helix_js::resolve_async_event(id, event),
+                None => {
+                    let st = helix_js::host::state_handle_or_init();
+                    helix_js::resolve_async_event(&st, id, event)
+                }
             };
             if let Err(err) = resolved {
                 error = Some(err);
@@ -586,7 +589,10 @@ impl Application {
             };
             let resolved = match self.js_host.as_deref_mut() {
                 Some(host) => host.resolve_lsp(id, result),
-                None => helix_js::resolve_lsp(id, result),
+                None => {
+                    let st = helix_js::host::state_handle_or_init();
+                    helix_js::resolve_lsp(&st, id, result)
+                }
             };
             if let Err(err) = resolved {
                 log::error!("lsp result {id}: {err}");
@@ -697,7 +703,8 @@ impl Application {
                     host.emit_cursor_move(doc.id().as_u64(), row, col, mode);
                 }
                 None => {
-                    helix_js::cursor::emit_cursor_move(doc.id().as_u64(), row, col, mode);
+                    let st = helix_js::host::state_handle_or_init();
+                    helix_js::cursor::emit_cursor_move(&st, doc.id().as_u64(), row, col, mode);
                 }
             }
             if changed_sel {
@@ -1955,7 +1962,8 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
 
     let (view, doc) = current_ref!(editor);
     let Some(client) = doc.language_servers_with_feature(feature).next() else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let st = helix_js::host::state_handle_or_init();
+        let _ = helix_js::resolve_lsp(&st, req.id, Ok(None));
         return;
     };
     let offset_encoding = client.offset_encoding();
@@ -1997,7 +2005,8 @@ fn handle_lsp_request(editor: &Editor, req: helix_js::LspRequest) {
             .map(|f| Box::pin(lsp_json(f)) as _),
     };
     let Some(future) = future else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let st = helix_js::host::state_handle_or_init();
+        let _ = helix_js::resolve_lsp(&st, req.id, Ok(None));
         return;
     };
 
@@ -2056,7 +2065,7 @@ fn handle_lsp_format(editor: &Editor, req: helix_js::LspRequest) {
         .language_servers_with_feature(LanguageServerFeature::Format)
         .next()
     else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let _ = helix_js::resolve_lsp(&helix_js::host::state_handle_or_init(), req.id, Ok(None));
         return;
     };
     let Some(future) = client.text_document_formatting(
@@ -2068,7 +2077,7 @@ fn handle_lsp_format(editor: &Editor, req: helix_js::LspRequest) {
         },
         None,
     ) else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let _ = helix_js::resolve_lsp(&helix_js::host::state_handle_or_init(), req.id, Ok(None));
         return;
     };
     let id = req.id;
@@ -2103,7 +2112,7 @@ fn handle_lsp_rename(editor: &Editor, req: helix_js::LspRequest) {
         .and_then(|p| p.as_str())
         .map(str::to_string)
     else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let _ = helix_js::resolve_lsp(&helix_js::host::state_handle_or_init(), req.id, Ok(None));
         return;
     };
     let (view, doc) = current_ref!(editor);
@@ -2111,7 +2120,7 @@ fn handle_lsp_rename(editor: &Editor, req: helix_js::LspRequest) {
         .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
         .next()
     else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let _ = helix_js::resolve_lsp(&helix_js::host::state_handle_or_init(), req.id, Ok(None));
         return;
     };
     let offset_encoding = client.offset_encoding();
@@ -2128,7 +2137,8 @@ fn handle_lsp_rename(editor: &Editor, req: helix_js::LspRequest) {
         None => doc.position(view.id, offset_encoding),
     };
     let Some(future) = client.rename_symbol(doc.identifier(), pos, new_name) else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let st = helix_js::host::state_handle_or_init();
+        let _ = helix_js::resolve_lsp(&st, req.id, Ok(None));
         return;
     };
     let id = req.id;
@@ -2168,7 +2178,7 @@ fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
         lsp::CodeActionTriggerKind::INVOKED,
     );
     if futures.is_empty() {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let _ = helix_js::resolve_lsp(&helix_js::host::state_handle_or_init(), req.id, Ok(None));
         return;
     }
     let id = req.id;
@@ -2219,7 +2229,8 @@ fn handle_lsp_code_actions(editor: &Editor, req: helix_js::LspRequest) {
 /// 主线程段 A 解析 _serverId 路由对应 server 后应用。无 CodeAction server → 段 A 报错 resolve null。
 fn handle_lsp_execute_code_action(_editor: &Editor, req: helix_js::LspRequest) {
     let Some(params) = req.params else {
-        let _ = helix_js::resolve_lsp(req.id, Ok(None));
+        let st = helix_js::host::state_handle_or_init();
+        let _ = helix_js::resolve_lsp(&st, req.id, Ok(None));
         return;
     };
     let tx = helix_js::lsp_result_tx();

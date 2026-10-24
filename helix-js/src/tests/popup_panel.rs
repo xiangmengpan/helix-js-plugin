@@ -133,7 +133,12 @@ fn panel_onkey() {
         ctrl: false,
         alt: false,
     };
-    assert_eq!(popup_key(id, &esc, &ctx).unwrap(), PopupKeyResult::Close);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(
+            popup_key(st, id, &esc, &ctx).unwrap(),
+            PopupKeyResult::Close
+        )
+    });
     assert_eq!(take_messages(), vec!["panel-key:Esc"]);
     // panel_has_onkey：有 onKey → true（简报测试的补充断言）
     assert!(panel_has_onkey(id));
@@ -247,14 +252,24 @@ fn popup_lifecycle() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Handled);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(
+            popup_key(st, id, &key, &ctx).unwrap(),
+            PopupKeyResult::Handled
+        )
+    });
     let key = PluginKey {
         name: "Esc".into(),
         shift: false,
         ctrl: false,
         alt: false,
     };
-    assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(
+            popup_key(st, id, &key, &ctx).unwrap(),
+            PopupKeyResult::Close
+        )
+    });
 
     close_popup(id).unwrap();
     assert_eq!(take_messages(), vec!["closed:null"]);
@@ -285,14 +300,24 @@ fn popup_default_keys_and_validation() {
         cursor: (0, 0),
         selection: ((0, 0), (0, 0)),
     };
-    assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Ignored);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(
+            popup_key(st, id, &key, &ctx).unwrap(),
+            PopupKeyResult::Ignored
+        )
+    });
     let key = PluginKey {
         name: "Esc".into(),
         shift: false,
         ctrl: false,
         alt: false,
     };
-    assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(
+            popup_key(st, id, &key, &ctx).unwrap(),
+            PopupKeyResult::Close
+        )
+    });
     close_popup(id).unwrap();
 
     // render 非数组 → Err
@@ -428,7 +453,12 @@ fn popup_onkey_edits_doc() {
         ctrl: false,
         alt: false,
     };
-    assert_eq!(popup_key(id, &key, &ctx).unwrap(), PopupKeyResult::Close);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(
+            popup_key(st, id, &key, &ctx).unwrap(),
+            PopupKeyResult::Close
+        )
+    });
     assert_eq!(
         take_edits(),
         vec![Edit {
@@ -445,7 +475,7 @@ fn popup_onkey_edits_doc() {
 fn buffer_icon_hook() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
-    assert_eq!(bufferline_icon(Some("a.rs")), None); // 未注册 → None
+    crate::host::with_state_or_init(|st| assert_eq!(bufferline_icon(st, Some("a.rs")), None)); // 未注册 → None
 
     load_script(
         r#"
@@ -453,9 +483,11 @@ fn buffer_icon_hook() {
     "#,
     )
     .unwrap();
-    assert_eq!(bufferline_icon(Some("main.rs")), Some("🦀".to_string()));
-    assert_eq!(bufferline_icon(Some("main.py")), None);
-    assert_eq!(bufferline_icon(None), None);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(bufferline_icon(st, Some("main.rs")), Some("🦀".to_string()))
+    });
+    crate::host::with_state_or_init(|st| assert_eq!(bufferline_icon(st, Some("main.py")), None));
+    crate::host::with_state_or_init(|st| assert_eq!(bufferline_icon(st, None), None));
 }
 
 #[test]
@@ -515,12 +547,12 @@ fn statusline_hook() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
     let ctx = statusline_ctx();
-    assert_eq!(statusline_parts(&ctx), None);
+    crate::host::with_state_or_init(|st| assert_eq!(statusline_parts(st, &ctx), None));
 
     // 字符串 → 单段（style None）
     load_script(r#"helix.set_statusline((ctx) => ctx.mode + ":" + ctx.cursor.row);"#).unwrap();
     assert_eq!(
-        statusline_parts(&ctx),
+        crate::host::with_state_or_init(|st| statusline_parts(st, &ctx)),
         Some(vec![StatuslinePart {
             text: "insert:3".into(),
             style: None,
@@ -540,7 +572,7 @@ fn statusline_hook() {
     )
     .unwrap();
     assert_eq!(
-        statusline_parts(&ctx),
+        crate::host::with_state_or_init(|st| statusline_parts(st, &ctx)),
         Some(vec![
             StatuslinePart {
                 text: " N ".into(),
@@ -562,13 +594,13 @@ fn statusline_hook() {
 
     // 返回 null → None
     load_script(r#"helix.set_statusline(() => null);"#).unwrap();
-    assert_eq!(statusline_parts(&ctx), None);
+    crate::host::with_state_or_init(|st| assert_eq!(statusline_parts(st, &ctx), None));
     // 抛错 → None
     load_script(r#"helix.set_statusline(() => { throw new Error("boom"); });"#).unwrap();
-    assert_eq!(statusline_parts(&ctx), None);
+    crate::host::with_state_or_init(|st| assert_eq!(statusline_parts(st, &ctx), None));
     // set_statusline(null) 清除
     load_script(r#"helix.set_statusline(null);"#).unwrap();
-    assert_eq!(statusline_parts(&ctx), None);
+    crate::host::with_state_or_init(|st| assert_eq!(statusline_parts(st, &ctx), None));
     // 非法参数 → JS 报错
     assert!(load_script(r#"helix.set_statusline(42);"#).is_err());
 }
@@ -605,14 +637,20 @@ fn node_events_and_focusables() {
     }
     assert_eq!(focusables, vec!["btn1".to_string(), "in1".to_string()]);
     // 事件分发：button onPress
-    assert!(dispatch_node_event(id, "btn1", None).is_ok());
+    crate::host::with_state_or_init(
+        |st| assert!(dispatch_node_event(st, id, "btn1", None).is_ok()),
+    );
     // input onKey
-    assert!(dispatch_node_event(id, "in1", Some("a")).is_ok());
+    crate::host::with_state_or_init(|st| {
+        assert!(dispatch_node_event(st, id, "in1", Some("a")).is_ok())
+    });
     let msgs = take_messages();
     assert!(msgs.contains(&"pressed".to_string()), "{msgs:?}");
     assert!(msgs.contains(&"key:a".to_string()), "{msgs:?}");
     // 未知节点 → Ok（无处理器）
-    assert!(dispatch_node_event(id, "nope", None).is_ok());
+    crate::host::with_state_or_init(
+        |st| assert!(dispatch_node_event(st, id, "nope", None).is_ok()),
+    );
     close_popup(id).unwrap();
 }
 

@@ -1665,10 +1665,15 @@ fn parse_children(
 
 /// 调 JS onKey 回调（第二个参数是可编辑的 doc 快照）。
 /// 未注册 onKey 或缺省时：Esc→Close，其他→Ignore。
-pub fn popup_key(id: u64, key: &PluginKey, ctx: &CommandContext) -> Result<PopupKeyResult> {
+pub fn popup_key(
+    st: &HostState,
+    id: u64,
+    key: &PluginKey,
+    ctx: &CommandContext,
+) -> Result<PopupKeyResult> {
     crate::init();
     crate::state::with_engine(|engine| {
-        let callbacks = crate::state::with_popups_current(|p| p.get(&id).cloned())
+        let callbacks = crate::state::with_popups(st, |p| p.get(&id).cloned())
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
         let Some(on_key) = callbacks.on_key else {
             return Ok(if key.name == "Esc" {
@@ -1923,9 +1928,9 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
     })
 }
 
-pub fn statusline_parts(ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
+pub fn statusline_parts(st: &HostState, ctx: &StatuslineCtx) -> Option<Vec<StatuslinePart>> {
     crate::init();
-    let hook = crate::state::with_statusline_hook_current(|h| h.clone())?;
+    let hook = crate::state::with_statusline_hook(st, |h| h.clone())?;
     crate::state::with_engine(|engine| {
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let cursor = ObjectInitializer::new(engine)
@@ -2209,10 +2214,10 @@ pub(crate) fn js_term_close(
 }
 
 /// 调 bufferline 图标钩子；未注册 / 返回 null / 报错 → None。
-pub fn bufferline_icon(path: Option<&str>) -> Option<String> {
+pub fn bufferline_icon(st: &HostState, path: Option<&str>) -> Option<String> {
     crate::init();
     crate::state::with_engine(|engine| {
-        let hook = crate::state::with_buffer_icon_hook_current(|h| h.clone());
+        let hook = crate::state::with_buffer_icon_hook(st, |h| h.clone());
         let hook = hook?;
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
         let arg = match path {

@@ -465,7 +465,9 @@ fn term_hook_emit_and_term_key() {
     init();
     // 无 handler:None
     assert_eq!(emit_hook("term-key", &[JsValue::from(1_i32)]), None);
-    assert_eq!(emit_term_key(1, "esc", false, false, false), None);
+    crate::host::with_state_or_init(|st| {
+        assert_eq!(emit_term_key(st, 1, "esc", false, false, false), None)
+    });
     assert!(!emit_term_close(1, "esc"), "无 handler 不阻止");
 
     load_script(
@@ -482,15 +484,15 @@ fn term_hook_emit_and_term_key() {
     use crate::commands::TermKeyDecision;
     // term-key 映射
     assert!(matches!(
-        emit_term_key(1, "esc", false, false, false),
+        crate::host::with_state_or_init(|st| emit_term_key(st, 1, "esc", false, false, false)),
         Some(TermKeyDecision::Minimize)
     ));
     assert!(matches!(
-        emit_term_key(1, "x", false, true, false),
+        crate::host::with_state_or_init(|st| emit_term_key(st, 1, "x", false, true, false)),
         Some(TermKeyDecision::Close)
     ));
     assert!(matches!(
-        emit_term_key(1, "a", false, false, false),
+        crate::host::with_state_or_init(|st| emit_term_key(st, 1, "a", false, false, false)),
         Some(TermKeyDecision::Pass)
     ));
     // term-close:false → 阻止

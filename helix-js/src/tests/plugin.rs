@@ -80,8 +80,12 @@ fn plugin_object_accepts_new_and_existing_properties() {
 fn loaded_scripts_list() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
-    load_script_named("a.js", r#"helix.register_command("a", () => {});"#).unwrap();
-    load_script_named("b.js", r#"helix.register_command("b", () => {});"#).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(st, "a.js", r#"helix.register_command("a", () => {});"#).unwrap()
+    });
+    crate::host::with_state_or_init(|st| {
+        load_script_named(st, "b.js", r#"helix.register_command("b", () => {});"#).unwrap()
+    });
     let names = loaded_scripts();
     assert!(names.iter().any(|n| n == "a.js"));
     assert!(names.iter().any(|n| n == "b.js"));
@@ -140,8 +144,17 @@ fn plugin_manifest_fields_are_parsed_and_recorded() {
         r#"helix.plugin("legacy", { deps: [] });"#,
     )
     .unwrap();
-    load_script_named("rich", &std::fs::read_to_string(d.join("rich.js")).unwrap()).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(
+            st,
+            "rich",
+            &std::fs::read_to_string(d.join("rich.js")).unwrap(),
+        )
+        .unwrap()
+    });
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "legacy",
         &std::fs::read_to_string(d.join("legacy.js")).unwrap(),
     )
@@ -186,7 +199,9 @@ fn permission_check_ask_then_decide() {
     )
     .unwrap();
     // 按**源**加载(load_script 收的是源码;按名字走 helix.load 才有"提供根"语义)
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "asker",
         &std::fs::read_to_string(d.join("asker.js")).unwrap(),
     )
@@ -596,7 +611,7 @@ fn capability_covers_sibling_apis() {
             helix.spawn({ pty: false, cmd: "true", onChunk: () => {}, onExit: () => {} });
         });
     "#;
-    load_script_named("cap", main_src).unwrap();
+    crate::host::with_state_or_init(|st| load_script_named(st, "cap", main_src).unwrap());
     let ctx = CommandContext {
         docs: vec![],
         path: None,
@@ -648,12 +663,16 @@ fn command_docs() {
 fn plugin_reload() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "a.js",
         r#"helix.register_command("reload-cmd", () => { helix.echo("v1"); });"#,
     )
     .unwrap();
-    load_script_named("b.js", r#"helix.on("save", () => {});"#).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(st, "b.js", r#"helix.on("save", () => {});"#).unwrap()
+    });
 
     assert!(has_handlers("save"));
     let ctx = CommandContext {
@@ -744,7 +763,9 @@ fn reload_keeps_plugins_with_deps_and_hooks() {
         ft.replace("\"lib/icons.js\"", &format!("\"{icons_abs}\"")),
     )
     .unwrap();
-    load_script_named(&init_path.display().to_string(), &init_src).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(st, &init_path.display().to_string(), &init_src).unwrap()
+    });
     // 模拟启动时的相对名记录:load 已把 features/* 记录为相对名
     let ctx = CommandContext {
         path: None,
@@ -815,7 +836,9 @@ fn reload_after_init_midway_failure_keeps_dependent_plugins() {
         bad = bad_abs,
         a = a_abs
     );
-    load_script_named(&init_path.display().to_string(), &init_src).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(st, &init_path.display().to_string(), &init_src).unwrap()
+    });
     let ctx = CommandContext {
         path: None,
         text: String::new(),
@@ -884,7 +907,9 @@ helix.load("features/filetree/index.js");
 helix.load("features/which-key.js");
 helix.load("features/picker.js")
 helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
-    let r = load_script_named(&init_path.display().to_string(), init_src);
+    let r = crate::host::with_state_or_init(|st| {
+        load_script_named(st, &init_path.display().to_string(), init_src)
+    });
     if let Err(e) = &r {
         panic!("init load failed: {e}");
     }
@@ -953,7 +978,7 @@ fn reload_missing_relative_load_then_dependent_pollution() {
     )
     .unwrap();
     let init_src = std::fs::read_to_string(&init_path).unwrap();
-    load_script_named(&init_abs, &init_src).unwrap();
+    crate::host::with_state_or_init(|st| load_script_named(st, &init_abs, &init_src).unwrap());
     let ctx = CommandContext {
         path: None,
         text: String::new(),
@@ -1005,12 +1030,16 @@ fn reload_failed_script_does_not_block_others() {
     // 绝对路径加载(PLUGINS_DIR 全局共享不可靠)
     let bad_abs = d.join("bad.js").to_string_lossy().into_owned();
     let good_abs = d.join("good.js").to_string_lossy().into_owned();
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         &bad_abs,
         &std::fs::read_to_string(d.join("bad.js")).unwrap(),
     )
     .unwrap();
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         &good_abs,
         &std::fs::read_to_string(d.join("good.js")).unwrap(),
     )
@@ -1064,7 +1093,9 @@ fn circular_runtime_load_errors_not_crash() {
     let init_path = d.join("init.js");
     let init_src = format!(r#"helix.load("{a_abs}");"#);
     std::fs::write(&init_path, init_src).unwrap();
+    let st = crate::host::state_handle_or_init();
     let r = load_script_named(
+        &st,
         &init_path.display().to_string(),
         &std::fs::read_to_string(&init_path).unwrap(),
     );
@@ -1111,7 +1142,9 @@ helix.load("which-key");
 helix.load("tabbar");
 helix.map("normal", "space-f", () => helix.picker.run("files"));"#;
     let init_path = d.join("init.js");
-    let r = load_script_named(&init_path.display().to_string(), init_src);
+    let r = crate::host::with_state_or_init(|st| {
+        load_script_named(st, &init_path.display().to_string(), init_src)
+    });
     if let Err(e) = &r {
         panic!("init load failed: {e}");
     }
@@ -1157,7 +1190,8 @@ fn reload_real_statusline_render_ok() {
     )
     .unwrap();
     let src = std::fs::read_to_string(d.join("statusline/plugin.js")).unwrap();
-    let r = load_script_named("statusline/plugin.js", &src);
+    let r =
+        crate::host::with_state_or_init(|st| load_script_named(st, "statusline/plugin.js", &src));
     eprintln!("load statusline result: {r:?}");
     r.unwrap();
     let _ = take_messages();
@@ -1171,7 +1205,7 @@ fn reload_real_statusline_render_ok() {
     });
     let ctx = statusline_ctx();
     // reload 前 render 正常
-    let before = statusline_parts(&ctx);
+    let before = crate::host::with_state_or_init(|st| statusline_parts(st, &ctx));
     eprintln!("reload 前 statusline_parts: {before:?}");
     assert!(
         before.is_some() && !before.unwrap().is_empty(),
@@ -1182,7 +1216,7 @@ fn reload_real_statusline_render_ok() {
     let _ = take_messages();
     let _ = take_ui_requests();
     // reload 后 render 应正常(非空,不抛错)
-    let after = statusline_parts(&ctx);
+    let after = crate::host::with_state_or_init(|st| statusline_parts(st, &ctx));
     assert!(after.is_some(), "reload 后 statusline render 不应抛错");
     assert!(!after.unwrap().is_empty(), "reload 后 statusline 应有内容");
 }
@@ -1226,7 +1260,9 @@ fn plugin_reload_top_level_const() {
     // （无 IIFE 时全局词法环境重复声明会抛 SyntaxError: duplicate lexical declaration）
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "c.js",
         r#"const X = 1; helix.register_command("ccmd", () => helix.echo("ok"));"#,
     )
@@ -1284,7 +1320,7 @@ fn plugin_deps_auto_load() {
         feat = feat_abs,
         icons = icons_abs,
     );
-    load_script_named("driver.js", &script).unwrap();
+    crate::host::with_state_or_init(|st| load_script_named(st, "driver.js", &script).unwrap());
     let ctx = CommandContext {
         docs: vec![],
         path: None,
@@ -1315,7 +1351,7 @@ fn plugin_deps_auto_load() {
     "#,
         a = a_abs,
     );
-    load_script_named("cyc.js", &cyc_script).unwrap();
+    crate::host::with_state_or_init(|st| load_script_named(st, "cyc.js", &cyc_script).unwrap());
     assert!(crate::host::with_state_or_init(|st| run_command(st, "cyc-run", &ctx)).unwrap());
     assert!(
         take_messages()[0].contains("circular dependency"),
@@ -1341,10 +1377,14 @@ fn entry_load_export_lazy() {
         r#"helix.export({ a: 1, b: "x" });"#,
     )
     .unwrap();
-    load_script_named("init.js", r#"helix.load("exp.js");"#).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(st, "init.js", r#"helix.load("exp.js");"#).unwrap()
+    });
     // init.js 的 load 本身无法断言返回值——直接测 js_load 路径：
     // 用 helix.run_command 间接：注册命令调用 load 并把结果 echo 出来
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "driver.js",
         r#"
     helix.register_command("load-exp", () => {
@@ -1377,19 +1417,30 @@ fn entry_load_export_lazy() {
         r#"helix.register_command("lazy-cmd", () => { helix.echo("lazy-ran"); });"#,
     )
     .unwrap();
-    load_script_named("lazy-driver.js", r#"helix.lazy("lazy.js", "lazy-cmd");"#).unwrap();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(
+            st,
+            "lazy-driver.js",
+            r#"helix.lazy("lazy.js", "lazy-cmd");"#,
+        )
+        .unwrap()
+    });
     assert!(crate::host::with_state_or_init(|st| run_command(st, "lazy-cmd", &ctx)).unwrap());
     assert_eq!(take_messages(), vec!["lazy-ran"]);
 
     // run_command 带 ctx：命令读 ctx.cursor
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "rc.js",
         r#"
     helix.register_command("where", (c) => { helix.echo("at:" + c.cursor.row + "," + c.cursor.col); });
     "#,
     )
     .unwrap();
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "rc-driver.js",
         r#"helix.register_command("call-where", () => { helix.run_command("where", { cursor: { row: 3, col: 7 } }); });"#,
     )
@@ -1398,7 +1449,9 @@ fn entry_load_export_lazy() {
     assert_eq!(take_messages(), vec!["at:3,7"]);
 
     // 校验：未知文件 → 抛错
+    let st = crate::host::state_handle_or_init();
     load_script_named(
+        &st,
         "bad-driver.js",
         r#"helix.register_command("bad-load", () => { helix.load("nope.js"); });"#,
     )

@@ -229,11 +229,11 @@ pub fn drain_lsp_results() -> Vec<LspResult> {
 
 /// 按 id 兑现 LSP promise：Ok(Some(json)) → JSON.parse 后 resolve；Ok(None) → resolve null；
 /// Err(e) → reject Error（e.message 可读）。幂等：未知/已兑现 id → no-op。
-pub fn resolve_lsp(id: u64, result: Result<Option<String>, String>) -> Result<()> {
+pub fn resolve_lsp(st: &HostState, id: u64, result: Result<Option<String>, String>) -> Result<()> {
     crate::init();
     crate::permissions::with_callback_owner(&crate::permissions::CbKey::lsp_promise(id), || {
         crate::state::with_engine(|engine| {
-            let resolving = crate::state::with_lsp_promises_current(|m| m.remove(&id));
+            let resolving = crate::state::with_lsp_promises(st, |m| m.remove(&id));
             let Some(resolving) = resolving else {
                 return Ok(());
             };
@@ -408,7 +408,7 @@ mod tests {
         });
         // Ok(None) → null
         crate::load_script("__lsp_p.then((v) => { globalThis.__seen = v; });").unwrap();
-        resolve_lsp(id, Ok(None)).unwrap();
+        crate::host::with_state_or_init(|st| resolve_lsp(st, id, Ok(None)).unwrap());
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
             let seen = engine
@@ -426,7 +426,9 @@ mod tests {
             take_lsp_requests_current()[0].id
         });
         crate::load_script("__lsp_p2.then((v) => { globalThis.__seen2 = v; });").unwrap();
-        resolve_lsp(id2, Ok(Some(r#"{"a": 1}"#.to_string()))).unwrap();
+        crate::host::with_state_or_init(|st| {
+            resolve_lsp(st, id2, Ok(Some(r#"{"a": 1}"#.to_string()))).unwrap()
+        });
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
             let seen = engine
@@ -453,7 +455,9 @@ mod tests {
             take_lsp_requests_current()[0].id
         });
         crate::load_script("__lsp_p3.catch((e) => { globalThis.__seen3 = e.message; });").unwrap();
-        resolve_lsp(id3, Err("boom".to_string())).unwrap();
+        crate::host::with_state_or_init(|st| {
+            resolve_lsp(st, id3, Err("boom".to_string())).unwrap()
+        });
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
             let seen = engine
@@ -475,7 +479,9 @@ mod tests {
             take_lsp_requests_current()[0].id
         });
         crate::load_script("__lsp_p4.catch((e) => { globalThis.__seen4 = e.message; });").unwrap();
-        resolve_lsp(id4, Ok(Some("not json".to_string()))).unwrap();
+        crate::host::with_state_or_init(|st| {
+            resolve_lsp(st, id4, Ok(Some("not json".to_string()))).unwrap()
+        });
         crate::pump_jobs().unwrap();
         crate::state::with_engine(|engine| {
             let seen = engine

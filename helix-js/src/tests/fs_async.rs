@@ -488,7 +488,7 @@ fn async_fs() {
             | AsyncEvent::FsGlob(id, _)
             | AsyncEvent::FsTree(id, _) => *id,
         };
-        resolve_async_event(id, ev).unwrap();
+        crate::host::with_state_or_init(|st| resolve_async_event(st, id, ev).unwrap());
     }
     pump_jobs().unwrap();
     let msgs = take_messages();
@@ -530,7 +530,7 @@ fn async_fs() {
             | AsyncEvent::FsGlob(id, _)
             | AsyncEvent::FsTree(id, _) => *id,
         };
-        resolve_async_event(id, ev).unwrap();
+        crate::host::with_state_or_init(|st| resolve_async_event(st, id, ev).unwrap());
     }
     pump_jobs().unwrap();
     let msgs2 = take_messages();
@@ -563,7 +563,7 @@ fn async_fs() {
             | AsyncEvent::FsGlob(id, _)
             | AsyncEvent::FsTree(id, _) => *id,
         };
-        resolve_async_event(id, ev).unwrap();
+        crate::host::with_state_or_init(|st| resolve_async_event(st, id, ev).unwrap());
     }
     pump_jobs().unwrap();
     assert!(take_messages().iter().any(|m| m == "bad:err"));

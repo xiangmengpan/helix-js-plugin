@@ -322,19 +322,19 @@ grep -rn "_current(" helix-js/src helix-term/src --include=*.rs | grep -v "fn .*
 所以 ② 的工程量 ≈ **0**；顺带也免掉了"`RefCell` 换 `Mutex` 会把重入 panic 变成死锁"这个风险
 （那才是这一档原本最贵的地方）。
 
-#### 剩下的唯一一档：`pump()` 作用域（④）
+#### ④ `pump()` 作用域：**已收口（2026-10-22）**
 
-`pump()` 已把 `&HostState` 交给闭包（`8e145dc17`）。剩下要做的是**callee 先行**：
+`pump()` 把 `&HostState` 交给闭包后，按"callee 先行"把 **34 个 pump callee** 逐个改成
+`fn xxx(st: &HostState, …)`；再回头把泵方法的 `|_st|` 换成 `|st|`。
 
-| 测量项 | 结果 |
-|---|---|
-| `pump` 里调用的 callee | **35** 个 |
-| 这些 callee 体内**直接的隐式访问点**（`*_current` / `with_state_or_init` / `host_state`） | **32** 处 |
-| 集中度 | `commands::run_command` **6** · `popup::render_component_cached` **3** · `popup::render_popup` **3** · `shell::resolve_term_event` **3** · 其余 1–2 |
+**收口度量**：遍历 pump 里调用的 34 个 callee，统计其体内
+`*_current` / `with_state_or_init` / `host_state` 的出现次数 ⇒ **0**。
 
-即：把 `pump` 的 `_st` 换成 `st` 之前，先给这 35 个 callee 各加一个 `(st: &HostState, …)` 变体，
-再逐个把泵方法从 `|_st|` 改成 `|st|`。按 32 个访问点算，这是**一批可完成的机械改造**
-（比 3b 的 140 处、L3 的 213 处都小），做完之后 `ACTIVE` 就只剩"引擎已借出的原生回调"这一个用途。
+**这一档之后 `ACTIVE` 的用途**：只剩"引擎已借出、必须走隐式解析"的原生回调
+（`with_engine`）与 `pump` 自身的作用域 —— 也就是文档最初设想的最终形态。
+少数边界仍走**具名捕获入口**（`host::state_handle_or_init()`）：
+`ui/js_surface::refresh_global`（布局期无 `&mut Context`）与 helix-term 里
+`with_js` 返回 `None` 的分支。
 
 ### 建议
 

@@ -192,7 +192,10 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     // D-2:状态栏钩子是最热的 JS 入口(每帧)⇒ 走 `&mut JsHost` 泵入口
     let js_parts = match context.js.as_deref_mut() {
         Some(host) => host.statusline_parts(&js_ctx),
-        None => helix_js::statusline_parts(&js_ctx),
+        None => {
+            let st = helix_js::host::state_handle_or_init();
+            helix_js::statusline_parts(&st, &js_ctx)
+        }
     };
     // L4-③:用**构造时捕获**的状态(不再摸隐式宿主)。无状态 ⇒ 没有 JS 替换模式。
     let js_replace = match context.state.as_deref() {

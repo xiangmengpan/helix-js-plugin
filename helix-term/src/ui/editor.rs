@@ -767,9 +767,10 @@ impl EditorView {
                 Some(host) => {
                     host.bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()))
                 }
-                None => {
-                    helix_js::bufferline_icon(doc.path().map(|p| p.to_str().unwrap_or_default()))
-                }
+                None => helix_js::bufferline_icon(
+                    &helix_js::host::state_handle_or_init(),
+                    doc.path().map(|p| p.to_str().unwrap_or_default()),
+                ),
             };
             let fname = match icon {
                 Some(icon) if !icon.is_empty() => format!("{icon} {fname}"),

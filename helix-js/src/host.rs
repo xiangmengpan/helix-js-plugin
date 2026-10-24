@@ -646,7 +646,7 @@ impl JsHost {
         node_id: &str,
         key: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.pump(|_st| crate::commands::dispatch_node_event(view_id, node_id, key))
+        self.pump(|st| crate::commands::dispatch_node_event(st, view_id, node_id, key))
     }
 
     /// 泵入口·弹窗/面板节点按键(`onKey` + 节点路由),返回插件决定
@@ -656,12 +656,12 @@ impl JsHost {
         key: &crate::types::PluginKey,
         ctx: &crate::types::CommandContext,
     ) -> anyhow::Result<crate::types::PopupKeyResult> {
-        self.pump(|_st| crate::popup::popup_key(id, key, ctx))
+        self.pump(|st| crate::popup::popup_key(st, id, key, ctx))
     }
 
     /// 泵入口·组件节点上的鼠标/输入事件;返回 true = 插件消费了该事件
     pub fn emit_component_event(&mut self, id: u64, kind: &str, x: u16, y: u16) -> bool {
-        self.pump(|_st| crate::commands::emit_component_event(id, kind, x, y))
+        self.pump(|st| crate::commands::emit_component_event(st, id, kind, x, y))
     }
 
     /// 泵入口·终端按键钩子(`term-key`),返回决策
@@ -673,7 +673,7 @@ impl JsHost {
         ctrl: bool,
         alt: bool,
     ) -> Option<crate::commands::TermKeyDecision> {
-        self.pump(|_st| crate::commands::emit_term_key(pty_id, code, shift, ctrl, alt))
+        self.pump(|st| crate::commands::emit_term_key(st, pty_id, code, shift, ctrl, alt))
     }
 
     /// 泵入口·终端显示模式通知(`term-mode-change`)
@@ -711,7 +711,7 @@ impl JsHost {
         id: u64,
         event: crate::types::AsyncEvent,
     ) -> anyhow::Result<()> {
-        self.pump(|_st| crate::shell::resolve_async_event(id, event))
+        self.pump(|st| crate::shell::resolve_async_event(st, id, event))
     }
 
     /// 泵入口·兑现 LSP 请求对应的 Promise
@@ -720,7 +720,7 @@ impl JsHost {
         id: u64,
         result: Result<Option<String>, String>,
     ) -> anyhow::Result<()> {
-        self.pump(|_st| crate::lsp::resolve_lsp(id, result))
+        self.pump(|st| crate::lsp::resolve_lsp(st, id, result))
     }
 
     /// 泵入口·按**源码**加载脚本(启动引导 `init.js` 用)
@@ -734,7 +734,7 @@ impl JsHost {
 
     /// 泵入口·按**名字**加载脚本(名字用于报错定位与热重载记录)
     pub fn load_script_named(&mut self, name: &str, src: &str) -> anyhow::Result<()> {
-        self.pump(|_st| crate::commands::load_script_named(name, src))
+        self.pump(|st| crate::commands::load_script_named(st, name, src))
     }
 
     /// 泵入口·`pane-mode-change`(平级模式切换;与 `helix.pane_mode.*` 快照同一来源)
@@ -744,12 +744,12 @@ impl JsHost {
 
     /// 泵入口·缓冲区行图标(`helix.set_bufferline_icon`;返回值给渲染用)
     pub fn bufferline_icon(&mut self, path: Option<&str>) -> Option<String> {
-        self.pump(|_st| crate::popup::bufferline_icon(path))
+        self.pump(|st| crate::popup::bufferline_icon(st, path))
     }
 
     /// 泵入口·光标移动事件(`cursor-move`)
     pub fn emit_cursor_move(&mut self, doc_id: u64, row: usize, col: usize, mode: &str) -> bool {
-        self.pump(|_st| crate::cursor::emit_cursor_move(doc_id, row, col, mode))
+        self.pump(|st| crate::cursor::emit_cursor_move(st, doc_id, row, col, mode))
     }
 
     /// 泵入口·选区变化事件(`selection-change`)
@@ -820,7 +820,7 @@ impl JsHost {
         source: &str,
         payload: &[String],
     ) -> Option<(String, usize)> {
-        self.pump(|_st| crate::picker::invoke_preview(source, payload))
+        self.pump(|st| crate::picker::invoke_preview(st, source, payload))
     }
 
     /// 泵入口·picker `onKey` 钩子;返回 true = 插件消费了该键
@@ -864,7 +864,7 @@ impl JsHost {
         &mut self,
         ctx: &crate::types::StatuslineCtx,
     ) -> Option<Vec<crate::types::StatuslinePart>> {
-        self.pump(|_st| crate::popup::statusline_parts(ctx))
+        self.pump(|st| crate::popup::statusline_parts(st, ctx))
     }
 }
 

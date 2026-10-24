@@ -171,7 +171,10 @@ impl Context<'_> {
     ) -> anyhow::Result<()> {
         match self.with_js(|h| h.dispatch_node_event(view_id, node_id, key)) {
             Some(r) => r,
-            None => helix_js::dispatch_node_event(view_id, node_id, key),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::dispatch_node_event(&st, view_id, node_id, key)
+            }
         }
     }
 
@@ -184,7 +187,10 @@ impl Context<'_> {
     ) -> anyhow::Result<helix_js::PopupKeyResult> {
         match self.with_js(|h| h.popup_key(id, key, ctx)) {
             Some(r) => r,
-            None => helix_js::popup_key(id, key, ctx),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::popup_key(&st, id, key, ctx)
+            }
         }
     }
 
@@ -192,7 +198,10 @@ impl Context<'_> {
     pub fn js_emit_component_event(&mut self, id: u64, kind: &str, x: u16, y: u16) -> bool {
         match self.with_js(|h| h.emit_component_event(id, kind, x, y)) {
             Some(r) => r,
-            None => helix_js::emit_component_event(id, kind, x, y),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::emit_component_event(&st, id, kind, x, y)
+            }
         }
     }
 
@@ -207,7 +216,10 @@ impl Context<'_> {
     ) -> Option<helix_js::TermKeyDecision> {
         match self.with_js(|h| h.emit_term_key(pty_id, code, shift, ctrl, alt)) {
             Some(r) => r,
-            None => helix_js::emit_term_key(pty_id, code, shift, ctrl, alt),
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::emit_term_key(&st, pty_id, code, shift, ctrl, alt)
+            }
         }
     }
 
