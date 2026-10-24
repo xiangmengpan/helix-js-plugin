@@ -65,8 +65,9 @@ pub use state::{
 // 插件 load/reload 之后必须重建一次(见 helix-term `refresh_plugin_configs`)。
 pub use config::rebuild_configs;
 
-/// 卸载单个插件(按属主回收命令/事件/键位/主题/弹窗/钩子);返回回收计数。
-pub use commands::{unload_all, unload_plugin, UnloadReport};
+// 卸载:命令/事件/键位/主题/弹窗/钩子按属主回收
+// (`unload_plugin` 单个、`unload_all` 全部属主、`unload_orphans` 无主兜底)——
+// 都在 `commands` 里,经上面 `pub use commands::*` 导出,这里不重复列。
 
 /// 无宿主句柄的路径(测试 / 旧入口):对默认宿主重建配置并写回缓存,返回校验/告警。
 /// 有宿主时请用 `JsHost::refresh_plugin_configs()` —— 配置状态是**按宿主**的。

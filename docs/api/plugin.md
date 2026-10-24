@@ -83,8 +83,10 @@ helix.plugin("filetree", {
 | `onUnload` | 跑 | 跑(每个属主都跑一遍) |
 | 之后重新加载 | 不会(用 `:plugin-load` / `:plugin-reload`) | 会(重读磁盘) |
 
-实现:**一份**清理逻辑(`helix_js::unload_plugin`),`reload_all` 就是"对每个已知属主调它,
-再按老的规矩兜底清一次没有属主的注册"。
+实现:**一份**清理逻辑 —— `unload_plugin` 按属主回收;`reload_all` 是
+「`unload_all`(对每个已知属主调 `unload_plugin`,所以 `onUnload` 在重载时也会跑)
+→ `unload_orphans`(回收**没有属主**的注册,即 `lib/*.js` 里注册却没声明 manifest 的那类)
+→ 清加载期瞬态(编辑/装饰队列、加载栈)」。没有第二套"整表清空"。
 
 ## 存储与来源追踪
 

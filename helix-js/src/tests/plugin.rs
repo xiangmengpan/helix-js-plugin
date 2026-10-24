@@ -1630,3 +1630,54 @@ helix.set_theme({ "ui.text.alt": "#00ff00" });"##,
         "A 的弹窗应入队关闭"
     );
 }
+
+/// `unload_orphans`:只回收**没有属主**的注册,有属主的插件产物一条不动。
+/// `reload_all` 用它接替旧的"整表清空"(那个 fn 已删)。
+///
+/// 真实的无主来源:共享库文件(`lib/x.js`)里注册命令但没 `helix.plugin`,属主表里没有它。
+/// 测试用 `forget_command_owner` 直接造出这个状态(比造一条真实的 lib 加载链更短、
+/// 断言更直接)。
+#[test]
+fn unload_orphans_only_removes_unowned_registrations() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    crate::permissions::reset_for_test();
+    crate::host::with_state_or_init(|st| {
+        load_script_named(
+            st,
+            "owned.js",
+            r#"helix.plugin("owned", {});
+helix.register_command("owned-cmd", () => {});
+helix.register_command("orphan-cmd", () => {});
+helix.on("save", () => {});
+helix.set_statusline(() => "owned");"#,
+        )
+        .unwrap()
+    });
+    // 把 orphan-cmd 的属主抹掉(事件处理器与钩子保持有主)
+    crate::permissions::forget_command_owner("orphan-cmd");
+
+    let removed = crate::host::with_state_or_init(crate::commands::unload_orphans);
+    assert_eq!(removed, 1, "只有那一条无主命令该被回收");
+
+    let names = command_names();
+    assert!(!names.contains(&"orphan-cmd".to_string()), "无主命令应消失");
+    assert!(
+        names.contains(&"owned-cmd".to_string()),
+        "有属主的命令必须留着"
+    );
+    // 有主的事件处理器与钩子一条不动(不越界)
+    assert_eq!(
+        crate::host::with_state_or_init(|st| {
+            crate::state::with_event_handlers(st, |m| m.get("save").map(|v| v.len()).unwrap_or(0))
+        }),
+        1,
+        "有主的事件处理器不该被清"
+    );
+    assert!(
+        crate::host::with_state_or_init(|st| {
+            crate::state::with_statusline_hook(st, |h| h.is_some())
+        }),
+        "有主的状态栏钩子不该被清"
+    );
+}

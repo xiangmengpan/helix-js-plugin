@@ -923,7 +923,7 @@ impl JsHost {
 /// **L3 过渡入口**:给"没有 `ctx`、但需要调显式访问器"的少数 Rust 侧 helper 用。
 ///
 /// L3 把 24 个访问器改成 `fn xxx(st: &HostState, …)` 之后,真正有 `ctx` 的调用点直接传
-/// `host_state(ctx)`;剩下这些入口(`resolve_plugin_path` / `reset_plugin_state` /
+/// `host_state(ctx)`;剩下这些入口(`resolve_plugin_path` / `unload_orphans` /
 /// `take_theme_dirty` / `reload_all` …)拿不到引擎 ⇒ 在这里**一次性**解析宿主,
 /// 再把 `&HostState` 交给显式访问器。语义与旧的 `with_host_ref_or_init` 完全一致
 /// (必要时自动 init),但"隐式"被收敛到**一个可 grep 的名字**上 ——

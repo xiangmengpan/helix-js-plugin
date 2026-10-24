@@ -2470,27 +2470,196 @@ pub fn loaded_scripts() -> Vec<String> {
 
 /// 清空所有插件状态（热重载用；id 计数器保留保证唯一性）。
 /// 注意：UI_REQUESTS/MESSAGES 不清——它们是命令边界 drain 的队列。
-fn reset_plugin_state() {
-    crate::state::with_registry_current(|r| r.clear());
-    crate::state::with_event_handlers_current(|h| h.clear());
-    crate::host::with_state_or_init(|st| crate::state::with_popups(st, |p| p.clear()));
-    crate::host::with_state_or_init(|st| crate::state::with_edits(st, |c| c.clear()));
-    crate::state::with_decoration_requests_current(|c| c.clear());
-    crate::state::with_cursor_requests_current(|c| c.clear());
-    crate::host::with_state_or_init(|st| crate::state::with_txn_depth(st, |d| *d = 0));
-    crate::state::with_buffer_icon_hook_current(|h| *h = None);
-    crate::state::with_statusline_hook_current(|h| *h = None);
-    crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));
-    crate::state::with_command_docs_current(|d| d.clear());
-    // 导出缓存与 pending 导出随插件状态重置（reload 后按名重读磁盘重跑）
+/// 回收**没有属主**的注册(裸脚本 `:plugin-load x.js` / 单测里直接 `eval` 的脚本)。
+///
+/// 属主判据与 `unload_plugin` 同一套:注册期绑定的插件名。区别只是这里找的是
+/// "注册表里有它、属主表里没有它"的条目 —— 它们没有名字可供 `:plugin-unload`,只在
+/// 全部重载时由这条兜底清掉。
+///
+/// 返回清掉的注册条数(relabel 用;不计入 `UnloadReport`)。
+pub fn unload_orphans(st: &HostState) -> usize {
+    let mut removed = 0usize;
+
+    // 命令(+说明)
+    let orphans: Vec<String> =
+        crate::state::with_registry(st, |r| r.keys().cloned().collect::<Vec<_>>())
+            .into_iter()
+            .filter(|c| crate::permissions::command_owner(c).is_none())
+            .collect();
+    if !orphans.is_empty() {
+        crate::state::with_registry(st, |r| {
+            for c in &orphans {
+                r.remove(c);
+            }
+        });
+        crate::state::with_command_docs(st, |d| {
+            for c in &orphans {
+                d.remove(c);
+            }
+        });
+        removed += orphans.len();
+    }
+
+    // 事件处理器:逐事件按"属主缺项"重建两侧(与 unload_plugin 同款:下标先算,双侧同步)
+    let events: Vec<String> =
+        crate::state::with_event_handlers(st, |m| m.keys().cloned().collect::<Vec<_>>());
+    for event in &events {
+        let len =
+            crate::state::with_event_handlers(st, |m| m.get(event).map(|v| v.len()).unwrap_or(0));
+        if len == 0 {
+            continue;
+        }
+        let keep: Vec<usize> = (0..len)
+            .filter(|i| crate::permissions::handler_owner(event, *i).is_some())
+            .collect();
+        if keep.len() == len {
+            continue;
+        }
+        removed += len - keep.len();
+        crate::state::with_event_handlers(st, |m| {
+            if let Some(list) = m.get_mut(event) {
+                let mut idx = 0usize;
+                list.retain(|_| {
+                    let k = keep.contains(&idx);
+                    idx += 1;
+                    k
+                });
+            }
+        });
+        let owners: Vec<String> = keep
+            .iter()
+            .filter_map(|i| crate::permissions::handler_owner(event, *i))
+            .collect();
+        crate::permissions::set_handler_owners(event, owners);
+    }
+
+    // 弹窗/面板:无属主的 id 入队关闭并摘表
+    let open_panels = crate::state::with_open_panels(st, |p| p.clone());
+    let popup_ids = crate::state::with_popups(st, |m| m.keys().cloned().collect::<Vec<_>>());
+    for id in popup_ids {
+        if crate::permissions::callback_owner(&crate::permissions::CbKey::popup(id)).is_some() {
+            continue;
+        }
+        if open_panels.contains(&id) {
+            crate::state::with_open_panels(st, |p| p.retain(|x| *x != id));
+            if crate::state::last_panel_id(st) == Some(id) {
+                crate::state::set_last_panel_id(st, None);
+            }
+            UI_REQUESTS
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .push(UiRequest::ClosePanel(ClosePanelReq { id }));
+        } else {
+            UI_REQUESTS
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .push(UiRequest::ClosePopup(ClosePopupReq { id }));
+        }
+        crate::state::with_popups(st, |m| m.remove(&id));
+        removed += 1;
+    }
+
+    // 单例钩子:槽里有值但属主表里没有 ⇒ 无主
+    use crate::permissions::CbKey as K;
+    if crate::state::with_statusline_hook(st, |h| h.is_some())
+        && crate::permissions::callback_owner(&K::hook(crate::permissions::CB_HOOK_STATUSLINE))
+            .is_none()
+    {
+        crate::state::with_statusline_hook(st, |h| *h = None);
+        crate::state::set_statusline_replace(st, false);
+        removed += 1;
+    }
+    if crate::state::with_buffer_icon_hook(st, |h| h.is_some())
+        && crate::permissions::callback_owner(&K::hook(crate::permissions::CB_HOOK_BUFFER_ICON))
+            .is_none()
+    {
+        crate::state::with_buffer_icon_hook(st, |h| *h = None);
+        removed += 1;
+    }
+    if crate::state::with_completion_icon_hook_current(|h| h.is_some())
+        && crate::permissions::callback_owner(&K::hook(crate::permissions::CB_HOOK_COMPLETION_ICON))
+            .is_none()
+    {
+        crate::state::with_completion_icon_hook_current(|h| *h = None);
+        removed += 1;
+    }
+    if crate::state::with_completion_render_hook_current(|h| h.is_some())
+        && crate::permissions::callback_owner(&K::hook(
+            crate::permissions::CB_HOOK_COMPLETION_RENDER,
+        ))
+        .is_none()
+    {
+        crate::state::with_completion_render_hook_current(|h| *h = None);
+        removed += 1;
+    }
+    if crate::state::with_keymap_hint_hook_current(|h| h.is_some())
+        && crate::permissions::callback_owner(&K::hook(crate::permissions::CB_HOOK_KEYMAP_HINT))
+            .is_none()
+    {
+        crate::state::with_keymap_hint_hook_current(|h| *h = None);
+        removed += 1;
+    }
+
+    // picker 源 / 节点回调:无属主的删掉
+    let sources: Vec<String> =
+        crate::state::with_picker_sources(st, |m| m.keys().cloned().collect::<Vec<_>>());
+    for src in sources {
+        if crate::permissions::callback_owner(&K::picker(&src)).is_none() {
+            crate::state::with_picker_sources(st, |m| {
+                m.remove(&src);
+            });
+            removed += 1;
+        }
+    }
+    let nodes: Vec<(u64, String)> =
+        crate::state::with_node_handlers(st, |m| m.keys().cloned().collect::<Vec<_>>());
+    for (view, node) in nodes {
+        if crate::permissions::callback_owner(&K::node(view, &node)).is_none() {
+            crate::state::with_node_handlers(st, |m| {
+                m.remove(&(view, node.clone()));
+            });
+            removed += 1;
+        }
+    }
+
+    // 主题覆盖:无属主的 scope 摘掉
+    let scopes: Vec<String> =
+        crate::state::with_theme_overrides(st, |o| o.keys().cloned().collect::<Vec<_>>());
+    let unowned: Vec<String> = scopes
+        .into_iter()
+        .filter(|sc| !crate::state::with_theme_owners(st, |m| m.contains_key(sc)))
+        .collect();
+    if !unowned.is_empty() {
+        crate::state::with_theme_overrides(st, |o| {
+            for sc in &unowned {
+                o.remove(sc);
+            }
+        });
+        crate::state::mark_theme_dirty(st);
+        removed += unowned.len();
+    }
+
+    removed
+}
+
+/// 重载时的**加载期瞬态**(不属于任何插件的产物):编辑/装饰/光标队列、事务深度、
+/// 主题脏位、加载栈、`last_export`。所有权归"本次加载",重跑脚本前必须清干净。
+fn reset_transient_state(st: &HostState) {
+    crate::state::with_edits(st, |c| c.clear());
+    crate::state::with_decoration_requests(st, |c| c.clear());
+    crate::state::with_cursor_requests(st, |c| c.clear());
+    crate::state::with_txn_depth(st, |d| *d = 0);
+    crate::state::set_last_panel_id(st, None);
+    // 导出缓存与 pending 导出随加载重置（reload 后按名重读磁盘重跑）
     with_script_exports(|m| m.clear());
     // 加载栈防御性清空（正常路径已 pop；防止异常残留影响后续 reload）
-    crate::state::with_load_stack_current(|s: &mut Vec<String>| s.clear());
-    crate::host::with_state_or_init(crate::state::clear_load_roots);
-    crate::state::with_last_export_current(|l| *l = None);
-    // 主题覆盖随插件状态重置：清空并置脏（下次 drain 还原基准主题）
-    crate::state::with_theme_overrides_current(|o| o.clear());
-    crate::host::with_state_or_init(crate::state::mark_theme_dirty);
+    crate::state::with_load_stack(st, |s: &mut Vec<String>| s.clear());
+    crate::state::clear_load_roots(st);
+    crate::state::with_last_export(st, |l| *l = None);
 }
 
 /// `:plugin-unload <name>` 的回收结果(状态栏显示用)
@@ -2733,7 +2902,7 @@ pub fn unload_all(st: &HostState) -> Vec<UnloadReport> {
 pub fn reload_all(st: &HostState) -> Result<()> {
     crate::init();
     // 面板层还挂在 compositor 上——入队 ClosePanel 让 plugin_reload 的 apply_ui_requests 移除它们，
-    // 否则 reset_plugin_state 清掉 JS 注册表后这些层变成无法关闭的僵尸层（渲染报错 + 按键穿透）。
+    // 否则 unload_all/unload_orphans 清掉 JS 注册表后这些层变成无法关闭的僵尸层（渲染报错 + 按键穿透）。
     // 只关 last_panel_id 会漏掉多面板场景，遍历全部。
     let open_panels = crate::state::with_open_panels(st, std::mem::take);
     for panel_id in open_panels {
@@ -2746,12 +2915,14 @@ pub fn reload_all(st: &HostState) -> Result<()> {
     }
     crate::host::with_state_or_init(|st| crate::state::set_last_panel_id(st, None));
     let scripts = crate::state::with_loaded_scripts(|s| s.clone());
-    // 先**逐个属主走 unload**(onUnload 在 reload 时也要跑;清理逻辑与 :plugin-unload 同一份)
+    // ① 逐个属主走 unload(onUnload 在 reload 时也要跑;清理逻辑与 :plugin-unload 同一份)
     unload_all(st);
+    // ② 没有属主的注册(裸脚本 / 单测里直接 eval)没人能认领 ⇒ 单独兜底回收
+    unload_orphans(st);
+    // ③ 加载期瞬态(编辑/装饰队列、加载栈…)
+    reset_transient_state(st);
     // reload 语义 = 全部重新加载 ⇒ 把加载清单恢复(unload 会按属主摘掉条目,下面要按它重跑)
     crate::state::with_loaded_scripts(|s| *s = scripts.clone());
-    // 兜底:没有属主的注册(裸脚本/单测里的 eval)仍按老规矩整表清空
-    reset_plugin_state();
     // 装饰不随 reload 继承:全局 Clear(term 侧 doc: None = 清空所有 doc;泵循环下一帧应用)。
     // 必须放在 reset 之后(reset 清空队列);脚本重跑 eval 不 push 装饰,队列里只有这一个 Clear。
     crate::state::with_decoration_requests_current(|c| {

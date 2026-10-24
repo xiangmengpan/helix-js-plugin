@@ -565,7 +565,7 @@ pub(crate) struct PopupCallbacks {
     pub(crate) on_key: Option<JsValue>,
     pub(crate) on_close: Option<JsValue>,
     /// 脏渲染协议的**上次内容**:回调返回 null/undefined 表示"无变化"⇒ 复用这份,不再解析。
-    /// 生命周期天然安全:注销(id 移除)与 `reset_plugin_state`(整表 clear)都会丢掉它。
+    /// 生命周期天然安全:注销(id 移除)、`:plugin-unload`(按 id 摘表)与 reload 的兜底回收都会丢掉它。
     pub(crate) last: Option<Content>,
     /// 上次的**输入签名**(只对 `pure` 渲染器有意义):命中则**连 JS 都不调**。
     pub(crate) last_key: Option<String>,

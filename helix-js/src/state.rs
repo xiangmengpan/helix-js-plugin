@@ -88,15 +88,6 @@ pub(crate) fn with_registry<T>(
     f(&mut st.registry.borrow_mut())
 }
 
-/// **L3 过渡 shim**:给还拿不到宿主的调用点(async/send 闭包、`reload_all` 这类 Rust 侧入口)。
-///
-/// 为什么要有它:这些入口没有 `ctx`,而把 `&HostState` 沿它们传下去是 L3 第三批的设计活。
-/// 有了这个**独立名字**,隐式取态点从"每个访问器"收敛成"少数 `*_current` 调用" ——
-/// `grep -rn "_current(" helix-js/src` 就是 L4 的待办清单。
-pub(crate) fn with_registry_current<T>(f: impl FnOnce(&mut HashMap<String, JsValue>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| f(&mut h.registry.borrow_mut()))
-}
-
 /// 同 [`with_registry`],但**没有宿主时给 `None`**(查询类入口不得为了回答而建宿主)。
 pub(crate) fn try_with_registry<T>(
     f: impl FnOnce(&mut HashMap<String, JsValue>) -> T,
@@ -290,6 +281,8 @@ pub(crate) fn with_statusline_hook<T>(
     f(&mut st.statusline_hook.borrow_mut())
 }
 
+/// 只剩单测在用(`unload_orphans` 走显式取态后失去生产调用点)—— 保留给测试,别再加生产调用
+#[cfg(test)]
 pub(crate) fn with_statusline_hook_current<T>(f: impl FnOnce(&mut Option<JsValue>) -> T) -> T {
     crate::host::with_host_ref_or_init(|h| f(&mut h.statusline_hook.borrow_mut()))
 }
@@ -431,14 +424,6 @@ pub(crate) fn with_command_docs_current<T>(f: impl FnOnce(&mut HashMap<String, S
 /// 加载栈访问器。**显式**取态(L3)
 pub(crate) fn with_load_stack<T>(st: &HostState, f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     f(&mut st.load_stack.borrow_mut())
-}
-
-/// **L3 过渡 shim**(见 `with_registry_current` 的说明)
-pub(crate) fn with_load_stack_current<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
-    crate::host::with_host_ref_or_init(|h| {
-        let s = &h.load_stack;
-        f(&mut s.borrow_mut())
-    })
 }
 
 pub(crate) fn push_load_root(st: &HostState, root: PathBuf) {

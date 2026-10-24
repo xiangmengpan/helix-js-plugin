@@ -356,6 +356,22 @@ pub(crate) fn bind_handler_owner(event: &str, owner: &str) {
     })
 }
 
+/// **仅测试**:把某条命令的属主条目抹掉,制造"注册表有它、属主表没它"的无主状态
+/// (真实来源:`lib/*.js` 里注册但没 `helix.plugin`、或属主表缺失)
+#[cfg(test)]
+pub(crate) fn forget_command_owner(command: &str) {
+    with_state(|s| {
+        s.command_owners.remove(command);
+    })
+}
+
+/// 重写某个事件的处理器的属主表(`unload_orphans` 重建两侧后用)
+pub(crate) fn set_handler_owners(event: &str, owners: Vec<String>) {
+    with_state(|s| {
+        s.handler_owners.insert(event.to_string(), owners);
+    })
+}
+
 /// 命令的属主(运行时归属用)
 pub(crate) fn command_owner(command: &str) -> Option<String> {
     with_state(|s| s.command_owners.get(command).cloned())
