@@ -3,7 +3,9 @@
 //! Rust 侧 build_plugin_configs 合并用户 config.toml 覆盖并校验,结果经 cache_configs 写入。
 //! 设计:docs/superpowers/specs/2026-08-15-plugin-config-design.md
 
-use crate::state::{config_schemas, plugin_overrides, with_config_schemas, CONFIGS};
+use crate::host::host_state;
+use crate::host::HostState;
+use crate::state::{config_schemas, configs, plugin_overrides, with_config_schemas};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsString, JsValue};
@@ -18,13 +20,13 @@ use boa_engine::{Context, JsString, JsValue};
 /// 为什么要它：schema 是**插件脚本执行时**才注册的，而缓存只在启动与 `:config-reload` 构建。
 /// 插件 load/reload 之后不重建 ⇒ 新注册的 schema 不在 CONFIGS 里，`get_config` 拿到 null
 /// （默认值全丢），reload 后新增的键也没有默认值。
-pub fn rebuild_configs() -> (String, Vec<String>) {
+pub fn rebuild_configs(st: &HostState) -> (String, Vec<String>) {
     let user_all: serde_json::Value =
-        serde_json::from_str(&plugin_overrides()).unwrap_or(serde_json::Value::Null);
+        serde_json::from_str(&plugin_overrides(st)).unwrap_or(serde_json::Value::Null);
     let user_all = user_all.as_object().cloned().unwrap_or_default();
     let mut out = serde_json::Map::new();
     let mut errors: Vec<String> = Vec::new();
-    for (name, schema_json) in config_schemas() {
+    for (name, schema_json) in config_schemas(st) {
         let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_json) else {
             continue;
         };
@@ -148,13 +150,18 @@ pub(crate) fn js_define_config(
         .to_json(ctx)
         .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
         .unwrap_or_else(|_| "{}".to_string());
-    with_config_schemas(|m| {
+    let st = host_state(ctx);
+    with_config_schemas(st, |m| {
         m.insert(name, json);
     });
     Ok(JsValue::undefined())
 }
 
 /// 读取合并后的配置:helix.get_config(name) → 对象(含默认值);未声明 → null
+///
+/// **自愈**:缓存里没有 `name` 但 schema 里有时就地重建一次。这条是给"脚本**顶层**读配置"用的 ——
+/// 插件加载时先 `define_config` 再 `const CFG = helix.get_config(...)`,而宿主的重建发生在这整段
+/// 脚本**跑完之后**,不就地补一手拿到的就是上一轮的缓存(null)。
 pub(crate) fn js_get_config(
     _this: &JsValue,
     args: &[JsValue],
@@ -165,27 +172,34 @@ pub(crate) fn js_get_config(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("get_config: name must be a string"))?;
-    let json = CONFIGS
-        .get()
-        .map(|m| m.lock().unwrap().clone())
-        .unwrap_or_default();
-    if json.is_empty() {
-        return Ok(JsValue::null());
+    let st = host_state(ctx);
+    let mut cfg = cached_config(st, &name);
+    if cfg.is_none() && with_config_schemas(st, |m| m.contains_key(&name)) {
+        // 校验错误这次先丢(宿主在脚本跑完后还会再重建一次并显示)
+        let (json, _) = rebuild_configs(st);
+        crate::state::cache_configs(st, &json);
+        cfg = cached_config(st, &name);
     }
-    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
-    let Some(obj) = parsed.as_object() else {
-        return Ok(JsValue::null());
-    };
-    let Some(cfg) = obj.get(&name) else {
+    let Some(cfg) = cfg else {
         return Ok(JsValue::null());
     };
     // serde_json Value → JsValue(经 JSON.parse)
-    let cfg_json = serde_json::to_string(cfg).unwrap_or_else(|_| "null".to_string());
+    let cfg_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "null".to_string());
     // JSON 对象字面量直接 eval 会被当语句块;用 JSON.parse 包裹(Rust {:?} 转义与 JS 字符串兼容)
     let code = format!("JSON.parse({cfg_json:?})");
     Ok(ctx
         .eval(boa_engine::Source::from_bytes(code.as_bytes()))
         .unwrap_or(JsValue::null()))
+}
+
+/// 从合并缓存里取某个插件的配置(缓存空 / 没有该名字 ⇒ None)
+fn cached_config(st: &HostState, name: &str) -> Option<serde_json::Value> {
+    let json = configs(st);
+    if json.is_empty() {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&json).ok()?;
+    parsed.as_object()?.get(name).cloned()
 }
 
 /// 配置说明:helix.get_config_docs(name) → [{key, type, default, doc}]
@@ -199,7 +213,7 @@ pub(crate) fn js_get_config_docs(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("get_config_docs: name must be a string"))?;
-    let schema = with_config_schemas(|m| m.get(&name).cloned());
+    let schema = with_config_schemas(host_state(ctx), |m| m.get(&name).cloned());
     let Some(schema) = schema else {
         return Ok(JsValue::null());
     };
@@ -244,12 +258,46 @@ mod tests {
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// 配置状态是按宿主的 ⇒ 单测统一用默认宿主的那份
+    fn st() -> std::rc::Rc<crate::host::HostState> {
+        crate::host::state_handle_or_init()
+    }
+
     fn load_script(script: &str) {
         with_engine(|engine| {
             let _ = engine.eval(Source::from_bytes(script.as_bytes()));
             Ok::<(), anyhow::Error>(())
         })
         .unwrap();
+    }
+
+    /// 插件**脚本顶层**读配置(模块级 `const CFG = helix.get_config(...)`)必须拿到
+    /// 默认值 + 用户覆盖 —— 宿主的重建发生在这整段脚本跑完之后,不就地自愈就只能读到 null。
+    #[test]
+    fn get_config_at_script_top_level_sees_overrides() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        crate::state::cache_plugin_overrides(&st(), r#"{"top":{"flag":false}}"#);
+        // 一段脚本:先声明、紧接着在**同一段顶层代码**里读(正是插件文件的写法)
+        load_script(
+            r#"helix.define_config("top", {flag: {type: "boolean", default: true}});
+globalThis.__top = helix.get_config("top");"#,
+        );
+        with_engine(|engine| {
+            let v = engine
+                .global_object()
+                .get(JsString::from("__top"), engine)
+                .unwrap();
+            let o = v.as_object().expect("顶层读应拿到对象");
+            assert!(
+                !o.get(JsString::from("flag"), engine)
+                    .unwrap()
+                    .as_boolean()
+                    .unwrap(),
+                "用户覆盖 false 应生效(默认是 true)"
+            );
+        });
+        crate::state::cache_plugin_overrides(&st(), "{}");
     }
 
     /// rebuild_configs:覆盖只作用于已声明 schema;未声明的段忽略;类型非法 → 报错 + 默认值
@@ -260,8 +308,8 @@ mod tests {
         load_script(
             r#"helix.define_config("rb", {n: {type: "number", default: 1}, s: {type: "string", default: "a"}});"#,
         );
-        crate::cache_plugin_overrides(r#"{"rb":{"n":3},"ghost":{"x":1}}"#);
-        let (json, errors) = rebuild_configs();
+        crate::state::cache_plugin_overrides(&st(), r#"{"rb":{"n":3},"ghost":{"x":1}}"#);
+        let (json, errors) = rebuild_configs(&st());
         assert!(errors.is_empty(), "无错误: {errors:?}");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["rb"]["n"], 3, "用户覆盖生效");
@@ -269,30 +317,30 @@ mod tests {
         assert!(v.get("ghost").is_none(), "未声明 schema 的段忽略");
 
         // 非法类型 → 报错 + 回退默认(不崩)
-        crate::cache_plugin_overrides(r#"{"rb":{"n":"oops"}}"#);
-        let (json, errors) = rebuild_configs();
+        crate::state::cache_plugin_overrides(&st(), r#"{"rb":{"n":"oops"}}"#);
+        let (json, errors) = rebuild_configs(&st());
         assert_eq!(errors.len(), 1, "类型错误报一条: {errors:?}");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["rb"]["n"], 1, "非法值回退默认");
 
         // 拼错的键必须可见:静默忽略 = 用户以为配置生效了
-        crate::cache_plugin_overrides(r#"{"rb":{"n":3,"typo":1}}"#);
-        let (json, errors) = rebuild_configs();
+        crate::state::cache_plugin_overrides(&st(), r#"{"rb":{"n":3,"typo":1}}"#);
+        let (json, errors) = rebuild_configs(&st());
         assert_eq!(errors.len(), 1, "未声明的键报一条: {errors:?}");
         assert!(errors[0].contains("typo"), "错误里点到具体键: {errors:?}");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(v["rb"].get("typo").is_none(), "未声明的键不进入合并结果");
 
         // 未声明 schema 的段不报(可能只是懒加载插件还没 load),也不进结果
-        crate::cache_plugin_overrides(r#"{"ghost":{"x":1}}"#);
-        let (json, errors) = rebuild_configs();
+        crate::state::cache_plugin_overrides(&st(), r#"{"ghost":{"x":1}}"#);
+        let (json, errors) = rebuild_configs(&st());
         assert!(errors.is_empty(), "未知段不报错: {errors:?}");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(v.get("ghost").is_none(), "未知段不进结果");
 
         // 覆盖源被替换后不再残留旧键
-        crate::cache_plugin_overrides("{}");
-        let (json, _) = rebuild_configs();
+        crate::state::cache_plugin_overrides(&st(), "{}");
+        let (json, _) = rebuild_configs(&st());
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["rb"]["n"], 1, "覆盖清空后只剩默认值");
     }
@@ -305,17 +353,24 @@ mod tests {
         load_script(
             r#"helix.define_config("ft", {show_hidden: {type: "boolean", default: false, doc: "显示隐藏"}});"#,
         );
-        // 未合并(缓存空)→ get_config null
+        // 缓存还没建(脚本顶层读配置的形态)→ 自愈:就地按 schema 默认值算出来,不是 null
         load_script(r#"globalThis.__g = helix.get_config("ft");"#);
         with_engine(|engine| {
             let v = engine
                 .global_object()
                 .get(JsString::from("__g"), engine)
                 .unwrap();
-            assert!(v.is_null() || v.is_undefined(), "未合并 → null/undefined");
+            let o = v.as_object().expect("自愈后应是对象");
+            assert!(
+                !o.get(JsString::from("show_hidden"), engine)
+                    .unwrap()
+                    .as_boolean()
+                    .unwrap(),
+                "自愈取到 schema 默认值 false"
+            );
         });
         // 合并缓存 → get_config 返回对象
-        crate::state::cache_configs(r#"{"ft":{"show_hidden":true}}"#);
+        crate::state::cache_configs(&st(), r#"{"ft":{"show_hidden":true}}"#);
         load_script(r#"globalThis.__g2 = helix.get_config("ft");"#);
         with_engine(|engine| {
             let v = engine

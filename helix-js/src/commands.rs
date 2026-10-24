@@ -384,7 +384,7 @@ fn load_script_checked(ctx: &mut Context, name: &str) -> boa_engine::JsResult<Js
         }
         eval_result?;
         // C-2 的"内置"判据 = **提供根**是不是用户插件目录(用户层 = 最后一个根)。
-        // 内置 17 个插件随软件分发(runtime/plugins)⇒ 永不询问;用户同名覆盖
+        // 内置插件随软件分发(runtime/plugins,13 个)⇒ 永不询问;用户同名覆盖
         // (config/plugins 里那份)则按第三方对待。
         if let Some(name) = crate::permissions::last_declared() {
             crate::permissions::mark_builtin(&name, crate::state::is_builtin_root(&providing_root));
@@ -2426,8 +2426,9 @@ pub fn load_script_named(st: &HostState, name: &str, src: &str) -> Result<()> {
 /// 为什么在 helix-js 侧:懒加载走 `load_script_checked`,不经过 helix-term 的 `:plugin-load`,
 /// 那边没有可挂的边界。校验错误进 echo 队列(下个命令/事件边界上状态栏可见,不静默丢)。
 pub(crate) fn refresh_configs_after_load() {
-    let (json, errors) = crate::config::rebuild_configs();
-    crate::state::cache_configs(&json);
+    let st = crate::host::state_handle_or_init();
+    let (json, errors) = crate::config::rebuild_configs(&st);
+    crate::state::cache_configs(&st, &json);
     for e in errors {
         crate::host::push_message(format!("plugin config: {e}"));
     }

@@ -19,6 +19,8 @@ fn panel_text(app: &mut Application) -> String {
 
 /// 建临时目录结构 + 加载真实插件(读仓库 `plugins/filetree/plugin.js`)
 async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
+    // 配置合并缓存是进程级的:插件加载时会读 [plugins.filetree],别的用例写过的覆盖会漏进来
+    let _cfg = plugin_config_lock().await;
     let dir = tempfile::tempdir()?;
     std::fs::create_dir(dir.path().join("src"))?;
     std::fs::write(dir.path().join("src/main.js"), "console.log(1)\n")?;
@@ -181,6 +183,40 @@ helix.map("normal", "C-e", "probe-ctrl");
     assert!(
         text.contains("readme.md"),
         "C-\\ 只是移焦点，面板应仍在（且 root 不该被别人换走）: {text:?}"
+    );
+    Ok(())
+}
+
+/// `[plugins.filetree] show_hidden = true` 真的改变行为（配置 → 插件,2026-10-23 接线）
+///
+/// 之前这个键只声明不生效（`CFG` 取了没用），写进 config.toml 只会通过校验 ⇒ 静默无效。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_config_show_hidden_applies() -> anyhow::Result<()> {
+    // 配置合并缓存是进程级的 ⇒ 与其它写 [plugins.*] 的用例串行
+    let _cfg = plugin_config_lock().await;
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("readme.md"), "hi\n")?;
+    std::fs::write(dir.path().join(".secret.txt"), "s\n")?;
+    let plugin = dir.path().join("filetree.js");
+    std::fs::write(
+        &plugin,
+        std::fs::read_to_string(repo_plugin("filetree/plugin.js"))?,
+    )?;
+
+    let mut cfg = test_config();
+    cfg.plugins = Some(toml::from_str("[filetree]\nshow_hidden = true\n")?);
+    let mut app = AppBuilder::new().with_config(cfg).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(
+        &mut app,
+        &format!(":open {}<ret>", dir.path().join("readme.md").display()),
+    )
+    .await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    assert!(
+        panel_text(&mut app).contains(".secret.txt"),
+        "show_hidden=true ⇒ 面板开局就显示 dotfile（无需按 H）"
     );
     Ok(())
 }

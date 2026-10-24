@@ -1087,3 +1087,32 @@ async fn cursor_position_not_swapped() -> anyhow::Result<()> {
     assert!(pos.col >= 5, "光标 col 在内容区(行号右侧): col={}", pos.col);
     Ok(())
 }
+
+/// `[plugins.tabbar] max_labels = 2` 真的生效:3 个叶子 ⇒ 第三个折叠成 `+1`(2026-10-23 接线)
+#[tokio::test(flavor = "multi_thread")]
+async fn tabbar_config_max_labels_folds_extra() -> anyhow::Result<()> {
+    // 配置合并缓存是进程级的 ⇒ 与其它写 [plugins.*] 的用例串行
+    let _cfg = plugin_config_lock().await;
+    let dir = tempfile::tempdir()?;
+    let plugin = dir.path().join("tabbar.js");
+    std::fs::write(
+        &plugin,
+        std::fs::read_to_string(repo_plugin("tabbar/plugin.js"))?,
+    )?;
+
+    let mut cfg = test_config();
+    cfg.plugins = Some(toml::from_str("[tabbar]\nmax_labels = 2\n")?);
+    let mut app = AppBuilder::new().with_config(cfg).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    // 造 4 个叶子:编辑器 + 3 次 vsplit ⇒ max_labels=2 ⇒ 折叠 `+2`
+    pump(&mut app, ":vsplit<ret>").await?;
+    pump(&mut app, ":vsplit<ret>").await?;
+    pump(&mut app, ":vsplit<ret>").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    assert!(
+        rows[0].contains("+2"),
+        "max_labels=2 ⇒ 多出的 2 个标签折叠成 +2,实得: {:?}",
+        &rows[0]
+    );
+    Ok(())
+}

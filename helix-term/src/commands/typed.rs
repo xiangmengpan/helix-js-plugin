@@ -5151,10 +5151,17 @@ fn reload_plugins(
                 let overrides = helix_js::theme_overrides();
                 apply_theme_overrides(editor, Some(&overrides));
             }
-            apply_ui_requests(js, helix_js::take_ui_requests())?;
             // 脚本已重跑 ⇒ define_config 的 schema 是最新的,重建合并缓存(:plugin-reload /
-            // `helix.reload_plugins()` / `:plugin reload` 都走这里)
-            refresh_plugin_configs(editor);
+            // `helix.reload_plugins()` / `:plugin reload` 都走这里)。
+            // 必须在 apply_ui_requests 之前:它会把 `js` 移走。
+            let cfg_errors = match js.as_deref() {
+                Some(host) => host.refresh_plugin_configs(),
+                None => helix_js::refresh_plugin_configs_or_init(),
+            };
+            apply_ui_requests(js, helix_js::take_ui_requests())?;
+            for e in cfg_errors {
+                editor.set_error(e);
+            }
             Ok(())
         }
         Err(err) => {
@@ -5403,7 +5410,7 @@ fn plugin_load(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     apply_ui_requests(cx.js.as_deref_mut(), helix_js::take_ui_requests())?;
     // 运行时加载的插件可能刚用 define_config 注册了 schema ⇒ 重建配置缓存
     // (放在最后:校验错误不能被前面的 echo 状态盖掉)
-    refresh_plugin_configs(cx.editor);
+    refresh_plugin_configs(cx.js.as_deref(), cx.editor);
     Ok(())
 }
 
@@ -5424,18 +5431,34 @@ fn panel_close(
 
 /// 打开文档序列化:{current, buffers:[{id, path, name, dirty, language}]}。
 /// 每帧由 application.render 写入 helix-js 缓存(buffers/current_buffer 读取)。
-/// 构建插件配置合并缓存:把 config.toml 的 `[plugins]` 覆盖交给 helix-js,按 schema
-/// 重建合并结果(默认值 + 类型/enum 校验)。返回 (合并 JSON, 校验错误) → 调用方 cache_configs。
-pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<String>) {
+/// 把 config.toml 的 `[plugins]` 覆盖交给宿主,并按 schema 重建合并缓存(默认值 + 类型/enum
+/// 校验)。返回校验/告警(显示用)。
+///
+/// 配置状态是**按宿主**的(`HostState.config_overrides` / `configs`)⇒ 进程内多个 app 互不串味。
+/// 没有宿主(测试 / 旧入口)时对默认宿主操作。
+pub fn build_plugin_configs(
+    host: Option<&helix_js::host::JsHost>,
+    config: &crate::config::Config,
+) -> Vec<String> {
     let plugins = config.plugins.clone().unwrap_or_default();
     let overrides = serde_json::Value::Object(
         plugins
             .iter()
             .map(|(k, v)| (k.clone(), toml_to_json(v)))
             .collect(),
-    );
-    helix_js::cache_plugin_overrides(&overrides.to_string());
-    helix_js::rebuild_configs()
+    )
+    .to_string();
+    match host {
+        Some(host) => {
+            host.cache_plugin_overrides(&overrides);
+            host.refresh_plugin_configs()
+        }
+        None => {
+            let st = helix_js::host::state_handle_or_init();
+            helix_js::cache_plugin_overrides(&st, &overrides);
+            helix_js::refresh_plugin_configs_or_init()
+        }
+    }
 }
 
 /// 插件脚本(重)执行后重建配置缓存。
@@ -5443,12 +5466,14 @@ pub fn build_plugin_configs(config: &crate::config::Config) -> (String, Vec<Stri
 /// `define_config` 只在脚本执行时才注册 schema,而配置缓存只在启动与 `:config-reload` 构建。
 /// 不在 load/reload 之后补这一步:运行时新加载的插件 `get_config()` 返回 null(默认值全丢),
 /// reload 后新增的 schema 键也没有默认值。
-/// 用户覆盖已由 `build_plugin_configs` 缓存在 helix-js 侧,这里不需要 Config。
-fn refresh_plugin_configs(editor: &mut helix_view::Editor) {
-    let (json, errors) = helix_js::rebuild_configs();
-    helix_js::cache_configs(&json);
-    if let Some(first) = errors.first().cloned() {
-        editor.set_error(first);
+/// 用户覆盖已由 `build_plugin_configs` 缓存在宿主里,这里不需要 Config。
+fn refresh_plugin_configs(js: Option<&helix_js::host::JsHost>, editor: &mut helix_view::Editor) {
+    let errors = match js {
+        Some(host) => host.refresh_plugin_configs(),
+        None => helix_js::refresh_plugin_configs_or_init(),
+    };
+    for e in errors {
+        editor.set_error(e);
     }
 }
 
@@ -6039,7 +6064,8 @@ mod plugin_config_tests {
     #[test]
     fn merges_defaults_and_user_override() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        helix_js::seed_config_schema(
+        let host = helix_js::host::JsHost::new();
+        host.seed_config_schema(
             "ft",
             r#"{"show_hidden":{"type":"boolean","default":false},"refresh_ms":{"type":"number","default":500}}"#,
         );
@@ -6051,8 +6077,9 @@ mod plugin_config_tests {
             plugins: Some(plugins),
             ..Default::default()
         };
-        let (json, errors) = build_plugin_configs(&config);
+        let errors = build_plugin_configs(Some(&host), &config);
         assert!(errors.is_empty(), "无错误: {errors:?}");
+        let (json, _) = host.rebuild_configs();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["ft"]["show_hidden"], true, "用户覆盖生效");
         assert_eq!(parsed["ft"]["refresh_ms"], 500, "未覆盖用默认");
@@ -6061,7 +6088,8 @@ mod plugin_config_tests {
     #[test]
     fn rejects_wrong_type_with_default_fallback() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        helix_js::seed_config_schema(
+        let host = helix_js::host::JsHost::new();
+        host.seed_config_schema(
             "wk",
             r#"{"position":{"type":"enum","default":"bottom-right","options":["bottom-right","bottom-left"]}}"#,
         );
@@ -6073,8 +6101,9 @@ mod plugin_config_tests {
             plugins: Some(plugins),
             ..Default::default()
         };
-        let (json, errors) = build_plugin_configs(&config);
+        let errors = build_plugin_configs(Some(&host), &config);
         assert!(!errors.is_empty(), "非法 enum 报错");
+        let (json, _) = host.rebuild_configs();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["wk"]["position"], "bottom-right", "非法值回退默认");
     }

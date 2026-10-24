@@ -5,8 +5,7 @@ helix.plugin("tabbar", { deps: [], permissions: {} }); // permissions: 纯渲染
 
 // 插件配置(方案 C):config.toml [plugins.tabbar]
 helix.define_config("tabbar", {
-  show_dirty: { type: "boolean", default: true, doc: "标签显示未保存标记" },
-  max_labels: { type: "number", default: 12, doc: "标签条最多显示数" },
+  max_labels: { type: "number", default: 12, doc: "标签条最多显示数(超出折叠成 +N)" },
 });
 const CFG = helix.get_config("tabbar") || {};
 
@@ -46,7 +45,12 @@ const CFG = helix.get_config("tabbar") || {};
     }
     const gap = 2;
     let x = 0;
-    const parts = layout.leafs.map((leaf) => {
+    boundaries = []; // 每次渲染重算(旧实现只 push 不清,陈旧边界会让点击命中错标签)
+    // [plugins.tabbar] max_labels:超出就折叠成 `+N`(0/非法 ⇒ 默认 12)
+    const max = Number(CFG.max_labels) > 0 ? Math.floor(Number(CFG.max_labels)) : 12;
+    const shown = layout.leafs.slice(0, max);
+    const overflow = layout.leafs.length - shown.length;
+    const parts = shown.map((leaf) => {
       const active = leaf.id === layout.active;
       const icon = leaf_icon(leaf, layout);
       const label = leaf_label(leaf);
@@ -56,6 +60,9 @@ const CFG = helix.get_config("tabbar") || {};
       x += w + gap;
       return { type: "text", text, style: active ? "ui.selection" : "ui.statusline.inactive" };
     });
+    if (overflow > 0) {
+      parts.push({ type: "text", text: "  +" + overflow, style: "ui.statusline.inactive" });
+    }
     return { type: "row", children: parts, gap };
   });
 

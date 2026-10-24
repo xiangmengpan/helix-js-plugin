@@ -11,7 +11,6 @@ helix.plugin("filetree", {
 // 插件配置(方案 C):config.toml [plugins.filetree]
 helix.define_config("filetree", {
   show_hidden: { type: "boolean", default: false, doc: "默认显示隐藏文件" },
-  refresh_ms: { type: "number", default: 1000, doc: "自动刷新间隔(ms;0 = 关闭)" },
 });
 const CFG = helix.get_config("filetree") || {};
 // 用法:init.js 里 helix.load("filetree")(裸名 → filetree/plugin.js),:filetree 开关面板。
@@ -121,7 +120,7 @@ const S = {
   root: null,          // 当前树根目录
   tree: null,          // 根 Node（虚拟容器）
   cursor: 0,           // 选中行索引（visible_rows 序）
-  show_hidden: false,  // H 切换
+  show_hidden: CFG.show_hidden === true,  // 初值取 [plugins.filetree] show_hidden;H 切换
   follow: true,        // F 切换：buffer-open 时自动定位当前文件
   panel_id: null,      // open_panel 返回的 id（null = 未打开）
   current: null,       // 当前编辑文件路径（buffer-open 更新）

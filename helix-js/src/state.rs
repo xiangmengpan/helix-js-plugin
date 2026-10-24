@@ -118,65 +118,54 @@ pub(crate) fn with_last_plugin_deps<T>(st: &HostState, f: impl FnOnce(&mut Vec<S
     f(&mut st.last_plugin_deps.borrow_mut())
 }
 
-/// 插件配置 schema 注册表(进程级,与 `CONFIGS` 同域)。
-/// 为什么不是 host/thread_local:合并缓存 `CONFIGS` 是进程全局的,注册表若按线程存,
-/// 另一个线程重建时看不到 schema ⇒ 全局缓存被写成 `{}`(集成测试多 app 并行时实测踩到;
-/// 多线程重建 + 全局缓存的组合本身就是错的)。
-static CONFIG_SCHEMAS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-
-/// 访问 CONFIG_SCHEMAS
-pub(crate) fn with_config_schemas<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
-    let m = CONFIG_SCHEMAS.get_or_init(|| Mutex::new(HashMap::new()));
-    f(&mut m.lock().unwrap())
+/// 访问插件配置 schema 注册表(**按宿主**;原来是进程级静态 —— 那让 A 的 schema 跑进 B 的
+/// `get_config`,集成测试多 app 并行时实测串味)
+pub(crate) fn with_config_schemas<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<String, String>) -> T,
+) -> T {
+    f(&mut st.config_schemas.borrow_mut())
 }
 
-/// 写入 schema(helix-term 测试/插件预置用;插件正常走 define_config)
-pub fn seed_config_schema(name: &str, json: &str) {
-    with_config_schemas(|m| {
+/// 写入 schema(测试/预置用;插件正常走 define_config)
+pub fn seed_config_schema(st: &HostState, name: &str, json: &str) {
+    with_config_schemas(st, |m| {
         m.insert(name.to_string(), json.to_string());
     });
 }
 
-/// 读取全部插件配置 schema(helix-term build_plugin_configs 用)name → schema JSON
-pub fn config_schemas() -> Vec<(String, String)> {
-    with_config_schemas(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+/// 读取全部插件配置 schema name → schema JSON
+pub fn config_schemas(st: &HostState) -> Vec<(String, String)> {
+    with_config_schemas(st, |m| {
+        m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    })
 }
 
-/// 用户 config.toml `[plugins]` 原始覆盖（JSON: `{"<name>": {...}}`）。
-/// config load / :config-reload 时由 helix-term 写入 ⇒ 插件 load/reload 后重建配置不必再碰
-/// helix-term 的 Config（`Editor::config()` 只含 editor 段，拿不到 plugins 表）。
-pub(crate) static PLUGIN_OVERRIDES: OnceLock<Mutex<String>> = OnceLock::new();
-
-/// 写入用户覆盖（helix-term `build_plugin_configs` 调）
-pub fn cache_plugin_overrides(json: &str) {
-    let m = PLUGIN_OVERRIDES.get_or_init(|| Mutex::new("{}".to_string()));
-    *m.lock().unwrap() = json.to_string();
+/// 写入用户 `config.toml` `[plugins]` 原始覆盖(JSON: `{"<name>": {...}}`)。
+/// 由 helix-term 在 config load / `:config-reload` 时写入 ⇒ 插件 load/reload 后重建配置
+/// 不必再碰 helix-term 的 Config(`Editor::config()` 只含 editor 段,拿不到 plugins 表)。
+pub fn cache_plugin_overrides(st: &HostState, json: &str) {
+    *st.config_overrides.borrow_mut() = json.to_string();
 }
 
-/// 读取用户覆盖（未写入过 ⇒ `{}`）
-pub(crate) fn plugin_overrides() -> String {
-    PLUGIN_OVERRIDES
-        .get_or_init(|| Mutex::new("{}".to_string()))
-        .lock()
-        .unwrap()
-        .clone()
-}
-
-/// 合并缓存是否已被填过（启动路径用它判断"这次重建是不是多余的":没有 `[plugins]` 段时
-/// 再重建只会把同样的默认值重写一遍，却会冲掉同进程里另一份 app 的用户覆盖）。
-pub fn configs_populated() -> bool {
-    CONFIGS
-        .get()
-        .map(|m| !m.lock().unwrap().is_empty())
-        .unwrap_or(false)
-}
-
-/// 写入插件配置合并缓存（helix-term config load/reload 后调用）
-pub fn cache_configs(json: &str) {
-    let _ = CONFIGS.get_or_init(Default::default);
-    if let Some(m) = CONFIGS.get() {
-        *m.lock().unwrap() = json.to_string();
+/// 读取用户覆盖(未写入过 ⇒ `{}`)
+pub(crate) fn plugin_overrides(st: &HostState) -> String {
+    let s = st.config_overrides.borrow().clone();
+    if s.is_empty() {
+        "{}".to_string()
+    } else {
+        s
     }
+}
+
+/// 写入插件配置合并缓存
+pub fn cache_configs(st: &HostState, json: &str) {
+    *st.configs.borrow_mut() = json.to_string();
+}
+
+/// 读取插件配置合并缓存(未建过 ⇒ 空串)
+pub(crate) fn configs(st: &HostState) -> String {
+    st.configs.borrow().clone()
 }
 
 /// 访问 EVENT_HANDLERS：同上（内容泄漏）
@@ -875,9 +864,6 @@ pub(crate) fn resolve_plugin_path(key: &str) -> Option<PathBuf> {
         resolve_in_pref(plugin_roots(st), key, pref.as_deref())
     })
 }
-
-/// 插件配置合并缓存（helix-term config load 后写入；get_config 读取）JSON: `{"<name>": {...}}`
-pub(crate) static CONFIGS: OnceLock<Mutex<String>> = OnceLock::new();
 
 /// 终端实例注册表(pty_id → (view_id, cmd);`term_kill(pty_id)` 清理、`term_list` 查询)。
 /// 1b:存进宿主字段(这张表的键是 pty id,但状态本就属于某个宿主)。

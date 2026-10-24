@@ -584,10 +584,12 @@ pub fn reload_file(file: &mut NamedTempFile) -> anyhow::Result<()> {
 /// `std::sync::MutexGuard` 不是 `Send`,multi_thread 的测试容器会拒绝编译。
 static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 插件配置缓存是**进程级**的（`helix-js/src/state.rs` 的 `CONFIG_SCHEMAS` /
-/// `PLUGIN_OVERRIDES` / `CONFIGS` 全是 `OnceLock`）⇒ 两个并行用例写不同的
-/// `[plugins.<name>]` 会互相覆盖（实测：两个 terminal 尺寸用例同跑时，一方读到对方的值）。
-/// 凡是给 `Config.plugins` 塞值的用例，先拿这把锁。
+/// 插件配置状态**曾经**是进程级的（`CONFIG_SCHEMAS` / `PLUGIN_OVERRIDES` / `CONFIGS` 三个
+/// `OnceLock`）⇒ 并行用例写不同的 `[plugins.<name>]` 会互相覆盖（实测：两个 terminal 尺寸
+/// 用例同跑时一方读到对方的值；filetree 用例读到别人的 `show_hidden=true`）。
+///
+/// 2026-10-23 起三个缓存都搬进 `HostState`（**按宿主**，见 `helix-js/src/host.rs`）⇒ 串味消失。
+/// 这把锁保留作双保险：凡给 `Config.plugins` 塞值、且在断言里读插件行为的用例仍先拿它。
 ///
 /// ```ignore
 /// let _cfg = plugin_config_lock().await;

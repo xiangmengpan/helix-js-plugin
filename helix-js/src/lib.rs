@@ -48,11 +48,10 @@ pub use shell::*;
 // 现在新增导出必须在这里加一行 —— 边界是可见的。
 pub use state::{
     cache_buffers, cache_configs, cache_diagnostics, cache_layout, cache_pane_mode, cache_panes,
-    cache_plugin_overrides, clear_command_args, config_schemas, configs_populated,
-    register_component_state, seed_config_schema, set_command_args, set_layouts_dir,
-    set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake, set_viewport,
-    statusline_replaces, statusline_zones, take_messages, take_ui_requests,
-    unregister_component_state,
+    cache_plugin_overrides, clear_command_args, config_schemas, register_component_state,
+    seed_config_schema, set_command_args, set_layouts_dir, set_picker_state, set_plugin_roots,
+    set_runtime_dirs, set_term_wake, set_viewport, statusline_replaces, statusline_zones,
+    take_messages, take_ui_requests, unregister_component_state,
 };
 // **L3 过渡入口**:helix-term 的"无宿主分支"与 `Drop` 实现拿不到 `&HostState` ⇒
 // 这些 `*_current` 是同一批访问器的隐式版本。它们**只**给 helix-term 的边界用,
@@ -65,6 +64,15 @@ pub use state::{
 // 插件配置合并(纯函数):schema 注册表 + 已缓存用户覆盖 → 合并 JSON。
 // 插件 load/reload 之后必须重建一次(见 helix-term `refresh_plugin_configs`)。
 pub use config::rebuild_configs;
+
+/// 无宿主句柄的路径(测试 / 旧入口):对默认宿主重建配置并写回缓存,返回校验/告警。
+/// 有宿主时请用 `JsHost::refresh_plugin_configs()` —— 配置状态是**按宿主**的。
+pub fn refresh_plugin_configs_or_init() -> Vec<String> {
+    let st = host::state_handle_or_init();
+    let (json, errors) = config::rebuild_configs(&st);
+    state::cache_configs(&st, &json);
+    errors
+}
 // `:layout` 类型化命令用的 Rust 层入口(与 helix.layout.* 共用内核与目录)
 pub use host::set_editor_version;
 // `pub use state::*` 换成本文件里的显式清单后,原先被 glob 顺带带出的 `pub(crate)`

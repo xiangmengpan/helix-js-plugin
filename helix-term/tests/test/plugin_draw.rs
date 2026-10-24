@@ -298,6 +298,7 @@ async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
 /// **真实插件样板 ②**:`filetree` 的面板骨架（头 + 分隔线 + 滚动树）全部用 `helix.draw.*`
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_draws_panel_skeleton() -> anyhow::Result<()> {
+    let _cfg = plugin_config_lock().await; // 同上:进程级配置缓存
     let dir = tempfile::tempdir()?;
     let a = dir.path().join("a.txt");
     std::fs::write(&a, "x\n")?;

@@ -304,16 +304,9 @@ impl Application {
             }
         }
 
-        // 插件已 load(define_config 注册)→ 构建插件配置合并缓存。
-        // 没有 `[plugins]` 段时,插件加载路径 (`refresh_configs_after_load`) 已经写过同样的默认值:
-        // 再重建一遍只会覆盖掉同进程另一份 app 的用户覆盖(集成测试多 app 并行时实测踩到),
-        // 对单 app 无任何作用 ⇒ 跳过。
-        if config.load().plugins.is_some() || !helix_js::configs_populated() {
-            let (json, errors) = crate::commands::typed::build_plugin_configs(&config.load());
-            helix_js::cache_configs(&json);
-            for e in errors {
-                editor.set_error(e);
-            }
+        // 插件已 load(define_config 注册)→ 构建插件配置合并缓存(按宿主,只有本 app 看得见)
+        for e in crate::commands::typed::build_plugin_configs(Some(&js_host), &config.load()) {
+            editor.set_error(e);
         }
 
         if args.load_tutor {
@@ -931,8 +924,10 @@ impl Application {
 
             self.terminal.reconfigure((&default_config.editor).into())?;
             // 插件配置:合并 [plugins] 段覆盖 + 校验 → 缓存;错误显示
-            let (json, errors) = crate::commands::typed::build_plugin_configs(&default_config);
-            helix_js::cache_configs(&json);
+            let errors = crate::commands::typed::build_plugin_configs(
+                self.js_host.as_deref(),
+                &default_config,
+            );
             if let Some(first) = errors.first().cloned() {
                 self.editor.set_error(first);
             }

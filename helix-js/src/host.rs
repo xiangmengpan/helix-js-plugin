@@ -82,6 +82,17 @@ pub struct HostState {
     /// 诊断快照 JSON(2:原为进程级 `static DIAGNOSTICS`)
     pub(crate) diagnostics: RefCell<String>,
 
+    /// 插件配置 schema 注册表(name → schema JSON)。**按宿主**:`define_config` 在插件脚本执行时
+    /// 注册,进程级会让 A 的 schema 跑进 B 的 `get_config`(集成测试多 app 并行时实测串味)。
+    pub(crate) config_schemas: RefCell<HashMap<String, String>>,
+
+    /// 用户 `config.toml` 的 `[plugins]` 覆盖(JSON `{"<name>":{...}}`)。**按宿主**:每个 app
+    /// 只该看见自己的配置 —— 合并缓存曾是进程级,A 的覆盖会漏进 B。
+    pub(crate) config_overrides: RefCell<String>,
+
+    /// 合并后的插件配置缓存(JSON `{"<name>": {...}}`)。**按宿主**(同上)。
+    pub(crate) configs: RefCell<String>,
+
     /// `helix.fuzzy.session` 的条目快照（id → 字符串数组）。按宿主隔离。
     pub(crate) fuzzy_sessions: RefCell<HashMap<u64, Vec<String>>>,
 
@@ -266,6 +277,9 @@ impl JsHost {
             buffers: RefCell::new(String::new()),
             layout: RefCell::new(String::new()),
             diagnostics: RefCell::new(String::new()),
+            config_schemas: RefCell::new(HashMap::new()),
+            config_overrides: RefCell::new(String::new()),
+            configs: RefCell::new(String::new()),
             fuzzy_sessions: RefCell::new(HashMap::new()),
             next_fuzzy_session: Cell::new(1),
             snapshot_reads: Cell::new(0),
@@ -797,6 +811,29 @@ impl JsHost {
 
     pub fn set_runtime_dirs(&mut self, dirs: Vec<std::path::PathBuf>) {
         crate::state::set_runtime_dirs(self.state(), dirs);
+    }
+
+    /// 写入用户 `[plugins]` 覆盖(config load / `:config-reload` 时由 helix-term 调)。
+    pub fn cache_plugin_overrides(&self, json: &str) {
+        crate::state::cache_plugin_overrides(self.state(), json);
+    }
+
+    /// 按 schema + 本宿主的用户覆盖重建合并缓存,返回校验/告警(并写回缓存)。
+    /// 插件 load/reload 之后必须调一次:define_config 只在脚本执行时注册 schema。
+    pub fn refresh_plugin_configs(&self) -> Vec<String> {
+        let (json, errors) = self.rebuild_configs();
+        *self.state.configs.borrow_mut() = json;
+        errors
+    }
+
+    /// 纯计算:合并结果(不写缓存)
+    pub fn rebuild_configs(&self) -> (String, Vec<String>) {
+        crate::config::rebuild_configs(self.state())
+    }
+
+    /// 预置 schema(测试 / 无脚本场景用;插件正常走 `helix.define_config`)
+    pub fn seed_config_schema(&self, name: &str, json: &str) {
+        crate::state::seed_config_schema(self.state(), name, json);
     }
 
     pub fn take_lsp_requests(&mut self) -> Vec<crate::lsp::LspRequest> {
