@@ -24,6 +24,9 @@ function make_host(opts) {
     handlers: {},
     picker: null,
     exported: null,
+    highlights: [],
+    vt: [],
+    theme: [],
   };
   const host = {
     plugin() {},
@@ -69,7 +72,11 @@ function make_host(opts) {
     },
     pane: { focus: () => {} },
     open_file: () => {},
-    set_virtual_text: () => {},
+    set_virtual_text: (...args) => calls.vt.push({ args }),
+    set_highlight: (path, sr, sc, er, ec, style) =>
+      calls.highlights.push({ path, sr, sc, er, ec, style }),
+    set_theme: (obj) => calls.theme.push(obj),
+    get_style: (scope) => (o.styles && o.styles[scope]) || null,
     dap: {
       sessions: () => (o.sessions ? o.sessions() : []),
       stack_frames: (thread) => Promise.resolve(o.frames ? o.frames(thread) : []),
@@ -305,4 +312,109 @@ test('命令齐了:dapui / dapui-repl / dapui-output / dapui-breakpoints', () =>
   }
   calls.commands['dapui-repl']();
   assert.equal(calls.panels[0].side, 'bottom');
+});
+
+// ── 当前执行行高亮（规格里 "D 面" 的另一半） ──
+
+test('命中停止 ⇒ 高亮当前执行行（默认开）', async () => {
+  const { calls, api } = load({
+    cfg: { auto_open: false, max_depth: 0 },
+    sessions: () => [stopped],
+    frames: () => [{ id: 11, name: 'main', source: '/tmp/main.rs', line: 41, column: 0 }],
+    scopes: () => [],
+  });
+  calls.handlers['dap-stopped']();
+  await tick();
+  await tick();
+  const hl = calls.highlights || [];
+  assert.equal(hl.length, 1, `应有一条高亮: ${JSON.stringify(hl)}`);
+  assert.equal(hl[0].path, '/tmp/main.rs');
+  assert.equal(hl[0].sr, 41, '高亮从执行行开始');
+  assert.equal(hl[0].er, 42, '整行（行尾独占）');
+  assert.equal(hl[0].sc, 0);
+  assert.equal(hl[0].ec, 0);
+  assert.ok(hl[0].style, `要有 scope: ${hl[0].style}`);
+});
+
+test('highlight_current_line = false ⇒ 不写高亮', async () => {
+  const { calls } = load({
+    cfg: { auto_open: false, max_depth: 0, highlight_current_line: false },
+    sessions: () => [stopped],
+    frames: () => [{ id: 11, name: 'main', source: '/tmp/main.rs', line: 41, column: 0 }],
+    scopes: () => [],
+  });
+  calls.handlers['dap-stopped']();
+  await tick();
+  await tick();
+  assert.deepEqual(calls.highlights || [], [], '不该有高亮调用');
+});
+
+test('scope 解析：主题没定义 ⇒ 从 cursorline 底色派生并注册', async () => {
+  const { calls } = load({
+    cfg: { auto_open: false, max_depth: 0 },
+    sessions: () => [stopped],
+    frames: () => [{ id: 11, name: 'main', source: '/tmp/main.rs', line: 5, column: 0 }],
+    scopes: () => [],
+    styles: { 'ui.cursorline.primary': { bg: '#222222' } },
+  });
+  calls.handlers['dap-stopped']();
+  await tick();
+  await tick();
+  assert.deepEqual(
+    calls.theme,
+    [{ 'dap.current-line': { bg: '#222222' } }],
+    `应派生并注册 scope: ${JSON.stringify(calls.theme)}`,
+  );
+  assert.equal(calls.highlights[0].style, 'dap.current-line');
+});
+
+test('换主题 ⇒ 派生 scope 缓存失效并重新解析', async () => {
+  const styles = { 'ui.cursorline.primary': { bg: '#111111' } };
+  const { calls } = load({
+    cfg: { auto_open: false, max_depth: 0 },
+    sessions: () => [stopped],
+    frames: () => [{ id: 11, name: 'main', source: '/tmp/main.rs', line: 1, column: 0 }],
+    scopes: () => [],
+    styles,
+  });
+  calls.handlers['dap-stopped']();
+  await tick();
+  await tick();
+  assert.equal(calls.theme.length, 1);
+  // 模拟换主题：底色变了 + 触发 theme-change
+  styles['ui.cursorline.primary'] = { bg: '#333333' };
+  calls.handlers['theme-change']();
+  delete calls.theme; // 清空记录再看下一次
+  calls.theme = [];
+  calls.handlers['dap-stopped']();
+  await tick();
+  await tick();
+  assert.deepEqual(
+    calls.theme.pop(),
+    { 'dap.current-line': { bg: '#333333' } },
+    '换主题后应按新底色重算并覆盖注册',
+  );
+});
+
+test('继续执行 ⇒ 清装饰（含高亮），不是只清内联值', async () => {
+  const { calls, api } = load({
+    cfg: { auto_open: false, max_depth: 0 },
+    sessions: () => [stopped],
+    frames: () => [{ id: 11, name: 'main', source: '/tmp/main.rs', line: 2, column: 0 }],
+    scopes: () => [],
+  });
+  calls.handlers['dap-stopped']();
+  await tick();
+  await tick();
+  const before = calls.vt.length;
+  api.close_bottom && api.close_bottom();
+  calls.handlers['dap-continued']();
+  const last = calls.vt[calls.vt.length - 1];
+  assert.ok(
+    calls.vt.length > before,
+    `继续执行应再发一次 Clear: ${JSON.stringify(calls.vt)}`,
+  );
+  assert.equal(last.args.length, 1, 'Clear = 只传 path（VT + highlight 一起清）');
+  assert.equal(last.args[0], '/tmp/main.rs');
+  assert.equal(api.T.ctx, null, '上下文清空');
 });

@@ -106,4 +106,6 @@ DAP 动作原先**只有键位**（`<space>G b` 之类），`:` 补全里一个�
 - 面板:内置插件 `dapui` —— **右侧**面板是变量树(`:dapui`),**底部**面板是 REPL / Output 双 tab
   (`:dapui-repl` / `:dapui-output`,面板内 `Tab` 切换);断点用 `:dapui-breakpoints`(Picker)。
   配置见 `[plugins.dapui]`(`panel_size` / `bottom_size` / `auto_open` / `auto_open_repl` /
-  `inline_values` / `max_depth` / `max_nodes`)。
+  `inline_values` / `highlight_current_line` / `current_line_scope` / `max_depth` / `max_nodes`)。
+- 编辑器内:命中时**高亮当前执行行**(默认开,scope `dap.current-line`,主题没定义时按
+  `ui.cursorline.primary` 的底色派生)+ 行尾内联值(默认关)。

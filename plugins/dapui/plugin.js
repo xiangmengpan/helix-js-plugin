@@ -28,6 +28,16 @@ helix.define_config("dapui", {
     doc: "命中停止时自动打开底部 REPL 面板",
   },
   inline_values: { type: "boolean", default: false, doc: "命中时在行尾写内联变量值" },
+  highlight_current_line: {
+    type: "boolean",
+    default: true,
+    doc: "命中时高亮当前执行行(用当前行 scope)",
+  },
+  current_line_scope: {
+    type: "string",
+    default: "dap.current-line",
+    doc: "当前执行行用的主题 scope;主题没定义时按 cursorline/selection 的底色派生一个",
+  },
   max_depth: { type: "number", default: 2, doc: "停止时自动展开的层数(0 = 全折叠)" },
   max_nodes: { type: "number", default: 2000, doc: "变量树节点上限(超出截断,不再发请求)" },
 });
@@ -158,6 +168,9 @@ function load_roots() {
       // 内联值要"当前帧的文件 + 行"：会话快照的 frame 没有 source 字段，从栈帧里记下来
       T.ctx.source = ordered[0].source || null;
       T.ctx.line = ordered[0].line || 0;
+      // 装饰（当前行高亮/内联值）依赖上面这两个字段 —— 它们是**异步**才有的，
+      // 所以在栈帧回来之后才重写（handler 里同步调会拿到 undefined ⇒ 什么都不画）。
+      refresh_decorations();
       const roots = ordered.slice(0, 20).map((f) => ({
         id: "f" + f.id,
         depth: 0,
@@ -656,16 +669,55 @@ function statusline_segment() {
 
 // ============================ 内联值（默认关） ============================
 
-function apply_inline_values() {
-  if (!cfg().inline_values) return;
-  if (!T.ctx || !T.ctx.source) return;
-  const path = T.ctx.source;
-  const row = T.ctx.line || 0;
+/// 当前执行行用的 scope。主题定义了就用；否则从 `ui.cursorline.primary` / `ui.selection`
+/// 的底色派生一个注册（`set_theme` 是合并语义，不会抹掉别人的 scope）。
+let current_line_scope_cache;
+function current_line_scope() {
+  if (current_line_scope_cache !== undefined) return current_line_scope_cache;
+  const want = cfg().current_line_scope || "dap.current-line";
+  let scope = want;
   try {
-    helix.set_virtual_text(path); // 先清旧值，避免残留
+    if (!helix.get_style(want)) {
+      const base = helix.get_style("ui.cursorline.primary") || helix.get_style("ui.selection");
+      const bg = base && base.bg;
+      if (bg) {
+        helix.set_theme({ [want]: { bg: bg } });
+      } else {
+        // 主题里连 cursorline/selection 都没有 ⇒ 直接借用（渲染成主题默认，不报错）
+        scope = "ui.cursorline.primary";
+      }
+    }
+  } catch (e) {
+    scope = "ui.cursorline.primary";
+  }
+  current_line_scope_cache = scope;
+  return scope;
+}
+
+/// 重写当前帧的所有装饰。
+///
+/// **必须一次写齐**：Rust 侧按文档处理这一批装饰请求时是**整组替换**
+/// （`virtual_text` 与 `highlights` 一起换），所以"先清空再只写一类"会让另一类消失。
+/// 这里起手 `set_virtual_text(path)` = Clear（VT + highlight 一起清），再按开关写回。
+function refresh_decorations() {
+  const path = T.ctx && T.ctx.source;
+  if (!path) return;
+  try {
+    helix.set_virtual_text(path); // Clear：VT + highlight 一起清
   } catch (e) {
     return;
   }
+  const row = T.ctx.line || 0;
+  // ① 当前执行行高亮（默认开）
+  if (cfg().highlight_current_line !== false) {
+    try {
+      helix.set_highlight(path, row, 0, row + 1, 0, current_line_scope());
+    } catch (e) {
+      /* 行号越界等，忽略 */
+    }
+  }
+  // ② 行尾内联值（默认关）
+  if (!cfg().inline_values) return;
   const locals = (T.cache[(T.roots[0] && T.roots[0].id) || ""] || []).slice(0, 8);
   const text = locals
     .filter((n) => n.value)
@@ -675,11 +727,12 @@ function apply_inline_values() {
   try {
     helix.set_virtual_text(path, row, 0, "  " + text, "ui.virtual");
   } catch (e) {
-    /* 行号越界等，忽略 */
+    /* 忽略 */
   }
 }
 
-function clear_inline_values() {
+/// 清掉装饰（继续执行/会话结束）：`set_virtual_text(path)` = Clear。
+function clear_decorations() {
   const path = T.ctx && T.ctx.source;
   if (!path) return;
   try {
@@ -695,23 +748,27 @@ helix.on("dap-stopped", () => {
   if (cfg().auto_open !== false) open_tree();
   load_roots();
   if (cfg().auto_open_repl) open_bottom("repl");
-  apply_inline_values();
 });
 
 helix.on("dap-continued", () => {
-  clear_inline_values();
+  clear_decorations();
   T.ctx = null;
   reset_tree();
 });
 
 helix.on("dap-terminated", () => {
-  clear_inline_values();
+  clear_decorations();
   T.ctx = null;
   reset_tree();
 });
 
 helix.on("dap-exited", () => {
-  clear_inline_values();
+  clear_decorations();
+});
+
+// 换主题 ⇒ 派生 scope 的底色失效，下次重新解析
+helix.on("theme-change", () => {
+  current_line_scope_cache = undefined;
 });
 
 helix.on("dap-output", (payload) => {

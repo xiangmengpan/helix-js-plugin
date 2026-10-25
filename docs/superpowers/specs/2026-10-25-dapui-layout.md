@@ -138,12 +138,16 @@ Node = { label, value, ref,          // ref>0 才可展开（variablesReference�
 
 | 时机 | 动作 |
 |---|---|
-| `dap-stopped` | ① `set_highlight(path, row, 0, row+1, 0, "dap.current-line")`<br>② 若 `inline_values`：先 `set_virtual_text(path)` 清旧，再对**已加载**作用域的前 8 个变量写行尾内联值 |
+| `dap-stopped` | **一次写齐**（Rust 侧按文档整组替换，分两次写会互相清）：<br>① `set_virtual_text(path)` = Clear（VT + highlight 一起清）<br>② `set_highlight(path, row, 0, row+1, 0, scope)` 当前执行行（`highlight_current_line`，默认**开**）<br>③ 若 `inline_values`：对已加载作用域的前 8 个变量写行尾内联值（默认关） |
 | `dap-continued` / `dap-terminated` | `set_virtual_text(path)` 清 + 清高亮（`set_highlight` 传空区间或 `style:null`） |
 | 切会话（多会话） | 先清旧会话的装饰，再按新 active 写 |
 
 约束：
 - `inline_values` 默认 **false**（每帧虚拟文本有渲染成本，且对噪声敏感）
+- `highlight_current_line` 默认 **true**；scope 默认 `dap.current-line`，主题没定义时按
+  `ui.cursorline.primary` / `ui.selection` 的底色**派生注册**（`set_theme` 合并语义，不抹别人）
+- 装饰的时机：`T.ctx.source/line` 来自 **异步**的 `stack_frames` ⇒ 装饰在栈帧回来之后重写
+  （在事件 handler 里同步调会拿到 `undefined`，什么都不画 —— 这是实现时踩过的坑）
 - 内联值只对**当前文件**的变量写（跨文件变量不猜位置）；`available` 的 scope 里只取 `Local`
 - `path` 必须是绝对路径（`dap-stopped` 时从 frame 的 `source.path` 取）
 
@@ -254,3 +258,15 @@ max_nodes       = 2000    # 变量树节点上限
 - 配置新增 `bottom_size`（期望高度，最终会被 40% 视口上限收住）与 `auto_open_repl`（默认 false）。
 - 验证：node 14 条（tab 切换 / REPL 求值与失败 / 历史 / output 环形 500 / stderr 样式 / 状态栏段 /
   键位穿透 / 命令齐备）+ Rust 集成 2 条（真引擎里开面板 + tab 条渲染）。
+
+## 14. v1.1 补：当前执行行高亮（2026-10-25）
+
+规格 §2 的"D 面"此前只做了内联值（默认关），缺了当前行高亮。现已补齐：
+
+- `[plugins.dapui] highlight_current_line = true`（默认开）+ `current_line_scope = "dap.current-line"`。
+- scope 解析顺序：主题定义了 `dap.current-line` → 直接用；否则取 `ui.cursorline.primary`（再退
+  `ui.selection`）的 **bg** 经 `set_theme` 派生注册；都没有 → 借用 `ui.cursorline.primary` 名字（不注册）。
+  换主题时清缓存重算（依赖 `theme-change` 事件）。
+- 清装饰只发一条 `set_virtual_text(path)`（= Clear，VT 与 highlight 一起清）：
+  `dap-continued` / `dap-terminated` / `dap-exited` 都走它。
+- 验证：node 5 条（默认开 / 关掉不写 / 派生 scope / 换主题重算 / 继续执行清装饰）。
