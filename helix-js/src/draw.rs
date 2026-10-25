@@ -346,14 +346,9 @@ fn put_grapheme(
 const MAX_BRAILLE_PTS: usize = 65_536;
 
 fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip, xf: Xf) {
+    // 每个 DrawOp 一个函数:分派只负责拆参数,几何/裁剪细节都在各自的函数里
     match op {
-        DrawOp::Clip { x, y, w, h, ops } => {
-            let inner = clip.intersect(*x as i32 + xf.tx, *y as i32 + xf.ty, *w, *h);
-            for op in ops {
-                apply(op, grid, inner, xf);
-            }
-        }
-        // 滚动容器:矩形**同时**是裁剪区;内部坐标再平移一层(嵌套时平移量相加)
+        DrawOp::Clip { x, y, w, h, ops } => apply_clip(*x, *y, *w, *h, ops, grid, clip, xf),
         DrawOp::Scroll {
             x,
             y,
@@ -362,195 +357,335 @@ fn apply(op: &DrawOp, grid: &mut [Vec<Cell>], clip: Clip, xf: Xf) {
             dx,
             dy,
             ops,
-        } => {
-            let inner = clip.intersect(*x as i32 + xf.tx, *y as i32 + xf.ty, *w, *h);
-            let inner_xf = xf.shifted(*dx, *dy);
-            for op in ops {
-                apply(op, grid, inner, inner_xf);
-            }
-        }
-        DrawOp::Braille { pts, style } => {
-            // 同格的点先按位 OR(2×4 点 = 一个盲文字符),再一次性写格
-            let mut cells: std::collections::BTreeMap<(i32, i32), u8> =
-                std::collections::BTreeMap::new();
-            for (dx, dy) in pts.iter().take(MAX_BRAILLE_PTS) {
-                let (cx, cy) = (*dx as i32 / 2, *dy as i32 / 4);
-                let (sx, sy) = (cx + xf.tx, cy + xf.ty);
-                if sx < 0 || sy < 0 || !clip.contains(sx as usize, sy as usize) {
-                    continue;
-                }
-                let bit = match ((*dx as usize) & 1, (*dy as usize) & 3) {
-                    (0, 0) => 0x01,
-                    (0, 1) => 0x02,
-                    (0, 2) => 0x04,
-                    (0, 3) => 0x40,
-                    (1, 0) => 0x08,
-                    (1, 1) => 0x10,
-                    (1, 2) => 0x20,
-                    (1, 3) => 0x80,
-                    _ => continue,
-                };
-                *cells.entry((cx, cy)).or_insert(0u8) |= bit;
-            }
-            for ((cx, cy), mask) in cells {
-                let ch = char::from_u32(0x2800 + mask as u32).unwrap_or(' ');
-                put(grid, clip, xf, cx, cy, ch, style);
-            }
-        }
+        } => apply_scroll(*x, *y, *w, *h, *dx, *dy, ops, grid, clip, xf),
+        DrawOp::Braille { pts, style } => apply_braille(pts, style, grid, clip, xf),
         DrawOp::Rect {
             x,
             y,
-            w: rw,
-            h: rh,
+            w,
+            h,
             style,
             border,
             fill,
             title,
-        } => {
-            let (x, y, rw, rh) = (*x as i32, *y as i32, *rw as i32, *rh as i32);
-            if rw == 0 || rh == 0 {
-                return;
-            }
-            // 填充在先,边框最后画(边框不被填充覆盖)
-            if let Some(fill_style) = fill {
-                let fill_style = Some(fill_style.clone());
-                let (fx, fy, fw, fh) = if *border == BorderKind::None {
-                    (x, y, rw, rh)
-                } else {
-                    (x + 1, y + 1, (rw - 2).max(0), (rh - 2).max(0))
-                };
-                let (cx0, cx1) = cspan(xf, fx, fx + fw, clip.x0, clip.x1, false);
-                let (cy0, cy1) = cspan(xf, fy, fy + fh, clip.y0, clip.y1, true);
-                for row in cy0..cy1 {
-                    for col in cx0..cx1 {
-                        put(grid, clip, xf, col, row, ' ', &fill_style);
-                    }
-                }
-            }
-            if *border == BorderKind::None {
-                return;
-            }
-            let (tl, tr, bl, br, hor, ver) = border.chars();
-            let right = x + rw - 1;
-            let bottom = y + rh - 1;
-            // 退化成一维:只画那一维(否则四角互相覆盖成乱码)
-            if rh == 1 {
-                let (lo, hi) = cspan(xf, x, x + rw, clip.x0, clip.x1, false);
-                for col in lo..hi {
-                    put(grid, clip, xf, col, y, hor, style);
-                }
-                return;
-            }
-            if rw == 1 {
-                let (lo, hi) = cspan(xf, y, y + rh, clip.y0, clip.y1, true);
-                for row in lo..hi {
-                    put(grid, clip, xf, x, row, ver, style);
-                }
-                return;
-            }
-            // 四角 self-clip(cput 会自己判断);四条边先与裁剪区求交再循环
-            put(grid, clip, xf, x, y, tl, style);
-            put(grid, clip, xf, right, y, tr, style);
-            put(grid, clip, xf, x, bottom, bl, style);
-            put(grid, clip, xf, right, bottom, br, style);
-            let (hx0, hx1) = cspan(xf, x + 1, right, clip.x0, clip.x1, false);
-            for col in hx0..hx1 {
-                put(grid, clip, xf, col, y, hor, style);
-                if rh > 2 {
-                    put(grid, clip, xf, col, bottom, hor, style);
-                }
-            }
-            let (vy0, vy1) = cspan(xf, y + 1, bottom, clip.y0, clip.y1, true);
-            for row in vy0..vy1 {
-                put(grid, clip, xf, x, row, ver, style);
-                put(grid, clip, xf, right, row, ver, style);
-            }
-            // 标题:`┌ title ─┐` —— 角后留一格空白,标题后也留一格(不压右边框)
-            if let Some(spans) = title {
-                let mut cx = x + 2;
-                if cx < right {
-                    put(grid, clip, xf, x + 1, y, ' ', style);
-                }
-                'outer: for span in spans {
-                    let own = span.style.clone().or_else(|| style.clone());
-                    for g in span.text.graphemes(true) {
-                        if cx + g.width() as i32 >= right {
-                            break 'outer;
-                        }
-                        if put_grapheme(grid, clip, xf, cx, y, g, &own) == 0 {
-                            break 'outer;
-                        }
-                        cx += g.width() as i32;
-                    }
-                }
-                if cx < right {
-                    put(grid, clip, xf, cx, y, ' ', style);
-                }
-            }
-        }
+        } => apply_rect(*x, *y, *w, *h, style, *border, fill, title, grid, clip, xf),
         DrawOp::HLine {
             x,
             y,
             len,
             ch,
             style,
-        } => {
-            let (y, len) = (*y as i32, *len as i32);
-            let (lo, hi) = cspan(xf, *x as i32, *x as i32 + len, clip.x0, clip.x1, false);
-            for col in lo..hi {
-                put(grid, clip, xf, col, y, *ch, style);
-            }
-        }
+        } => apply_hline(*x, *y, *len, *ch, style, grid, clip, xf),
         DrawOp::VLine {
             x,
             y,
             len,
             ch,
             style,
-        } => {
-            let (x, len) = (*x as i32, *len as i32);
-            let (lo, hi) = cspan(xf, *y as i32, *y as i32 + len, clip.y0, clip.y1, true);
-            for row in lo..hi {
-                put(grid, clip, xf, x, row, *ch, style);
-            }
-        }
+        } => apply_vline(*x, *y, *len, *ch, style, grid, clip, xf),
         DrawOp::Text {
             x,
             y,
             spans,
             max_width,
-        } => {
-            let mut cx = *x as i32;
-            let y = *y as i32;
-            // 整行都不可见(上下)⇒ 直接返回,别逐字空转
-            let sy = y + xf.ty;
-            if sy < clip.y0 as i32 || sy >= clip.y1 as i32 {
-                return;
+        } => apply_text(*x, *y, spans, *max_width, grid, clip, xf),
+    }
+}
+
+/// `clip(x,y,w,h) { ops }`：与裁剪区求交后递归
+#[allow(clippy::too_many_arguments)]
+fn apply_clip(
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    ops: &[DrawOp],
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let inner = clip.intersect(x as i32 + xf.tx, y as i32 + xf.ty, w, h);
+    for op in ops {
+        apply(op, grid, inner, xf);
+    }
+}
+
+/// `scroll(x,y,w,h,{dx,dy}) { ops }`：矩形**同时**是裁剪区;内部坐标再平移一层(嵌套相加)
+#[allow(clippy::too_many_arguments)]
+fn apply_scroll(
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    dx: u16,
+    dy: u16,
+    ops: &[DrawOp],
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let inner = clip.intersect(x as i32 + xf.tx, y as i32 + xf.ty, w, h);
+    let inner_xf = xf.shifted(dx, dy);
+    for op in ops {
+        apply(op, grid, inner, inner_xf);
+    }
+}
+
+/// 半像素点阵:同格的点先按位 OR(2×4 点 = 一个盲文字符),再一次性写格
+fn apply_braille(
+    pts: &[(u16, u16)],
+    style: &Option<String>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let mut cells: std::collections::BTreeMap<(i32, i32), u8> = std::collections::BTreeMap::new();
+    for (dx, dy) in pts.iter().take(MAX_BRAILLE_PTS) {
+        let (cx, cy) = (*dx as i32 / 2, *dy as i32 / 4);
+        let (sx, sy) = (cx + xf.tx, cy + xf.ty);
+        if sx < 0 || sy < 0 || !clip.contains(sx as usize, sy as usize) {
+            continue;
+        }
+        let bit = match ((*dx as usize) & 1, (*dy as usize) & 3) {
+            (0, 0) => 0x01,
+            (0, 1) => 0x02,
+            (0, 2) => 0x04,
+            (0, 3) => 0x40,
+            (1, 0) => 0x08,
+            (1, 1) => 0x10,
+            (1, 2) => 0x20,
+            (1, 3) => 0x80,
+            _ => continue,
+        };
+        *cells.entry((cx, cy)).or_insert(0u8) |= bit;
+    }
+    for ((cx, cy), mask) in cells {
+        let ch = char::from_u32(0x2800 + mask as u32).unwrap_or(' ');
+        put(grid, clip, xf, cx, cy, ch, style);
+    }
+}
+
+/// 矩形:填充 → 边框(含退化成一维的情况)→ 标题
+#[allow(clippy::too_many_arguments)]
+fn apply_rect(
+    x: u16,
+    y: u16,
+    rw: u16,
+    rh: u16,
+    style: &Option<String>,
+    border: BorderKind,
+    fill: &Option<String>,
+    title: &Option<Vec<TextSpan>>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let (x, y, rw, rh) = (x as i32, y as i32, rw as i32, rh as i32);
+    if rw == 0 || rh == 0 {
+        return;
+    }
+    // 填充在先,边框最后画(边框不被填充覆盖)
+    if let Some(fill_style) = fill {
+        rect_fill(x, y, rw, rh, border, fill_style, grid, clip, xf);
+    }
+    if border == BorderKind::None {
+        return;
+    }
+    rect_border(x, y, rw, rh, border, style, title, grid, clip, xf);
+}
+
+/// 矩形内填充(有边框时内缩一格)
+#[allow(clippy::too_many_arguments)]
+fn rect_fill(
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    border: BorderKind,
+    fill_style: &str,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let fill_style = Some(fill_style.to_string());
+    let (fx, fy, fw, fh) = if border == BorderKind::None {
+        (x, y, rw, rh)
+    } else {
+        (x + 1, y + 1, (rw - 2).max(0), (rh - 2).max(0))
+    };
+    let (cx0, cx1) = cspan(xf, fx, fx + fw, clip.x0, clip.x1, false);
+    let (cy0, cy1) = cspan(xf, fy, fy + fh, clip.y0, clip.y1, true);
+    for row in cy0..cy1 {
+        for col in cx0..cx1 {
+            put(grid, clip, xf, col, row, ' ', &fill_style);
+        }
+    }
+}
+
+/// 矩形边框:四角 + 四条边 + 标题;退化成一维时只画那一维(否则四角互相覆盖成乱码)
+#[allow(clippy::too_many_arguments)]
+fn rect_border(
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    border: BorderKind,
+    style: &Option<String>,
+    title: &Option<Vec<TextSpan>>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let (tl, tr, bl, br, hor, ver) = border.chars();
+    let right = x + rw - 1;
+    let bottom = y + rh - 1;
+    if rh == 1 {
+        let (lo, hi) = cspan(xf, x, x + rw, clip.x0, clip.x1, false);
+        for col in lo..hi {
+            put(grid, clip, xf, col, y, hor, style);
+        }
+        return;
+    }
+    if rw == 1 {
+        let (lo, hi) = cspan(xf, y, y + rh, clip.y0, clip.y1, true);
+        for row in lo..hi {
+            put(grid, clip, xf, x, row, ver, style);
+        }
+        return;
+    }
+    // 四角 self-clip(cput 会自己判断);四条边先与裁剪区求交再循环
+    put(grid, clip, xf, x, y, tl, style);
+    put(grid, clip, xf, right, y, tr, style);
+    put(grid, clip, xf, x, bottom, bl, style);
+    put(grid, clip, xf, right, bottom, br, style);
+    let (hx0, hx1) = cspan(xf, x + 1, right, clip.x0, clip.x1, false);
+    for col in hx0..hx1 {
+        put(grid, clip, xf, col, y, hor, style);
+        if rh > 2 {
+            put(grid, clip, xf, col, bottom, hor, style);
+        }
+    }
+    let (vy0, vy1) = cspan(xf, y + 1, bottom, clip.y0, clip.y1, true);
+    for row in vy0..vy1 {
+        put(grid, clip, xf, x, row, ver, style);
+        put(grid, clip, xf, right, row, ver, style);
+    }
+    rect_title(x, right, y, style, title, grid, clip, xf);
+}
+
+/// 标题:`┌ title ─┐` —— 角后留一格空白,标题后也留一格(不压右边框)
+#[allow(clippy::too_many_arguments)]
+fn rect_title(
+    x: i32,
+    right: i32,
+    y: i32,
+    style: &Option<String>,
+    title: &Option<Vec<TextSpan>>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let Some(spans) = title else {
+        return;
+    };
+    let mut cx = x + 2;
+    if cx < right {
+        put(grid, clip, xf, x + 1, y, ' ', style);
+    }
+    'outer: for span in spans {
+        let own = span.style.clone().or_else(|| style.clone());
+        for g in span.text.graphemes(true) {
+            if cx + g.width() as i32 >= right {
+                break 'outer;
             }
-            let limit = match max_width {
-                Some(m) => cx + *m as i32,
-                None => i32::MAX,
-            };
-            for span in spans {
-                for g in span.text.graphemes(true) {
-                    let gw = g.width() as i32;
-                    if gw == 0 {
-                        continue;
-                    }
-                    if cx + gw > limit || cx + gw + xf.tx > clip.x1 as i32 {
-                        return; // 右边界(或 maxWidth)装不下 ⇒ 这段文字到此为止
-                    }
-                    // 起笔落在裁剪区**左边** ⇒ 跳过它继续(裁剪不砍可见部分)
-                    if cx + xf.tx < clip.x0 as i32 {
-                        cx += gw;
-                        continue;
-                    }
-                    if put_grapheme(grid, clip, xf, cx, y, g, &span.style) == 0 {
-                        return; // 宽字符两列不全在区内 ⇒ 整字丢弃
-                    }
-                    cx += gw;
-                }
+            if put_grapheme(grid, clip, xf, cx, y, g, &own) == 0 {
+                break 'outer;
             }
+            cx += g.width() as i32;
+        }
+    }
+    if cx < right {
+        put(grid, clip, xf, cx, y, ' ', style);
+    }
+}
+
+/// 水平线(与裁剪区求交后逐格写)
+#[allow(clippy::too_many_arguments)]
+fn apply_hline(
+    x: u16,
+    y: u16,
+    len: u16,
+    ch: char,
+    style: &Option<String>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let (y, len) = (y as i32, len as i32);
+    let (lo, hi) = cspan(xf, x as i32, x as i32 + len, clip.x0, clip.x1, false);
+    for col in lo..hi {
+        put(grid, clip, xf, col, y, ch, style);
+    }
+}
+
+/// 垂直线(与裁剪区求交后逐格写)
+#[allow(clippy::too_many_arguments)]
+fn apply_vline(
+    x: u16,
+    y: u16,
+    len: u16,
+    ch: char,
+    style: &Option<String>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let (x, len) = (x as i32, len as i32);
+    let (lo, hi) = cspan(xf, y as i32, y as i32 + len, clip.y0, clip.y1, true);
+    for row in lo..hi {
+        put(grid, clip, xf, x, row, ch, style);
+    }
+}
+
+/// 文本:逐 grapheme 写格(宽字符整字丢弃;超出 maxWidth/右边界即止)
+fn apply_text(
+    x: u16,
+    y: u16,
+    spans: &[TextSpan],
+    max_width: Option<u16>,
+    grid: &mut [Vec<Cell>],
+    clip: Clip,
+    xf: Xf,
+) {
+    let mut cx = x as i32;
+    let y = y as i32;
+    // 整行都不可见(上下)⇒ 直接返回,别逐字空转
+    let sy = y + xf.ty;
+    if sy < clip.y0 as i32 || sy >= clip.y1 as i32 {
+        return;
+    }
+    let limit = match max_width {
+        Some(m) => cx + m as i32,
+        None => i32::MAX,
+    };
+    for span in spans {
+        for g in span.text.graphemes(true) {
+            let gw = g.width() as i32;
+            if gw == 0 {
+                continue;
+            }
+            if cx + gw > limit || cx + gw + xf.tx > clip.x1 as i32 {
+                return; // 右边界(或 maxWidth)装不下 ⇒ 这段文字到此为止
+            }
+            // 起笔落在裁剪区**左边** ⇒ 跳过它继续(裁剪不砍可见部分)
+            if cx + xf.tx < clip.x0 as i32 {
+                cx += gw;
+                continue;
+            }
+            if put_grapheme(grid, clip, xf, cx, y, g, &span.style) == 0 {
+                return; // 宽字符两列不全在区内 ⇒ 整字丢弃
+            }
+            cx += gw;
         }
     }
 }

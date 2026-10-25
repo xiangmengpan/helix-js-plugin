@@ -56,7 +56,89 @@ pub(crate) fn js_server_rows(
     Ok(JsValue::from(id))
 }
 
-/// term 侧回投行数据（主线程 apply 阶段调用）：查回调 → 构造行数组 → 调 cb → 移除回调。
+/// `Option<String>` → JS 字符串 / `null`(行对象里 5 个可空字段共用)
+fn opt_str(v: &Option<String>) -> JsValue {
+    match v {
+        Some(s) => JsValue::from(JsString::from(s.clone())),
+        None => JsValue::null(),
+    }
+}
+
+/// 一行 server 数据 → JS 对象(languages 是字符串数组;可空字段走 `opt_str`)
+fn row_to_js(row: &ServerRow, engine: &mut Context) -> Result<JsValue> {
+    let langs = JsArray::new(engine).map_err(|e| anyhow!("JsArray::new: {e}"))?;
+    for l in &row.languages {
+        langs
+            .push(JsValue::from(JsString::from(l.clone())), engine)
+            .map_err(|e| anyhow!("row langs build: {e}"))?;
+    }
+    let item = ObjectInitializer::new(engine)
+        .property(
+            JsString::from("name"),
+            JsValue::from(JsString::from(row.name.clone())),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("kind"),
+            JsValue::from(JsString::from(row.kind.clone())),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("languages"),
+            JsValue::from(langs),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("installed"),
+            JsValue::from(row.installed),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("local"),
+            JsValue::from(row.local),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("version"),
+            opt_str(&row.version),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("description"),
+            JsValue::from(JsString::from(row.description.clone())),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("homepage"),
+            opt_str(&row.homepage),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("installable"),
+            JsValue::from(row.installable),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("upgradable"),
+            JsValue::from(row.upgradable),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("needs_version"),
+            JsValue::from(row.needs_version),
+            Attribute::all(),
+        )
+        .property(JsString::from("bin"), opt_str(&row.bin), Attribute::all())
+        .property(
+            JsString::from("source"),
+            opt_str(&row.source),
+            Attribute::all(),
+        )
+        .build();
+    Ok(JsValue::from(item))
+}
+
+/// term 侧回投行数据(主线程 apply 阶段调用):查回调 → 构造行数组 → 调 cb → 移除回调。
 pub fn deliver(id: u64, rows: Vec<ServerRow>) -> Result<()> {
     crate::init();
     with_engine(|engine| -> Result<()> {
@@ -70,91 +152,7 @@ pub fn deliver(id: u64, rows: Vec<ServerRow>) -> Result<()> {
             .ok_or_else(|| anyhow!("server rows {id} callback not callable"))?;
         let arr = JsArray::new(engine).map_err(|e| anyhow!("JsArray::new: {e}"))?;
         for r in &rows {
-            let langs = JsArray::new(engine).map_err(|e| anyhow!("JsArray::new: {e}"))?;
-            for l in &r.languages {
-                langs
-                    .push(JsValue::from(JsString::from(l.clone())), engine)
-                    .map_err(|e| anyhow!("row langs build: {e}"))?;
-            }
-            let item = ObjectInitializer::new(engine)
-                .property(
-                    JsString::from("name"),
-                    JsValue::from(JsString::from(r.name.clone())),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("kind"),
-                    JsValue::from(JsString::from(r.kind.clone())),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("languages"),
-                    JsValue::from(langs),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("installed"),
-                    JsValue::from(r.installed),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("local"),
-                    JsValue::from(r.local),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("version"),
-                    r.version
-                        .as_ref()
-                        .map(|v| JsValue::from(JsString::from(v.clone())))
-                        .unwrap_or(JsValue::null()),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("description"),
-                    JsValue::from(JsString::from(r.description.clone())),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("homepage"),
-                    r.homepage
-                        .as_ref()
-                        .map(|v| JsValue::from(JsString::from(v.clone())))
-                        .unwrap_or(JsValue::null()),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("installable"),
-                    JsValue::from(r.installable),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("upgradable"),
-                    JsValue::from(r.upgradable),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("needs_version"),
-                    JsValue::from(r.needs_version),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("bin"),
-                    r.bin
-                        .as_ref()
-                        .map(|v| JsValue::from(JsString::from(v.clone())))
-                        .unwrap_or(JsValue::null()),
-                    Attribute::all(),
-                )
-                .property(
-                    JsString::from("source"),
-                    r.source
-                        .as_ref()
-                        .map(|v| JsValue::from(JsString::from(v.clone())))
-                        .unwrap_or(JsValue::null()),
-                    Attribute::all(),
-                )
-                .build();
+            let item = row_to_js(r, engine)?;
             arr.push(item, engine)
                 .map_err(|e| anyhow!("row build: {e}"))?;
         }
