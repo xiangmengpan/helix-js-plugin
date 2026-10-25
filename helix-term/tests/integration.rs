@@ -27,6 +27,8 @@ mod test {
     mod plugin_components;
     mod plugin_cross_buffer;
     mod plugin_cwd;
+    mod plugin_dap_config;
+    mod plugin_dapui;
     mod plugin_decorations;
     mod plugin_doc;
     mod plugin_docchange;
