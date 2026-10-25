@@ -1087,9 +1087,10 @@ url = "file://{}"
     #[test]
     fn builtin_specs_all_have_description_and_homepage() {
         let _m = sm_lock();
-        // M5:内置 7 配方补展示数据(arsenal 行/信息弹窗显示)——缺描述/主页=遗漏
+        // M5:内置配方补展示数据(arsenal 行/信息弹窗显示)——缺描述/主页=遗漏
+        // 8 = 7 原有 + `lldb-dap`(DAP 重构 P0-T4:让 Rust 开箱能选到一个真实存在的 adapter)
         let specs = registry::builtin_specs();
-        assert_eq!(specs.len(), 7, "内置配方数变更需同步测试");
+        assert_eq!(specs.len(), 8, "内置配方数变更需同步测试");
         for s in &specs {
             assert!(
                 !s.description.is_empty(),
@@ -1120,6 +1121,7 @@ url = "file://{}"
                 "pyright",
                 "clangd",
                 "debugpy",
+                "lldb-dap",
                 "black",
                 "prettier"
             ],

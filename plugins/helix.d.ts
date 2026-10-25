@@ -162,7 +162,16 @@ interface PanelOptions {
   render: RenderFn; // 面板 render 固定收到 focus = null
   onKey?: KeyHandler;
   onClose?: () => void;
-  focusable?: boolean; // 参与焦点路由(Tab/Esc)
+  focusable?: boolean; // 面板内 button/input 的 Tab 焦点路由（与"拿到键盘焦点"无关）
+  /**
+   * 侧栏轨道（rail）：贴 root 边缘、**固定全高**、不参与窗口分割；注册即聚焦。
+   *
+   * - **全局只能有一条 rail**：注册新的会把旧的取掉（两个侧栏插件都用 rail 会互相驱逐）；
+   * - 与 `focusable` 无关：面板打开后本身就是活动叶子 ⇒ 按键直达 `onKey`，
+   *   所以"想让面板能按键"**不需要** rail；
+   * - rail 上 `Esc` / 裸 `l` 回主区（`C-\` 同效）。
+   */
+  rail?: boolean;
 }
 
 // ────────────────────────── 进程 / fs ──────────────────────────
@@ -281,6 +290,114 @@ interface CompletionCtx {
   deprecated: boolean;
   matchIndices: number[];
 }
+// ────────────────────────── DAP（调试） ──────────────────────────
+
+/** `dap.sessions()` 的一项。`id` 是**稳定的对外数字 id**（写进快照、可再传回 API）。 */
+interface DapSessionInfo {
+  id: number;
+  /** 调试适配器名（`languages.toml` 的 `[language.debugger].name`，如 `lldb-dap`） */
+  name: string;
+  state: "starting" | "running" | "stopped" | "terminated";
+  /** 是否是当前默认会话（命令与省略 `id` 的 API 都作用于它） */
+  active: boolean;
+  /** 当前线程 id（停止时才有） */
+  thread?: number | null;
+  /** 当前栈帧（`line`/`column` **0 起始**） */
+  frame?: { id: number; name: string; line: number; column: number } | null;
+}
+
+/** `dap.configs()` 的一项：可用调试配置。P1 只有 `source: "lang"`（`languages.toml` 模板）。 */
+interface DapConfigInfo {
+  name: string;
+  request: "launch" | "attach";
+  language?: string;
+  source: "lang" | "toml" | "json";
+  adapter: string;
+}
+
+/** `dap.list_breakpoints()` 的一项。`line` **0 起始**；`verified/message` 由 adapter 回填。 */
+interface DapBreakpointInfo {
+  path: string;
+  line: number;
+  condition?: string | null;
+  hit?: string | null;
+  log?: string | null;
+  verified: boolean;
+  message?: string | null;
+  id?: number | null;
+}
+
+interface DapThread {
+  id: number;
+  name: string;
+}
+
+/** `dap.stack_frames()` 的一项（`line`/`column`/`end_line`/`end_column` 全 **0 起始**）。 */
+interface DapStackFrame {
+  id: number;
+  name: string;
+  source?: string | null;
+  line: number;
+  column: number;
+  end_line?: number | null;
+  end_column?: number | null;
+}
+
+interface DapScope {
+  name: string;
+  variablesReference: number;
+  expensive: boolean;
+}
+
+interface DapVariable {
+  name: string;
+  value: string;
+  type?: string | null;
+  /** >0 ⇒ 可继续 `dap.variables(r)` 展开 */
+  variablesReference: number;
+  namedVariables?: number | null;
+  indexedVariables?: number | null;
+}
+
+/**
+ * `helix.dap.*` —— 调试（DAP）。
+ *
+ * 约定：
+ * - `row`/`line` 一律 **0 起始**（与 `helix.lsp.*` / `set_virtual_text` 一致）；
+ * - `id` 省略 = 当前活动会话；没有会话时**拒绝**（不是静默返回 null）；
+ * - 查询/动作返回 Promise，失败时 reject（消息来自 adapter）；
+ * - 状态走快照（`sessions()`，同步、零 IO）+ 事件（`helix.on("dap-*")`）。
+ */
+interface DapNamespace {
+  sessions(): DapSessionInfo[];
+  configs(): DapConfigInfo[];
+  list_breakpoints(path?: string): DapBreakpointInfo[];
+  launch(name?: string, args?: Record<string, unknown>, id?: number): Promise<DapSessionInfo>;
+  attach(name?: string, args?: Record<string, unknown>, id?: number): Promise<DapSessionInfo>;
+  terminate(id?: number): Promise<void>;
+  restart(id?: number): Promise<void>;
+  continue(id?: number): Promise<void>;
+  pause(thread?: number, id?: number): Promise<void>;
+  step_in(id?: number): Promise<void>;
+  step_out(id?: number): Promise<void>;
+  next(id?: number): Promise<void>;
+  threads(id?: number): Promise<DapThread[]>;
+  stack_frames(thread: number, id?: number): Promise<DapStackFrame[]>;
+  scopes(frame: number, id?: number): Promise<DapScope[]>;
+  variables(reference: number, id?: number): Promise<DapVariable[]>;
+  eval(expr: string, frame?: number, id?: number): Promise<{ result: string; type?: string | null; variablesReference: number }>;
+  set_breakpoint(
+    path: string,
+    row: number,
+    opts?: { condition?: string; hit?: string; log?: string },
+  ): Promise<void>;
+  remove_breakpoint(path: string, row: number): Promise<void>;
+  clear_breakpoints(path?: string): Promise<void>;
+  set_exception_breakpoints(filters: string[]): Promise<void>;
+  /** 逃生口：任意 DAP 请求，响应 body 原样返回（进阶用法，不做类型映射）。 */
+  request(name: string, args?: Record<string, unknown>, id?: number): Promise<unknown>;
+}
+
 /** `set_statusline` 的入参（与 `helix-js/src/types.rs::StatuslineCtx` 一一对应） */
 interface StatuslineCtx {
   path: string | null;
@@ -518,7 +635,16 @@ type EventName =
   | "term-title"
   | "term-key"
   | "pane-mode-change"
-  | "component-event";
+  | "component-event"
+  | "dap-session"
+  | "dap-stopped"
+  | "dap-continued"
+  | "dap-exited"
+  | "dap-terminated"
+  | "dap-output"
+  | "dap-thread"
+  | "dap-breakpoint"
+  | "dap-progress";
 
 // ────────────────────────── 主接口 ──────────────────────────
 
@@ -661,6 +787,17 @@ interface Helix {
   on(event: "theme-change", fn: (doc: Doc, payload: EventDoc) => void): void;
   /** `lsp-diagnostics`:诊断更新;`diags` 是原样透传的 JSON 数组 */
   on(event: "lsp-diagnostics", fn: (docId: number, diags: unknown[], payload: EventLspDiagnostics) => void): void;
+  /** DAP 会话事件：`kind` 为 `"created"` / `"removed"`。 */
+  on(event: "dap-session", fn: (payload: { id: number; kind: "created" | "removed"; name?: string; state?: string }) => void): void;
+  /** 命中停止（**栈帧已拉完**之后才发，收到即可 `stack_frames()`）。 */
+  on(event: "dap-stopped", fn: (payload: { id: number; reason?: string; thread_id?: number | null; text?: string | null; all_threads_stopped?: boolean | null }) => void): void;
+  on(event: "dap-continued", fn: (payload: { id: number; thread_id?: number | null }) => void): void;
+  on(event: "dap-exited", fn: (payload: { id: number; exit_code?: number | null }) => void): void;
+  on(event: "dap-terminated", fn: (payload: { id: number; restart?: unknown }) => void): void;
+  on(event: "dap-output", fn: (payload: { id: number; category?: string | null; output: string }) => void): void;
+  on(event: "dap-thread", fn: (payload: { id: number; reason: string; thread_id: number }) => void): void;
+  on(event: "dap-breakpoint", fn: (payload: { id: number; path: string; line: number; verified: boolean; message?: string | null; removed?: boolean }) => void): void;
+  on(event: "dap-progress", fn: (payload: { id: number; kind: "start" | "update" | "end"; text?: string | null; percentage?: number | null }) => void): void;
   /** `cursor-move`:光标移动 */
   on(event: "cursor-move", fn: (docId: number, ev: { row: number; col: number; mode: string }, payload: EventCursorMove) => void): void;
   /** `selection-change`:选区数量/主选区 */
@@ -768,6 +905,29 @@ interface Helix {
     fn: ((ctx: StatuslineCtx) => string | StatuslinePart[] | null) | null,
     opts?: StatuslineOptions,
   ): void;
+  /**
+   * 注册一个**外部状态栏段**（给自己之外的渲染方用）：段名 → 渲染函数。
+   *
+   * 为什么需要：`statusline` 插件的段是**闭集**（它自己的 `SEGMENTS` 表），而 `set_statusline`
+   * 的追加模式会被 `replace: true` 短路 ⇒ 别的插件无法往状态栏加段。注册后把段名写进
+   * `[plugins.statusline] left/center/right` 列表即可显示。
+   *
+   * - `name` 必须匹配 `[A-Za-z0-9_.:-]{1,64}`（否则抛 TypeError）；
+   * - 传 `null` = 注销；同名重复注册 = 后者覆盖；
+   * - **内置段名优先**：与 statusline 内置段同名时，内置实现生效（核心不做命名空间隔离）；
+   * - 段函数在**每帧**渲染路径上跑，属主按注册方绑定，`:plugin-unload` 时自动移除。
+   */
+  register_statusline_segment(
+    name: string,
+    fn: ((ctx: StatuslineCtx) => string | StatuslinePart[] | null) | null,
+  ): void;
+  /**
+   * 由**渲染方**（`statusline` 插件）调用外部段；`ctx` 原样转交给段函数。
+   *
+   * 错语义刻意不同：**名字未注册 ⇒ 抛错**（渲染方据此显示 `!段名`，让拼错可见）；
+   * **段函数抛错 ⇒ 返回 `null`**（状态栏每帧渲染，单个插件的 bug 不能把整条拖没）。
+   */
+  statusline_segment(name: string, ctx: StatuslineCtx): string | StatuslinePart[] | null;
   set_buffer_icon(fn: (path: string) => string | null): void;
   set_completion_icon(fn: (kindNum: number) => string): void;
   set_completion_render(fn: (ctx: CompletionCtx) => (string | StyledText)[] | ElNode): void;
@@ -999,6 +1159,9 @@ interface Helix {
   get_style(scope: string): ThemeColor | null;
   theme_info(): unknown;
   set_theme_name(name: string): void;
+
+  // ── DAP（调试）──
+  dap: DapNamespace;
 
   // ── LSP ──
   lsp: {

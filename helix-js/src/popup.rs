@@ -1874,6 +1874,105 @@ pub(crate) fn js_set_statusline(
     Ok(JsValue::undefined())
 }
 
+/// 外部状态栏段:段名白名单。
+///
+/// 为什么卡这个:状态栏是**每帧**渲染的,而段名同时出现在两处(`config.toml` 的列表与
+/// `helix.register_statusline_segment` 的入参)。只要两边一致就对得上 —— 但回车/空格/引号
+/// 会让"看到的字"与"注册的字"不一致(静默不匹配 = 用户以为配了)。
+fn statusline_segment_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
+}
+
+/// `helix.register_statusline_segment(name, fn|null)`
+///
+/// 存在的理由：`statusline` 插件的段是**闭集**(它自己的 `SEGMENTS` 常量)，而 `set_statusline`
+/// 的追加模式会被 `replace: true` 短路 ⇒ 别的插件没法往状态栏加段。这道口子把"段表"拆成两半：
+/// 内置段在渲染方(插件)里，外部段注册到这里，渲染方按段名取。
+///
+/// **内置段名优先**：核心不做名字空间隔离，同名时渲染方用内置实现（文档已写明）。
+pub(crate) fn js_register_statusline_segment(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    const API: &str = "helix.register_statusline_segment";
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err(format!("{API}: name must be a string")))?;
+    if !statusline_segment_name_ok(&name) {
+        return Err(crate::js_err(format!(
+            "{API}: name must match [A-Za-z0-9_.:-]{{1,64}}, got {name:?}"
+        )));
+    }
+    let f = args.get(1).cloned().unwrap_or(JsValue::null());
+    let st = crate::host::host_state(context);
+    let key = crate::permissions::CbKey::statusline_segment(&name);
+    if f.is_null_or_undefined() {
+        crate::state::with_statusline_segments(st, |m| m.remove(&name));
+        crate::permissions::forget_callback(&key);
+    } else if f.as_callable().is_some() {
+        // 注册期绑定属主:段函数在**每帧**路径上跑,卸载时按属主回收(同 `set_statusline`)
+        crate::permissions::bind_callback(key);
+        crate::state::with_statusline_segments(st, |m| {
+            m.insert(name, f);
+        });
+    } else {
+        return Err(crate::js_err(format!(
+            "{API}: second arg must be a function or null"
+        )));
+    }
+    Ok(JsValue::undefined())
+}
+
+/// `helix.statusline_segment(name, ctx)` —— 只由**渲染方**(`statusline` 插件)调用。
+///
+/// `ctx` 是渲染方手里那个对象**原样**转交(不做 `StatuslineCtx` 的来回转换 —— 段函数看到的
+/// 字段与状态栏钩子完全一致)。返回值由渲染方当段结果用(字符串/分段数组都有)。
+///
+/// 两条错语义刻意不同：
+/// - **名字不存在 ⇒ 抛错**：渲染方要能区分"段名拼错"与"本帧没有内容"(拼错要显示 `!name`)；
+/// - **段函数抛错 ⇒ 返回 null**：状态栏是每帧渲染的，单个外部插件的 bug 不能把整条状态栏拖没。
+pub(crate) fn js_statusline_segment(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    const API: &str = "helix.statusline_segment";
+    let name: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err(format!("{API}: name must be a string")))?;
+    let st = crate::host::host_state(context);
+    let Some(hook) = crate::state::with_statusline_segments(st, |m| m.get(&name).cloned()) else {
+        return Err(crate::js_err(format!(
+            "{API}: no segment registered as {name:?}"
+        )));
+    };
+    let Some(func) = hook.as_callable().and_then(JsFunction::from_object) else {
+        return Ok(JsValue::null());
+    };
+    let ctx_obj = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    // 段的属主作用域:段里再注册的回调(如 `helix.on`)绑到**注册方**,不是渲染方
+    let value = crate::permissions::with_callback_owner(
+        &crate::permissions::CbKey::statusline_segment(&name),
+        || func.call(&JsValue::undefined(), &[ctx_obj], context),
+    );
+    match value {
+        Ok(v) => Ok(v),
+        Err(err) => {
+            crate::state::js_dbg(format_args!("{API} {name}: {err:?}"));
+            Ok(JsValue::null())
+        }
+    }
+}
+
 /// 调状态栏钩子；返回分段（每段可带 theme scope）。
 /// 回调返回 null/undefined → None；字符串 → 单段；数组 [{text, style?} | "str", ...] → 多段。
 /// keymap 前缀提示注册:helix.set_keymap_hint(fn) / 清除:set_keymap_hint(null)。

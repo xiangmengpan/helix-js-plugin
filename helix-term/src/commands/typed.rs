@@ -2346,6 +2346,102 @@ fn hsplit_new(
     Ok(())
 }
 
+// ── DAP：把"只有键位"的动作接成 `:` 命令（`:` 补全能看见 = 找得到） ──
+fn debug_toggle_breakpoint(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_toggle_breakpoint(cx);
+    }
+    Ok(())
+}
+
+fn debug_continue(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_request(cx, "continue");
+    }
+    Ok(())
+}
+
+fn debug_next(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_request(cx, "next");
+    }
+    Ok(())
+}
+
+fn debug_step_in(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_request(cx, "step_in");
+    }
+    Ok(())
+}
+
+fn debug_step_out(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_request(cx, "step_out");
+    }
+    Ok(())
+}
+
+fn debug_terminate(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_request(cx, "terminate");
+    }
+    Ok(())
+}
+
+fn debug_restart(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_request(cx, "restart");
+    }
+    Ok(())
+}
+
+fn debug_variables(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_variables(cx);
+    }
+    Ok(())
+}
+
+fn debug_sessions(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::commands::dap::typed_sessions(cx);
+    }
+    Ok(())
+}
+
 fn debug_eval(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3930,6 +4026,78 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
+    },
+    TypableCommand {
+        name: "debug-toggle-breakpoint",
+        aliases: &["dbgb"],
+        doc: "Toggle a breakpoint on the current line.",
+        fun: debug_toggle_breakpoint,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-continue",
+        aliases: &["dbgc"],
+        doc: "Continue the debuggee (resume execution).",
+        fun: debug_continue,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-next",
+        aliases: &["dbgn"],
+        doc: "Step over (next).",
+        fun: debug_next,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-step-in",
+        aliases: &["dbgi"],
+        doc: "Step in.",
+        fun: debug_step_in,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-step-out",
+        aliases: &["dbgo"],
+        doc: "Step out.",
+        fun: debug_step_out,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-terminate",
+        aliases: &["dbgq"],
+        doc: "Terminate the debug session.",
+        fun: debug_terminate,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-restart",
+        aliases: &[],
+        doc: "Restart the debug session.",
+        fun: debug_restart,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-variables",
+        aliases: &["dbgv"],
+        doc: "Show variables of the current stack frame.",
+        fun: debug_variables,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-sessions",
+        aliases: &[],
+        doc: "Switch the active debug session.",
+        fun: debug_sessions,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
     },
     TypableCommand {
         name: "debug-start",

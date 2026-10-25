@@ -1,8 +1,11 @@
+pub mod breakpoints;
 mod client;
 pub mod registry;
+#[cfg(test)]
+mod tests;
 mod transport;
 
-pub use client::Client;
+pub use client::{initialize_arguments, Client, DapHandle};
 pub use helix_dap_types::*;
 pub use transport::{Payload, Response, Transport};
 

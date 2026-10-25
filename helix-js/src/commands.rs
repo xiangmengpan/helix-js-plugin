@@ -11,7 +11,7 @@ use boa_engine::{Context, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-pub(crate) const EVENT_WHITELIST: [&str; 21] = [
+pub(crate) const EVENT_WHITELIST: [&str; 30] = [
     "save",
     "mode-change",
     "cwd-change", // 工作目录真的变了（:cd / :lcd / :pop-directory）——插件据此重取根目录
@@ -33,6 +33,15 @@ pub(crate) const EVENT_WHITELIST: [&str; 21] = [
     "pane-mode-change",
     "layout-change",
     "startup", // 启动完成（发在 application.rs 的初始文件处理之后；由插件自行判断“是否空白无名 buffer”）
+    "dap-session",
+    "dap-stopped",
+    "dap-continued",
+    "dap-exited",
+    "dap-terminated",
+    "dap-output",
+    "dap-thread",
+    "dap-breakpoint",
+    "dap-progress",
 ];
 
 /// 事件白名单（`api::describe()` 与对账脚本用；唯一事实仍是上面那张表）
@@ -2648,6 +2657,18 @@ fn orphan_hooks(st: &HostState) -> usize {
     {
         crate::state::with_keymap_hint_hook_current(|h| *h = None);
         removed += 1;
+    }
+    // 外部状态栏段是**按名字**的回调(同 picker 源),属主走了就删 —— 否则卸载后的插件
+    // 还能继续往状态栏上画(每帧跑着已死插件的代码)。
+    let segments: Vec<String> =
+        crate::state::with_statusline_segments(st, |m| m.keys().cloned().collect());
+    for name in segments {
+        if crate::permissions::callback_owner(&K::statusline_segment(&name)).is_none() {
+            crate::state::with_statusline_segments(st, |m| {
+                m.remove(&name);
+            });
+            removed += 1;
+        }
     }
     removed
 }

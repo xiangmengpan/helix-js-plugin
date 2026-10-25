@@ -26,6 +26,7 @@ mod types;
 
 pub mod config;
 pub mod cursor;
+pub mod dap;
 pub mod diagnostics;
 pub mod draw;
 pub mod server_rows;

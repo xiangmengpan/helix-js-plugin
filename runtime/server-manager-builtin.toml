@@ -64,8 +64,19 @@ cmd = ""
 description = "Python debug adapter (debugpy, VS Code core)"
 homepage = "https://github.com/microsoft/debugpy"
 
-[server-manager.registry.black]
+# lldb-dap:随 LLVM ≥ 15 分发(大多数发行版的 `lldb` 包就带它)。这里不自动下载 ——
+# 各发行版的打包差异太大,给"占位条目 + 引导"比猜一个 URL 靠谱(与 gopls/clangd 同策略)。
+[server-manager.registry.lldb-dap]
 order = 6
+kind = "dap"
+languages = ["rust", "c", "cpp", "swift"]
+bin-name = "lldb-dap"
+url = ""
+description = "LLDB debug adapter, ships with LLVM >= 15 (apt/brew install lldb)"
+homepage = "https://lldb.llvm.org/"
+
+[server-manager.registry.black]
+order = 7
 kind = "formatter"
 languages = ["python"]
 cmd = ""
@@ -73,7 +84,7 @@ description = "Python code formatter (black)"
 homepage = "https://github.com/psf/black"
 
 [server-manager.registry.prettier]
-order = 7
+order = 8
 kind = "formatter"
 languages = ["javascript", "typescript", "html", "css", "json", "markdown"]
 cmd = ""

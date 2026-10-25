@@ -24,7 +24,6 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "io-std", "time", "process", "macros", "fs", "parking_lot", "net", "sync"] }
 thiserror.workspace = true
 slotmap.workspace = true
-futures-executor.workspace = true
 futures-util.workspace = true
 tokio-stream.workspace = true
 sonic-rs.workspace = true

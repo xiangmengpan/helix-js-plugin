@@ -7,11 +7,9 @@ use helix_core::Selection;
 use helix_dap::{
     self as dap, registry::DebugAdapterId, Client, ConnectionType, Payload, Request, ThreadId,
 };
-use helix_lsp::block_on;
 use log::{error, warn};
 use serde_json::{json, Value};
 use std::fmt::Write;
-use std::path::PathBuf;
 
 #[macro_export]
 macro_rules! debugger {
@@ -87,59 +85,52 @@ pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
     align_view(doc, view, Align::Center);
 }
 
-pub fn breakpoints_changed(
-    debugger: &mut dap::Client,
-    path: PathBuf,
-    breakpoints: &mut [Breakpoint],
+/// 断点能力检查：条件断点 / 命中条件 / 日志断点。
+///
+/// 抽出来是因为有**两条路径**都要查（命令的同步路径、`initialized` 的重放路径），
+/// 而错误文案必须一致 —— 用户看到的该是"这个 adapter 不支持 X"，不是"设断点失败"。
+pub fn check_breakpoint_caps(
+    caps: Option<&dap::DebuggerCapabilities>,
+    breakpoints: &[Breakpoint],
 ) -> Result<(), anyhow::Error> {
-    if let Some(caps) = debugger.caps.as_ref() {
-        if breakpoints.iter().any(|b| b.condition.is_some())
-            && !caps.supports_conditional_breakpoints.unwrap_or_default()
-        {
-            bail!("Can't edit breakpoint: debugger does not support conditional breakpoints")
-        }
-        if breakpoints.iter().any(|b| b.hit_condition.is_some())
-            && !caps
-                .supports_hit_conditional_breakpoints
-                .unwrap_or_default()
-        {
-            bail!("Can't edit breakpoint: debugger does not support hit conditional breakpoints")
-        }
-        if breakpoints.iter().any(|b| b.log_message.is_some())
-            && !caps.supports_log_points.unwrap_or_default()
-        {
-            bail!("Can't edit breakpoint: debugger does not support logpoints")
-        }
+    let Some(caps) = caps else { return Ok(()) };
+    if breakpoints.iter().any(|b| b.condition.is_some())
+        && !caps.supports_conditional_breakpoints.unwrap_or_default()
+    {
+        bail!("Can't edit breakpoint: debugger does not support conditional breakpoints")
     }
-    let source_breakpoints = breakpoints
-        .iter()
-        .map(|breakpoint| helix_dap::SourceBreakpoint {
-            line: breakpoint.line + 1, // convert from 0-indexing to 1-indexing (TODO: could set debugger to 0-indexing on init)
-            column: breakpoint.column,
-            condition: breakpoint.condition.clone(),
-            hit_condition: breakpoint.hit_condition.clone(),
-            log_message: breakpoint.log_message.clone(),
-        })
-        .collect::<Vec<_>>();
+    if breakpoints.iter().any(|b| b.hit_condition.is_some())
+        && !caps
+            .supports_hit_conditional_breakpoints
+            .unwrap_or_default()
+    {
+        bail!("Can't edit breakpoint: debugger does not support hit conditional breakpoints")
+    }
+    if breakpoints.iter().any(|b| b.log_message.is_some())
+        && !caps.supports_log_points.unwrap_or_default()
+    {
+        bail!("Can't edit breakpoint: debugger does not support logpoints")
+    }
+    Ok(())
+}
 
-    let request = debugger.set_breakpoints(path, source_breakpoints);
-    match block_on(request) {
-        Ok(Some(dap_breakpoints)) => {
-            for (breakpoint, dap_breakpoint) in breakpoints.iter_mut().zip(dap_breakpoints) {
-                breakpoint.id = dap_breakpoint.id;
-                breakpoint.verified = dap_breakpoint.verified;
-                breakpoint.message = dap_breakpoint.message;
-                // TODO: handle breakpoint.message
-                // TODO: verify source matches
-                breakpoint.line = dap_breakpoint.line.unwrap_or(0).saturating_sub(1); // convert to 0-indexing
-                                                                                      // TODO: no unwrap
-                breakpoint.column = dap_breakpoint.column;
-                // TODO: verify end_linef/col instruction reference, offset
-            }
-        }
-        Err(e) => anyhow::bail!("Failed to set breakpoints: {}", e),
-        _ => {}
-    };
+/// 把某个文件的断点推给 adapter，并把响应回填进 `store`（**唯一**的推断点实现）。
+///
+/// 不并行推多个文件：回填要 `&mut store`，并行就得同时持有多份可变借用（不可能）。
+/// 断点规模是几十条，"按文件串行"完全够，而且顺序稳定（`paths()` 是 BTreeMap 序）。
+pub async fn sync_breakpoints(
+    debugger: &dap::Client,
+    store: &mut helix_dap::breakpoints::BreakpointStore,
+    path: &std::path::Path,
+) -> Result<(), anyhow::Error> {
+    check_breakpoint_caps(debugger.caps.as_ref(), &store.for_path(path))?;
+    let source_breakpoints = store.source_breakpoints(path);
+    let response = debugger
+        .set_breakpoints(path.to_path_buf(), source_breakpoints)
+        .await?;
+    if let Some(breakpoints) = response {
+        store.apply_response(path, &breakpoints);
+    }
     Ok(())
 }
 
@@ -151,6 +142,7 @@ impl Editor {
     ) -> bool {
         use helix_dap::{events, Event};
 
+        let adapter_id = id;
         match payload {
             Payload::Event(event) => {
                 let event = match Event::parse(&event.event, event.body) {
@@ -203,6 +195,7 @@ impl Editor {
                             None => "Target".to_owned(),
                         };
 
+                        let text_for_event = text.clone();
                         let mut status = format!("{} stopped because of {}", scope, reason);
                         if let Some(desc) = description {
                             write!(status, " {}", desc).unwrap();
@@ -215,6 +208,19 @@ impl Editor {
                         }
 
                         self.set_status(status);
+                        // 事件放在栈帧抓取**之后**（上面那段已经 await 完）：插件收到事件立刻
+                        // `stack_frames()` 才拿得到新帧。
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-stopped",
+                            json!({
+                                "id": public,
+                                "reason": reason,
+                                "thread_id": thread_id.map(|t| t.to_string().parse::<i64>().unwrap_or(0)),
+                                "text": text_for_event,
+                                "all_threads_stopped": all_threads_stopped,
+                            }),
+                        );
                     }
                     Event::Continued(events::ContinuedBody { thread_id, .. }) => {
                         let debugger = match self.debug_adapters.get_client_mut(id) {
@@ -228,9 +234,26 @@ impl Editor {
                         if debugger.thread_id == Some(thread_id) {
                             debugger.resume_application();
                         }
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-continued",
+                            json!({
+                                "id": public,
+                                "thread_id": thread_id.to_string().parse::<i64>().unwrap_or(0),
+                            }),
+                        );
                     }
                     Event::Thread(thread) => {
                         self.set_status(format!("Thread {}: {}", thread.thread_id, thread.reason));
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-thread",
+                            json!({
+                                "id": public,
+                                "reason": thread.reason,
+                                "thread_id": thread.thread_id.to_string().parse::<i64>().unwrap_or(0),
+                            }),
+                        );
                         let debugger = match self.debug_adapters.get_client_mut(id) {
                             Some(debugger) => debugger,
                             None => return false,
@@ -251,17 +274,32 @@ impl Editor {
                                         warn!("DAP breakpoint event missing line");
                                         return false;
                                     };
-                                    self.breakpoints.entry(path).or_default().push(Breakpoint {
-                                        id: breakpoint.id,
-                                        verified: breakpoint.verified,
-                                        message: breakpoint.message.clone(),
-                                        line: line.saturating_sub(1),
-                                        column: breakpoint.column,
-                                        ..Default::default()
-                                    });
+                                    let path_for_event = path.to_string_lossy().to_string();
+                                    self.breakpoints.set(
+                                        path,
+                                        Breakpoint {
+                                            id: breakpoint.id,
+                                            verified: breakpoint.verified,
+                                            message: breakpoint.message.clone(),
+                                            line: line.saturating_sub(1),
+                                            column: breakpoint.column,
+                                            ..Default::default()
+                                        },
+                                    );
                                     if let Some(message) = &breakpoint.message {
                                         self.set_status(format!("Breakpoint: {}", message));
                                     }
+                                    let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                                    self.emit_dap_event(
+                                        "dap-breakpoint",
+                                        json!({
+                                            "id": public,
+                                            "path": path_for_event,
+                                            "line": line.saturating_sub(1),
+                                            "verified": breakpoint.verified,
+                                            "message": breakpoint.message,
+                                        }),
+                                    );
                                 }
                             }
                             "changed" => {
@@ -277,22 +315,19 @@ impl Editor {
                                 if breakpoint.line.is_none() {
                                     warn!("DAP breakpoint event missing line");
                                 }
-                                for breakpoints in self.breakpoints.values_mut() {
-                                    if let Some(i) =
-                                        breakpoints.iter().position(|b| b.id == Some(id))
-                                    {
-                                        breakpoints[i].verified = breakpoint.verified;
-                                        breakpoints[i].message = breakpoint
-                                            .message
-                                            .clone()
-                                            .or_else(|| breakpoints[i].message.take());
-                                        breakpoints[i].line =
-                                            breakpoint.line.map_or(breakpoints[i].line, |line| {
-                                                line.saturating_sub(1)
-                                            });
-                                        breakpoints[i].column =
-                                            breakpoint.column.or(breakpoints[i].column);
-                                    }
+                                // 按 id 回填 + 必要时按新行号重排（`apply_changed` 内部保证键值同步）
+                                if self
+                                    .breakpoints
+                                    .apply_changed(
+                                        id,
+                                        breakpoint.verified,
+                                        breakpoint.message.clone(),
+                                        breakpoint.line.map(|l| l.saturating_sub(1)),
+                                        breakpoint.column,
+                                    )
+                                    .is_none()
+                                {
+                                    warn!("DAP breakpoint {} not found in store", id);
                                 }
                                 if let Some(message) = &breakpoint.message {
                                     self.set_status(format!("Breakpoint: {}", message));
@@ -303,12 +338,22 @@ impl Editor {
                                     warn!("DAP breakpoint event missing id");
                                     return false;
                                 };
-                                for breakpoints in self.breakpoints.values_mut() {
-                                    if let Some(i) =
-                                        breakpoints.iter().position(|b| b.id == Some(id))
-                                    {
-                                        breakpoints.remove(i);
+                                match self.breakpoints.remove_by_id(id) {
+                                    Some((path, line)) => {
+                                        let public =
+                                            self.debug_adapters.public_id(adapter_id).unwrap_or(0);
+                                        self.emit_dap_event(
+                                            "dap-breakpoint",
+                                            json!({
+                                                "id": public,
+                                                "path": path.to_string_lossy(),
+                                                "line": line,
+                                                "verified": false,
+                                                "removed": true,
+                                            }),
+                                        );
                                     }
+                                    None => warn!("DAP breakpoint {} not found in store", id),
                                 }
                             }
                             reason => {
@@ -319,6 +364,7 @@ impl Editor {
                     Event::Output(events::OutputBody {
                         category, output, ..
                     }) => {
+                        let category_for_event = category.clone();
                         let prefix = match category {
                             Some(category) => {
                                 if &category == "telemetry" {
@@ -331,6 +377,15 @@ impl Editor {
 
                         log::info!("{}", output);
                         self.set_status(format!("{} {}", prefix, output));
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-output",
+                            json!({
+                                "id": public,
+                                "category": category_for_event,
+                                "output": output,
+                            }),
+                        );
                     }
                     Event::ProgressStart(body) => {
                         let status = {
@@ -339,10 +394,20 @@ impl Editor {
                                 None => return false,
                             };
 
-                            debugger.progress_start(body)
+                            debugger.progress_start(body.clone())
                         };
 
                         self.set_status(status);
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-progress",
+                            json!({
+                                "id": public,
+                                "kind": "start",
+                                "text": body.title,
+                                "percentage": body.percentage,
+                            }),
+                        );
                     }
                     Event::ProgressUpdate(body) => {
                         let status = {
@@ -351,12 +416,22 @@ impl Editor {
                                 None => return false,
                             };
 
-                            debugger.progress_update(body)
+                            debugger.progress_update(body.clone())
                         };
 
                         if let Some(status) = status {
                             self.set_status(status);
                         }
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-progress",
+                            json!({
+                                "id": public,
+                                "kind": "update",
+                                "text": body.message,
+                                "percentage": body.percentage,
+                            }),
+                        );
                     }
                     Event::ProgressEnd(body) => {
                         let status = {
@@ -365,27 +440,46 @@ impl Editor {
                                 None => return false,
                             };
 
-                            debugger.progress_end(body)
+                            debugger.progress_end(body.clone())
                         };
 
                         if let Some(status) = status {
                             self.set_status(status);
                         }
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-progress",
+                            json!({
+                                "id": public,
+                                "kind": "end",
+                                "text": body.message,
+                            }),
+                        );
                     }
                     Event::Initialized(_) => {
                         self.set_status("Debugger initialized...");
-                        let debugger = match self.debug_adapters.get_client_mut(id) {
-                            Some(debugger) => debugger,
-                            None => return false,
-                        };
-
-                        // send existing breakpoints
-                        for (path, breakpoints) in &mut self.breakpoints {
-                            // TODO: call futures in parallel, await all
-                            let _ = breakpoints_changed(debugger, path.clone(), breakpoints);
+                        // 把已有断点全量推给 adapter。`debug_adapters`（不可变借）与
+                        // `breakpoints`（可变借）是**不同字段** ⇒ 同时借是合法的，不用先克隆客户端。
+                        let paths = self.breakpoints.paths();
+                        let mut failure = None;
+                        for path in paths {
+                            let Some(debugger) = self.debug_adapters.get_client(id) else {
+                                break;
+                            };
+                            if let Err(err) =
+                                sync_breakpoints(debugger, &mut self.breakpoints, &path).await
+                            {
+                                failure = Some(err);
+                                break;
+                            }
                         }
-                        // TODO: fetch breakpoints (in case we're attaching)
+                        if let Some(err) = failure {
+                            self.set_error(format!("Failed to set breakpoints: {}", err));
+                        }
 
+                        let Some(debugger) = self.debug_adapters.get_client(id) else {
+                            return false;
+                        };
                         if let Err(err) = debugger.configuration_done().await {
                             self.set_error(format!("Debugger configuration failed: {}", err));
                         } else {
@@ -395,6 +489,13 @@ impl Editor {
                         self.debug_adapters.set_active_client(id);
                     }
                     Event::Terminated(terminated) => {
+                        // 先发事件再取可变借用：`public_id` 只读 registry，顺序反了会撞借用检查
+                        let public = self.debug_adapters.public_id(adapter_id).unwrap_or(0);
+                        let restart_for_event = terminated.as_ref().and_then(|t| t.restart.clone());
+                        self.emit_dap_event(
+                            "dap-terminated",
+                            json!({ "id": public, "restart": restart_for_event }),
+                        );
                         let debugger = match self.debug_adapters.get_client_mut(id) {
                             Some(debugger) => debugger,
                             None => return false,
@@ -432,13 +533,8 @@ impl Editor {
                                     "Terminated debugging session and disconnected debugger.",
                                 );
 
-                                // Go through all breakpoints and set verfified to false
-                                // this should update the UI to show the breakpoints are no longer connected
-                                for breakpoints in self.breakpoints.values_mut() {
-                                    for breakpoint in breakpoints.iter_mut() {
-                                        breakpoint.verified = false;
-                                    }
-                                }
+                                // 全部标回"未确认"：UI 上 ● → ◯（会话断了，断点还在，但不再有效）
+                                self.breakpoints.invalidate_all();
                             }
                             Some(val) => {
                                 log::info!("Attempting to restart debug session.");
@@ -468,6 +564,11 @@ impl Editor {
                     }
                     Event::Exited(resp) => {
                         let exit_code = resp.exit_code;
+                        let public = self.debug_adapters.public_id(id).unwrap_or(0);
+                        self.emit_dap_event(
+                            "dap-exited",
+                            json!({ "id": public, "exit_code": exit_code }),
+                        );
                         if exit_code != 0 {
                             self.set_error(format!(
                                 "Debuggee failed to exit successfully (exit code: {exit_code})."
@@ -535,7 +636,10 @@ impl Editor {
                             }
                         };
 
-                        let result = self.debug_adapters.start_client(Some(socket), &config);
+                        let result = self
+                            .debug_adapters
+                            .start_client(Some(socket), &config)
+                            .await;
 
                         let client_id = match result {
                             Ok(child) => child,

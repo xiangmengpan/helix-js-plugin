@@ -171,3 +171,100 @@ async fn probe_key_dispatch_under_rail() -> anyhow::Result<()> {
     eprintln!("DBG row0 after H: [{s}]");
     Ok(())
 }
+
+/// `rail: true` 才是"**面板拿到键盘焦点**"的开关（`focusable` 只管面板内 button/input 的 Tab 焦点）。
+///
+/// 这条测试钉的是用户实际踩到的坑：面板开出来按键却落在编辑器里 —— 因为插件只写了
+/// `focusable: true`。两个变体对照，把语义差别写成可执行的断言。
+fn keyed_panel_plugin(dir: &std::path::Path, rail: bool) -> std::path::PathBuf {
+    let p = dir.join(format!("keyed_panel_{rail}.js"));
+    std::fs::write(
+        &p,
+        format!(
+            r#"
+            helix.register_command("open-keyed", () => {{
+                helix.open_panel({{
+                    side: "right",
+                    size: 24,
+                    rail: {rail},
+                    focusable: true,
+                    render: () => ["panel-row"],
+                    onKey: (k) => {{ helix.echo("PANELKEY:" + (k && k.name)); return "handled"; }},
+                }});
+            }});
+            "#
+        ),
+    )
+    .unwrap();
+    p
+}
+
+async fn press_and_get_status(rail: bool) -> anyhow::Result<String> {
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let p = keyed_panel_plugin(dir.path(), rail);
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", p.display())).await?;
+    pump(&mut app, ":open-keyed<ret>").await?;
+    // 面板已开：按一个普通键，看它落到哪
+    pump(&mut app, "a").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    Ok(status.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rail_panel_receives_keys() -> anyhow::Result<()> {
+    let status = press_and_get_status(true).await?;
+    assert!(
+        status.contains("PANELKEY:a"),
+        "rail 面板应拿到键盘焦点（注册即聚焦）: {status:?}"
+    );
+    Ok(())
+}
+
+/// 不写 `rail` 的面板**也能**拿到按键（打开后它就是活动叶子）—— 之前"面板拿不到焦点"的
+/// 结论是错的（那是屏幕抓取撞上脏格 diff 渲染造成的误判）。`rail` 的额外语义只有两条：
+/// 固定贴边全高、注册即聚焦（且**同侧只能有一个 rail**：注册新的会取掉旧的）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plain_panel_receives_keys_without_being_a_rail() -> anyhow::Result<()> {
+    let status = press_and_get_status(false).await?;
+    assert!(
+        status.contains("PANELKEY:a"),
+        "普通面板打开后即活动叶子，按键应直达 onKey: {status:?}"
+    );
+    Ok(())
+}
+
+/// 事件里打开的面板（`dap-stopped` 那种）是否也能拿到按键 —— 与命令里打开对照。
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_opened_from_event_receives_keys() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "AAA\n")?;
+    let p = dir.path().join("event_panel.js");
+    std::fs::write(
+        &p,
+        r#"
+        helix.on("save", () => {
+            helix.open_panel({
+                side: "right",
+                size: 24,
+                focusable: true,
+                render: () => ["event-panel"],
+                onKey: (k) => { helix.echo("EVENTPANEL:" + (k && k.name)); return "handled"; },
+            });
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().with_file(a, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", p.display())).await?;
+    pump(&mut app, ":w<ret>").await?; // 触发 save → 事件里开面板
+    pump(&mut app, "a").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.to_string().contains("EVENTPANEL:a"),
+        "事件里打开的面板同样应拿到按键: {status:?}"
+    );
+    Ok(())
+}

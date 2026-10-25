@@ -2106,7 +2106,6 @@ name = "helix-dap"
 version = "25.7.1"
 dependencies = [
  "anyhow",
- "futures-executor",
  "futures-util",
  "helix-core",
  "helix-dap-types",

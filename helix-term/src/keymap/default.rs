@@ -231,6 +231,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                     "f" => dap_switch_stack_frame,
                     // sl, sb
                 },
+                "S" => dap_sessions,
                 "e" => dap_enable_exceptions,
                 "E" => dap_disable_exceptions,
             },

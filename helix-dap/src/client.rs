@@ -17,6 +17,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
+    sync::Arc,
 };
 use tokio::{
     io::{AsyncBufRead, AsyncWrite, BufReader, BufWriter},
@@ -31,7 +32,7 @@ pub struct Client {
     id: DebugAdapterId,
     _process: Option<Child>,
     server_tx: UnboundedSender<Payload>,
-    request_counter: AtomicU64,
+    request_counter: Arc<AtomicU64>,
     connection_type: Option<ConnectionType>,
     starting_request_args: Option<Value>,
     /// The socket address of the debugger, if using TCP transport.
@@ -83,7 +84,7 @@ impl Client {
             id,
             _process: process,
             server_tx,
-            request_counter: AtomicU64::new(0),
+            request_counter: Arc::new(AtomicU64::new(0)),
             caps: None,
             connection_type: None,
             starting_request_args: None,
@@ -214,7 +215,14 @@ impl Client {
                         .send((id, Payload::Event(ev)))
                         .expect("Failed to send");
                 }
-                Payload::Response(_) => unreachable!(),
+                Payload::Response(res) => {
+                    // 防御:transport 已经不再转发"无主响应",这里跳过而不是 `unreachable!()`
+                    // —— 前者丢一条消息,后者掉整条事件流。
+                    log::warn!(
+                        "Dropping orphan DAP response for request #{}",
+                        res.request_seq
+                    );
+                }
                 Payload::Request(req) => {
                     client_tx
                         .send((id, Payload::Request(req)))
@@ -250,6 +258,19 @@ impl Client {
         self.thread_id = None;
     }
 
+    /// 请求用的**廉价句柄**：`Clone` 一次 = 两个 `Arc`/`Rc` 克隆 + 一个 `Copy` 的 id。
+    ///
+    /// 为什么要它：命令层是**同步**的，而 `Client` 里带着子进程与可变会话状态，搬不进
+    /// `jobs.callback` 的异步任务；句柄只带 `server_tx` + 序号计数器，`'static` 且 `Clone`，
+    /// 于是"请求丢后台、结果回主线程"成为可能（`call` 的 20s 超时语义完全不变）。
+    pub fn handle(&self) -> DapHandle {
+        DapHandle {
+            id: self.id,
+            server_tx: self.server_tx.clone(),
+            request_counter: Arc::clone(&self.request_counter),
+        }
+    }
+
     /// Execute a RPC request on the debugger.
     pub fn call<R: helix_dap_types::Request>(
         &self,
@@ -258,44 +279,7 @@ impl Client {
     where
         R::Arguments: serde::Serialize,
     {
-        let server_tx = self.server_tx.clone();
-        let id = self.next_request_id();
-
-        async move {
-            use std::time::Duration;
-            use tokio::time::timeout;
-
-            let arguments = Some(serde_json::to_value(arguments)?);
-
-            let (callback_tx, mut callback_rx) = channel(1);
-
-            let req = Request {
-                back_ch: Some(callback_tx),
-                seq: id,
-                command: R::COMMAND.to_string(),
-                arguments,
-            };
-
-            server_tx
-                .send(Payload::Request(req))
-                .map_err(|e| Error::Other(e.into()))?;
-
-            // TODO: specifiable timeout, delay other calls until initialize success
-            let response = timeout(Duration::from_secs(20), callback_rx.recv())
-                .await
-                .map_err(|_| Error::Timeout(id))? // return Timeout
-                .ok_or(Error::StreamClosed)??;
-
-            if !response.success {
-                let message = response
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| "DAP request failed".to_string());
-                return Err(Error::Other(anyhow!(message)));
-            }
-
-            Ok(response.body.unwrap_or_default())
-        }
+        call_impl::<R>(self.server_tx.clone(), self.next_request_id(), arguments)
     }
 
     pub async fn request<R: helix_dap_types::Request>(
@@ -305,10 +289,7 @@ impl Client {
     where
         R::Arguments: serde::Serialize,
     {
-        // a future that resolves into the response
-        let json = self.call::<R>(params).await?;
-        let response = serde_json::from_value(json)?;
-        Ok(response)
+        request_impl::<R>(self.server_tx.clone(), self.next_request_id(), params).await
     }
 
     pub fn reply(
@@ -317,33 +298,12 @@ impl Client {
         command: &str,
         result: core::result::Result<Value, Error>,
     ) -> impl Future<Output = Result<()>> {
-        let server_tx = self.server_tx.clone();
-        let command = command.to_string();
-
-        async move {
-            let response = match result {
-                Ok(result) => Response {
-                    request_seq,
-                    command,
-                    success: true,
-                    message: None,
-                    body: Some(result),
-                },
-                Err(error) => Response {
-                    request_seq,
-                    command,
-                    success: false,
-                    message: Some(error.to_string()),
-                    body: None,
-                },
-            };
-
-            server_tx
-                .send(Payload::Response(response))
-                .map_err(|e| Error::Other(e.into()))?;
-
-            Ok(())
-        }
+        reply_impl(
+            self.server_tx.clone(),
+            request_seq,
+            command.to_string(),
+            result,
+        )
     }
 
     pub fn capabilities(&self) -> &DebuggerCapabilities {
@@ -369,22 +329,7 @@ impl Client {
     }
 
     pub async fn initialize(&mut self, adapter_id: String) -> Result<()> {
-        let args = requests::InitializeArguments {
-            client_id: Some("hx".to_owned()),
-            client_name: Some("helix".to_owned()),
-            adapter_id,
-            locale: Some("en-us".to_owned()),
-            lines_start_at_one: Some(true),
-            columns_start_at_one: Some(true),
-            path_format: Some("path".to_owned()),
-            supports_variable_type: Some(true),
-            supports_variable_paging: Some(false),
-            supports_run_in_terminal_request: Some(true),
-            supports_memory_references: Some(false),
-            supports_progress_reporting: Some(true),
-            supports_invalidated_event: Some(false),
-        };
-
+        let args = initialize_arguments(&adapter_id);
         let response = self.request::<requests::Initialize>(args).await?;
         self.caps = Some(response);
 
@@ -577,4 +522,317 @@ impl Client {
             .get(&self.thread_id?)?
             .get(self.active_frame?)
     }
+}
+
+/// `initialize` 请求的载荷（`Client::initialize` 与"后台起会话"路径**共用**这一份）。
+///
+/// 关键字段：`lines_start_at_one` / `columns_start_at_one` —— 它们决定断点行号能不能 +1，
+/// 以及 `DapBreakpoint.line` 回填时要不要 -1（`BreakpointStore::apply_response`）。
+/// 线上名是 `linesStartAt1`（DAP 规范），与 Rust 字段名不同。
+pub fn initialize_arguments(adapter_id: &str) -> requests::InitializeArguments {
+    requests::InitializeArguments {
+        client_id: Some("hx".to_owned()),
+        client_name: Some("helix".to_owned()),
+        adapter_id: adapter_id.to_owned(),
+        locale: Some("en-us".to_owned()),
+        lines_start_at_one: Some(true),
+        columns_start_at_one: Some(true),
+        path_format: Some("path".to_owned()),
+        supports_variable_type: Some(true),
+        supports_variable_paging: Some(false),
+        supports_run_in_terminal_request: Some(true),
+        supports_memory_references: Some(false),
+        supports_progress_reporting: Some(true),
+        supports_invalidated_event: Some(false),
+    }
+}
+
+/// 请求句柄（见 [`Client::handle`]）。
+#[derive(Clone)]
+pub struct DapHandle {
+    id: DebugAdapterId,
+    server_tx: UnboundedSender<Payload>,
+    request_counter: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for DapHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DapHandle").field("id", &self.id).finish()
+    }
+}
+
+impl DapHandle {
+    pub fn id(&self) -> DebugAdapterId {
+        self.id
+    }
+
+    fn next_request_id(&self) -> u64 {
+        self.request_counter.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// 与 [`Client::call`] 同一实现（同一个 `server_tx`，序号共享）。
+    pub fn call<R: helix_dap_types::Request>(
+        &self,
+        arguments: R::Arguments,
+    ) -> impl Future<Output = Result<Value>>
+    where
+        R::Arguments: serde::Serialize,
+    {
+        call_impl::<R>(self.server_tx.clone(), self.next_request_id(), arguments)
+    }
+
+    pub async fn request<R: helix_dap_types::Request>(
+        &self,
+        params: R::Arguments,
+    ) -> Result<R::Result>
+    where
+        R::Arguments: serde::Serialize,
+    {
+        request_impl::<R>(self.server_tx.clone(), self.next_request_id(), params).await
+    }
+
+    /// 任意 DAP 请求（命令 + 原始参数）：`helix.dap.request` 的逃生口。
+    ///
+    /// 原理上就是 `call_impl` 的无类型版 —— 新能力不必每次改核心。代价是对 adapter 乱回
+    /// 零容错，所以文档里标注为**进阶用法**。
+    pub fn call_raw(
+        &self,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> impl Future<Output = Result<Value>> {
+        call_raw_impl(
+            self.server_tx.clone(),
+            self.next_request_id(),
+            command.to_string(),
+            arguments,
+        )
+    }
+
+    /// 只把请求塞进发送队列、**不等回包**（fire-and-forget，非阻塞）。
+    ///
+    /// 用途：`pause` / `continue` 这类"结果由 `stopped`/`continued` 事件告知"的请求 ——
+    /// 以前为了拿一个没人看的响应，在 UI 线程上 `block_on` 等 adapter 回包。
+    /// 回包会被 transport 当作"无主响应"丢掉（见 `transport.rs`）。
+    pub fn send_only<R: helix_dap_types::Request>(&self, arguments: R::Arguments) -> Result<()>
+    where
+        R::Arguments: serde::Serialize,
+    {
+        let req = Request {
+            back_ch: None,
+            seq: self.next_request_id(),
+            command: R::COMMAND.to_string(),
+            arguments: Some(serde_json::to_value(arguments)?),
+        };
+        self.server_tx
+            .send(Payload::Request(req))
+            .map_err(|e| Error::Other(e.into()))
+    }
+
+    /// 取作用域（后台任务用句柄版；与 [`Client::scopes`] 同一载荷）。
+    pub async fn scopes(&self, frame_id: usize) -> Result<Vec<Scope>> {
+        let response = self
+            .request::<requests::Scopes>(requests::ScopesArguments { frame_id })
+            .await?;
+        Ok(response.scopes)
+    }
+
+    /// 取变量（后台任务用句柄版）。
+    pub async fn variables(&self, variables_reference: usize) -> Result<Vec<Variable>> {
+        let args = requests::VariablesArguments {
+            variables_reference,
+            filter: None,
+            start: None,
+            count: None,
+            format: None,
+        };
+        let response = self.request::<requests::Variables>(args).await?;
+        Ok(response.variables)
+    }
+
+    /// 取线程栈帧（后台任务用句柄版）。
+    pub async fn stack_trace(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(Vec<StackFrame>, Option<usize>)> {
+        let args = requests::StackTraceArguments {
+            thread_id,
+            start_frame: None,
+            levels: None,
+            format: None,
+        };
+        let response = self.request::<requests::StackTrace>(args).await?;
+        Ok((response.stack_frames, response.total_frames))
+    }
+
+    /// 设断点（与 [`Client::set_breakpoints`] 同一载荷；后台任务用句柄版）。
+    pub async fn set_breakpoints(
+        &self,
+        file: PathBuf,
+        breakpoints: Vec<SourceBreakpoint>,
+    ) -> Result<Option<Vec<Breakpoint>>> {
+        let args = requests::SetBreakpointsArguments {
+            source: Source {
+                path: Some(file),
+                name: None,
+                source_reference: None,
+                presentation_hint: None,
+                origin: None,
+                sources: None,
+                adapter_data: None,
+                checksums: None,
+            },
+            breakpoints: Some(breakpoints),
+            source_modified: Some(false),
+        };
+
+        let response = self.request::<requests::SetBreakpoints>(args).await?;
+
+        Ok(response.breakpoints)
+    }
+
+    /// 回一个反向请求（`runInTerminal` 之类）。
+    pub fn reply(
+        &self,
+        request_seq: u64,
+        command: &str,
+        result: core::result::Result<Value, Error>,
+    ) -> impl Future<Output = Result<()>> {
+        reply_impl(
+            self.server_tx.clone(),
+            request_seq,
+            command.to_string(),
+            result,
+        )
+    }
+}
+
+/// `Client::call` / `DapHandle::call` 的**唯一实现**。
+///
+/// 只吃自有的值（`server_tx`/`seq`）⇒ 返回的 future 不借用 `self`，因此可以 `'static` 地
+/// 丢进 `jobs.callback`（命令层去 `block_on` 的关键；见 `helix-term/src/commands/dap.rs`）。
+async fn call_impl<R: helix_dap_types::Request>(
+    server_tx: UnboundedSender<Payload>,
+    id: u64,
+    arguments: R::Arguments,
+) -> Result<Value>
+where
+    R::Arguments: serde::Serialize,
+{
+    {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let arguments = Some(serde_json::to_value(arguments)?);
+
+        let (callback_tx, mut callback_rx) = channel(1);
+
+        let req = Request {
+            back_ch: Some(callback_tx),
+            seq: id,
+            command: R::COMMAND.to_string(),
+            arguments,
+        };
+
+        server_tx
+            .send(Payload::Request(req))
+            .map_err(|e| Error::Other(e.into()))?;
+
+        // TODO: specifiable timeout, delay other calls until initialize success
+        let response = timeout(Duration::from_secs(20), callback_rx.recv())
+            .await
+            .map_err(|_| Error::Timeout(id))? // return Timeout
+            .ok_or(Error::StreamClosed)??;
+
+        if !response.success {
+            let message = response
+                .message
+                .clone()
+                .unwrap_or_else(|| "DAP request failed".to_string());
+            return Err(Error::Other(anyhow!(message)));
+        }
+
+        Ok(response.body.unwrap_or_default())
+    }
+}
+
+async fn request_impl<R: helix_dap_types::Request>(
+    server_tx: UnboundedSender<Payload>,
+    id: u64,
+    params: R::Arguments,
+) -> Result<R::Result>
+where
+    R::Arguments: serde::Serialize,
+{
+    let json = call_impl::<R>(server_tx, id, params).await?;
+    let response = serde_json::from_value(json)?;
+    Ok(response)
+}
+
+async fn reply_impl(
+    server_tx: UnboundedSender<Payload>,
+    request_seq: u64,
+    command: String,
+    result: core::result::Result<Value, Error>,
+) -> Result<()> {
+    {
+        let response = match result {
+            Ok(result) => Response {
+                request_seq,
+                command,
+                success: true,
+                message: None,
+                body: Some(result),
+            },
+            Err(error) => Response {
+                request_seq,
+                command,
+                success: false,
+                message: Some(error.to_string()),
+                body: None,
+            },
+        };
+
+        server_tx
+            .send(Payload::Response(response))
+            .map_err(|e| Error::Other(e.into()))?;
+
+        Ok(())
+    }
+}
+
+/// `DapHandle::call_raw` 的实现（无类型请求；与 `call_impl` 同一套回包/超时语义）。
+async fn call_raw_impl(
+    server_tx: UnboundedSender<Payload>,
+    id: u64,
+    command: String,
+    arguments: Option<Value>,
+) -> Result<Value> {
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    let (callback_tx, mut callback_rx) = channel(1);
+    let req = Request {
+        back_ch: Some(callback_tx),
+        seq: id,
+        command,
+        arguments,
+    };
+    server_tx
+        .send(Payload::Request(req))
+        .map_err(|e| Error::Other(e.into()))?;
+
+    let response = timeout(Duration::from_secs(20), callback_rx.recv())
+        .await
+        .map_err(|_| Error::Timeout(id))?
+        .ok_or(Error::StreamClosed)??;
+
+    if !response.success {
+        let message = response
+            .message
+            .clone()
+            .unwrap_or_else(|| "DAP request failed".to_string());
+        return Err(Error::Other(anyhow!(message)));
+    }
+
+    Ok(response.body.unwrap_or_default())
 }

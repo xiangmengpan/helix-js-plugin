@@ -475,10 +475,23 @@ impl Application {
             Some(host) => host.take_lsp_requests(),
             None => Vec::new(), // 没有宿主 ⇒ 没有 JS 侧请求可泵
         };
+        // DAP：快照每轮刷一次（几十条数据），再取走待派发的 `helix.dap.*` 请求。
+        // 快照必须先刷：插件在 `dap-stopped` 事件里读 `sessions()` 要看到新状态。
+        crate::commands::dap::refresh_dap_snapshots(&self.editor, self.js_host.as_deref_mut());
+        let dap_requests = match self.js_host.as_deref_mut() {
+            Some(host) => helix_js::dap::take_requests(host.state()),
+            None => helix_js::dap::take_requests(&helix_js::host::state_handle_or_init()),
+        };
+        // 会话事件（`dap-*`）在这里统一发给插件：`Editor` 不依赖 helix-js，只排队。
+        let dap_events = std::mem::take(&mut self.editor.pending_dap_events);
+        for (name, payload) in &dap_events {
+            helix_js::dap::emit_event(name, payload);
+        }
         if term_events.is_empty()
             && async_events.is_empty()
             && lsp_results.is_empty()
             && lsp_requests.is_empty()
+            && dap_requests.is_empty()
         {
             // 仅 fs-watcher 事件:resolve 内部 drain(空则 no-op);回调可能编辑/echo
             // D-2:resolve = 进 JS ⇒ 有宿主走泵入口
@@ -595,6 +608,11 @@ impl Application {
         for req in lsp_requests {
             handle_lsp_request(&self.editor, req);
         }
+        // 段 C：DAP 请求 → 变成"后台任务 + 回主线程兑现"（`dispatch_dap_request` 只入 `jobs`，
+        // 不阻塞：真正的请求在 tokio 任务里跑，回主线程后先改状态再兑现 Promise）。
+        for req in dap_requests {
+            crate::commands::dap::dispatch_dap_request(&mut self.editor, &mut self.jobs, req);
+        }
         // 泵 promise job 队列（.then/.catch/await 恢复）；空队列即时返回。
         // 放 resolve 之后：promise settle 只是入队，须在 take_messages/take_edits 前泵出，
         // 否则 .then 里 echo/编辑的消息要等下一帧且早退路径不 drain，会滞留。
@@ -606,6 +624,9 @@ impl Application {
         if let Err(err) = pumped {
             log::error!("promise job pump: {err}");
         }
+        // DAP 动作队列：命令与 Picker 回调只"排队"，这里（唯一同时握有 `&mut Editor` 与
+        // `&mut Jobs` 的地方）把它们变成异步任务。放 `pump_jobs` 之前：新入队的 job 同一帧就跑。
+        crate::commands::dap::dispatch_dap_intents(&mut self.editor, &mut self.jobs);
         let cursor_reqs = helix_js::take_cursor_requests();
         if !cursor_reqs.is_empty() {
             if let Err(err) =

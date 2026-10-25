@@ -148,6 +148,10 @@ pub(crate) const CB_HOOK_BUFFER_ICON: u8 = 11;
 pub(crate) const CB_HOOK_COMPLETION_ICON: u8 = 12;
 pub(crate) const CB_HOOK_COMPLETION_RENDER: u8 = 13;
 pub(crate) const CB_HOOK_KEYMAP_HINT: u8 = 14;
+/// 外部状态栏段(`helix.register_statusline_segment`)：**按名字**的回调(同 `CB_NODE`)。
+pub(crate) const CB_HOOK_STATUSLINE_SEGMENT: u8 = 15;
+/// DAP Promise（`helix.dap.*`）：按 id 的回调，兑现时按属主跑 `.then/.catch`。
+pub(crate) const CB_DAP: u8 = 16;
 
 impl CbKey {
     pub(crate) fn kind(&self) -> u8 {
@@ -190,6 +194,17 @@ impl CbKey {
     }
     pub(crate) fn hook(kind: u8) -> Self {
         Self::bare(kind, 0)
+    }
+    pub(crate) fn dap_promise(id: u64) -> Self {
+        Self::bare(CB_DAP, id)
+    }
+    /// 外部状态栏段：名字进 `name`(注册/卸载路径，一次小分配可忽略)。
+    pub(crate) fn statusline_segment(name: &str) -> Self {
+        Self {
+            kind: CB_HOOK_STATUSLINE_SEGMENT,
+            id: 0,
+            name: name.to_string(),
+        }
     }
     pub(crate) fn node(view_id: u64, node_id: &str) -> Self {
         Self {

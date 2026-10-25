@@ -1,6 +1,6 @@
 use crate::{registry::DebugAdapterId, Error, Result};
 use anyhow::Context;
-use log::{error, info, warn};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -219,8 +219,13 @@ impl Transport {
                         ),
                     }
                     None => {
-                        warn!("Response to nonexistent request #{}", res.request_seq);
-                        client_tx.send(Payload::Response(res)).expect("Failed to send");
+                        // 没有回包消费方 = fire-and-forget 请求（`DapHandle::send_only`）。
+                        // 以前这里会把它转成 `Payload::Response` 往前推，而 `Client::recv` 里
+                        // 那一支是 `unreachable!()` ⇒ 直接 panic 掉事件流。丢弃才是对的。
+                        debug!(
+                            "Dropping response to fire-and-forget request #{}",
+                            res.request_seq
+                        );
                     }
                 }
 

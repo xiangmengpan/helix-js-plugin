@@ -66,7 +66,7 @@
 
 ### 插件配置
 
-`helix.define_config(name, {key: {type, default, doc}})`(脚本加载时声明)、`helix.get_config(name)`(默认值 + 用户 `[plugins.<name>]` 覆盖,只读)、`helix.get_config_docs(name)`(键/类型/默认值/说明,自建设置面板用)。类型只有 `boolean`/`number`/`string`/`enum`;写错回退默认值并报错,**拼错的键也报错**(不静默)。
+`helix.define_config(name, {key: {type, default, doc}})`(脚本加载时声明)、`helix.get_config(name)`(默认值 + 用户 `[plugins.<name>]` 覆盖,只读)、`helix.get_config_docs(name)`(键/类型/默认值/说明,自建设置面板用)。类型只有 `boolean`/`number`/`string`/`enum`/`array`(`array` 可带 `items: "boolean"|"number"|"string"` 逐元素校验,第几项/实际类型会进错误串);写错回退默认值并报错,**拼错的键也报错**(不静默)。
 
 - 优点:声明式 + 类型校验;插件 load / reload / 懒加载后自动重建(装完插件不会读到 null);用户覆盖只走 `config.toml`,不用改插件。
 - 局限:只支持标量(无嵌套对象/数组);只读、无写入 API(改了走 `:config-reload`);`[plugins]` 顶层键暂无读取入口。
@@ -108,6 +108,26 @@
 
 - 优点:声明式树 + 焦点;input 引擎权威;渲染脏格 diff;补全/组件外观全可定制且回退安全。
 - 局限:scroll O(内容);无树内点击命中;面板无节点焦点;completion 行钩子每帧每行(勿跑重逻辑)。
+
+#### 状态栏的外部段(`register_statusline_segment`)
+
+`statusline` 插件的段是**闭集**(它自己的 `SEGMENTS` 表)，`set_statusline` 的**追加模式**又会被
+`replace: true` 短路 ⇒ 其他插件本来无法往状态栏加段。现在两道 API 把这个口子做成正式契约：
+
+```js
+// 注册方（比如 dapui）
+helix.register_statusline_segment("dap", (ctx) => (dapRunning ? { text: "#1 ⏸", style: "error" } : null));
+// 用户配置：[plugins.statusline] right = ["position", "dap"]
+
+// 渲染方（statusline 插件内部，由它自己调）
+helix.statusline_segment("dap", ctx);   // → 段函数结果，原样当段用
+```
+
+- **内置段名优先**：与内置段同名时内置实现生效（核心不做命名空间隔离）；
+- **名字未注册 ⇒ 抛错**（渲染方据此显示 `!段名`，让拼错可见）；
+- **段函数抛错 ⇒ 返回 `null`**：状态栏每帧渲染，一个插件的 bug 不能把整条拖没；
+- 属主按**注册方**绑，`:plugin-unload` 时自动从段表里摘掉。
+
 
 → 详细见 [`api/ui.md`](api/ui.md)
 
@@ -335,8 +355,11 @@ helix.write_file_async(path, content)           // Promise
 helix.stat_async(path)                          // Promise → {is_dir, size, mtime}
 helix.glob_async(pattern)                       // Promise → paths[]
 helix.read_tree(path, { depth? })               // Promise → [{name, is_dir, path}](递归)
+helix.dap.*（调试，见下「DAP」段）
 helix.set_statusline(fn, opts?)                 // fn(ctx) -> string | StatuslinePart[] | null
                                                // opts = { replace?: true, zones?: [左,中,右] }
+helix.register_statusline_segment(name, fn|null) // 外部状态栏段(段名写进 statusline 的 left/center/right 列表即生效)
+helix.statusline_segment(name, ctx)             // 渲染方取外部段;未注册 ⇒ 抛错,段函数抛错 ⇒ null
 helix.set_buffer_icon(fn)                       // fn(path) -> string|null
 helix.set_completion_icon(fn)                   // fn(kindNum) -> 图标字符(kind 列)
 helix.set_completion_render(fn)                 // fn(ctx) -> 行内容数组|组件树(补全菜单行钩子)
@@ -377,14 +400,17 @@ helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
 helix.fuzzy.*   drop, run, session
 helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
+helix.dap.*   attach, clear_breakpoints, configs, continue, eval, launch, list_breakpoints, next, pause, remove_breakpoint, request, restart, scopes, sessions, set_breakpoint, set_exception_breakpoints, stack_frames, step_in, step_out, terminate, threads, variables
 helix.server.*   install, list, remove, rows, search, status, task, update
 helix.draw.*   braille, done, fill, hline, pop, push_clip, push_scroll, rect, text, vline
 helix.text.*   pad, truncate, width
 
-事件(21 个):
+事件(30 个):
   buffer-close, buffer-open, component-event, cursor-move, cwd-change
   doc-change, layout-change, lsp-diagnostics, mode-change
   pane-mode-change, save, selection-change, startup
+  dap-breakpoint, dap-continued, dap-exited, dap-output, dap-progress
+  dap-session, dap-stopped, dap-terminated, dap-thread
   term-close, term-exit, term-key, term-mode-change
   term-open, term-resize, term-title, theme-change
 ```

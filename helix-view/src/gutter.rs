@@ -263,12 +263,17 @@ pub fn breakpoints<'doc>(
     let info = theme.get("info");
     let breakpoint_style = theme.get("ui.debug.breakpoint");
 
-    let breakpoints = doc.path().and_then(|path| editor.breakpoints.get(path));
-
-    let breakpoints = match breakpoints {
-        Some(breakpoints) => breakpoints,
-        None => return Box::new(move |_, _, _, _| None),
+    // 断点真身在 `BreakpointStore`（`helix-dap`）：这里取一份**快照**，gutter 只读。
+    // 每帧拷一次是刻意的 —— 渲染期不能持有 `&Editor` 之外的可变借用，而断点表会被
+    // adapter 的 `breakpoint` 事件改。断点数量是几十级别，拷贝成本可忽略。
+    let breakpoints = match doc.path() {
+        Some(path) => editor.breakpoints.for_path(path),
+        None => Vec::new(),
     };
+
+    if breakpoints.is_empty() {
+        return Box::new(move |_, _, _, _| None);
+    }
 
     Box::new(
         move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {

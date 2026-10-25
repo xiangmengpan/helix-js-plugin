@@ -1261,17 +1261,33 @@ impl Default for SearchConfig {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Breakpoint {
-    pub id: Option<usize>,
-    pub verified: bool,
-    pub message: Option<String>,
+/// 断点类型**只有一份**：`helix_dap::breakpoints::Breakpoint`。
+///
+/// 这里只做 re-export（而不是本地再定义一遍）—— 之前 `Editor.breakpoints` 与本 crate 的
+/// `Breakpoint` 两张表搞出了"谁推 setBreakpoints / 谁回填 verified"的两处真相。
+pub use helix_dap::breakpoints::Breakpoint;
 
-    pub line: usize,
-    pub column: Option<usize>,
-    pub condition: Option<String>,
-    pub hit_condition: Option<String>,
-    pub log_message: Option<String>,
+/// 需要异步请求的 DAP 动作（见 [`Editor::dap_intents`]）。
+///
+/// 只放"命令/Picker 期间产生、必须等 adapter 回包"的动作；能用
+/// `jobs.callback(async { … })` 直接派发的不进这里。
+#[derive(Debug, Clone)]
+pub enum DapIntent {
+    /// 把某个文件的断点推给 adapter 并回填 `verified/id/message`
+    SyncBreakpoints(std::path::PathBuf),
+    /// 一条"标准请求"：`kind` 用 `helix.dap.*` 的成员名（`continue`/`next`/`step_in`/
+    /// `terminate`/`restart`/`pause`…），`params` 同 API 参数形状。
+    ///
+    /// 这样命令层（键位命令 + `:` 命令）都不必碰 `Jobs`，派发侧直接复用 `helix.dap.*`
+    /// 那条路径 —— 一套实现，两条入口。
+    Request {
+        kind: String,
+        params: serde_json::Value,
+    },
+    /// 切换当前线程：拉栈帧 + 跳第一个帧
+    SwitchThread(helix_dap::ThreadId),
+    /// 变量视图：拉 scopes + variables 后开弹层
+    Variables { frame_id: usize },
 }
 
 use futures_util::stream::{Flatten, Once};
@@ -1301,7 +1317,16 @@ pub struct Editor {
     pub diff_providers: DiffProviderRegistry,
 
     pub debug_adapters: dap::registry::Registry,
-    pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
+    /// 待派发的 DAP 动作（命令层与 Picker 回调只"排队"，由事件循环统一变成异步任务）。
+    ///
+    /// 为什么需要队列：命令与 Picker 回调都是**同步**的，手上只有 `&mut Editor`；
+    /// DAP 请求必须异步（不能 `block_on` 卡 UI）。唯一同时握有 `&mut Editor` 与 `&mut Jobs`
+    /// 的地方是事件循环的 `pump_term_events`，所以"排队 → 那边派发"是唯一不引入新债的接法。
+    pub dap_intents: Vec<DapIntent>,
+    /// 待发给 JS 的 DAP 事件（`(事件名, JSON payload)`）。`Editor` 不依赖 `helix-js`，
+    /// 所以这里只排队，由 `application.rs::pump_term_events` 交给 `helix_js::dap::emit_event`。
+    pub pending_dap_events: Vec<(String, String)>,
+    pub breakpoints: helix_dap::breakpoints::BreakpointStore,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1453,7 +1478,9 @@ impl Editor {
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
-            breakpoints: HashMap::new(),
+            breakpoints: helix_dap::breakpoints::BreakpointStore::new(),
+            dap_intents: Vec::new(),
+            pending_dap_events: Vec::new(),
             syn_loader,
             theme_loader,
             last_theme: None,
@@ -2578,6 +2605,12 @@ impl Editor {
             doc.set_selection(view.id, selection);
             doc.restore_cursor = false;
         }
+    }
+
+    /// 记一个待发给插件的事件（`dap-*`）。由 `application.rs` 每帧冲刷。
+    pub fn emit_dap_event(&mut self, name: &str, payload: serde_json::Value) {
+        self.pending_dap_events
+            .push((name.to_string(), payload.to_string()));
     }
 
     pub fn current_stack_frame(&self) -> Option<&dap::StackFrame> {

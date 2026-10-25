@@ -287,8 +287,28 @@ pub(crate) fn with_statusline_hook_current<T>(f: impl FnOnce(&mut Option<JsValue
     crate::host::with_host_ref_or_init(|h| f(&mut h.statusline_hook.borrow_mut()))
 }
 
+/// DAP Promise 兑现函数表（按宿主隔离）。
+pub(crate) fn with_dap_promises<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut HashMap<u64, ResolvingFunctions>) -> T,
+) -> T {
+    f(&mut st.dap_promises.borrow_mut())
+}
+
 pub(crate) fn set_statusline_replace(st: &HostState, v: bool) {
     st.statusline_replace.set(v);
+}
+
+/// 访问外部状态栏段表：段名 → 渲染函数。
+///
+/// 存在的理由：`statusline` 插件的段是**闭集**(它自己的 `SEGMENTS` 常量)，别的插件无法往
+/// 状态栏加段；而 `set_statusline` 的追加模式会被 `replace: true` 短路(核心全替换分支直接
+/// `return`)。这道口子让"渲染方"(statusline 插件)能按段名拿到"注册方"(dapui 等)的函数。
+pub(crate) fn with_statusline_segments<T>(
+    st: &HostState,
+    f: impl FnOnce(&mut std::collections::HashMap<String, JsValue>) -> T,
+) -> T {
+    f(&mut st.statusline_segments.borrow_mut())
 }
 
 pub fn statusline_replaces(st: &HostState) -> bool {

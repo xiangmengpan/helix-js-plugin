@@ -168,6 +168,21 @@ pub struct HostState {
     /// 状态栏钩子(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
     pub(crate) statusline_hook: RefCell<Option<JsValue>>,
 
+    /// 待派发的 DAP 请求（`helix.dap.*` 的 Promise 已挂起，等 helix-term 派发）
+    pub(crate) dap_requests: RefCell<Vec<crate::dap::DapRequest>>,
+    /// DAP Promise 的兑现函数（id → resolve/reject）
+    pub(crate) dap_promises:
+        RefCell<HashMap<u64, boa_engine::builtins::promise::ResolvingFunctions>>,
+    /// 调试快照缓存（`sessions()` / `list_breakpoints()` / `configs()` 读它们）
+    pub(crate) dap_sessions: RefCell<String>,
+    pub(crate) dap_breakpoints: RefCell<String>,
+    pub(crate) dap_configs: RefCell<String>,
+
+    /// 外部状态栏段:`段名 → 渲染函数`(由 `helix.register_statusline_segment` 注册)。
+    /// 与内置段的关系:**内置优先** —— 段名冲突时 `statusline` 插件用内置实现,
+    /// 核心不对名字空间做隔离(那是渲染方的决定,不是协议的事)。
+    pub(crate) statusline_segments: RefCell<HashMap<String, JsValue>>,
+
     /// 终端回调(1b-3b:原 thread_local `Option<&'static mut …>` + leak)
     pub(crate) terms: RefCell<HashMap<u64, TermCallbacks>>,
 
@@ -313,6 +328,12 @@ impl JsHost {
             completion_render_hook: RefCell::new(None),
             picker_sources: RefCell::new(HashMap::new()),
             statusline_hook: RefCell::new(None),
+            statusline_segments: RefCell::new(HashMap::new()),
+            dap_requests: RefCell::new(Vec::new()),
+            dap_promises: RefCell::new(HashMap::new()),
+            dap_sessions: RefCell::new(String::new()),
+            dap_breakpoints: RefCell::new(String::new()),
+            dap_configs: RefCell::new(String::new()),
             terms: RefCell::new(HashMap::new()),
             term_promises: RefCell::new(HashMap::new()),
             last_export: RefCell::new(None),

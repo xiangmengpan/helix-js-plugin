@@ -738,10 +738,14 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
         text.contains("demo-bin") && text.contains("demob"),
         "两注入配方应可见: {text:?}"
     );
-    // Esc 清搜索回 NORMAL(sel=0=rust-analyzer);内置 7 配方在前 → j×7 到 demo-bin 再标记两件
+    // Esc 清搜索回 NORMAL(sel=0=rust-analyzer);**内置配方在前** → j×(内置数) 到 demo-bin 再标记两件
     // (标记/导航须在 NORMAL 态:字母是命令)
+    //
+    // ⚠️ 这里的 `j` 次数 = 内置配方条数(现在是 8:`lldb-dap` 进内置后加的一条)。
+    // 加/删内置配方时**必须跟着改** —— 否则会标记到别的行,表现为"批量安装只装了一个"。
+    // 条数本身有单测钉住:`server_manager::tests::builtin_specs_all_have_description_and_homepage`。
     pump(&mut app, "<esc>").await?;
-    pump(&mut app, "jjjjjjj").await?; // sel → demo-bin(第 8 行)
+    pump(&mut app, "jjjjjjjj").await?; // sel → demo-bin(内置 8 条之后的第 9 行)
     pump(&mut app, "t").await?; // 标记 demo-bin
     pump(&mut app, "j").await?; // sel → demob
     pump(&mut app, "t").await?; // 标记 demob
