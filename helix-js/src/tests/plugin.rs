@@ -1914,3 +1914,54 @@ fn reset_theme_clears_overrides_but_keeps_owner_table() {
     );
     let _ = crate::unload_plugin(&st, "themed2");
 }
+
+/// `set_theme` 是**合并**语义：两个插件各注册自己的 scope，互相不能抹掉对方。
+///
+/// 这条钉的是一个真实事故：statusline 的 `corners="powerline"` 按模式懒注册
+/// `statusline.cap.<mode>`，在"整体替换"语义下切模式就把前一个模式（以及**其它插件**）
+/// 的主题覆盖一起抹掉 —— 表现为端帽失去颜色。
+#[test]
+fn set_theme_merges_across_plugins() {
+    let mut host = crate::host::JsHost::new();
+    host.load_script_named(
+        "pa.js",
+        r##"helix.plugin("pa", { permissions: {} }); helix.set_theme({ "pa.a": "red" });"##,
+    )
+    .expect("a 应能加载");
+    host.load_script_named(
+        "pb.js",
+        r##"helix.plugin("pb", { permissions: {} }); helix.set_theme({ "pb.b": "blue" });"##,
+    )
+    .expect("b 应能加载");
+    let st = host.state();
+    assert!(
+        crate::state::with_theme_overrides(st, |o| o.contains_key("pa.a")),
+        "后注册的插件不能抹掉先注册的 scope"
+    );
+    assert!(crate::state::with_theme_overrides(st, |o| o.contains_key("pb.b")));
+    // 属主各归各（卸载时才能各摘各的）
+    assert_eq!(
+        crate::state::with_theme_owners(st, |m| m.get("pa.a").cloned()),
+        Some("pa".to_string())
+    );
+    assert_eq!(
+        crate::state::with_theme_owners(st, |m| m.get("pb.b").cloned()),
+        Some("pb".to_string())
+    );
+    // 同一 scope 再设一次 = 单条覆盖（仍不碰别人）
+    // 注意：`st` 借住 host ⇒ 要再 load 得先把它放掉（用块作用域重取）
+    let st2 = std::rc::Rc::clone(host.state_rc());
+    host.load_script_named(
+        "pa2.js",
+        r##"helix.plugin("pa", { permissions: {} }); helix.set_theme({ "pa.a": "green" });"##,
+    )
+    .expect("重复注册应能加载");
+    assert_eq!(
+        crate::state::with_theme_overrides(&st2, |o| o.get("pa.a").and_then(|s| s.fg.clone())),
+        Some("green".to_string())
+    );
+    assert!(
+        crate::state::with_theme_overrides(&st2, |o| o.contains_key("pb.b")),
+        "单条覆盖不应波及他人"
+    );
+}

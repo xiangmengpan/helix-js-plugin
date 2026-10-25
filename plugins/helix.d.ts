@@ -1154,7 +1154,12 @@ interface Helix {
   get_config_docs(name: string): unknown;
 
   // ── 主题 ──
-  set_theme(theme: Record<string, ThemeColor>): void; // scope 级实时覆盖
+  /**
+   * 主题 scope 覆盖（**合并**语义：只改本次给出的 scope，不清掉别的插件/别次调用注册的）。
+   * 传 `{}` 仍表示"清空所有覆盖"（历史用法）；要清空也可以 `reset_theme()`。
+   * 颜色 = palette 名或 `#rrggbb`；modifiers: bold/dim/italic/underline/strikethrough/reversed。
+   */
+  set_theme(theme: Record<string, ThemeColor>): void;
   reset_theme(): void;
   get_style(scope: string): ThemeColor | null;
   theme_info(): unknown;

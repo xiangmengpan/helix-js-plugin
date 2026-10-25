@@ -10,7 +10,7 @@ fn theme_overrides_api() {
     let _ = take_theme_dirty();
     assert!(theme_overrides().is_empty());
 
-    // set_theme：整体替换 + 置脏；字符串 = fg，对象 = {fg, bg, modifiers}
+    // set_theme：**合并** + 置脏；字符串 = fg，对象 = {fg, bg, modifiers}
     load_script(
         r##"
     helix.set_theme({
@@ -35,12 +35,25 @@ fn theme_overrides_api() {
     assert_eq!(win.modifiers, vec!["italic", "bold"]);
     assert!(!ov.contains_key("ui.linenr"), "非字符串非对象值应被忽略");
 
-    // 再次 set_theme：替换而非累积
+    // 再次 set_theme：**合并**而非替换 —— 没提到的 scope 原地不动
+    // （以前这里是整体替换：一个插件调 set_theme 会抹掉别的插件的覆盖，详见 theme.rs 的注释）
     load_script(r#"helix.set_theme({ "error": "blue" });"#).unwrap();
     assert!(take_theme_dirty());
     let ov = theme_overrides();
-    assert_eq!(ov.len(), 1);
-    assert_eq!(ov.get("error").unwrap().fg.as_deref(), Some("blue"));
+    assert_eq!(
+        ov.len(),
+        3,
+        "3 个合法 scope 都应还在（ui.linenr 是非法值，被忽略）: {ov:?}"
+    );
+    assert_eq!(
+        ov.get("error").unwrap().fg.as_deref(),
+        Some("blue"),
+        "同名覆盖生效"
+    );
+    assert!(
+        ov.contains_key("ui.popup") && ov.contains_key("ui.window"),
+        "没提到的 scope 不该被清掉: {ov:?}"
+    );
 
     // 空对象 → 清空覆盖（等价的 reset）
     load_script(r#"helix.set_theme({});"#).unwrap();

@@ -87,7 +87,13 @@ helix.picker.define("my-src", {
 
 ### `helix.set_theme({ scope: color | { fg?, bg?, modifiers? } })`
 
-实时覆盖任意主题 scope(整体替换旧覆盖集)。scope 可用 `ui.*` 或任意语法 scope(如 `keyword`、`string`)。
+实时覆盖任意主题 scope。scope 可用 `ui.*` 或任意语法 scope(如 `keyword`、`string`)。
+
+**合并语义**(2026-10-25 起):只改动本次给出的 scope,**不清掉**别的插件/别的调用注册的覆盖;
+传 **空对象 `{}`** 仍表示"清空所有覆盖"(历史用法)。此前是"整体替换" —— 任何插件调一次
+`set_theme` 都会抹掉其它插件的覆盖,具体事故是 `statusline` 的 `corners="powerline"`:
+它按模式懒注册 `statusline.cap.<mode>`,切模式时把前一个模式的 cap scope 连同别人的一起抹掉
+(表现为端帽失去颜色)。要清空请用 `reset_theme()`,要改单条就只传那一条。
 
 ```js
 helix.set_theme({ "ui.popup": "#ff79c6", "error": "red" });            // 字符串 = fg

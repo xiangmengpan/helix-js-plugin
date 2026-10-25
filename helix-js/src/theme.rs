@@ -98,8 +98,15 @@ fn parse_style_value(
     Ok(out)
 }
 
-/// 设置主题覆盖：scope → 颜色字符串或 { fg, bg, modifiers } 对象，整体替换旧覆盖集并置脏。
-/// 空对象等价清空。非字符串/非对象值忽略（不整体报错——部分非法条目不阻断其余覆盖）。
+/// 设置主题覆盖：scope → 颜色字符串或 { fg, bg, modifiers } 对象。
+///
+/// **合并语义**（2026-10-25 起）：逐 scope 覆盖，**不清掉**本次没提到的 scope。
+/// 以前是"整体替换"，于是任何插件调一次 `set_theme` 都会抹掉别的插件的覆盖 ——
+/// 具体事故是 statusline 的 `corners="powerline"`：它按模式懒注册 `statusline.cap.<mode>`，
+/// 切模式时后一次调用把前一个模式的 cap scope 抹掉（端帽失去颜色），并顺手抹掉其它插件。
+///
+/// 传**空对象** `{}` 仍等价"清空所有覆盖"（历史用法，`set_theme({})` 被当 reset 用）。
+/// 非字符串/非对象值忽略（不整体报错——部分非法条目不阻断其余覆盖）。
 pub(crate) fn js_set_theme(
     _this: &JsValue,
     args: &[JsValue],
@@ -137,8 +144,19 @@ pub(crate) fn js_set_theme(
             }
         });
     }
-    with_theme_overrides(crate::host::host_state(ctx), |o| *o = overrides);
-    mark_theme_dirty(crate::host::host_state(ctx));
+    let st = crate::host::host_state(ctx);
+    if overrides.is_empty() {
+        // 空对象 = 清空（历史兼容：`set_theme({})` 被当 reset 用）
+        with_theme_overrides(st, |o| o.clear());
+    } else {
+        // 合并：只改本次给出的 scope，其它插件的覆盖原地不动
+        with_theme_overrides(st, |o| {
+            for (scope, style) in overrides {
+                o.insert(scope, style);
+            }
+        });
+    }
+    mark_theme_dirty(st);
     Ok(JsValue::undefined())
 }
 
