@@ -1840,3 +1840,77 @@ fn real_dapui_plugin_loads_in_engine() {
     // 没注册状态栏钩子（dapui 不接管整条状态栏）⇒ 这里应为 None
     assert!(parts.is_none(), "dapui 不该接管整条状态栏");
 }
+
+/// 主题 scope 的**回收**：`set_theme` 注册的 scope 要按属主记住，卸载插件时一起摘掉。
+///
+/// 这条盯的是 dapui/statusline 这类"派生 scope"（statusline 的 `statusline.cap.<mode>`
+/// 就是运行时算出来再 `set_theme` 注册的）：如果属主没记或卸载没摘，它们会永久留在覆盖表里，
+/// 换主题后还盖着旧颜色。
+#[test]
+fn unload_plugin_removes_its_theme_scopes() {
+    let mut host = crate::host::JsHost::new();
+    host.load_script_named(
+        "themed.js",
+        r##"
+        helix.plugin("themed", { permissions: {} });
+        helix.set_theme({ "themed.a": { fg: "#ffffff", bg: "#000000" } });
+        "##,
+    )
+    .expect("插件应能加载");
+
+    let st = host.state();
+    assert!(
+        crate::state::with_theme_overrides(st, |o| o.contains_key("themed.a")),
+        "set_theme 应写入覆盖表"
+    );
+    assert_eq!(
+        crate::state::with_theme_owners(st, |m| m.get("themed.a").cloned()),
+        Some("themed".to_string()),
+        "覆盖表要记属主（否则卸载摘不掉）"
+    );
+
+    let report = crate::unload_plugin(st, "themed");
+    assert!(report.themes >= 1, "卸载报告应计入 scope 数: {report:?}");
+    assert!(
+        !crate::state::with_theme_overrides(st, |o| o.contains_key("themed.a")),
+        "卸载后覆盖表不该残留"
+    );
+    assert!(
+        !crate::state::with_theme_owners(st, |m| m.contains_key("themed.a")),
+        "卸载后属主表也要清（否则 orphan 清理永远看不见它）"
+    );
+}
+
+/// 换主题走 `reset_theme()` = **整体清空覆盖**，所以"换主题后残留旧颜色"不可能。
+///
+/// 注：`reset_theme()` / `theme_overrides()` 走的是**当前宿主**（`_current` 访问器），
+/// 所以这条测试用默认宿主 + `TEST_LOCK` 串行（私有宿主看不到它的效果）。
+#[test]
+fn reset_theme_clears_overrides_but_keeps_owner_table() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let st = crate::host::state_handle_or_init();
+    load_script(
+        r##"
+        helix.plugin("themed2", { permissions: {} });
+        helix.set_theme({ "themed2.a": "red" });
+        "##,
+    )
+    .expect("插件应能加载");
+    assert!(
+        crate::state::with_theme_overrides(&st, |o| o.contains_key("themed2.a")),
+        "前提：覆盖已写入"
+    );
+
+    crate::theme::reset_theme();
+    assert!(
+        !crate::state::with_theme_overrides(&st, |o| o.contains_key("themed2.a")),
+        "reset_theme 应清空覆盖"
+    );
+    // 属主条目还在：这是**有界**残留（键 = scope 名），换主题次数不影响它
+    assert!(
+        crate::state::with_theme_owners(&st, |m| m.contains_key("themed2.a")),
+        "属主表按 scope 名收敛，不随主题切换增长（已知且可接受）"
+    );
+    let _ = crate::unload_plugin(&st, "themed2");
+}
