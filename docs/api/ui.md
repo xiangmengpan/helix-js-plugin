@@ -202,7 +202,12 @@ const id = helix.open_panel({
 ```
 
 - 关闭:`helix.close_panel(id)` 或 onKey 返回 "close";`move_panel(id, side)` 换边。
-- `focusable: true` → 面板可参与焦点路由(Tab/Esc/节点按键直达,批次 7 能力)。
+- `focusable: true` → **面板内** `button`/`input` 节点的 Tab 焦点路由(批次 7 能力)。
+  ⚠️ 它**不是**"面板能不能接收按键"的开关:面板打开后本身就是布局的活动叶子,
+  `onKey` 直接收键(`tests/test/window_rail.rs` 有断言)。
+- `rail: true` → **侧栏轨道**:贴 root 边缘、固定全高、不参与窗口分割,注册即聚焦;
+  rail 上 `Esc`/裸 `l` 回主区。**全局只能有一条 rail** —— 注册新的会取掉旧的,
+  所以两个侧栏插件都用 rail 会互相驱逐(需要并存就别用 rail)。
 
 **优缺点**：优点：真实布局收缩(非覆盖),可换边;focusable 焦点路由。局限：render 无节点焦点(focus=null);内容需自维护命中。
 

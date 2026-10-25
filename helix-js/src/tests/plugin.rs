@@ -1716,3 +1716,127 @@ helix.plugin.unload("a");"#,
         "空名应报错"
     );
 }
+
+/// 真插件（仓库里那份 `plugins/statusline/plugin.js`）的**配置面**回归：
+///   ① 默认布局 = 旧观感：两端 `╭`/`╮`、文件名、位置/百分比/行数各归其区
+///   ② `corners = "off"` ⇒ 无圆角
+///   ③ `left/center/right` 列表决定**内容与所在区**；拼错的段名变成 `!名字`（红字可见，不静默）
+///
+/// 用**私有宿主**（`JsHost::new()`）而不是默认宿主：配置覆盖与状态栏钩子都是按宿主隔离的，
+/// 这样这条测试不会污染 `popup_panel::statusline_hook`（那条假定共享宿主里没有钩子 ——
+/// 底下没有清钩子的 API，见 `state::with_statusline_hook_current`）。
+#[test]
+fn real_statusline_layout_is_config_driven() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugins/statusline/plugin.js"
+    ))
+    .expect("仓库里的真实 statusline 插件应可读");
+    // 断言用：把 parts 拼成一条可读串（`|` 分隔，便于失败时看整行）
+    let joined = |parts: &[crate::types::StatuslinePart]| -> String {
+        parts
+            .iter()
+            .map(|p| p.text.clone())
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let ctx = statusline_ctx(); // mode=insert cursor=(3,7) total=100 err=2 warn=1 1 char
+
+    // ① 默认布局：圆角 + 各段内容
+    let mut host = crate::host::JsHost::new();
+    host.load_script_named("statusline/plugin.js", &src)
+        .expect("真插件应能加载");
+    let parts = host.statusline_parts(&ctx).expect("默认应渲染出内容");
+    let line = joined(&parts);
+    assert!(
+        line.starts_with("╭"),
+        "默认 line 圆角：left 区从 ╭ 起: {line:?}"
+    );
+    assert!(
+        line.ends_with("╮"),
+        "默认 line 圆角：right 区以 ╮ 收: {line:?}"
+    );
+    assert!(line.contains("a.rs"), "文件名段: {line:?}");
+    assert!(line.contains("4:8"), "位置段 3,7 ⇒ 4:8: {line:?}");
+    assert!(line.contains("4%"), "百分比段 4/100: {line:?}");
+    assert!(line.contains("1 char"), "主选区长度段: {line:?}");
+    // 诊断在 center 区（红/黄两条）
+    let center: Vec<&str> = parts
+        .iter()
+        .filter(|p| p.zone.as_deref() == Some("center"))
+        .map(|p| p.text.as_str())
+        .collect();
+    assert_eq!(center.len(), 2, "error+warning 两段进 center: {center:?}");
+    // 位置/百分比/行数在 right 区
+    let right: Vec<&str> = parts
+        .iter()
+        .filter(|p| p.zone.as_deref() == Some("right"))
+        .map(|p| p.text.as_str())
+        .collect();
+    assert!(right.contains(&"4:8"), "位置在 right: {right:?}");
+    assert!(right.contains(&"100"), "总行数在 right: {right:?}");
+
+    // ②③ 配置覆盖：corners=off、左区只要文件名、右区拼错一个段名
+    let mut host = crate::host::JsHost::new();
+    host.cache_plugin_overrides(
+        r#"{"statusline":{"corners":"off","left":["file"],"center":[],"right":["nope","position"]}}"#,
+    );
+    host.load_script_named("statusline/plugin.js", &src)
+        .expect("真插件在覆盖下也应能加载");
+    let parts = host.statusline_parts(&ctx).expect("覆盖后仍应有内容");
+    let line = joined(&parts);
+    assert!(
+        !line.contains('╭') && !line.contains('╮'),
+        "corners=off 无圆角: {line:?}"
+    );
+    assert!(
+        !line.contains("char"),
+        "right 列表里没有 chars ⇒ 不显示: {line:?}"
+    );
+    assert!(line.contains("a.rs"), "左区只要文件名: {line:?}");
+    assert!(
+        parts
+            .iter()
+            .any(|p| p.text == "!nope" && p.style.as_deref() == Some("error")),
+        "拼错的段名要红字可见（不静默）: {line:?}"
+    );
+    assert!(
+        !parts.iter().any(|p| p.zone.as_deref() == Some("center")),
+        "center 列表清空 ⇒ 没有 center 段: {line:?}"
+    );
+}
+
+/// 真插件 `plugins/dapui/plugin.js` 能在这个引擎里**加载并跑通基本路径**。
+///
+/// 为什么必须有这条：内置插件最终跑在 boa 里，node 测试通过 ≠ 引擎通过
+/// （本仓历史上栽过："可选链/新语法在 boa 里不支持" ⇒ 插件整个加载失败，而 node 全绿）。
+/// 这里用**私有宿主**（不污染共享宿主的钩子表），断言：
+/// ① 加载不抛；② 注册了 `dap` 状态栏段；③ 注册了 3 个命令；④ 快照为空时段函数返回 null。
+#[test]
+fn real_dapui_plugin_loads_in_engine() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugins/dapui/plugin.js"
+    ))
+    .expect("仓库里的真实 dapui 插件应可读");
+    let mut host = crate::host::JsHost::new();
+    host.load_script_named("dapui/plugin.js", &src)
+        .expect("dapui 应能在 boa 里加载（语法/API 都要对）");
+
+    // ① 命令注册了（名字与插件里一致）
+    let names =
+        crate::state::with_registry(host.state(), |r| r.keys().cloned().collect::<Vec<_>>());
+    for want in ["dapui", "dapui-breakpoints", "dapui-repl"] {
+        assert!(
+            names.contains(&want.to_string()),
+            "命令 {want} 应已注册；实际: {names:?}"
+        );
+    }
+
+    // ② 状态栏段注册了，且没有会话时返回 null（不能画半条）
+    let seg = crate::state::with_statusline_segments(host.state(), |m| m.contains_key("dap"));
+    assert!(seg, "应注册 statusline 段 'dap'");
+    let parts = host.statusline_parts(&statusline_ctx());
+    // 没注册状态栏钩子（dapui 不接管整条状态栏）⇒ 这里应为 None
+    assert!(parts.is_none(), "dapui 不该接管整条状态栏");
+}

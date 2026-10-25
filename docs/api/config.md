@@ -18,9 +18,10 @@ helix.define_config("filetree", {
 
 - `name`:必填非空字符串,即 `config.toml` 里 `[plugins.<name>]` 的段名(须是合法 TOML 键:
   字母/数字/`_`/`-`)。
-- 每个字段:`type`(必填,`boolean` / `number` / `string` / `enum`)、`default`、`doc`;
-  `enum` 需要额外的 `options` 数组。
-- **只支持标量**:嵌套对象、数组、带点号的多级段都不支持。
+- 每个字段:`type`(必填,`boolean` / `number` / `string` / `enum` / `array`)、`default`、`doc`;
+  `enum` 需要额外的 `options` 数组;`array` 可带 `items: "boolean"|"number"|"string"` 逐元素校验
+  (不写 `items` = 只要求"是数组";错误串会点到**第几项**)。
+- **不支持嵌套对象**、带点号的多级段;数组可以(元素只能是标量)。
 - 同名重复声明 = 后声明覆盖(热重载时正常重注册)。
 - `name` 与 `helix.plugin(name)` 里的名字**没有绑定关系**,它只是段名;两者取一致才便于用户理解。
 
@@ -91,13 +92,39 @@ schema 是在**插件脚本执行时**才注册的,所以"合并结果"必须在
 | `[plugins.filetree]` | `show_hidden` |
 | `[plugins.icons]` | `nerd_font` |
 | `[plugins.picker-ui]` | `max_items` / `width` / `height` |
-| `[plugins.statusline]` | `show_git_branch` / `show_diagnostics` |
+| `[plugins.statusline]` | `left` / `center` / `right`(段名数组)· `zones`(比例数组)· `corners` |
 | `[plugins.tabbar]` | `max_labels` |
 | `[plugins.terminal]` | `shell` / `float_size` / `vterm_size` / `hterm_size` |
 | `[plugins.which-key]` | `position` / `show_docs` |
 
+### 6.1 `[plugins.statusline]` —— 内容、位置、圆角
+
+三个区各一个**段名数组**(顺序即显示顺序),段间由核心插 1 空格 gap:
+
+```toml
+[plugins.statusline]
+left    = ["mode", "file", "git"]
+center  = ["diagnostics"]
+right   = ["position", "percent", "modified", "chars", "filetype", "lines"]
+zones   = [1, 3, 2]   # 左/中/右 宽度比例(**注册时读一次** ⇒ 改后需 :plugin-reload)
+corners = "line"      # off | line | powerline(需 Nerd Font 有 U+E0B6/U+E0B4)
+```
+
+可用段名:`window` `mode` `file` `git` `diagnostics` `position` `percent` `modified`
+`selections` `readonly` `encoding` `line-ending` `register` `chars` `indent` `filetype`
+`cwd` `code-action` `workspace-diag` `spinner` `lines`。
+
+- 不写数组 = 默认布局(相当于旧版的观感);**拼错的段名会在状态栏里显示成红字 `!名字`**。
+- 段不适用的那一帧返回空 ⇒ 自动隐藏(不会留双空格)。
+- `corners = "powerline"` 的端帽颜色由 `helix.set_theme` 派生(`statusline.cap.<mode>`:
+  fg = mode 段底色,bg = `ui.statusline` 底色),换主题时自动重算。
+- **外部段**:其他插件可用 `helix.register_statusline_segment(name, fn)` 注册段，把 `name` 写进上面
+  任一列表即生效；**内置段名优先**(同名时内置实现生效)，未注册的名字显示红字 `!名字`。
+
 ## 7. 已知限制
 
+- **`zones` 是注册态**:`[plugins.statusline] zones` 只在 `set_statusline` 注册时读一次 ⇒ 改比例要
+  `:plugin-reload`;同段的 `left/center/right/corners` 是每帧读,`:config-reload` 即时生效。
 - **声明了却没人读的键已清零(2026-10-23)**:`filetree.show_hidden` 与 `tabbar.max_labels` 已接线;
   另两个键**从 schema 删除**了,因为当前拿不到实现它们的数据 —— `filetree.refresh_ms`(boa 没有
   定时器)与 `tabbar.show_dirty`(布局快照 `leafs` 里没有逐叶子的 buffer id)。写了会报

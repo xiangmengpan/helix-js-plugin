@@ -26,6 +26,7 @@ safe_load("dashboard"); // 启动屏(LazyVim 风格,buffer 式)—— 已验证"
 safe_load("picker-ui"); // JS 自绘 picker(策略外移至插件,机制留核心) // helix.pane.open({place,content})统一创建入口   // :plugin 管理器(JS 侧第 1 步,临时命令名 plugin-js)   // :layout 会话(- 已从核心搬到插件)   // 教程(:tutor)—— 已从核心搬到插件
 safe_load("terminal");
 safe_load("statusline");
+safe_load("dapui");       // 调试 UI(变量树/REPL/断点/状态栏段);右侧面板,命中时自动开
 safe_load("filetree");
 
 // 方案 3 可选：状态栏 mode 图标（整行替换默认状态栏，默认不启用）

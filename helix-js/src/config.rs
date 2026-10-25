@@ -113,6 +113,32 @@ pub(crate) fn validate_field(
                 Err(format!("期望 enum {options:?}，得到 {s:?}"))
             }
         }
+        // 数组:`items`("boolean"|"number"|"string")存在时逐元素校验;
+        // 不写 `items` = 只要求"是数组"。写未知的 items 类型 = 不校验元素(与未知 type 同策略)。
+        "array" => {
+            let Some(items) = v.as_array() else {
+                return Err(format!("期望 array，得到 {}", v_type(v)));
+            };
+            let Some(item_type) = field.get("items").and_then(|x| x.as_str()) else {
+                return Ok(());
+            };
+            for (i, item) in items.iter().enumerate() {
+                let ok = match item_type {
+                    "boolean" => item.is_boolean(),
+                    "number" => item.is_number(),
+                    "string" => item.is_string(),
+                    _ => true,
+                };
+                if !ok {
+                    return Err(format!(
+                        "期望 array<{item_type}>，第 {} 项(从 1 数)是 {}",
+                        i + 1,
+                        v_type(item)
+                    ));
+                }
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -123,6 +149,7 @@ fn v_type(v: &serde_json::Value) -> &'static str {
         serde_json::Value::Number(_) => "number",
         serde_json::Value::String(_) => "string",
         serde_json::Value::Null => "null",
+        serde_json::Value::Array(_) => "array",
         _ => "other",
     }
 }
@@ -398,6 +425,49 @@ globalThis.__top = helix.get_config("top");"#,
                 .unwrap();
             assert_eq!(len, 1, "docs 一项");
         });
+        let _ = take_ui_requests();
+    }
+
+    /// array 类型:`items` 逐元素校验、非法值回退默认、非数组报错。
+    /// 状态栏的 `left/center/right/zones` 就是靠它拿到"拼错就是错误"而不是静默回退。
+    #[test]
+    fn array_field_validates_items() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        load_script(
+            r#"helix.define_config("arr", {
+                 names: {type: "array", items: "string", default: ["mode", "file"]},
+                 nums: {type: "array", default: [1, 3, 2]},
+               });"#,
+        );
+        // 合法:names 是字符串数组;nums 不写 items ⇒ 元素类型不管
+        crate::state::cache_plugin_overrides(&st(), r#"{"arr":{"names":["git"],"nums":["x", 1]}}"#);
+        let (json, errors) = rebuild_configs(&st());
+        assert!(errors.is_empty(), "合法覆盖不报错: {errors:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["arr"]["names"][0], "git", "数组覆盖生效");
+        assert_eq!(v["arr"]["nums"][0], "x", "无 items 的元素不校验");
+
+        // 元素类型非法 ⇒ 点到第几项,并整字段回退默认
+        crate::state::cache_plugin_overrides(&st(), r#"{"arr":{"names":["ok", 1]}}"#);
+        let (json, errors) = rebuild_configs(&st());
+        assert_eq!(errors.len(), 1, "报一条: {errors:?}");
+        assert!(
+            errors[0].contains("第 2 项") && errors[0].contains("number"),
+            "错误里点到第几项与实际类型: {errors:?}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["arr"]["names"][0], "mode", "非法值回退默认");
+
+        // 不是数组(用户写成字符串)⇒ 报错 + 回退默认,不静默当字符串用
+        crate::state::cache_plugin_overrides(&st(), r#"{"arr":{"names":"mode file"}}"#);
+        let (json, errors) = rebuild_configs(&st());
+        assert_eq!(errors.len(), 1, "报一条: {errors:?}");
+        assert!(errors[0].contains("期望 array"), "错里说清期望: {errors:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["arr"]["names"].as_array().unwrap().len(), 2, "回退默认");
+
+        crate::state::cache_plugin_overrides(&st(), "{}");
         let _ = take_ui_requests();
     }
 }

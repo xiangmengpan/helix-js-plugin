@@ -605,6 +605,118 @@ fn statusline_hook() {
     assert!(load_script(r#"helix.set_statusline(42);"#).is_err());
 }
 
+/// 外部状态栏段（`register_statusline_segment` / `statusline_segment`）：
+/// 注册方能给别人的状态栏加段，错语义按"拼错可见、段崩不拖整条"分工。
+#[test]
+fn statusline_external_segments() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let read = |name: &str| -> boa_engine::JsValue {
+        crate::state::with_engine(|engine| {
+            engine
+                .global_object()
+                .get(JsString::from(name), engine)
+                .unwrap()
+        })
+    };
+
+    // 注册 → 渲染方按名取；ctx 原样转交（段函数看到的字段与状态栏钩子一致）
+    load_script(
+        r#"
+        helix.register_statusline_segment("x", (ctx) => ({ text: "X" + ctx.mode, style: "error" }));
+        globalThis.__seg = JSON.stringify(helix.statusline_segment("x", { mode: "insert" }));
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        read("__seg").as_string().unwrap().to_std_string_escaped(),
+        r#"{"text":"Xinsert","style":"error"}"#,
+        "外部段的 text/style 原样回来"
+    );
+
+    // 名字未注册 ⇒ 抛错（渲染方据此显示 `!段名`，让拼错可见）
+    load_script(
+        r#"
+        // 注意:核心的 API 错误是**抛出的字符串**(不是 Error 对象) ⇒ 取 e.message 会拿到
+        // undefined。JS 侧同理要写 `String(e && e.message ? e.message : e)`。
+        try { helix.statusline_segment("nope", {}); globalThis.__err = ""; }
+        catch (e) { globalThis.__err = String(e && e.message ? e.message : e); }
+        "#,
+    )
+    .unwrap();
+    let err = read("__err").as_string().unwrap().to_std_string_escaped();
+    assert!(
+        err.contains("no segment registered") && err.contains("nope"),
+        "未注册要抛错并点出段名: {err}"
+    );
+
+    // 段函数自己抛错 ⇒ 返回 null（每帧渲染，一个插件的 bug 不能拖掉整条状态栏）
+    load_script(
+        r#"
+        helix.register_statusline_segment("boom", () => { throw new Error("kaboom"); });
+        globalThis.__boom = helix.statusline_segment("boom", {});
+        "#,
+    )
+    .unwrap();
+    assert!(read("__boom").is_null(), "段函数抛错 ⇒ null");
+
+    // 名字/参数校验：非法段名、非函数
+    assert!(
+        load_script(r#"helix.register_statusline_segment("bad name", () => null);"#).is_err(),
+        "带空格的段名应报错（配置里写不出来）"
+    );
+    assert!(
+        load_script(r#"helix.register_statusline_segment("", () => null);"#).is_err(),
+        "空段名应报错"
+    );
+    assert!(
+        load_script(r#"helix.register_statusline_segment("ok", 42);"#).is_err(),
+        "非函数应报错"
+    );
+
+    // 传 null = 注销；同名重复注册 = 后者覆盖
+    load_script(
+        r#"
+        helix.register_statusline_segment("x", () => "second");
+        globalThis.__over = helix.statusline_segment("x", {});
+        helix.register_statusline_segment("x", null);
+        try { helix.statusline_segment("x", {}); globalThis.__gone = "no-error"; }
+        catch (e) { globalThis.__gone = "error"; }
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        read("__over").as_string().unwrap().to_std_string_escaped(),
+        "second",
+        "同名后注册覆盖"
+    );
+    assert_eq!(
+        read("__gone").as_string().unwrap().to_std_string_escaped(),
+        "error",
+        "注销后取不到"
+    );
+
+    // 属主回收：有属主的段留着，属主消失后 `unload_orphans` 摘掉
+    use crate::permissions::CbKey;
+    load_script(r#"helix.register_statusline_segment("orph", () => "O");"#).unwrap();
+    let key = CbKey::statusline_segment("orph");
+    crate::permissions::bind_callback_to(key.clone(), "some-plugin");
+    let removed = crate::host::with_state_or_init(crate::commands::unload_orphans);
+    assert_eq!(removed, 0, "有属主的段不该被回收");
+    load_script(r#"globalThis.__orph = helix.statusline_segment("orph", {});"#).unwrap();
+    assert_eq!(
+        read("__orph").as_string().unwrap().to_std_string_escaped(),
+        "O"
+    );
+    crate::permissions::forget_callback(&key);
+    let removed = crate::host::with_state_or_init(crate::commands::unload_orphans);
+    assert_eq!(removed, 1, "属主消失后应回收这一段");
+    assert!(
+        load_script(r#"helix.statusline_segment("orph", {});"#).is_err(),
+        "回收后取不到"
+    );
+}
+
 /// 临时任务简报的验证测试。wait 条件用 Exit（chunk 是它的先导），
 /// 返回的全部事件按序 resolve（先 Chunk 后 Exit），保证通道不残留。
 /// 注意：编译报错调整——简报原文 `events[0]` 按值取会 move，改为 `&events[0]`；

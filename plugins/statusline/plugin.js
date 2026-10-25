@@ -1,41 +1,98 @@
 // statusline.js — 状态栏美化（lazyvim 风格三段分栏）
-// 依赖清单：icons（统一图标映射，自动先加载）
-// 图标已收进核心,不再需要 deps;git 分支名走 `run_async` ⇒ 起进程
+// 依赖清单：图标已收进核心,不再需要 deps;git 分支名走 `run_async` ⇒ 起进程
 helix.plugin("statusline", {
   deps: [],
+  // 2.0:配置键改成 left/center/right/zones/corners(旧的 show_git_branch/show_diagnostics 已删,
+  //      老配置会以"未在 define_config 中声明(已忽略)"报出来 —— 那就是迁移提示)。
+  version: "2.0",
+  // 清单**声明面**版本(比的是本编辑器支持的 manifest 语义,现在 = 1),不是本插件配置的版本。
   schema_version: 1,
   permissions: { process: true },
 });
 
-// 插件配置(方案 C):config.toml [plugins.statusline]
+// 依赖：icons（统一图标映射,已进核心 `helix.icons.*`）；set_statusline replace 模式 + zones 比例。
+// 布局：left / center / right 三个**段名列表**（config.toml 可配）+ 圆角风格。
+//   · 每个区按列表顺序渲染,段间自动 1 空格 gap（Rust 端插）⇒ **空段必须丢**,否则双空格
+//   · zones = [左,中,右] 宽度比例；它是**注册态**(Rust `statusline_zones` 只在 set_statusline
+//     时写入)⇒ 改比例要 `:plugin-reload`。其余键每帧读,`:config-reload` 即时生效。
+
+// ============================ 配置 ============================
+
+// 默认布局 = 2.0 之前的观感（长串拆成细粒度段,顺序不变）
+const DEFAULT_LEFT = ["window", "mode", "file", "git"];
+const DEFAULT_CENTER = ["diagnostics"];
+const DEFAULT_RIGHT = [
+  "position",
+  "percent",
+  "modified",
+  "selections",
+  "readonly",
+  "encoding",
+  "line-ending",
+  "register",
+  "chars",
+  "indent",
+  "filetype",
+  "cwd",
+  "code-action",
+  "workspace-diag",
+  "spinner",
+  "lines",
+];
+
 helix.define_config("statusline", {
-  show_git_branch: { type: "boolean", default: true, doc: "显示 git 分支" },
-  show_diagnostics: { type: "boolean", default: true, doc: "显示诊断计数" },
+  left: {
+    type: "array",
+    items: "string",
+    default: DEFAULT_LEFT,
+    doc: "左区段名列表(顺序即显示顺序);可用段见 docs 或 helix.get_config_docs",
+  },
+  center: { type: "array", items: "string", default: DEFAULT_CENTER, doc: "中区段名列表(居中)" },
+  right: { type: "array", items: "string", default: DEFAULT_RIGHT, doc: "右区段名列表(右对齐贴最右)" },
+  zones: {
+    type: "array",
+    items: "number",
+    default: [1, 3, 2],
+    doc: "左/中/右 宽度比例;**注册时读取**,改后需 :plugin-reload(其余键即时生效)",
+  },
+  corners: {
+    type: "enum",
+    default: "line",
+    options: ["off", "line", "powerline"],
+    doc: "圆角:off 无 | line 整条两端 ╭╮ | powerline mode 色块两侧圆角端帽(需 Nerd Font)",
+  },
 });
+
 // cfg 每次渲染读取(config-reload 后即时生效)
 function current_cfg() {
   return helix.get_config("statusline") || {};
 }
-// 依赖：icons.js（统一图标映射）；set_statusline replace 模式 + zones 比例（Rust 增强）。
-// 布局：左区（mode 色块 + 文件名 + git）· 中区（诊断，居中）· 右区（位置/百分比/行数，右对齐贴最右）。
-// 比例在注册处 zones: [左, 中, 右]；段间自动 1 空格 gap。
 
 // ============================ 状态 ============================
 
-// 图标已收进核心:直接用 `helix.icons.*`(原先的懒加载 + 逐处 `ICONS ? … : 回退` 已删)
-let gitBranch = "";      // 当前 git 分支（异步查询缓存）
+let gitBranch = ""; // 当前 git 分支（异步查询缓存）
 
 // 能力清单查询(`helix.permissions()`):**不问就放行吗**。
 // 没声明 `permissions` 的插件(legacy)与内置插件恒为 true;声明了但没要 `process`
 // (或用户 deny)时为 false ⇒ 这里**降级为"无分支"**,而不是 spawn 一次再收失败。
 // try/catch 兼作老编辑器兼容:没有这个 API 时按"可用"处理。
 function hasProcess() {
-  try { return !!(helix.permissions && helix.permissions().process); } catch (e) { return true; }
+  try {
+    return !!(helix.permissions && helix.permissions().process);
+  } catch (e) {
+    return true;
+  }
 }
 
 async function refreshGit(path) {
-  if (!path) { gitBranch = ""; return; }
-  if (!hasProcess()) { gitBranch = ""; return; }
+  if (!path) {
+    gitBranch = "";
+    return;
+  }
+  if (!hasProcess()) {
+    gitBranch = "";
+    return;
+  }
   try {
     const out = await helix.run_async("git -C " + shq(dirname(path)) + " branch --show-current");
     gitBranch = (out || "").trim();
@@ -49,92 +106,219 @@ function dirname(p) {
   return i > 0 ? p.slice(0, i) : ".";
 }
 
-function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+function shq(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
 
-// ============================ 状态栏渲染 ============================
+// ============================ 段注册表 ============================
+// 每个段：`(ctx) -> {text, style} | [parts] | null`。返回 null / 空 text ⇒ 本帧不显示。
+// 带 `cap` 字段的段在 corners = "powerline" 时两侧加圆角端帽（目前只有 mode）。
 
-// 三段分栏：zone 默认 left；诊断走 center；位置/百分比/行数走 right。
-function render(ctx) {
-  ctx = ctx || {};
-  const mode = ctx.mode || "normal";
-  const parts = [];
+const CAP = "\ue0b6"; // 左圆角端帽(U+E0B6)
+const CAP_END = "\ue0b4"; // 右圆角端帽(U+E0B4)
 
-  // ── 窗口模式指示：当前窗口图标 ──
-  if (ctx.window_mode) {
+const SEGMENTS = {
+  // 窗口模式指示(平级窗口/面板态)：图标跟当前窗口类型
+  window: (ctx) => {
+    if (!ctx.window_mode) return null;
     let winIcon = helix.icons.file(ctx.active_leaf_path || "");
     if (ctx.active_leaf_type === "terminal") winIcon = helix.icons.file("term.sh");
     else if (ctx.active_leaf_type === "panel") winIcon = helix.icons.dir(false);
-    parts.push({ text: " " + winIcon + " ", style: "ui.statusline.insert" });
-  }
+    return { text: " " + winIcon + " ", style: "ui.statusline.insert" };
+  },
+  // mode 色块：关掉图标时**不能**变空,用模式首字母回退(保留信息)
+  mode: (ctx) => {
+    const mode = ctx.mode || "normal";
+    const icon = helix.icons.mode(mode) || mode.charAt(0).toUpperCase();
+    return { text: " " + icon + " ", style: "ui.statusline." + mode, cap: mode };
+  },
+  file: (ctx) => {
+    const name = ctx.path ? ctx.path.split("/").pop() : "[scratch]";
+    return { text: helix.icons.file(ctx.path || "") + " " + name, style: null };
+  },
+  git: () => (gitBranch ? { text: "\uf1d3 " + gitBranch, style: "ui.virtual" } : null),
+  // 诊断计数(error 红 / warning 黄;0 不显示):一个段可以吐多块
+  diagnostics: (ctx) => {
+    const out = [];
+    if ((ctx.diagnostics_error || 0) > 0) {
+      out.push({ text: (helix.icons.diagnostic("error") || "✗") + " " + ctx.diagnostics_error, style: "error" });
+    }
+    if ((ctx.diagnostics_warning || 0) > 0) {
+      out.push({ text: (helix.icons.diagnostic("warning") || "!") + " " + ctx.diagnostics_warning, style: "warning" });
+    }
+    return out;
+  },
 
-  // ── 左区：mode 色块 + 文件名（类型图标）+ git 分支 ──
-  // 关掉图标时**不能**变空:用模式首字母回退(保留信息,与旧行为一致)
-  parts.push({ text: " " + (helix.icons.mode(mode) || mode.charAt(0).toUpperCase()) + " ", style: "ui.statusline." + mode });
-  const name = ctx.path ? ctx.path.split("/").pop() : "[scratch]";
-  const fileIcon = helix.icons.file(ctx.path || "");
-  parts.push({ text: fileIcon + " " + name, style: null });
+  position: (ctx) => {
+    const cur = ctx.cursor || {};
+    const row = (cur.row || 0) + 1;
+    const col = (cur.col || 0) + 1;
+    return { text: row + ":" + col, style: null };
+  },
+  percent: (ctx) => {
+    const row = ((ctx.cursor || {}).row || 0) + 1;
+    const total = ctx.total_lines || 1;
+    return { text: Math.round((row / total) * 100) + "%", style: "ui.virtual" };
+  },
+  // 修改标记:语义对齐核心 `FileModificationIndicator`(`[+]` / 未改时无)
+  modified: (ctx) => (ctx.modified ? { text: "[+]", style: "ui.virtual" } : null),
+  // 选区数:对齐核心 `render_selections`(1 个时不显示;多个显示 `主序/总数 sels`)
+  selections: (ctx) =>
+    ctx.selections > 1
+      ? { text: ctx.selections_primary + 1 + "/" + ctx.selections + " sels", style: "ui.virtual" }
+      : null,
+  readonly: (ctx) => (ctx.read_only ? { text: "[readonly]", style: "ui.virtual" } : null),
+  encoding: (ctx) =>
+    ctx.encoding && ctx.encoding !== "utf-8" ? { text: ctx.encoding, style: "ui.virtual" } : null,
+  // 行尾符:核心**总是**显示 `LF`;JS 布局里 LF 是常态 ⇒ 仅非 LF 时显示(刻意的布局取舍)
+  "line-ending": (ctx) =>
+    ctx.line_ending && ctx.line_ending !== "LF" ? { text: ctx.line_ending, style: "ui.virtual" } : null,
+  register: (ctx) => (ctx.register ? { text: "reg=" + ctx.register, style: "ui.virtual" } : null),
+  // 主选区长度:对齐核心 `N char(s)`(总是显示)
+  chars: (ctx) => {
+    const n = ctx.primary_selection_length || 0;
+    return { text: n + " char" + (n === 1 ? "" : "s"), style: "ui.virtual" };
+  },
+  indent: (ctx) => (ctx.indent_style ? { text: ctx.indent_style, style: "ui.virtual" } : null),
+  filetype: (ctx) => ({ text: ctx.file_type || "text", style: "ui.virtual" }),
+  cwd: (ctx) => (ctx.cwd ? { text: ctx.cwd, style: "ui.virtual" } : null),
+  "code-action": (ctx) => (ctx.code_action_hint ? { text: "⋮", style: "ui.virtual" } : null),
+  // 工作区诊断:核心折叠成 4 个计数;这里**只列非零项**,字母 E/W/I/H
+  "workspace-diag": (ctx) => {
+    const ws = [
+      ["E", ctx.workspace_diagnostics_error],
+      ["W", ctx.workspace_diagnostics_warning],
+      ["I", ctx.workspace_diagnostics_info],
+      ["H", ctx.workspace_diagnostics_hint],
+    ]
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => k + n)
+      .join(" ");
+    return ws ? { text: ws, style: "ui.virtual" } : null;
+  },
+  spinner: (ctx) => (ctx.spinner ? { text: ctx.spinner, style: "ui.virtual" } : null),
+  lines: (ctx) => ({ text: String(ctx.total_lines || 1), style: "ui.virtual" }),
+};
+
+// ============================ 圆角 ============================
+// powerline 端帽要 fg = 该段的**底色**、bg = 状态栏底色 —— 而 `StatuslinePart.style` 只
+// 接受**主题 scope 名**(不能内联颜色) ⇒ 派生一个 scope 交给 `set_theme` 注册。
+// 拿不到颜色(主题没给 bg / 无 theme 源)就**退化为无帽**,不报错。
+const capScopes = {}; // mode -> scope 名 | null(本主题下没有可用的派生 scope)
+
+function bgOf(scope) {
+  try {
+    const st = helix.get_style(scope);
+    return st && typeof st === "object" && st.bg ? st.bg : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function capScope(mode) {
+  if (Object.prototype.hasOwnProperty.call(capScopes, mode)) return capScopes[mode];
+  let scope = null;
+  const fg = bgOf("ui.statusline." + mode);
+  if (fg) {
+    const name = "statusline.cap." + mode;
+    try {
+      helix.set_theme({ [name]: { fg: fg, bg: bgOf("ui.statusline") } });
+      scope = name;
+    } catch (e) {
+      scope = null;
+    }
+  }
+  capScopes[mode] = scope;
+  return scope;
+}
+
+function pushCapped(out, part) {
+  const scope = part.cap ? capScope(part.cap) : null;
+  if (scope) out.push({ text: CAP, style: scope });
+  out.push({ text: part.text, style: part.style || null });
+  if (scope) out.push({ text: CAP_END, style: scope });
+}
+
+// ============================ 状态栏渲染 ============================
+
+function pushSegment(out, name, ctx, corners) {
+  // 内置段**优先**（外部插件注册同名段无效 —— 核心不做名字空间隔离，这条是渲染方的决定）。
+  // 非内置段走 `helix.statusline_segment`：
+  //   · 名字**未注册** ⇒ 它抛错（这里接住 ⇒ 红字 `!名字`，让拼错可见）
+  //   · 段函数**自己抛错** ⇒ 它返回 null（只坏这一格，不拖掉整条）
+  let seg = SEGMENTS[name];
+  let external = false;
+  if (!seg) {
+    seg = (c) => helix.statusline_segment(name, c);
+    external = true;
+  }
+  let got;
+  try {
+    got = seg(ctx);
+  } catch (e) {
+    out.push({ text: "!" + name, style: "error" });
+    return;
+  }
+  // 外部段用字符串返回也说得通（与钩子同一套：字符串 = 单段）
+  if (external && typeof got === "string") got = { text: got, style: null };
+  if (!got) return;
+  for (const part of Array.isArray(got) ? got : [got]) {
+    // 空段必须丢: Rust 端会为**每一段**前插 1 空格 gap,空段会吐双空格
+    if (!part || !part.text) continue;
+    if (corners === "powerline" && part.cap) pushCapped(out, part);
+    else out.push({ text: part.text, style: part.style || null });
+  }
+}
+
+function pushZone(out, names, fallback, ctx, corners) {
+  const list = Array.isArray(names) ? names : fallback;
+  for (const raw of list) pushSegment(out, String(raw), ctx, corners);
+}
+
+function render(ctx) {
+  ctx = ctx || {};
   const cfg = current_cfg();
-  if (cfg.show_git_branch && gitBranch) {
-    parts.push({ text: "\uf1d3 " + gitBranch, style: "ui.virtual" });
+  const corners = cfg.corners || "line";
+
+  // ── 三个区各自成串(zone 字段由渲染顺序决定) ──
+  const left = [];
+  const center = [];
+  const right = [];
+  pushZone(left, cfg.left, DEFAULT_LEFT, ctx, corners);
+  pushZone(center, cfg.center, DEFAULT_CENTER, ctx, corners);
+  pushZone(right, cfg.right, DEFAULT_RIGHT, ctx, corners);
+
+  // ── 圆角 `line`:整条两端 ╭ / ╮ ──
+  // 属于"条"不属于"段":即使某个区的列表被清空,两端仍画。
+  // 位置是**算得准的**:left 区从第 0 列起,right 区右对齐贴最右 ⇒ 不需要视口宽度。
+  if (corners === "line") {
+    left.unshift({ text: "╭", style: null });
+    right.push({ text: "╮", style: null });
   }
 
-  // ── 中区：诊断计数（error 红 / warning 黄；0 不显示）──
-  if (cfg.show_diagnostics && (ctx.diagnostics_error || 0) > 0) {
-    parts.push({ text: (helix.icons.diagnostic("error") || "✗") + " " + ctx.diagnostics_error, style: "error", zone: "center" });
-  }
-  if (cfg.show_diagnostics && (ctx.diagnostics_warning || 0) > 0) {
-    parts.push({ text: (helix.icons.diagnostic("warning") || "!") + " " + ctx.diagnostics_warning, style: "warning", zone: "center" });
-  }
-
-  // ── 右区：位置 + 百分比 + 总行数（右对齐贴最右）──
-  const cur = ctx.cursor || {};
-  const row = (cur.row || 0) + 1;
-  const col = (cur.col || 0) + 1;
-  const total = ctx.total_lines || 1;
-  // 修改标记:语义严格对齐核心的 `FileModificationIndicator`(`[+]` / 未改时无),
-  // 由新增的 ctx 字段 `modified`(statusline.rs:79 填入 `doc.is_modified()`)驱动。
-  // 放置位置是 JS 状态栏自己的布局选择(挂在右区位置段上)。
-  const modMark = ctx.modified ? " [+]" : "";
-  // 选区数:语义**对齐核心** `render_selections`(1 个时不显示;多个显示 `主序/总数 sels`)
-  const selMark = ctx.selections > 1 ? " " + (ctx.selections_primary + 1) + "/" + ctx.selections + " sels" : "";
-  // 只读 / 编码:语义对齐核心(`" [readonly] "` · 非 UTF-8 时才显示编码名)
-  const roMark = ctx.read_only ? " [readonly]" : "";
-  const encMark = ctx.encoding && ctx.encoding !== "utf-8" ? " " + ctx.encoding : "";
-  // 行尾符:核心**总是**显示(`" LF "`);JS 布局里 LF 是常态,故**仅非 LF 时显示** ——
-  // 这是一处**刻意的布局取舍**(同"放置位置"由 JS 布局决定),不是语义偏差:字符串本身与核心一致。
-  const leMark = ctx.line_ending && ctx.line_ending !== "LF" ? " " + ctx.line_ending : "";
-  // 寄存器:对齐核心 `" reg=X "`(未选中寄存器时不显示)
-  const regMark = ctx.register ? " reg=" + ctx.register : "";
-  // 主选区长度:对齐核心 `" N char(s) "`
-  const n = ctx.primary_selection_length;
-  const charMark = " " + n + " char" + (n === 1 ? "" : "s");
-  // 缩进风格:直接用核心的原文案(`tabs` / `4 spaces`)
-  const indMark = ctx.indent_style ? " " + ctx.indent_style : "";
-  // 语言名:对齐核心的 `unwrap_or(DEFAULT_LANGUAGE_NAME)`(该常量的值实测为 `"text"`)
-  const ftMark = " " + (ctx.file_type || "text");
-  // 工作目录末段名(核心 `render_cwd` 就是 `current_working_dir().file_name()`)
-  const cwdMark = ctx.cwd ? " " + ctx.cwd : "";
-  // 代码动作提示:沿用核心的符号 `⋮`(`⋮` = U+22EE),仅在 focused 且有提示时出现
-  const caMark = ctx.code_action_hint ? " ⋮" : "";
-  // 工作区诊断:核心把它折叠成 4 个计数;这里**只列非零项**,字母 E/W/I/H。
-  // (核心的具体排版我没读全 → 这是 JS 侧自己的排版选择,计数语义与核心一致)
-  const ws = [["E", ctx.workspace_diagnostics_error], ["W", ctx.workspace_diagnostics_warning],
-              ["I", ctx.workspace_diagnostics_info], ["H", ctx.workspace_diagnostics_hint]]
-    .filter(([, n]) => n > 0).map(([k, n]) => k + n).join(" ");
-  const wsMark = ws ? " " + ws : "";
-  // LSP 进度帧:核心在无进度时也占位;JS 里仅在有时显示(布局取舍,已注明)
-  const spinMark = ctx.spinner ? " " + ctx.spinner : "";
-  const pct = Math.round((row / total) * 100) + "%" + modMark + selMark + roMark + encMark + leMark + regMark + charMark + indMark + ftMark + cwdMark + caMark + wsMark + spinMark;
-  parts.push({ text: row + ":" + col, style: null, zone: "right" });
-  parts.push({ text: pct, style: "ui.virtual", zone: "right" });
-  parts.push({ text: String(total), style: "ui.virtual", zone: "right" });
-
+  const parts = [];
+  for (const p of left) parts.push({ text: p.text, style: p.style || null });
+  for (const p of center) parts.push({ text: p.text, style: p.style || null, zone: "center" });
+  for (const p of right) parts.push({ text: p.text, style: p.style || null, zone: "right" });
   return parts;
 }
 
 // ============================ 注册 ============================
 
+// zones 是注册态 ⇒ 这里读一次(config 缺失/非法就回默认 [1,3,2])
+function zoneWeights() {
+  const z = current_cfg().zones;
+  if (Array.isArray(z) && z.length === 3 && z.every((n) => Number(n) > 0)) return z.map(Number);
+  return [1, 3, 2];
+}
+
 if (typeof helix !== "undefined") {
-  helix.set_statusline(render, { replace: true, zones: [1, 3, 2] });
-  helix.on("buffer-open", (doc) => { refreshGit(doc && doc.path); });
+  helix.set_statusline(render, { replace: true, zones: zoneWeights() });
+  helix.on("buffer-open", (doc) => {
+    refreshGit(doc && doc.path);
+  });
+  // 换主题 ⇒ 派生端帽 scope 的底色失效,丢掉缓存(下次渲染按新主题重算并覆盖)
+  helix.on("theme-change", () => {
+    for (const k in capScopes) delete capScopes[k];
+  });
 }
