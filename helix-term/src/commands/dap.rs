@@ -1108,20 +1108,58 @@ pub fn dap_breakpoints_json(editor: &Editor) -> String {
     Value::Array(items).to_string()
 }
 
+/// 当前文档上下文：`(workspace, language)`。没有文档/焦点时 `None`（快照退化成空列表）。
+fn doc_ctx(editor: &Editor) -> Option<(PathBuf, Option<String>)> {
+    let view = editor.tree.try_get(editor.tree.focus)?;
+    let doc = editor.documents.get(&view.doc)?;
+    Some((
+        doc.workspace_root().to_path_buf(),
+        doc.language_name().map(str::to_string),
+    ))
+}
+
+/// `dap_configs_json` 的缓存指纹：工作区 + 语言 + 两个配置文件的 mtime。
+///
+/// 为什么需要缓存：`refresh_dap_snapshots` 在 `pump_term_events` 里**每帧**跑，而配置快照要
+/// 读 + 解析两个磁盘文件。每帧两次 `open`+`parse` 是纯白烧（且每次都要重新分配一堆 String）。
+/// 用 mtime 做钥匙：内容没变就复用（两次 `stat` 是微秒级，且不分配）。
+#[derive(PartialEq, Eq, Clone)]
+struct ConfigsFingerprint {
+    workspace: PathBuf,
+    language: Option<String>,
+    toml: Option<std::time::SystemTime>,
+    json: Option<std::time::SystemTime>,
+}
+
+thread_local! {
+    static CONFIGS_CACHE: std::cell::RefCell<Option<(ConfigsFingerprint, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
+}
+
+/// 清空配置快照缓存（配置层相关的集成测试用；生产路径靠 mtime 自动失效，不需要它）。
+pub fn invalidate_dap_configs_cache() {
+    CONFIGS_CACHE.with(|c| *c.borrow_mut() = None);
+}
+
 /// 读三级启动配置（`launch.toml` → `launch.json` → `languages.toml` 模板）。
 ///
 /// 返回 `(配置列表, 告警)`。告警**只在用户主动开 Picker / 起会话时**显示 —— 这个函数也会被
 /// 每帧的快照刷新调用，每帧弹告警等于刷屏。
 pub fn load_launch_configs(editor: &Editor) -> (Vec<dap_config::LaunchConfig>, Vec<String>) {
+    let Some((workspace, language)) = doc_ctx(editor) else {
+        return (Vec::new(), Vec::new());
+    };
     let Some(view) = editor.tree.try_get(editor.tree.focus) else {
         return (Vec::new(), Vec::new());
     };
     let Some(doc) = editor.documents.get(&view.doc) else {
         return (Vec::new(), Vec::new());
     };
-    let workspace = doc.workspace_root().to_path_buf();
     let file = doc.path().map(ToOwned::to_owned);
-    let language = doc.language_name().map(str::to_string);
     let templates: Vec<dap_config::LangTemplate> = doc
         .language_config()
         .and_then(|c| c.debugger.as_ref())
@@ -1176,7 +1214,27 @@ fn debugger_for(
 /// P1 只有 `source: "lang"`（`languages.toml` 的 `[language.debugger]` 模板）；
 /// `.helix/launch.toml` 与 `.vscode/launch.json` 是 P2。
 pub fn dap_configs_json(editor: &Editor) -> String {
-    // 每帧跑（刷新快照）⇒ 必须 panic-free 且不弹告警：这里只取条目，告警由 Picker 路径显示。
+    // 每帧跑（刷新快照）⇒ 必须 panic-free、不弹告警、**不重复读盘**。
+    let Some((workspace, language)) = doc_ctx(editor) else {
+        return "[]".to_string();
+    };
+    let toml_path = workspace.join(".helix").join("launch.toml");
+    let json_path = workspace.join(".vscode").join("launch.json");
+    let key = ConfigsFingerprint {
+        workspace: workspace.clone(),
+        language: language.clone(),
+        toml: file_mtime(&toml_path),
+        json: file_mtime(&json_path),
+    };
+    if let Some(cached) = CONFIGS_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    }) {
+        return cached;
+    }
+
     let (configs, _warnings) = load_launch_configs(editor);
     let adapter_name = editor
         .documents
@@ -1202,7 +1260,9 @@ pub fn dap_configs_json(editor: &Editor) -> String {
             })
         })
         .collect();
-    Value::Array(items).to_string()
+    let out = Value::Array(items).to_string();
+    CONFIGS_CACHE.with(|c| *c.borrow_mut() = Some((key, out.clone())));
+    out
 }
 
 /// 刷新三份快照缓存（`pump_term_events` 每轮调一次；数据是几十条，成本可忽略）。

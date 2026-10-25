@@ -2442,25 +2442,51 @@ fn debug_sessions(
     Ok(())
 }
 
+/// `:debug-eval <expr>`：在当前栈帧求值，结果显示在状态栏。
+///
+/// **不阻塞**：请求丢后台任务，回主线程再写状态栏。以前这里是 `helix_lsp::block_on(...)`
+/// —— 求值要等 adapter 一来一回，而 `debug-eval` 又是最常用的手输命令，卡的就是它。
 fn debug_eval(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-
-    if let Some(debugger) = cx.editor.debug_adapters.get_active_client() {
-        let (frame, thread_id) = match (debugger.active_frame, debugger.thread_id) {
-            (Some(frame), Some(thread_id)) => (frame, thread_id),
-            _ => {
-                bail!("Cannot find current stack frame to access variables")
-            }
-        };
-
-        // TODO: support no frame_id
-
-        let frame_id = debugger.stack_frames[&thread_id][frame].id;
-        let response = helix_lsp::block_on(debugger.eval(args.join(" "), Some(frame_id)))?;
-        cx.editor.set_status(response.result);
+    let expr = args.join(" ");
+    if expr.trim().is_empty() {
+        bail!("debug-eval: 需要一个表达式");
     }
+    let Some(debugger) = cx.editor.debug_adapters.get_active_client() else {
+        bail!("没有活动调试会话（先 :debug-start）");
+    };
+    let (Some(frame), Some(thread_id)) = (debugger.active_frame, debugger.thread_id) else {
+        bail!("Cannot find current stack frame to access variables")
+    };
+    let Some(frame_id) = debugger
+        .stack_frames
+        .get(&thread_id)
+        .and_then(|frames| frames.get(frame))
+        .map(|f| f.id)
+    else {
+        bail!("Failed to get stack frame for thread {thread_id}");
+    };
+    let handle = debugger.handle();
+    let job = Box::pin(async move {
+        let response = handle
+            .request::<helix_dap::requests::Evaluate>(helix_dap::requests::EvaluateArguments {
+                expression: expr,
+                frame_id: Some(frame_id),
+                context: None,
+                format: None,
+            })
+            .await;
+        let call: Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, _compositor: &mut Compositor, mut _js| match response {
+                Ok(resp) => editor.set_status(resp.result),
+                Err(err) => editor.set_error(format!("debug-eval 失败: {err}")),
+            },
+        ));
+        Ok(call)
+    });
+    cx.jobs.callback(job);
     Ok(())
 }
 

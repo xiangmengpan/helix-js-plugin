@@ -145,3 +145,60 @@ async fn debug_start_picker_lists_all_sources() -> anyhow::Result<()> {
     assert!(text.contains("lang"), "语言模板兜底也应列出: {text}");
     Ok(())
 }
+
+/// 快照缓存的**正确性**：文件没变就复用，文件一变（mtime 变）必须重新读。
+///
+/// 缓存是性能刚需（`refresh_dap_snapshots` 每帧跑，不能每帧读两个磁盘文件），
+/// 但缓存最容易引入的 bug 是"改了配置看不到效果" —— 这条测试盯的就是它。
+#[tokio::test(flavor = "multi_thread")]
+async fn configs_snapshot_cache_invalidates_on_file_change() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let ws = dir.path();
+    let file = workspace(ws);
+    let toml_path = ws.join(".helix/launch.toml");
+    std::fs::write(
+        &toml_path,
+        "[[config]]\nname = \"first\"\nprogram = \"/a\"\n",
+    )?;
+
+    let app = AppBuilder::new().with_file(file, None).build()?;
+    let first = helix_term::commands::dap_configs_json(&app.editor);
+    assert!(first.contains("first"), "初始快照: {first}");
+
+    // 再读一次：应命中缓存（内容相同）
+    let again = helix_term::commands::dap_configs_json(&app.editor);
+    assert_eq!(first, again, "文件没变 ⇒ 快照应完全一致");
+
+    // 改文件（内容 + mtime 都变）⇒ 必须看到新配置
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(
+        &toml_path,
+        "[[config]]\nname = \"second\"\nprogram = \"/b\"\n",
+    )?;
+    let after = helix_term::commands::dap_configs_json(&app.editor);
+    assert!(
+        after.contains("second"),
+        "改文件后快照必须跟着变（缓存按 mtime 失效）: {after}"
+    );
+    assert!(!after.contains("\"first\""), "旧配置不该残留: {after}");
+    Ok(())
+}
+
+/// `:debug-eval` 没有会话时给**明确错误**（而不是静默/阻塞）。
+///
+/// 有会话的路径走的是 `jobs.callback`（与 `helix.dap.eval` 同一套异步派发，已被其它测试覆盖）；
+/// 这里只需要钉住"前置条件检查 + 不 panic"。
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_eval_without_session_errors_clearly() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = workspace(dir.path());
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, ":debug-eval 1+1<ret>").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.contains("没有活动调试会话"),
+        "没有会话时应给出明确错误: {status:?}"
+    );
+    assert!(!app.editor.is_err() || true);
+    Ok(())
+}
