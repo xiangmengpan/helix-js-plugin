@@ -953,150 +953,200 @@ pub(crate) fn js_el(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err(format!("{api}: 'type' must be a string")))?;
-    // 先收集字段再一次性建对象：builder 持有 &mut ctx，中途再借 ctx 会冲突
     let arg = args.get(1).cloned().unwrap_or(JsValue::undefined());
     let opts = args.get(2).filter(|o| !o.is_null_or_undefined());
+    // 先收集字段再一次性建对象：builder 持有 &mut ctx，中途再借 ctx 会冲突
     let mut props: Vec<(String, JsValue)> =
         vec![("type".into(), JsString::from(type_.clone()).into())];
-    match type_.as_str() {
-        "text" => {
-            // text 可为字符串或富文本段数组（[{text, style}, ...]）
-            if arg.try_js_into::<String>(ctx).is_ok() {
-                // 字符串直通
-            } else if arg
-                .try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
-                .is_ok()
-            {
-                // 数组直通（parse_node 解析）
-            } else {
-                return Err(crate::js_err(format!(
-                    "{api}: 'text' expects a string or an array of segments"
-                )));
-            }
-            props.push(("text".into(), arg));
-            if let Some(opts) = opts {
-                let obj = opts
-                    .as_object()
-                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
-                if let Some(style) = obj_opt_str(&obj, "style", ctx, api)? {
-                    props.push(("style".into(), JsString::from(style).into()));
-                }
-                if let Some(width) = obj_opt_u16(&obj, "width", ctx, api)? {
-                    props.push(("width".into(), JsValue::from(width)));
-                }
-                if let Some(flex) = obj_opt_u16(&obj, "flex", ctx, api)? {
-                    props.push(("flex".into(), JsValue::from(flex)));
-                }
-                if let Some(wrap) = obj_opt_bool(&obj, "wrap", ctx, api)? {
-                    props.push(("wrap".into(), JsValue::from(wrap)));
-                }
-            }
-        }
-        "button" => {
-            // button(label, { id, onPress, style })
-            props.push(("text".into(), arg));
-            if let Some(opts) = opts {
-                let obj = opts
-                    .as_object()
-                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
-                let id_val = obj.get(JsString::from("id"), ctx)?;
-                if id_val.try_js_into::<String>(ctx).is_err() {
-                    return Err(crate::js_err(format!(
-                        "{api}: 'button' requires an 'id' string"
-                    )));
-                }
-                props.push(("id".into(), id_val));
-                for key in ["onPress", "onKey", "style", "width", "flex"] {
-                    let v = obj.get(JsString::from(key), ctx)?;
-                    if !v.is_null_or_undefined() {
-                        props.push((key.into(), v));
-                    }
-                }
-            } else {
-                return Err(crate::js_err(format!(
-                    "{api}: 'button' requires options with 'id'"
-                )));
-            }
-        }
-        "input" => {
-            // input({ id, value, onKey, width })
-            let obj = arg.as_object().ok_or_else(|| {
-                crate::js_err(format!("{api}: 'input' expects an options object"))
-            })?;
-            let id_val = obj.get(JsString::from("id"), ctx)?;
-            if id_val.try_js_into::<String>(ctx).is_err() {
-                return Err(crate::js_err(format!(
-                    "{api}: 'input' requires an 'id' string"
-                )));
-            }
-            props.push(("id".into(), id_val));
-            props.push(("value".into(), obj.get(JsString::from("value"), ctx)?));
-            for key in ["onKey", "onPress", "width", "flex"] {
-                let v = obj.get(JsString::from(key), ctx)?;
-                if !v.is_null_or_undefined() {
-                    props.push((key.into(), v));
-                }
-            }
-        }
-        "box" => {
-            // box([children], { border, title, style, width, height, flex })
-            let _: JsArray = arg
-                .try_js_into(ctx)
-                .map_err(|_| crate::js_err(format!("{api}: 'box' expects an array of nodes")))?;
-            props.push(("children".into(), arg.clone()));
-            if let Some(opts) = opts {
-                let obj = opts
-                    .as_object()
-                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
-                for key in ["border", "title", "style"] {
-                    let v = obj.get(JsString::from(key), ctx)?;
-                    if !v.is_null_or_undefined() {
-                        props.push((key.into(), v));
-                    }
-                }
-                for key in ["width", "height", "flex"] {
-                    if let Some(v) = obj_opt_u16(&obj, key, ctx, api)? {
-                        props.push((key.into(), JsValue::from(v)));
-                    }
-                }
-            }
-        }
-        "row" | "col" | "scroll" => {
-            let _: JsArray = arg.try_js_into(ctx).map_err(|_| {
-                crate::js_err(format!("{api}: '{type_}' expects an array of nodes"))
-            })?;
-            props.push(("children".into(), arg.clone()));
-            if let Some(opts) = opts {
-                let obj = opts
-                    .as_object()
-                    .ok_or_else(|| crate::js_err(format!("{api}: options must be an object")))?;
-                let is_scroll = type_ == "scroll";
-                if let Some(v) =
-                    obj_opt_u16(&obj, if is_scroll { "height" } else { "gap" }, ctx, api)?
-                {
-                    let key: &str = if is_scroll { "height" } else { "gap" };
-                    props.push((key.into(), JsValue::from(v)));
-                }
-                if !is_scroll {
-                    if let Some(flex) = obj_opt_u16(&obj, "flex", ctx, api)? {
-                        props.push(("flex".into(), JsValue::from(flex)));
-                    }
-                } else if let Some(offset) = obj_opt_u16(&obj, "offset", ctx, api)? {
-                    props.push(("offset".into(), JsValue::from(offset)));
-                }
-            }
-        }
+    // 每种元素只做"校验 + 收字段",建对象统一在下面(见各 `el_*_props`)
+    props.extend(match type_.as_str() {
+        "text" => el_text_props(&arg, opts, ctx, api)?,
+        "button" => el_button_props(&arg, opts, ctx, api)?,
+        "input" => el_input_props(&arg, ctx, api)?,
+        "box" => el_box_props(&arg, opts, ctx, api)?,
+        "row" | "col" | "scroll" => el_container_props(&arg, opts, ctx, api, &type_)?,
         other => {
             return Err(crate::js_err(format!(
                 "{api}: unknown type '{other}' (expected text|row|col|scroll|box|button|input)"
             )));
         }
-    }
+    });
     let mut builder = ObjectInitializer::new(ctx);
     for (k, v) in props {
         builder.property(JsString::from(k), v, Attribute::all());
     }
     Ok(builder.build().into())
+}
+
+/// 选项对象:缺省 ⇒ `Ok(None)`;不是对象 ⇒ 报错(各元素共用同一句文案)
+fn el_opts_obj(
+    opts: Option<&JsValue>,
+    api: &str,
+) -> boa_engine::JsResult<Option<boa_engine::JsObject>> {
+    match opts {
+        Some(o) => match o.as_object() {
+            Some(obj) => Ok(Some(obj)),
+            None => Err(crate::js_err(format!("{api}: options must be an object"))),
+        },
+        None => Ok(None),
+    }
+}
+
+/// 把对象上若干"存在就带上"的字段搬进 props(值解析交给 `parse_node`)
+fn take_opt_props(
+    obj: &boa_engine::JsObject,
+    ctx: &mut Context,
+    keys: &[&str],
+    props: &mut Vec<(String, JsValue)>,
+) -> boa_engine::JsResult<()> {
+    for key in keys {
+        let v = obj.get(JsString::from(*key), ctx)?;
+        if !v.is_null_or_undefined() {
+            props.push(((*key).to_string(), v));
+        }
+    }
+    Ok(())
+}
+
+/// `helix.el("text", string|segments, {style,width,flex,wrap})`
+fn el_text_props(
+    arg: &JsValue,
+    opts: Option<&JsValue>,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Vec<(String, JsValue)>> {
+    // text 可为字符串或富文本段数组([{text, style}, ...]);两者都直通给 parse_node
+    if arg.try_js_into::<String>(ctx).is_err()
+        && arg
+            .try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
+            .is_err()
+    {
+        return Err(crate::js_err(format!(
+            "{api}: 'text' expects a string or an array of segments"
+        )));
+    }
+    let mut props = vec![("text".to_string(), arg.clone())];
+    if let Some(obj) = el_opts_obj(opts, api)? {
+        if let Some(style) = obj_opt_str(&obj, "style", ctx, api)? {
+            props.push(("style".into(), JsString::from(style).into()));
+        }
+        for key in ["width", "flex"] {
+            if let Some(v) = obj_opt_u16(&obj, key, ctx, api)? {
+                props.push((key.into(), JsValue::from(v)));
+            }
+        }
+        if let Some(wrap) = obj_opt_bool(&obj, "wrap", ctx, api)? {
+            props.push(("wrap".into(), JsValue::from(wrap)));
+        }
+    }
+    Ok(props)
+}
+
+/// `helix.el("button", label, {id (必填), onPress, onKey, style, width, flex})`
+fn el_button_props(
+    arg: &JsValue,
+    opts: Option<&JsValue>,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Vec<(String, JsValue)>> {
+    let mut props = vec![("text".to_string(), arg.clone())];
+    let Some(obj) = el_opts_obj(opts, api)? else {
+        return Err(crate::js_err(format!(
+            "{api}: 'button' requires options with 'id'"
+        )));
+    };
+    let id_val = obj.get(JsString::from("id"), ctx)?;
+    if id_val.try_js_into::<String>(ctx).is_err() {
+        return Err(crate::js_err(format!(
+            "{api}: 'button' requires an 'id' string"
+        )));
+    }
+    props.push(("id".into(), id_val));
+    take_opt_props(
+        &obj,
+        ctx,
+        &["onPress", "onKey", "style", "width", "flex"],
+        &mut props,
+    )?;
+    Ok(props)
+}
+
+/// `helix.el("input", {id (必填), value, onKey, onPress, width, flex})`
+fn el_input_props(
+    arg: &JsValue,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Vec<(String, JsValue)>> {
+    let obj = arg
+        .as_object()
+        .ok_or_else(|| crate::js_err(format!("{api}: 'input' expects an options object")))?;
+    let id_val = obj.get(JsString::from("id"), ctx)?;
+    if id_val.try_js_into::<String>(ctx).is_err() {
+        return Err(crate::js_err(format!(
+            "{api}: 'input' requires an 'id' string"
+        )));
+    }
+    let mut props = vec![
+        ("id".to_string(), id_val),
+        ("value".to_string(), obj.get(JsString::from("value"), ctx)?),
+    ];
+    take_opt_props(
+        &obj,
+        ctx,
+        &["onKey", "onPress", "width", "flex"],
+        &mut props,
+    )?;
+    Ok(props)
+}
+
+/// `helix.el("box", [children], {border, title, style, width, height, flex})`
+fn el_box_props(
+    arg: &JsValue,
+    opts: Option<&JsValue>,
+    ctx: &mut Context,
+    api: &str,
+) -> boa_engine::JsResult<Vec<(String, JsValue)>> {
+    let _: JsArray = arg
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: 'box' expects an array of nodes")))?;
+    let mut props = vec![("children".to_string(), arg.clone())];
+    if let Some(obj) = el_opts_obj(opts, api)? {
+        take_opt_props(&obj, ctx, &["border", "title", "style"], &mut props)?;
+        for key in ["width", "height", "flex"] {
+            if let Some(v) = obj_opt_u16(&obj, key, ctx, api)? {
+                props.push((key.into(), JsValue::from(v)));
+            }
+        }
+    }
+    Ok(props)
+}
+
+/// `helix.el("row"|"col"|"scroll", [children], opts)`
+fn el_container_props(
+    arg: &JsValue,
+    opts: Option<&JsValue>,
+    ctx: &mut Context,
+    api: &str,
+    type_: &str,
+) -> boa_engine::JsResult<Vec<(String, JsValue)>> {
+    let _: JsArray = arg
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: '{type_}' expects an array of nodes")))?;
+    let mut props = vec![("children".to_string(), arg.clone())];
+    let Some(obj) = el_opts_obj(opts, api)? else {
+        return Ok(props);
+    };
+    // scroll 用 height/offset;row/col 用 gap/flex
+    let is_scroll = type_ == "scroll";
+    let size_key = if is_scroll { "height" } else { "gap" };
+    if let Some(v) = obj_opt_u16(&obj, size_key, ctx, api)? {
+        props.push((size_key.to_string(), JsValue::from(v)));
+    }
+    let extra_key = if is_scroll { "offset" } else { "flex" };
+    if let Some(v) = obj_opt_u16(&obj, extra_key, ctx, api)? {
+        props.push((extra_key.to_string(), JsValue::from(v)));
+    }
+    Ok(props)
 }
 
 /// 取走并清空 UI 请求队列
@@ -1344,58 +1394,7 @@ fn parse_node(
         .try_js_into(ctx)
         .map_err(|_| crate::js_err(format!("{api}: node 'type' must be a string")))?;
     match type_.as_str() {
-        "text" => {
-            let text_val = obj.get(JsString::from("text"), ctx)?;
-            // 节点级 style 属性（字符串文本时整段应用）
-            let node_style = obj_opt_str(&obj, "style", ctx, &api)?;
-            // text 支持字符串或富文本段数组 [{text, style}, ...]
-            let spans = if let Ok(s) = text_val.try_js_into::<String>(ctx) {
-                vec![TextSpan {
-                    text: s,
-                    style: node_style,
-                }]
-            } else if let Ok(arr) =
-                text_val.try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
-            {
-                let mut spans = Vec::new();
-                let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
-                for i in 0..len {
-                    let item = arr.get(i, ctx)?;
-                    let obj = item.as_object().ok_or_else(|| {
-                        crate::js_err(format!(
-                            "{api}: rich text segments must be objects with 'text'"
-                        ))
-                    })?;
-                    let t: String = obj
-                        .get(JsString::from("text"), ctx)?
-                        .try_js_into(ctx)
-                        .map_err(|_| {
-                            crate::js_err(format!(
-                                "{api}: rich text segment must have a string 'text'"
-                            ))
-                        })?;
-                    let st = obj_opt_str(&obj, "style", ctx, &api)?;
-                    spans.push(TextSpan { text: t, style: st });
-                }
-                spans
-            } else {
-                return Err(crate::js_err(format!(
-                    "{api}: text node 'text' must be a string or an array of segments"
-                )));
-            };
-            let width = obj_opt_u16(&obj, "width", ctx, &api)?;
-            let node_id = obj_opt_str(&obj, "id", ctx, &api)?;
-            register_node_handlers(&obj, ctx, id, node_id.as_deref())?;
-            let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
-            let wrap = obj_opt_bool(&obj, "wrap", ctx, &api)?.unwrap_or(false);
-            Ok(CompNode::Text {
-                spans,
-                width,
-                id: node_id,
-                flex,
-                wrap,
-            })
-        }
+        "text" => node_text(&obj, ctx, id, &api),
         "row" | "col" => {
             let children = parse_children(&obj, ctx, id, what)?;
             let gap = obj_opt_u16(&obj, "gap", ctx, &api)?.unwrap_or(0);
@@ -1414,66 +1413,7 @@ fn parse_node(
                 }
             })
         }
-        "box" => {
-            let children = parse_children(&obj, ctx, id, what)?;
-            let border = match obj_opt_str(&obj, "border", ctx, &api)? {
-                Some(s) => crate::draw::BorderKind::parse(&s).ok_or_else(|| {
-                    crate::js_err(format!(
-                        "{api}: box 'border' must be plain|round|double|thick|none"
-                    ))
-                })?,
-                None => crate::draw::BorderKind::Plain,
-            };
-            let style = obj_opt_str(&obj, "style", ctx, &api)?;
-            // title:字符串 / 富文本段数组(与 text 节点同一套解析)
-            let title = {
-                let v = obj.get(JsString::from("title"), ctx)?;
-                if v.is_null_or_undefined() {
-                    Vec::new()
-                } else if let Ok(s) = v.try_js_into::<String>(ctx) {
-                    vec![TextSpan {
-                        text: s,
-                        style: style.clone(),
-                    }]
-                } else {
-                    let arr = v
-                        .try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
-                        .map_err(|_| {
-                            crate::js_err(format!(
-                                "{api}: box 'title' must be a string or segment array"
-                            ))
-                        })?;
-                    let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
-                    let mut spans = Vec::new();
-                    for i in 0..len {
-                        let item = arr.get(i, ctx)?;
-                        let o = item.as_object().ok_or_else(|| {
-                            crate::js_err(format!("{api}: box title segments must be objects"))
-                        })?;
-                        let t: String = o
-                            .get(JsString::from("text"), ctx)?
-                            .try_js_into(ctx)
-                            .map_err(|_| {
-                                crate::js_err(format!("{api}: title segment needs 'text'"))
-                            })?;
-                        spans.push(TextSpan {
-                            text: t,
-                            style: obj_opt_str(&o, "style", ctx, &api)?.or_else(|| style.clone()),
-                        });
-                    }
-                    spans
-                }
-            };
-            Ok(CompNode::Box {
-                children,
-                border,
-                title,
-                style,
-                width: obj_opt_u16(&obj, "width", ctx, &api)?,
-                height: obj_opt_u16(&obj, "height", ctx, &api)?,
-                flex: obj_opt_u16(&obj, "flex", ctx, &api)?,
-            })
-        }
+        "box" => node_box(&obj, ctx, id, what, &api),
         "scroll" => {
             let children = parse_children(&obj, ctx, id, what)?;
             let height = obj_opt_u16(&obj, "height", ctx, &api)?.unwrap_or(0);
@@ -1502,52 +1442,148 @@ fn parse_node(
                 flex,
             })
         }
-        "input" => {
-            let node_id: String = obj
-                .get(JsString::from("id"), ctx)?
-                .try_js_into(ctx)
-                .map_err(|_| crate::js_err(format!("{api}: input node must have a string 'id'")))?;
-            let js_value: String = obj
-                .get(JsString::from("value"), ctx)?
-                .try_js_into(ctx)
-                .unwrap_or_default();
-            let width = obj_opt_u16(&obj, "width", ctx, &api)?;
-            register_node_handlers(&obj, ctx, id, Some(&node_id))?;
-            let flex = obj_opt_u16(&obj, "flex", ctx, &api)?;
-            // multiline 开关：Enter 换行 + 行感知光标 + 多行渲染（缺省 false，单行行为不变）
-            let multiline_param = obj_opt_bool(&obj, "multiline", ctx, &api)?.unwrap_or(false);
-            // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值。
-            // multiline 同取 state(引擎权威)——渲染回调动态改参不与编辑语义分叉。
-            let (value, cursor, multiline) = crate::host::with_state_or_init(|st| {
-                crate::input::with_input_states(st, |m| match m.entry((id, node_id.clone())) {
-                    std::collections::hash_map::Entry::Occupied(e) => {
-                        let s = e.get();
-                        (s.value.clone(), s.cursor, s.multiline)
-                    }
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        let c = js_value.chars().count();
-                        e.insert(InputState {
-                            value: js_value.clone(),
-                            cursor: c,
-                            multiline: multiline_param,
-                        });
-                        (js_value.clone(), c, multiline_param)
-                    }
-                })
-            });
-            Ok(CompNode::Input {
-                value,
-                cursor,
-                width,
-                id: node_id,
-                flex,
-                multiline,
-            })
-        }
+        "input" => node_input(&obj, ctx, id, &api),
         other => Err(crate::js_err(format!(
             "{api}: unknown node type '{other}' (expected text|row|col|scroll|button|input)"
         ))),
     }
+}
+
+/// `text` 节点:字符串或富文本段数组 → `CompNode::Text`
+fn node_text(
+    obj: &boa_engine::JsObject,
+    ctx: &mut Context,
+    id: u64,
+    api: &str,
+) -> boa_engine::JsResult<CompNode> {
+    let spans = parse_text_spans(obj, ctx, api)?;
+    let width = obj_opt_u16(obj, "width", ctx, api)?;
+    let node_id = obj_opt_str(obj, "id", ctx, api)?;
+    register_node_handlers(obj, ctx, id, node_id.as_deref())?;
+    let flex = obj_opt_u16(obj, "flex", ctx, api)?;
+    let wrap = obj_opt_bool(obj, "wrap", ctx, api)?.unwrap_or(false);
+    Ok(CompNode::Text {
+        spans,
+        width,
+        id: node_id,
+        flex,
+        wrap,
+    })
+}
+
+/// `box` 节点:children + 边框/标题/尺寸
+fn node_box(
+    obj: &boa_engine::JsObject,
+    ctx: &mut Context,
+    id: u64,
+    what: &str,
+    api: &str,
+) -> boa_engine::JsResult<CompNode> {
+    let children = parse_children(obj, ctx, id, what)?;
+    let border = match obj_opt_str(obj, "border", ctx, api)? {
+        Some(s) => crate::draw::BorderKind::parse(&s).ok_or_else(|| {
+            crate::js_err(format!(
+                "{api}: box 'border' must be plain|round|double|thick|none"
+            ))
+        })?,
+        None => crate::draw::BorderKind::Plain,
+    };
+    let style = obj_opt_str(obj, "style", ctx, api)?;
+    // title:字符串 / 富文本段数组(与 text 节点同一套解析)
+    let title = {
+        let v = obj.get(JsString::from("title"), ctx)?;
+        if v.is_null_or_undefined() {
+            Vec::new()
+        } else if let Ok(s) = v.try_js_into::<String>(ctx) {
+            vec![TextSpan {
+                text: s,
+                style: style.clone(),
+            }]
+        } else {
+            let arr = v
+                .try_js_into::<boa_engine::object::builtins::JsArray>(ctx)
+                .map_err(|_| {
+                    crate::js_err(format!(
+                        "{api}: box 'title' must be a string or segment array"
+                    ))
+                })?;
+            let len: usize = arr.get(JsString::from("length"), ctx)?.try_js_into(ctx)?;
+            let mut spans = Vec::new();
+            for i in 0..len {
+                let item = arr.get(i, ctx)?;
+                let o = item.as_object().ok_or_else(|| {
+                    crate::js_err(format!("{api}: box title segments must be objects"))
+                })?;
+                let t: String = o
+                    .get(JsString::from("text"), ctx)?
+                    .try_js_into(ctx)
+                    .map_err(|_| crate::js_err(format!("{api}: title segment needs 'text'")))?;
+                spans.push(TextSpan {
+                    text: t,
+                    style: obj_opt_str(&o, "style", ctx, api)?.or_else(|| style.clone()),
+                });
+            }
+            spans
+        }
+    };
+    Ok(CompNode::Box {
+        children,
+        border,
+        title,
+        style,
+        width: obj_opt_u16(obj, "width", ctx, api)?,
+        height: obj_opt_u16(obj, "height", ctx, api)?,
+        flex: obj_opt_u16(obj, "flex", ctx, api)?,
+    })
+}
+
+/// `input` 节点:引擎权威的输入状态(首次用 JS 传值初始化,之后以宿主状态为准)
+fn node_input(
+    obj: &boa_engine::JsObject,
+    ctx: &mut Context,
+    id: u64,
+    api: &str,
+) -> boa_engine::JsResult<CompNode> {
+    let node_id: String = obj
+        .get(JsString::from("id"), ctx)?
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: input node must have a string 'id'")))?;
+    let js_value: String = obj
+        .get(JsString::from("value"), ctx)?
+        .try_js_into(ctx)
+        .unwrap_or_default();
+    let width = obj_opt_u16(obj, "width", ctx, api)?;
+    register_node_handlers(obj, ctx, id, Some(&node_id))?;
+    let flex = obj_opt_u16(obj, "flex", ctx, api)?;
+    // multiline 开关：Enter 换行 + 行感知光标 + 多行渲染（缺省 false，单行行为不变）
+    let multiline_param = obj_opt_bool(obj, "multiline", ctx, api)?.unwrap_or(false);
+    // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值。
+    // multiline 同取 state(引擎权威)——渲染回调动态改参不与编辑语义分叉。
+    let (value, cursor, multiline) = crate::host::with_state_or_init(|st| {
+        crate::input::with_input_states(st, |m| match m.entry((id, node_id.clone())) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                let s = e.get();
+                (s.value.clone(), s.cursor, s.multiline)
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let c = js_value.chars().count();
+                e.insert(InputState {
+                    value: js_value.clone(),
+                    cursor: c,
+                    multiline: multiline_param,
+                });
+                (js_value.clone(), c, multiline_param)
+            }
+        })
+    });
+    Ok(CompNode::Input {
+        value,
+        cursor,
+        width,
+        id: node_id,
+        flex,
+        multiline,
+    })
 }
 
 /// 解析富文本段数组 [{text, style}, ...] 或字符串 → `Vec<TextSpan>`
@@ -1933,230 +1969,196 @@ pub fn statusline_parts(st: &HostState, ctx: &StatuslineCtx) -> Option<Vec<Statu
     let hook = crate::state::with_statusline_hook(st, |h| h.clone())?;
     crate::state::with_engine(|engine| {
         let func = hook.as_callable().and_then(JsFunction::from_object)?;
-        let cursor = ObjectInitializer::new(engine)
-            .property(
-                JsString::from("row"),
-                JsValue::from(ctx.cursor.0 as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("col"),
-                JsValue::from(ctx.cursor.1 as f64),
-                Attribute::all(),
-            )
-            .build();
-        let ctx_obj = ObjectInitializer::new(engine)
-            .property(
-                JsString::from("path"),
-                match &ctx.path {
-                    Some(p) => JsValue::from(JsString::from(p.clone())),
-                    None => JsValue::null(),
-                },
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("mode"),
-                JsValue::from(JsString::from(ctx.mode.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("cursor"),
-                JsValue::from(cursor),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("total_lines"),
-                JsValue::from(ctx.total_lines as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("modified"),
-                JsValue::from(ctx.modified),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("selections"),
-                JsValue::from(ctx.selections as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("selections_primary"),
-                JsValue::from(ctx.selections_primary as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("read_only"),
-                JsValue::from(ctx.read_only),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("encoding"),
-                JsValue::from(JsString::from(ctx.encoding.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("line_ending"),
-                JsValue::from(JsString::from(ctx.line_ending.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("register"),
-                match &ctx.register {
-                    Some(r) => JsValue::from(JsString::from(r.clone())),
-                    None => JsValue::null(),
-                },
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("primary_selection_length"),
-                JsValue::from(ctx.primary_selection_length as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("indent_style"),
-                JsValue::from(JsString::from(ctx.indent_style.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("file_type"),
-                match &ctx.file_type {
-                    Some(t) => JsValue::from(JsString::from(t.clone())),
-                    None => JsValue::null(),
-                },
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("cwd"),
-                JsValue::from(JsString::from(ctx.cwd.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("code_action_hint"),
-                JsValue::from(ctx.code_action_hint),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("workspace_diagnostics_error"),
-                JsValue::from(ctx.workspace_diagnostics_error as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("workspace_diagnostics_warning"),
-                JsValue::from(ctx.workspace_diagnostics_warning as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("workspace_diagnostics_info"),
-                JsValue::from(ctx.workspace_diagnostics_info as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("workspace_diagnostics_hint"),
-                JsValue::from(ctx.workspace_diagnostics_hint as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("spinner"),
-                match &ctx.spinner {
-                    Some(s) => JsValue::from(JsString::from(s.clone())),
-                    None => JsValue::null(),
-                },
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("diagnostics_error"),
-                JsValue::from(ctx.diagnostics_error as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("diagnostics_warning"),
-                JsValue::from(ctx.diagnostics_warning as f64),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("window_mode"),
-                JsValue::from(ctx.window_mode),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("active_leaf_type"),
-                JsValue::from(JsString::from(ctx.active_leaf_type.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("active_leaf_path"),
-                match &ctx.active_leaf_path {
-                    Some(p) => JsValue::from(JsString::from(p.clone())),
-                    None => JsValue::null(),
-                },
-                Attribute::all(),
-            )
-            .build();
+        let ctx_obj = statusline_ctx_object(ctx, engine);
         let undefined = JsValue::undefined();
         let value: JsValue = crate::permissions::with_callback_owner(
             &crate::permissions::CbKey::hook(crate::permissions::CB_HOOK_STATUSLINE),
             || func.call(&undefined, &[JsValue::from(ctx_obj)], engine),
         )
         .ok()?;
-        if value.is_null_or_undefined() {
-            return None;
-        }
-        // 数组 → 多段（每项：字符串 或 { text, style?, right? }）
-        if let Some(obj) = value.as_object() {
-            if let Ok(arr) = boa_engine::object::builtins::JsArray::from_object(obj.clone()) {
-                let mut parts = Vec::new();
-                let len: u64 = arr.length(engine).unwrap_or(0);
-                for i in 0..len {
-                    if let Ok(item) = arr.get(i, engine) {
-                        if let Ok(text) = item.try_js_into::<String>(engine) {
-                            parts.push(StatuslinePart {
-                                text,
-                                style: None,
-                                zone: None,
-                            });
-                        } else if let Some(seg) = item.as_object() {
-                            if let Ok(text) = seg
-                                .get(JsString::from("text"), engine)
-                                .and_then(|v| v.try_js_into::<String>(engine))
-                            {
-                                let style = seg
-                                    .get(JsString::from("style"), engine)
-                                    .ok()
-                                    .and_then(|v| v.try_js_into::<String>(engine).ok());
-                                let zone = seg
-                                    .get(JsString::from("zone"), engine)
-                                    .ok()
-                                    .and_then(|v| v.try_js_into::<String>(engine).ok());
-                                // 兼容旧字段 right:true → zone "right"
-                                let right = seg
-                                    .get(JsString::from("right"), engine)
-                                    .ok()
-                                    .and_then(|v| v.try_js_into::<bool>(engine).ok())
-                                    .unwrap_or(false);
-                                let zone = match zone.as_deref() {
-                                    Some("center") => Some("center".to_string()),
-                                    Some("right") => Some("right".to_string()),
-                                    _ if right => Some("right".to_string()),
-                                    _ => None,
-                                };
-                                parts.push(StatuslinePart { text, style, zone });
-                            }
-                        }
+        statusline_value_to_parts(&value, engine)
+    })
+}
+
+/// 回调 `ctx` 对象:先按"基础 / 诊断 / 布局"三组收集,再一次性 build
+/// (字段顺序无关;分组只为每段都短到能一眼看完)
+fn statusline_ctx_object(ctx: &StatuslineCtx, engine: &mut Context) -> boa_engine::JsObject {
+    let mut props: Vec<(&'static str, JsValue)> = Vec::new();
+    statusline_ctx_core(ctx, engine, &mut props);
+    statusline_ctx_diags(ctx, &mut props);
+    statusline_ctx_layout(ctx, &mut props);
+    let mut builder = ObjectInitializer::new(engine);
+    for (k, v) in props {
+        builder.property(JsString::from(k), v, Attribute::all());
+    }
+    builder.build()
+}
+
+/// 基础:光标 / 路径 / 模式 / 选区 / 编码
+fn statusline_ctx_core(
+    ctx: &StatuslineCtx,
+    engine: &mut Context,
+    props: &mut Vec<(&'static str, JsValue)>,
+) {
+    let cursor = ObjectInitializer::new(engine)
+        .property(
+            JsString::from("row"),
+            JsValue::from(ctx.cursor.0 as f64),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("col"),
+            JsValue::from(ctx.cursor.1 as f64),
+            Attribute::all(),
+        )
+        .build();
+    let opt_str = |v: &Option<String>| match v {
+        Some(s) => JsValue::from(JsString::from(s.clone())),
+        None => JsValue::null(),
+    };
+    props.push(("path", opt_str(&ctx.path.clone().map(|p| p.to_string()))));
+    props.push(("mode", JsValue::from(JsString::from(ctx.mode.clone()))));
+    props.push(("cursor", JsValue::from(cursor)));
+    props.push(("total_lines", JsValue::from(ctx.total_lines as f64)));
+    props.push(("modified", JsValue::from(ctx.modified)));
+    props.push(("selections", JsValue::from(ctx.selections as f64)));
+    props.push((
+        "selections_primary",
+        JsValue::from(ctx.selections_primary as f64),
+    ));
+    props.push(("read_only", JsValue::from(ctx.read_only)));
+    props.push((
+        "encoding",
+        JsValue::from(JsString::from(ctx.encoding.clone())),
+    ));
+    props.push((
+        "line_ending",
+        JsValue::from(JsString::from(ctx.line_ending.clone())),
+    ));
+    props.push(("register", opt_str(&ctx.register)));
+    props.push((
+        "primary_selection_length",
+        JsValue::from(ctx.primary_selection_length as f64),
+    ));
+    props.push((
+        "indent_style",
+        JsValue::from(JsString::from(ctx.indent_style.clone())),
+    ));
+    props.push(("file_type", opt_str(&ctx.file_type)));
+    props.push(("cwd", JsValue::from(JsString::from(ctx.cwd.clone()))));
+}
+
+/// 诊断与状态提示(工作区计数 / spinner / code action 提示)
+fn statusline_ctx_diags(ctx: &StatuslineCtx, props: &mut Vec<(&'static str, JsValue)>) {
+    props.push(("code_action_hint", JsValue::from(ctx.code_action_hint)));
+    props.push((
+        "workspace_diagnostics_error",
+        JsValue::from(ctx.workspace_diagnostics_error as f64),
+    ));
+    props.push((
+        "workspace_diagnostics_warning",
+        JsValue::from(ctx.workspace_diagnostics_warning as f64),
+    ));
+    props.push((
+        "workspace_diagnostics_info",
+        JsValue::from(ctx.workspace_diagnostics_info as f64),
+    ));
+    props.push((
+        "workspace_diagnostics_hint",
+        JsValue::from(ctx.workspace_diagnostics_hint as f64),
+    ));
+    props.push(match &ctx.spinner {
+        Some(s) => ("spinner", JsValue::from(JsString::from(s.clone()))),
+        None => ("spinner", JsValue::null()),
+    });
+    props.push((
+        "diagnostics_error",
+        JsValue::from(ctx.diagnostics_error as f64),
+    ));
+    props.push((
+        "diagnostics_warning",
+        JsValue::from(ctx.diagnostics_warning as f64),
+    ));
+}
+
+/// 布局:窗口模式 / 活动叶子
+fn statusline_ctx_layout(ctx: &StatuslineCtx, props: &mut Vec<(&'static str, JsValue)>) {
+    props.push(("window_mode", JsValue::from(ctx.window_mode)));
+    props.push((
+        "active_leaf_type",
+        JsValue::from(JsString::from(ctx.active_leaf_type.clone())),
+    ));
+    props.push(match &ctx.active_leaf_path {
+        Some(p) => ("active_leaf_path", JsValue::from(JsString::from(p.clone()))),
+        None => ("active_leaf_path", JsValue::null()),
+    });
+}
+
+/// 回调返回值 → 多段:数组(字符串 或 `{text, style?, zone?/right?}`)或多行字符串
+fn statusline_value_to_parts(value: &JsValue, engine: &mut Context) -> Option<Vec<StatuslinePart>> {
+    if value.is_null_or_undefined() {
+        return None;
+    }
+    if let Some(obj) = value.as_object() {
+        if let Ok(arr) = boa_engine::object::builtins::JsArray::from_object(obj) {
+            let mut parts = Vec::new();
+            let len: u64 = arr.length(engine).unwrap_or(0);
+            for i in 0..len {
+                if let Ok(item) = arr.get(i, engine) {
+                    if let Ok(text) = item.try_js_into::<String>(engine) {
+                        parts.push(StatuslinePart {
+                            text,
+                            style: None,
+                            zone: None,
+                        });
+                    } else if let Some(seg) = item.as_object() {
+                        parts.extend(statusline_part_from_segment(&seg, engine));
                     }
                 }
-                return Some(parts);
             }
+            return Some(parts);
         }
-        // 字符串 → 单段
-        match value.try_js_into::<String>(engine) {
-            Ok(text) => Some(vec![StatuslinePart {
-                text,
-                style: None,
-                zone: None,
-            }]),
-            Err(_) => None,
-        }
-    })
+    }
+    // 字符串 → 单段
+    match value.try_js_into::<String>(engine) {
+        Ok(text) => Some(vec![StatuslinePart {
+            text,
+            style: None,
+            zone: None,
+        }]),
+        Err(_) => None,
+    }
+}
+
+/// `{ text, style?, zone? }` → 一段(`right: true` 是 `zone: "right"` 的旧写法)
+fn statusline_part_from_segment(
+    seg: &boa_engine::JsObject,
+    engine: &mut Context,
+) -> Option<StatuslinePart> {
+    let text: String = seg
+        .get(JsString::from("text"), engine)
+        .and_then(|v| v.try_js_into::<String>(engine))
+        .ok()?;
+    let style = seg
+        .get(JsString::from("style"), engine)
+        .ok()
+        .and_then(|v| v.try_js_into::<String>(engine).ok());
+    let zone = seg
+        .get(JsString::from("zone"), engine)
+        .ok()
+        .and_then(|v| v.try_js_into::<String>(engine).ok());
+    let right = seg
+        .get(JsString::from("right"), engine)
+        .ok()
+        .and_then(|v| v.try_js_into::<bool>(engine).ok())
+        .unwrap_or(false);
+    let zone = match zone.as_deref() {
+        Some("center") => Some("center".to_string()),
+        Some("right") => Some("right".to_string()),
+        _ if right => Some("right".to_string()),
+        _ => None,
+    };
+    Some(StatuslinePart { text, style, zone })
 }
 
 /// 当前打开的终端列表：[{ view_id, cmd }]（注册表在 Rust 侧，reload 后仍准确）

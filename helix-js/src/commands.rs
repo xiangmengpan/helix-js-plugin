@@ -2505,29 +2505,40 @@ pub fn loaded_scripts() -> Vec<String> {
 ///
 /// 返回清掉的注册条数(relabel 用;不计入 `UnloadReport`)。
 pub fn unload_orphans(st: &HostState) -> usize {
-    let mut removed = 0usize;
+    orphan_commands(st)
+        + orphan_handlers(st)
+        + orphan_popups(st)
+        + orphan_hooks(st)
+        + orphan_sources_and_nodes(st)
+        + orphan_theme_scopes(st)
+}
 
-    // 命令(+说明)
+/// 无主命令(注册表里有、`command_owners` 里没有)+ 它们的命令说明
+fn orphan_commands(st: &HostState) -> usize {
     let orphans: Vec<String> =
         crate::state::with_registry(st, |r| r.keys().cloned().collect::<Vec<_>>())
             .into_iter()
             .filter(|c| crate::permissions::command_owner(c).is_none())
             .collect();
-    if !orphans.is_empty() {
-        crate::state::with_registry(st, |r| {
-            for c in &orphans {
-                r.remove(c);
-            }
-        });
-        crate::state::with_command_docs(st, |d| {
-            for c in &orphans {
-                d.remove(c);
-            }
-        });
-        removed += orphans.len();
+    if orphans.is_empty() {
+        return 0;
     }
+    crate::state::with_registry(st, |r| {
+        for c in &orphans {
+            r.remove(c);
+        }
+    });
+    crate::state::with_command_docs(st, |d| {
+        for c in &orphans {
+            d.remove(c);
+        }
+    });
+    orphans.len()
+}
 
-    // 事件处理器:逐事件按"属主缺项"重建两侧(与 unload_plugin 同款:下标先算,双侧同步)
+/// 无主事件处理器:逐事件按"属主缺项"重建两侧(下标先算,双侧同步 —— 与 `unload_plugin` 同款)
+fn orphan_handlers(st: &HostState) -> usize {
+    let mut removed = 0usize;
     let events: Vec<String> =
         crate::state::with_event_handlers(st, |m| m.keys().cloned().collect::<Vec<_>>());
     for event in &events {
@@ -2559,10 +2570,14 @@ pub fn unload_orphans(st: &HostState) -> usize {
             .collect();
         crate::permissions::set_handler_owners(event, owners);
     }
+    removed
+}
 
-    // 弹窗/面板:无属主的 id 入队关闭并摘表
+/// 无主弹窗/面板:入队关闭并摘表
+fn orphan_popups(st: &HostState) -> usize {
     let open_panels = crate::state::with_open_panels(st, |p| p.clone());
     let popup_ids = crate::state::with_popups(st, |m| m.keys().cloned().collect::<Vec<_>>());
+    let mut removed = 0usize;
     for id in popup_ids {
         if crate::permissions::callback_owner(&crate::permissions::CbKey::popup(id)).is_some() {
             continue;
@@ -2589,9 +2604,13 @@ pub fn unload_orphans(st: &HostState) -> usize {
         crate::state::with_popups(st, |m| m.remove(&id));
         removed += 1;
     }
+    removed
+}
 
-    // 单例钩子:槽里有值但属主表里没有 ⇒ 无主
+/// 无主单例钩子:槽里有值但属主表里没有
+fn orphan_hooks(st: &HostState) -> usize {
     use crate::permissions::CbKey as K;
+    let mut removed = 0usize;
     if crate::state::with_statusline_hook(st, |h| h.is_some())
         && crate::permissions::callback_owner(&K::hook(crate::permissions::CB_HOOK_STATUSLINE))
             .is_none()
@@ -2630,8 +2649,13 @@ pub fn unload_orphans(st: &HostState) -> usize {
         crate::state::with_keymap_hint_hook_current(|h| *h = None);
         removed += 1;
     }
+    removed
+}
 
-    // picker 源 / 节点回调:无属主的删掉
+/// 无主的 picker 源与节点回调
+fn orphan_sources_and_nodes(st: &HostState) -> usize {
+    use crate::permissions::CbKey as K;
+    let mut removed = 0usize;
     let sources: Vec<String> =
         crate::state::with_picker_sources(st, |m| m.keys().cloned().collect::<Vec<_>>());
     for src in sources {
@@ -2652,25 +2676,27 @@ pub fn unload_orphans(st: &HostState) -> usize {
             removed += 1;
         }
     }
+    removed
+}
 
-    // 主题覆盖:无属主的 scope 摘掉
+/// 无主主题覆盖:摘掉并置脏
+fn orphan_theme_scopes(st: &HostState) -> usize {
     let scopes: Vec<String> =
         crate::state::with_theme_overrides(st, |o| o.keys().cloned().collect::<Vec<_>>());
     let unowned: Vec<String> = scopes
         .into_iter()
         .filter(|sc| !crate::state::with_theme_owners(st, |m| m.contains_key(sc)))
         .collect();
-    if !unowned.is_empty() {
-        crate::state::with_theme_overrides(st, |o| {
-            for sc in &unowned {
-                o.remove(sc);
-            }
-        });
-        crate::state::mark_theme_dirty(st);
-        removed += unowned.len();
+    if unowned.is_empty() {
+        return 0;
     }
-
-    removed
+    crate::state::with_theme_overrides(st, |o| {
+        for sc in &unowned {
+            o.remove(sc);
+        }
+    });
+    crate::state::mark_theme_dirty(st);
+    unowned.len()
 }
 
 /// 重载时的**加载期瞬态**(不属于任何插件的产物):编辑/装饰/光标队列、事务深度、
@@ -2730,37 +2756,66 @@ pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
     };
 
     // 1) onUnload **先**跑:错误只记录,绝不中断后面的回收(半卸载比不卸载更难查)
-    if let Some(hook) = crate::state::take_unload_hook(st, name) {
-        if let Some(func) = hook.as_callable().and_then(JsFunction::from_object) {
-            let res = crate::state::with_engine(|engine| {
-                func.call(&JsValue::undefined(), &[], engine).map(|_| ())
-            });
-            if let Err(e) = res {
-                crate::host::push_message(format!("{name}: onUnload failed: {e}"));
-            }
-        }
-    }
+    run_unload_hook(st, name);
 
     // 2) 属主表:命令 / 事件处理器 / 其余回调
     let cleanup = crate::permissions::take_owner_registrations(st, name);
     report.commands = cleanup.commands.len();
     report.handlers = cleanup.handlers;
-    if report.commands > 0 {
-        crate::state::with_registry(st, |r| {
-            for c in &cleanup.commands {
-                r.remove(c);
-            }
-        });
-        crate::state::with_command_docs(st, |d| {
-            for c in &cleanup.commands {
-                d.remove(c);
-            }
-        });
-    }
+    remove_commands(st, &cleanup.commands);
 
     // 3) 回调:按种类分流(弹窗/面板要**入队关闭**,钩子清槽,源/节点表删除)
+    reclaim_owned_callbacks(st, &cleanup.callbacks, &mut report);
+
+    // 4) 键位 / 5) 主题覆盖 / 6) 导出与加载清单
+    report.keymaps = unbind_owned_keymaps(st, name);
+    report.themes = drop_owned_theme_scopes(st, name);
+    report.scripts = forget_owned_scripts(name);
+
+    report
+}
+
+/// 1) 卸载前跑 manifest 的 `onUnload`(错误只进消息队列,**不中断**回收)
+fn run_unload_hook(st: &HostState, name: &str) {
+    let Some(hook) = crate::state::take_unload_hook(st, name) else {
+        return;
+    };
+    if let Some(func) = hook.as_callable().and_then(JsFunction::from_object) {
+        let res = crate::state::with_engine(|engine| {
+            func.call(&JsValue::undefined(), &[], engine).map(|_| ())
+        });
+        if let Err(e) = res {
+            crate::host::push_message(format!("{name}: onUnload failed: {e}"));
+        }
+    }
+}
+
+/// 2) 从注册表与命令说明里删掉这些命令
+fn remove_commands(st: &HostState, commands: &[String]) {
+    if commands.is_empty() {
+        return;
+    }
+    crate::state::with_registry(st, |r| {
+        for c in commands {
+            r.remove(c);
+        }
+    });
+    crate::state::with_command_docs(st, |d| {
+        for c in commands {
+            d.remove(c);
+        }
+    });
+}
+
+/// 3) 回调按种类分流:弹窗/面板入队关闭、单例钩子清槽、picker 源/节点表删、watch 退订
+fn reclaim_owned_callbacks(
+    st: &HostState,
+    callbacks: &[crate::permissions::CbKey],
+    report: &mut UnloadReport,
+) {
+    // 3) 回调:按种类分流(弹窗/面板要**入队关闭**,钩子清槽,源/节点表删除)
     let open_panels = crate::state::with_open_panels(st, |p| p.clone());
-    for key in &cleanup.callbacks {
+    for key in callbacks {
         match key.kind() {
             crate::permissions::CB_POPUP => {
                 let id = key.id();
@@ -2832,7 +2887,10 @@ pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
             _ => {}
         }
     }
+}
 
+/// 4) 该插件的每条键位入队解绑(term 侧 `remove_binding` 是真摘叶),返回条数
+fn unbind_owned_keymaps(st: &HostState, name: &str) -> usize {
     // 4) 键位:该插件的每条绑定都入队解绑(term 侧 remove_binding 是真摘叶)
     let keys: Vec<(String, String)> = crate::state::with_keymap_owners(st, |m| {
         let mine: Vec<(String, String)> = m
@@ -2858,8 +2916,11 @@ pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
                 unbind: true,
             }));
     }
-    report.keymaps = keys.len();
+    keys.len()
+}
 
+/// 5) 摘掉该插件的主题 scope 并置脏(下次 drain 还原基准主题),返回 scope 数
+fn drop_owned_theme_scopes(st: &HostState, name: &str) -> usize {
     // 5) 主题覆盖:摘掉该插件的 scope 并置脏(下次 drain 还原基准主题)
     let scopes: Vec<String> = crate::state::with_theme_owners(st, |m| {
         let mine: Vec<String> = m
@@ -2880,8 +2941,11 @@ pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
         });
         crate::state::mark_theme_dirty(st);
     }
-    report.themes = scopes.len();
+    scopes.len()
+}
 
+/// 6) 从导出缓存与加载清单里摘掉该插件的脚本,返回脚本数
+fn forget_owned_scripts(name: &str) -> usize {
     // 6) 导出与加载清单:按脚本 key 的派生名回收(manifest 名可能不同,两边都试)
     let stale: Vec<String> = crate::host::with_loaded_scripts(|s| {
         s.iter()
@@ -2898,9 +2962,7 @@ pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
             m.remove(k);
         });
     }
-    report.scripts = stale.len();
-
-    report
+    stale.len()
 }
 
 /// 对**当前已知的所有属主**逐个 `unload_plugin`(`reload_all` 复用同一份清理逻辑)。
