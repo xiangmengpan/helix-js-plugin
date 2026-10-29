@@ -16,6 +16,8 @@ pub mod health;
 pub mod input_router;
 pub mod job;
 pub mod keymap;
+/// `:lint`：跑已装的 linter 配方并把输出变成诊断
+pub mod lint;
 pub mod logging;
 pub mod plugins_cursor;
 pub mod plugins_watch;

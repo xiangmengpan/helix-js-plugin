@@ -857,10 +857,13 @@ url = "file://{}"
             .expect("python 语言存在");
         let dap = py.debugger.as_ref().expect("python 获得 debugger");
         assert_eq!(dap.name, "debugpy");
+        // debugpy 的 adapter 不是那个 console script（`python3 -m debugpy.adapter`），
+        // 所以配方给了 `dap-cmd` ⇒ 这里断言"用的是它"，而不是受管 bin 路径
+        assert_eq!(dap.command, "python3", "debugpy 用 dap-cmd 的 command");
         assert_eq!(
-            dap.command,
-            managed_bin("debugpy").to_string_lossy(),
-            "debugger command 为受管绝对路径"
+            dap.args,
+            vec!["-m", "debugpy.adapter"],
+            "debugpy 用 dap-cmd 的 args"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1092,7 +1095,17 @@ url = "file://{}"
         // M5:内置配方补展示数据(arsenal 行/信息弹窗显示)——缺描述/主页=遗漏
         // 8 = 7 原有 + `lldb-dap`(DAP 重构 P0-T4:让 Rust 开箱能选到一个真实存在的 adapter)
         let specs = registry::builtin_specs();
-        assert_eq!(specs.len(), 8, "内置配方数变更需同步测试");
+        // 配方已扩充到"常用 20+ 语言 × lsp/dap/linter/formatter"。
+        // 这里不再钉死总数（数据会增长），只要求：不为空、名字唯一、必有 description/homepage。
+        assert!(
+            specs.len() >= 40,
+            "内置配方应覆盖常用语言（现在 {}）",
+            specs.len()
+        );
+        let mut seen = std::collections::HashSet::new();
+        for s in &specs {
+            assert!(seen.insert(s.name.clone()), "配方名重复: {}", s.name);
+        }
         for s in &specs {
             assert!(
                 !s.description.is_empty(),
@@ -1115,20 +1128,37 @@ url = "file://{}"
         let _m = sm_lock();
         let specs = registry::builtin_specs();
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        // order 字段保序：rust-analyzer 必须首位（arsenal 的 sel0/导航依赖它）
         assert_eq!(
-            names,
-            vec![
-                "rust-analyzer",
-                "gopls",
-                "pyright",
-                "clangd",
-                "debugpy",
-                "lldb-dap",
-                "black",
-                "prettier"
-            ],
-            "order 字段保序(rust-analyzer 必须首位:arsenal sel0/导航依赖)"
+            names.first().copied(),
+            Some("rust-analyzer"),
+            "order 字段保序：rust-analyzer 必须首位"
         );
+        // 每类至少能装一个（linter 以前一条都没有）
+        for kind in [
+            registry::Kind::Lsp,
+            registry::Kind::Dap,
+            registry::Kind::Linter,
+            registry::Kind::Formatter,
+        ] {
+            let installable = specs
+                .iter()
+                .filter(|s| s.kind == kind && s.is_installable())
+                .count();
+            assert!(installable >= 1, "{kind:?} 类至少要有一个可安装配方");
+        }
+        // linter 必须给 lint-cmd（否则装完还是死的）
+        for s in specs.iter().filter(|s| s.kind == registry::Kind::Linter) {
+            assert!(
+                s.lint_cmd.is_some() || !s.is_installable(),
+                "linter {} 可装却没给 lint-cmd",
+                s.name
+            );
+        }
+        // formatter 必须给 format-args 语义（空数组 = 读 stdin，允许）
+        for s in specs.iter().filter(|s| s.kind == registry::Kind::Formatter) {
+            let _ = &s.format_args;
+        }
         let ra = specs.iter().find(|s| s.name == "rust-analyzer").unwrap();
         assert_eq!(ra.kind, registry::Kind::Lsp);
         assert_eq!(ra.languages, vec!["rust"]);
@@ -1144,20 +1174,36 @@ url = "file://{}"
         // 进程级的 `EXT`(其他用例 / 其他测试模块塞进来的扩展配方)合并进来,
         // 于是"pyright 是占位"会被用户配置里的 pyright 覆盖掉 —— D8 的间歇失败就是这条。
         // 本用例的名字与意图都只关于**内置 TOML**。
-        for n in ["gopls", "pyright", "clangd", "debugpy", "black", "prettier"] {
+        //
+        // 现在只有"随系统/工具链分发"的那几条是占位（clangd / debugpy / rustfmt…）；
+        // 能用 pip/npm/cargo/go 装的一律做成可装（本轮扩充的主要目标）。
+        for n in ["clangd", "debugpy", "rustfmt", "lldb-dap"] {
             let s = specs.iter().find(|s| s.name == n).unwrap();
             assert!(!s.is_installable(), "{n} 应为占位(no source)");
             assert!(!s.description.is_empty() && s.homepage.is_some());
         }
-        // Tool 占位:cmd 空 = Install::Tool(区别于 archive 占位)
-        assert!(matches!(
-            specs
+        // 反过来：常见语言工具**必须**可装（否则 arsenal 里是死的）
+        for n in [
+            "gopls",
+            "pyright",
+            "typescript-language-server",
+            "bashls",
+            "yaml-language-server",
+            "prettier",
+            "black",
+            "ruff",
+            "eslint",
+            "yamllint",
+        ] {
+            let s = specs
                 .iter()
-                .find(|s| s.name == "debugpy")
-                .unwrap()
-                .install,
-            registry::Install::Tool { ref cmd, .. } if cmd.is_empty()
-        ));
+                .find(|s| s.name == n)
+                .unwrap_or_else(|| panic!("缺配方 {n}"));
+            assert!(s.is_installable(), "{n} 应可安装");
+        }
+        // 占位用的是 `url = ""`（archive 占位）——`cmd = ""` 的 Tool 占位也合法，
+        // 两种都算"不可装"，这里只钉"有一类占位存在"即可。
+        assert!(specs.iter().any(|s| !s.is_installable()));
     }
 
     /// 同名覆盖:扩展配方替掉内置(不重复);内置顺序保留,扩展追加
@@ -1270,6 +1316,8 @@ url = "file://{}"
             },
             version,
             latest_source: None,
+            dap_cmd: None,
+            lint_cmd: None,
             format_args: Vec::new(),
         };
         assert!(

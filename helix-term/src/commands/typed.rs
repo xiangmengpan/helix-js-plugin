@@ -2567,6 +2567,18 @@ fn debug_build(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
 /// `:debug-log [n|clear]`：把最近 n 条（默认全部）DAP 协议流水开成临时 buffer。
 ///
 /// 比翻 `~/.cache/helix/helix.log` 快得多：`-vv` 才有日志，而这条命令当场就能看。
+/// `:lint [name]`：跑已装的 linter 配方（gcc 风格输出 → 编辑器诊断）。
+fn lint_cmd(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    match crate::lint::run(cx.editor, args.first()) {
+        Ok(msg) => cx.editor.set_status(msg),
+        Err(e) => cx.editor.set_error(format!("lint: {e:#}")),
+    }
+    Ok(())
+}
+
 /// `:keys`：当前层的完整键位表（which-key 提示里"还有 N 个（:keys 看全部）"的落点）。
 fn keys_help_cmd(
     cx: &mut compositor::Context,
@@ -4312,6 +4324,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: debug_sessions,
         completer: CommandCompleter::none(),
         signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "lint",
+        aliases: &[],
+        doc: "Run installed linter recipes for the current file and show their diagnostics (`lint <name>` for one).",
+        fun: lint_cmd,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
     },
     TypableCommand {
         name: "keys",

@@ -145,7 +145,10 @@ pub fn needs_version(spec: &registry::Spec) -> bool {
                 || assets.iter().any(|a| a.url.contains("{version}")))
                 && spec.version.is_none()
         }
-        registry::Install::Tool { .. } => false,
+        // Tool（pip/npm/cargo/go）：args 里写 `{version}` 才算需要版本
+        registry::Install::Tool { args, .. } => {
+            args.iter().any(|a| a.contains("{version}")) && spec.version.is_none()
+        }
     }
 }
 
@@ -399,15 +402,31 @@ pub fn build_section(
             body.push_str(&format!("language-servers = [{list}]\n"));
         }
         if let Some(s) = dap {
-            let cmd = attached
-                .iter()
-                .find(|e| std::ptr::eq(e.spec, s))
-                .and_then(|e| e.local.clone())
-                .unwrap_or_else(|| s.bin_path());
+            // 显式给了 `dap-cmd`（debugpy 那种 `python3 -m debugpy.adapter`）就用它，
+            // 否则直接跑受管/本地的可执行文件。
+            let (cmd, args) = match &s.dap_cmd {
+                Some(parts) if !parts.is_empty() => (
+                    parts[0].clone(),
+                    parts[1..]
+                        .iter()
+                        .map(|a| toml_str(a))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+                _ => {
+                    let path = attached
+                        .iter()
+                        .find(|e| std::ptr::eq(e.spec, s))
+                        .and_then(|e| e.local.clone())
+                        .unwrap_or_else(|| s.bin_path());
+                    (abs_bin(&path).to_string_lossy().into_owned(), String::new())
+                }
+            };
             body.push_str(&format!(
-                "debugger = {{ name = {}, transport = \"stdio\", command = {}, args = [], templates = [{{ name = \"launch\", request = \"launch\", args = {{ }} }}] }}\n",
+                "debugger = {{ name = {}, transport = \"stdio\", command = {}, args = [{}], templates = [{{ name = \"launch\", request = \"launch\", args = {{ }} }}] }}\n",
                 toml_str(&s.name),
-                toml_str(&abs_bin(&cmd).to_string_lossy())
+                toml_str(&cmd),
+                args
             ));
         }
         if let Some(s) = fmt {

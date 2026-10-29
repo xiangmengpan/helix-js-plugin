@@ -64,6 +64,11 @@ pub enum DiagnosticProvider {
         /// not clear the pull diagnostics and vice-versa.
         identifier: Option<Arc<str>>,
     },
+    /// 外部 linter（`:lint` 跑的 `ruff` / `shellcheck` / `yamllint` …）。
+    ///
+    /// `name` = 配方名（`ruff`），用于「同一次 lint 的整体替换」与来源显示。
+    /// 与 LSP 分开是必要的：跑一次 lint 不该把语言服务器的诊断清掉。
+    Linter { name: std::sync::Arc<str> },
     // Future internal features can go here...
 }
 
@@ -71,7 +76,7 @@ impl DiagnosticProvider {
     pub fn language_server_id(&self) -> Option<LanguageServerId> {
         match self {
             Self::Lsp { server_id, .. } => Some(*server_id),
-            // _ => None,
+            Self::Linter { .. } => None,
         }
     }
 }

@@ -157,3 +157,21 @@ linter 通道、项目级 registry、上游版本探测排在后面。
 
 **仍没做**（诚实记录）：`<space>i` 的键位入口（键位路径推 picker 在那一帧不稳，已回退，
 `:server panel` 命令仍可用）、项目级 registry 的信任门禁、多 server 同语言的优先级 UI。
+
+
+---
+
+## 8. 再补两刀（2026-10-29 深夜，用户要求"常用 20 种语言都要有 linter/formatter"）
+
+| 项 | 结果 |
+|---|---|
+| **配方扩充** | 内置从 8 条 → **50 条**：LSP 20 类语言、DAP 3、Formatter 18、Linter 8（含 `any` 的 typos）。能用包管理器装的一律可装（pip/npm/cargo/go），随系统分发的留占位但**本机已有时仍自动挂接** |
+| **linter 通道真做起来了** | 新增 `DiagnosticProvider::Linter` + `helix-term/src/lint.rs` + **`:lint`**：跑已装 linter 配方，按 gcc/parsable 家族解析 → 注入诊断；自动把 `managed/bin` 加进子进程 `PATH`；命令没找到会明说 |
+| **formatter 接线补齐** | pip 类配方统一用 `pip install --prefix {prefix} … && ln -sf {prefix}/local/bin/<bin> {prefix}/bin/<bin>`（pip 把脚本放 `local/bin`，实测踩到） |
+| **DAP 启动命令** | 配方新增 `dap-cmd`（数组）：debugpy = `python3 -m debugpy.adapter`、delve = `dlv dap`；不再把 console script 当成 adapter |
+| **`resolve_version` 修正** | pip/npm/cargo 装 latest 的配方**不需要版本**了（原来一律要求 version，导致 `:server install ruff` 直接失败） |
+
+**实测链路**（隔离 `SM_MANAGED_DIR`）：
+`:server install ruff` → `languages.toml` 写出 `formatter = { command = "…/managed/bin/ruff", args = ["format","-"] }`
+→ `:lint` → 行内出现 `● F401 [*] 'os' imported but unused`（状态栏 `lint: ruff：1 条`）
+→ `:server remove ruff` → `languages.toml` 里的 ruff 条目被清掉。

@@ -136,6 +136,13 @@ pub struct Spec {
     /// 上游最新版的来源：`github:owner/repo` 或一个返回**纯文本版本号**的 URL。
     /// 空 = 不支持查最新版（`:server update check` 会跳过并说明）。
     pub latest_source: Option<String>,
+    /// `kind = "dap"` 时写进 `languages.toml` 的 debugger 启动命令（首元素=command，
+    /// 其余=args）。为空 ⇒ 用受管/local 的 bin 路径直接跑。
+    /// 典型：debugpy 的 adapter 是 `python3 -m debugpy.adapter`，不是那个 console script。
+    pub dap_cmd: Option<Vec<String>>,
+    /// `kind = "linter"` 时要执行的命令（**shell 串**，支持 `%{file_path_absolute}` 等
+    /// 编辑器变量展开）；`:lint` 跑它、按 gcc 风格解析输出。
+    pub lint_cmd: Option<String>,
     /// `kind = "formatter"` 时写进 `languages.toml` 的 `formatter.args`
     /// （如 `ruff format --stdin-filename {}` 这类；空 = 不写 args）
     pub format_args: Vec<String>,
@@ -350,6 +357,22 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|s| !s.is_empty());
+    // DAP 启动命令（数组；仅 dap）
+    let dap_cmd: Option<Vec<String>> = match tbl.get("dap-cmd") {
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        )
+        .filter(|v: &Vec<String>| !v.is_empty()),
+        _ => None,
+    };
+    // linter 的执行命令（shell 串；其它 kind 忽略）
+    let lint_cmd = tbl
+        .get("lint-cmd")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
     // formatter 的参数（其它 kind 忽略）
     let format_args: Vec<String> = match tbl.get("format-args") {
         Some(Value::Array(a)) => a
@@ -457,6 +480,8 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         homepage,
         version,
         latest_source,
+        dap_cmd,
+        lint_cmd,
         format_args,
         install,
     })

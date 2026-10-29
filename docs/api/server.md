@@ -20,6 +20,7 @@
 | **`:server update check`** | 问**上游**有没有新版本（`latest` 源，缓存 24h）；之后 arsenal / `:server panel` 的 `▲` 才准 |
 | **`:server sync [check] [prune]`** | 按 `.helix/servers.toml` 对齐：装缺的、重写配置；`check` 只看差异，`prune` 额外卸掉多余的 |
 | `:server panel` | 面板（列表/过滤/状态列） |
+| **`:lint [name]`** | 跑**已装的 linter 配方**（当前文件语言），把输出变成编辑器诊断 |
 
 ## 装完会不会自动生效？
 
@@ -28,7 +29,7 @@
 | `lsp` | 写 `[language-server.<name>]` + `[[language]] language-servers = [...]` ✅ |
 | `dap` | 写 `[[language]] debugger = {...}` ✅ |
 | `formatter` | 写 `[[language]] formatter = { command, args }`（args 来自配方的 `format-args`）✅ |
-| `linter` | **不接线**（核心没有"外部 linter → 诊断"通道）；`:server doctor` 会直接告诉你，并建议用它的 LSP 模式 |
+| `linter` | 不写 `languages.toml`；用 **`:lint`** 手动跑（见下）。`:server doctor` 会说明接线方式 |
 
 > 用户已在 `languages.toml` 里自定义了某语言 ⇒ 不覆盖，只在 `conflicts` 里给手动接法。
 
@@ -69,6 +70,8 @@ sha256 = "…"                   # 有 url 时应给
 strip = 1
 cmd = "…"                      # 或 Tool 安装（走包管理器）
 format-args = ["-q", "-"]      # 仅 formatter：写进 formatter.args
+lint-cmd = "ruff check --output-format=concise %{file_path_absolute}"   # 仅 linter：`:lint` 跑它
+dap-cmd = ["python3", "-m", "debugpy.adapter"]  # 仅 dap：显式启动命令（首元素=command）
 latest = "github:owner/repo"   # 可选：上游最新版来源（GitHub releases/latest 的 tag，
                                # 或一个返回**纯文本版本号**的 URL；没有就查不了新版本）
 ```
@@ -99,3 +102,32 @@ managed/last-error.json  {"clangd": {"msg": "sha256 mismatch…", "at": …}}   
 installed/local）、`/` 搜索、`Enter` 动作菜单、`t` 批量标记、`x` 卸/unmanage、`u` 升级、`i` 信息。
 它显示的状态列就是上面的 `upgradable`（`▲` = 有新版本，靠 `:server update check` 的结果）。
 所以：**装工具用 arsenal 或 `:server install` 都行，是同一份数据。**
+
+
+## `:lint`（linter 通道）
+
+```vim
+:lint          " 跑当前文件语言的全部已装 linter
+:lint ruff     " 只跑某一个
+```
+
+- 用**受管的** linter：会自动把 `managed/bin` 加进子进程 `PATH`；
+- 输出按 **gcc / parsable 家族**解析：`path:line:col: [severity:] message`
+  （ruff `--output-format=concise`、flake8、shellcheck `-f gcc`、yamllint `-f parsable`、
+  markdownlint-cli2、golangci-lint `--out-format=line-number` 都是这一族）；
+- 诊断用独立的 `DiagnosticProvider::Linter` ⇒ **不会**把 LSP 的诊断清掉；
+- 只挂到**已打开**的文件；命令没找到时会明说（不会假装"0 条问题"）。
+
+> 想保存即跑：`[keys.normal]` 里绑一条 `":lint<ret>"`，或等后续 `lint-on-save`。
+
+## 内置配方覆盖面（约 50 条）
+
+| 类 | 能装（pip/npm/cargo/go/官方 release） | 占位（随系统/工具链） |
+|---|---|---|
+| LSP | rust-analyzer · gopls · pyright · typescript-language-server · vscode-langservers(json/css/html) · yaml-language-server · bashls · lua-language-server · taplo · cmake-language-server · sqls · intelephense | clangd · marksman · zls · jdtls · csharp-ls · solargraph · dart · kotlin-language-server |
+| DAP | delve（dlv dap） | lldb-dap · debugpy（`dap-cmd` 指向 `python3 -m debugpy.adapter`） |
+| Formatter | ruff-format · black · prettier · stylua · taplo-fmt · goimports · yamlfmt · sqlfluff · cmake-format | rustfmt · gofmt · shfmt · clang-format · rubocop · php-cs-fixer · ktlint · dart · zig |
+| Linter | ruff · eslint · yamllint · markdownlint · golangci-lint · typos | shellcheck（系统包）· hadolint |
+
+**占位条目不是死的**：只要本机已经有那个可执行文件，`languages.toml` 的自动挂接照样会把
+它接上（`local`）；占位只是"不替你下载"。

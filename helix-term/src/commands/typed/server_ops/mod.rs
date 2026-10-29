@@ -65,6 +65,10 @@ fn resolve_version(spec: &registry::Spec, explicit: Option<&str>) -> anyhow::Res
     if let Some(v) = &spec.version {
         return Ok(v.clone());
     }
+    // 不需要版本的配方（pip/npm/cargo 装 latest、url 无 {version}）⇒ 空串就是"不给版本"
+    if !server_manager::needs_version(spec) {
+        return Ok(String::new());
+    }
     Err(anyhow!(
         "server '{}': 配方未给固定 version;用 server install <name> <version> 或 config 加 version",
         spec.name

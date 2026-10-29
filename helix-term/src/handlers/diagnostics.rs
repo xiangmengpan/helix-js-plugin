@@ -223,6 +223,10 @@ fn request_document_diagnostics_for_language_servers(
                     })
                     .await;
                 }
+                // 非 LSP 的 provider（外部 linter）不会走 pull 路径；防御性忽略
+                Some(Some((Err(err), DiagnosticProvider::Linter { .. }, _))) => {
+                    log::warn!("lint provider 不该出现在 pull 诊断里: {err}");
+                }
                 Some(Some((Err(err), DiagnosticProvider::Lsp { server_id, .. }, _))) => {
                     let parsed_cancellation_data = if let helix_lsp::Error::Rpc(error) = err {
                         error.data.and_then(|data| {

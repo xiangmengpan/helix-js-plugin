@@ -9,16 +9,27 @@
 #   kind           lsp|dap|linter|formatter(缺省 lsp)
 #   languages      语言 id 列表
 #   bin-name       可执行名(缺省 = 配方名)
-#   url            release 下载模板({version}/{triple} 占位);url = "" 表示占位条目(no source,按 description 引导)
+#   url            release 下载模板({version}/{os}/{arch}/{triple} 占位);url = "" 表示占位条目(no source,按 description 引导)
 #   version        固定版本;留空且 url 含 {version} 时须 needs-version = true(安装/升级弹版本输入)
 #   needs-version  true = 允许 url 含 {version} 而 version 留空(动态版本配方)
 #   strip          解压裁剪层数(默认 1;单文件 gzip 用 0)
 #   bin            解压后链接到 managed/bin 的可执行相对路径(archive 类必填;url="" 时忽略)
 #   cmd / args     包管理器类安装(cmd 与 url 二选一);cmd = "" 表示占位条目
+#                   args 里可用 {prefix}(受管目录) / {version}
 #   sha256         可选校验
+#   latest         上游最新版来源(`github:owner/repo` 或返回纯文本版本号的 URL);`:server update check` 用
+#   format-args    仅 formatter:写进 languages.toml 的 formatter.args(stdin → stdout 协议)
+#   lint-cmd       仅 linter:shell 串(支持 %{file_path_absolute} 等变量);输出按 gcc 家族解析
 #   description/homepage  展示数据
 #
-# 内置 7 条此前硬编码在 server_manager.rs;迁出后内置改动=改数据文件(可选 runtime 覆盖),无需改代码。
+# 安装方式的选择原则:
+#   - 生态有包管理器的(pip/npm/cargo/go)用 `cmd` 安装 —— 不需要逐平台 URL 与 sha256,长期更稳;
+#   - 单二进制的 GitHub release(布局可预测的)用 archive + needs-version;
+#   - 随系统/工具链分发的(clangd、rustfmt、gofmt、shfmt…)留**占位条目**:本机已有时会被自动挂接
+#     (Local),没有时按 description 引导用系统包管理器装。
+
+# ============================ LSP ============================
+
 [server-manager.registry.rust-analyzer]
 latest = "github:rust-lang/rust-analyzer"
 order = 1
@@ -36,8 +47,10 @@ homepage = "https://github.com/rust-lang/rust-analyzer"
 order = 2
 kind = "lsp"
 languages = ["go"]
-url = ""
-description = "Go official language server"
+bin-name = "gopls"
+cmd = "sh"
+args = ["-c", "GOBIN={prefix}/bin go install golang.org/x/tools/gopls@latest"]
+description = "Go official language server (go install)"
 homepage = "https://github.com/golang/tools"
 
 [server-manager.registry.pyright]
@@ -45,54 +58,486 @@ order = 3
 kind = "lsp"
 languages = ["python"]
 bin-name = "pyright-langserver"
-url = ""
-description = "Python static type checker (Pylance core)"
-homepage = "https://github.com/microsoft/pyright"
+latest = "github:RobertCraigie/pyright-python"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "pyright"]
+description = "Python type checker / language server (npm pyright)"
+homepage = "https://github.com/DetachHead/basedpyright"
 
 [server-manager.registry.clangd]
 order = 4
 kind = "lsp"
-languages = ["c", "cpp"]
+languages = ["c", "cpp", "objective-c"]
 url = ""
-description = "C/C++ language server (clangd, LLVM)"
+description = "C/C++ language server (clangd)。随 LLVM/apt/brew 提供：sudo apt install clangd"
 homepage = "https://clangd.llvm.org"
+
+[server-manager.registry.typescript-language-server]
+order = 5
+kind = "lsp"
+languages = ["javascript", "typescript"]
+bin-name = "typescript-language-server"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "typescript-language-server", "typescript"]
+description = "TS/JS language server (npm)"
+homepage = "https://github.com/typescript-language-server/typescript-language-server"
+
+[server-manager.registry.vscode-langservers]
+order = 6
+kind = "lsp"
+languages = ["json", "css", "html"]
+bin-name = "vscode-json-language-server"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "vscode-langservers-extracted"]
+description = "JSON/CSS/HTML servers（一个包提供三个：vscode-json/css/html-language-server）"
+homepage = "https://github.com/hrsh7th/vscode-langservers-extracted"
+
+[server-manager.registry.yaml-language-server]
+order = 7
+kind = "lsp"
+languages = ["yaml"]
+bin-name = "yaml-language-server"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "yaml-language-server"]
+description = "YAML language server (npm)"
+homepage = "https://github.com/redhat-developer/yaml-language-server"
+
+[server-manager.registry.bashls]
+order = 8
+kind = "lsp"
+languages = ["bash"]
+bin-name = "bash-language-server"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "bash-language-server"]
+description = "Bash language server (npm；需本机有 shellcheck 才给诊断)"
+homepage = "https://github.com/bash-lsp/bash-language-server"
+
+[server-manager.registry.lua-language-server]
+order = 9
+kind = "lsp"
+languages = ["lua"]
+bin-name = "lua-language-server"
+url = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-linux-x64.tar.gz"
+strip = 0
+bin = "bin/lua-language-server"
+needs-version = true
+description = "Lua language server（linux-x64 资产）"
+homepage = "https://github.com/LuaLS/lua-language-server"
+
+[server-manager.registry.taplo]
+order = 10
+kind = "lsp"
+languages = ["toml"]
+bin-name = "taplo"
+latest = "github:tamasfe/taplo"
+cmd = "cargo"
+args = ["install", "--root", "{prefix}", "taplo-cli", "--features", "lsp"]
+description = "TOML language server + formatter（`taplo lsp stdio`）"
+homepage = "https://taplo.tamasfe.dev"
+
+[server-manager.registry.cmake-language-server]
+order = 11
+kind = "lsp"
+languages = ["cmake"]
+bin-name = "cmake-language-server"
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check cmake-language-server && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/cmake-language-server {prefix}/bin/cmake-language-server"]
+description = "CMake language server (pip)"
+homepage = "https://github.com/regen100/cmake-language-server"
+
+[server-manager.registry.sqls]
+order = 12
+kind = "lsp"
+languages = ["sql"]
+bin-name = "sqls"
+cmd = "sh"
+args = ["-c", "GOBIN={prefix}/bin go install github.com/sqls-server/sqls@latest"]
+description = "SQL language server (go install)"
+homepage = "https://github.com/sqls-server/sqls"
+
+[server-manager.registry.intelephense]
+order = 13
+kind = "lsp"
+languages = ["php"]
+bin-name = "intelephense"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "intelephense"]
+description = "PHP language server (npm；`intelephense --stdio`)"
+homepage = "https://intelephense.com"
+
+[server-manager.registry.marksman]
+order = 14
+kind = "lsp"
+languages = ["markdown"]
+url = ""
+description = "Markdown LSP（marksman）。单文件二进制：从 GitHub releases 手动装或 `cargo install marksman`"
+homepage = "https://github.com/artempyanykh/marksman"
+
+[server-manager.registry.zls]
+order = 15
+kind = "lsp"
+languages = ["zig"]
+url = ""
+description = "Zig language server（zls）。`zig build` 或系统包管理器；单文件二进制"
+homepage = "https://github.com/zigtools/zls"
+
+[server-manager.registry.jdtls]
+order = 16
+kind = "lsp"
+languages = ["java"]
+url = ""
+description = "Java LSP（eclipse.jdt.ls）。需要 JDK + 手动解压（布局随版本变，未做自动化）"
+homepage = "https://github.com/eclipse-jdtls/eclipse.jdt.ls"
+
+[server-manager.registry.csharp-ls]
+order = 17
+kind = "lsp"
+languages = ["csharp"]
+url = ""
+description = "C# LSP（csharp-ls）。`dotnet tool install --global csharp-ls`"
+homepage = "https://github.com/razzmatazz/csharp-language-server"
+
+[server-manager.registry.solargraph]
+order = 18
+kind = "lsp"
+languages = ["ruby"]
+url = ""
+description = "Ruby LSP（solargraph）。`gem install solargraph`"
+homepage = "https://solargraph.org"
+
+[server-manager.registry.dart]
+order = 19
+kind = "lsp"
+languages = ["dart"]
+url = ""
+description = "Dart SDK 自带（`dart language-server`）；随 Flutter/Dart SDK 提供"
+homepage = "https://dart.dev/tools"
+
+[server-manager.registry.kotlin-language-server]
+order = 20
+kind = "lsp"
+languages = ["kotlin"]
+url = ""
+description = "Kotlin LSP。GitHub releases（zip 布局随版本变），或 `brew install kotlin-language-server`"
+homepage = "https://github.com/Kotlin/kotlin-lsp"
+
+# ============================ DAP ============================
+
+[server-manager.registry.lldb-dap]
+order = 30
+kind = "dap"
+languages = ["rust", "c", "cpp", "swift", "zig", "odin"]
+url = ""
+description = "LLDB debug adapter（随 LLVM ≥ 15：apt install lldb / brew install llvm）"
+homepage = "https://lldb.llvm.org"
 
 [server-manager.registry.debugpy]
 latest = "github:microsoft/debugpy"
-order = 5
+order = 31
 kind = "dap"
 languages = ["python"]
-cmd = ""
-description = "Python debug adapter (debugpy, VS Code core)"
+url = ""
+# debugpy 的 adapter 不是那个 console script，而是模块入口
+dap-cmd = ["python3", "-m", "debugpy.adapter"]
+description = "Python debug adapter（`pip install debugpy`；adapter 走 `python3 -m debugpy.adapter`）"
 homepage = "https://github.com/microsoft/debugpy"
 
-# lldb-dap:随 LLVM ≥ 15 分发(大多数发行版的 `lldb` 包就带它)。这里不自动下载 ——
-# 各发行版的打包差异太大,给"占位条目 + 引导"比猜一个 URL 靠谱(与 gopls/clangd 同策略)。
-[server-manager.registry.lldb-dap]
-order = 6
+[server-manager.registry.delve]
+order = 32
 kind = "dap"
-languages = ["rust", "c", "cpp", "swift"]
-bin-name = "lldb-dap"
-url = ""
-description = "LLDB debug adapter, ships with LLVM >= 15 (apt/brew install lldb)"
-homepage = "https://lldb.llvm.org/"
+languages = ["go"]
+bin-name = "dlv"
+dap-cmd = ["dlv", "dap"]
+url = "https://github.com/go-delve/delve/releases/download/{version}/dlv_{os}_{arch}.tar.gz"
+strip = 0
+bin = "dlv"
+needs-version = true
+description = "Go debugger（dlv dap）"
+homepage = "https://github.com/go-delve/delve"
 
-[server-manager.registry.black]
-order = 7
+# ============================ 格式化 ============================
+
+[server-manager.registry.ruff-format]
+order = 50
 kind = "formatter"
 languages = ["python"]
-cmd = ""
+bin-name = "ruff"
+latest = "github:astral-sh/ruff"
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check ruff && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/ruff {prefix}/bin/ruff"]
+format-args = ["format", "-"]
+description = "Python formatter（ruff format，与 ruff linter 同一个二进制）"
+homepage = "https://github.com/astral-sh/ruff"
+
+[server-manager.registry.black]
+order = 51
+kind = "formatter"
+languages = ["python"]
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check black && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/black {prefix}/bin/black"]
 # 约定：helix 的 formatter 走 **stdin → stdout**；`-` 表示从标准输入读
 format-args = ["-q", "-"]
 description = "Python code formatter (black)"
 homepage = "https://github.com/psf/black"
 
 [server-manager.registry.prettier]
-order = 8
+order = 52
 kind = "formatter"
-languages = ["javascript", "typescript", "html", "css", "json", "markdown"]
-cmd = ""
+languages = ["javascript", "typescript", "html", "css", "json", "yaml", "markdown"]
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "prettier"]
 # `%{buffer_name}` 由编辑器展开成当前文件名（prettier 靠它猜语言）
 format-args = ["--stdin-filepath", "%{buffer_name}"]
 description = "Multi-language code formatter (prettier)"
-homepage = "https://github.com/prettier/prettier"
+homepage = "https://prettier.io"
+
+[server-manager.registry.stylua]
+order = 53
+kind = "formatter"
+languages = ["lua"]
+bin-name = "stylua"
+url = "https://github.com/JohnnyMorganz/StyLua/releases/download/{version}/stylua-linux-x86_64.zip"
+strip = 0
+bin = "stylua"
+needs-version = true
+format-args = ["-"]
+description = "Lua formatter (stylua)"
+homepage = "https://github.com/JohnnyMorganz/StyLua"
+
+[server-manager.registry.taplo-fmt]
+order = 54
+kind = "formatter"
+languages = ["toml"]
+bin-name = "taplo"
+cmd = "cargo"
+args = ["install", "--root", "{prefix}", "taplo-cli"]
+format-args = ["fmt", "-"]
+description = "TOML formatter (taplo fmt)"
+homepage = "https://taplo.tamasfe.dev"
+
+[server-manager.registry.goimports]
+order = 55
+kind = "formatter"
+languages = ["go"]
+bin-name = "goimports"
+cmd = "sh"
+args = ["-c", "GOBIN={prefix}/bin go install golang.org/x/tools/cmd/goimports@latest"]
+format-args = []
+description = "Go formatter（goimports；读 stdin）"
+homepage = "https://pkg.go.dev/golang.org/x/tools/cmd/goimports"
+
+[server-manager.registry.yamlfmt]
+order = 56
+kind = "formatter"
+languages = ["yaml"]
+bin-name = "yamlfmt"
+cmd = "sh"
+args = ["-c", "GOBIN={prefix}/bin go install github.com/google/yamlfmt/cmd/yamlfmt@latest"]
+format-args = ["-"]
+description = "YAML formatter (yamlfmt)"
+homepage = "https://github.com/google/yamlfmt"
+
+[server-manager.registry.sqlfluff]
+order = 57
+kind = "formatter"
+languages = ["sql"]
+bin-name = "sqlfluff"
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check sqlfluff && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/sqlfluff {prefix}/bin/sqlfluff"]
+format-args = ["format", "-"]
+description = "SQL formatter/linter (sqlfluff)"
+homepage = "https://sqlfluff.com"
+
+[server-manager.registry.cmake-format]
+order = 58
+kind = "formatter"
+languages = ["cmake"]
+bin-name = "cmake-format"
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check cmakelang && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/cmake-format {prefix}/bin/cmake-format"]
+format-args = ["-"]
+description = "CMake formatter (cmake-format，pip 包名 cmakelang)"
+homepage = "https://github.com/cheshirekow/cmake_format"
+
+[server-manager.registry.rustfmt]
+order = 59
+kind = "formatter"
+languages = ["rust"]
+bin-name = "rustfmt"
+url = ""
+format-args = []
+description = "Rust formatter（随 rustup 提供：rustup component add rustfmt；本机有就自动挂接）"
+homepage = "https://github.com/rust-lang/rustfmt"
+
+[server-manager.registry.gofmt]
+order = 60
+kind = "formatter"
+languages = ["go"]
+bin-name = "gofmt"
+url = ""
+format-args = []
+description = "Go formatter（随 Go 工具链；读 stdin）"
+homepage = "https://pkg.go.dev/cmd/gofmt"
+
+[server-manager.registry.shfmt]
+order = 61
+kind = "formatter"
+languages = ["bash"]
+bin-name = "shfmt"
+url = ""
+format-args = []
+description = "Shell formatter（shfmt）。`go install mvdan.cc/sh/v3/cmd/shfmt@latest` 或系统包管理器"
+homepage = "https://github.com/mvdan/sh"
+
+[server-manager.registry.clang-format]
+order = 62
+kind = "formatter"
+languages = ["c", "cpp", "objective-c", "java"]
+bin-name = "clang-format"
+url = ""
+format-args = []
+description = "C/C++/Java formatter（随 LLVM：apt install clang-format）"
+homepage = "https://clang.llvm.org/docs/ClangFormat.html"
+
+[server-manager.registry.rubocop]
+order = 63
+kind = "formatter"
+languages = ["ruby"]
+bin-name = "rubocop"
+url = ""
+format-args = ["-a", "-s", "%{file_path_absolute}", "-o", "/dev/stdout"]
+description = "Ruby formatter/linter（gem install rubocop）"
+homepage = "https://rubocop.org"
+
+[server-manager.registry.php-cs-fixer]
+order = 64
+kind = "formatter"
+languages = ["php"]
+url = ""
+description = "PHP formatter（composer global require friendsofphp/php-cs-fixer）"
+homepage = "https://cs.symfony.com"
+
+[server-manager.registry.kotlin-ktlint]
+order = 65
+kind = "formatter"
+languages = ["kotlin"]
+bin-name = "ktlint"
+url = ""
+format-args = ["-F", "-"]
+description = "Kotlin formatter (ktlint)。GitHub releases 的 zip，或 brew install ktlint"
+homepage = "https://pinterest.github.io/ktlint"
+
+[server-manager.registry.dart-format]
+order = 66
+kind = "formatter"
+languages = ["dart"]
+bin-name = "dart"
+url = ""
+format-args = ["format"]
+description = "Dart formatter（`dart format`，随 Dart SDK）"
+homepage = "https://dart.dev/tools/dart-format"
+
+[server-manager.registry.zig-fmt]
+order = 67
+kind = "formatter"
+languages = ["zig"]
+bin-name = "zig"
+url = ""
+format-args = ["fmt", "--stdin"]
+description = "Zig formatter（`zig fmt --stdin`，随 Zig 工具链）"
+homepage = "https://ziglang.org"
+
+# ============================ Linter ============================
+#
+# `lint-cmd` 必须是 **gcc/parsable 家族**输出（`path:line:col: [severity:] msg`）——
+# `:lint` 按这个格式解析。ruff(concise)/eslint(unix)/yamllint(parsable)/markdownlint-cli2
+# 都是这一族。
+
+[server-manager.registry.ruff]
+order = 70
+kind = "linter"
+languages = ["python"]
+bin-name = "ruff"
+latest = "github:astral-sh/ruff"
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check ruff && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/ruff {prefix}/bin/ruff"]
+lint-cmd = "ruff check --output-format=concise --no-fix %{file_path_absolute}"
+description = "Python linter + formatter (ruff)"
+homepage = "https://github.com/astral-sh/ruff"
+
+[server-manager.registry.eslint]
+order = 71
+kind = "linter"
+languages = ["javascript", "typescript"]
+bin-name = "eslint"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "eslint"]
+lint-cmd = "eslint -f unix %{file_path_absolute}"
+description = "JS/TS linter (eslint；需要有 eslint 配置)"
+homepage = "https://eslint.org"
+
+[server-manager.registry.yamllint]
+order = 72
+kind = "linter"
+languages = ["yaml"]
+bin-name = "yamllint"
+cmd = "sh"
+args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check yamllint && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/yamllint {prefix}/bin/yamllint"]
+lint-cmd = "yamllint -f parsable %{file_path_absolute}"
+description = "YAML linter (yamllint)"
+homepage = "https://github.com/adrienverge/yamllint"
+
+[server-manager.registry.markdownlint]
+order = 73
+kind = "linter"
+languages = ["markdown"]
+bin-name = "markdownlint-cli2"
+cmd = "npm"
+args = ["install", "--global", "--prefix", "{prefix}", "--no-fund", "--no-audit", "markdownlint-cli2"]
+lint-cmd = "markdownlint-cli2 %{file_path_absolute}"
+description = "Markdown linter (markdownlint-cli2)"
+homepage = "https://github.com/DavidAnson/markdownlint-cli2"
+
+[server-manager.registry.golangci-lint]
+order = 74
+kind = "linter"
+languages = ["go"]
+bin-name = "golangci-lint"
+url = "https://github.com/golangci/golangci-lint/releases/download/{version}/golangci-lint-{version}-linux-amd64.tar.gz"
+strip = 2
+bin = "golangci-lint"
+needs-version = true
+lint-cmd = "golangci-lint run --out-format=line-number ./... 2>&1"
+description = "Go linter（golangci-lint；按包跑，不是按文件）"
+homepage = "https://golangci-lint.run"
+
+[server-manager.registry.typos]
+order = 75
+kind = "linter"
+languages = ["any"]
+bin-name = "typos"
+url = "https://github.com/crate-ci/typos/releases/download/{version}/typos-{version}-x86_64-unknown-linux-musl.tar.gz"
+strip = 0
+bin = "typos"
+needs-version = true
+lint-cmd = "typos %{file_path_absolute}"
+description = "拼写检查（typos，任何语言都能用）"
+homepage = "https://github.com/crate-ci/typos"
+
+[server-manager.registry.hadolint]
+order = 76
+kind = "linter"
+languages = ["dockerfile"]
+url = ""
+description = "Dockerfile linter（hadolint）。单文件二进制：GitHub releases 手动下载"
+homepage = "https://github.com/hadolint/hadolint"
+
+[server-manager.registry.shellcheck]
+order = 77
+kind = "linter"
+languages = ["bash"]
+bin-name = "shellcheck"
+url = ""
+lint-cmd = "shellcheck -f gcc %{file_path_absolute}"
+description = "Shell linter（shellcheck；apt install shellcheck / brew install shellcheck）"
+homepage = "https://www.shellcheck.net"
