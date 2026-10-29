@@ -22,7 +22,12 @@
 // permissions: arsenal 会调 helix.server.*(下载/安装/卸载受管工具 + 改写 languages.toml)。
 // 这些 API 自 2026-10 起受 `process` 能力检查(内置插件本就 grandfathered,显式声明是为了
 // 让 manifest 与事实一致 —— 用户层同名覆盖时按第三方对待,声明才不会被询问)。
-helix.plugin("arsenal", { deps: [], permissions: { process: true } });
+helix.plugin("arsenal", {
+  deps: [],
+  permissions: { process: true },
+  // v2：行内进度条 / 取消 / 接线反馈 / 打开即查更新 / 版本列表 / 语言过滤 / 自检·日志·复制
+  version: "2.0",
+});
 
 const ST_W = 14; // 状态列宽(列数);行右锚贴框内右缘
 const BUSY_MSG = "arsenal: a task is running, please wait…";
@@ -77,6 +82,7 @@ const S = {
   vinputs: {},
   busy: null, // 批量进度 { task_id, items, idx, done, fail, pct };非空 = 任务在跑
   row_busy: {}, // name → { phase, pct };行状态优先显示(进度覆写)
+  lang: null, wiring: null, verlist: null, checking: false,
 };
 
 // 下载/任务事件 → S.row_busy / S.busy;kind 见 helix.server.task 事件约定
@@ -91,6 +97,24 @@ function on_task_event(ev) {
     b.pct = ev.total > 0 ? Math.floor((100 * ev.bytes) / ev.total) : null;
     S.row_busy[ev.name] = b;
     S.busy.pct = b.pct;
+    return;
+  }
+  if (ev.kind === "wiring") {
+    try { S.wiring = JSON.parse(ev.msg || "{}"); } catch (e) { S.wiring = {}; }
+    const w = S.wiring || {};
+    helix.echo("arsenal: languages.toml " + (w.written ? "updated" : "unchanged") +
+      ((w.servers || []).length ? " · wired " + w.servers.length : "") +
+      ((w.conflicts || []).length ? " · " + w.conflicts.length + " 处需手动接线" : ""));
+    return;
+  }
+  if (ev.kind === "canceled") {
+    delete S.row_busy[ev.name];
+    S.busy.canceled = (S.busy.canceled || 0) + 1;
+    S.busy.idx += 1;
+    S.busy.cur = S.busy.items[S.busy.idx] || null;
+    if (S.busy.done + S.busy.fail.length + S.busy.canceled >= S.busy.items.length) {
+      S.busy = null; S.row_busy = {}; fetch_rows();
+    }
     return;
   }
   // done / error = 当前项终态:worker 串行,按序推进 cur
@@ -207,6 +231,7 @@ function visible() {
     if (S.kind === "local" && !r.local) return false;
     if (S.kind !== "all" && S.kind !== "installed" && S.kind !== "local" && r.kind !== S.kind)
       return false;
+    if (S.lang && !(r.languages || []).includes(S.lang)) return false;
     if (!f) return true;
     return (r.name + " " + (r.bin || "") + " " + (r.languages || []).join(" ") + " " + (r.description || ""))
       .toLowerCase()
@@ -217,7 +242,13 @@ function visible() {
 // 行状态:行 busy 进度 > 可升级 ▲/✓/local/–;upgradable 字段驱动 ▲
 function status_text(r) {
   const busy = S.row_busy[r.name];
-  if (busy) return (busy.pct != null ? busy.pct + "% " : "") + (busy.phase || "…");
+  if (busy) {
+    if (busy.pct != null) {
+      const n = Math.max(0, Math.min(8, Math.round(busy.pct / 12.5)));
+      return "█".repeat(n) + "░".repeat(8 - n) + " " + busy.pct + "%";
+    }
+    return (busy.phase || "…").replace(/^\[\d+\/\d+\]\s*/, "");
+  }
   if (r.installed && r.local) return r.version ? "local " + r.version : "local";
   if (r.installed) return (r.upgradable ? "▲ " : "✓ ") + (r.version || "");
   if (r.installable) return "–";
@@ -308,9 +339,10 @@ function footer_text(W) {
     return bar + " " + pct + "% (" + b.done + "/" + b.items.length + ") " + cur;
   }
   if (S.searching) return "filtering: type to filter · ↑↓ move · Enter act · Esc exit";
+  if (S.verlist) return "j/k 选版本 · Enter 装该版本 · m 手动输入 · Esc 取消";
   const wide = (W || 200) >= 96;
   return wide
-    ? "↑↓/jk move · / search · Enter act · i info · t mark · x rm · u upd · r ref · C ver · Esc/q close"
+    ? "jk · / search · Enter act · v ver · u/U upd · d doctor · L log · y copy · l lang · i · t · x · Esc"
     : "↑↓/jk · / search · Enter act · i info · t mark · x rm · u upd · r ref · Esc/q";
 }
 
@@ -343,7 +375,10 @@ function main_render(focus, ctx) {
     // 行不足时以空白填充到 listH:scroll 只保留末尾 listH 行,框底须贴区域底
     while (lines.length < listH) lines.push(helix.el("text", frame_mid(W, ""), {}));
     const list = lines;
-    const topTxt = frame_top(W, "arsenal", rows.length + "/" + S.rows.length + " recipes");
+    const upd = S.rows.filter((r) => r.upgradable).length;
+    const topTxt = frame_top(W, "arsenal",
+      (upd ? "▲" + upd + " 更新 · " : S.checking ? "检查中… · " : "") +
+      rows.length + "/" + S.rows.length + " recipes" + (S.lang ? " · " + S.lang : ""));
     const footer = frame_mid(W, wc_ell(footer_text(W), W - 2));
     return helix.el("col", [
       helix.el("text", topTxt, { style: "ui.virtual" }),
@@ -671,6 +706,74 @@ function batch_run() {
   if (notes.length) helix.echo("arsenal: queued " + items.length + "; skipped " + notes.join("; "));
 }
 
+// ── v2 动作 ──────────────────────────────────────────────
+function lang_filter_cycle() {
+  const langs = [];
+  for (const r of S.rows) for (const l of r.languages || []) if (!langs.includes(l)) langs.push(l);
+  langs.sort();
+  const i = S.lang === null ? -1 : langs.indexOf(S.lang);
+  S.lang = i + 1 >= langs.length ? null : langs[i + 1];
+  S.sel = 0;
+  helix.echo(S.lang ? "arsenal: language = " + S.lang : "arsenal: language filter cleared");
+}
+function open_doctor() { const r = selected_row(); if (r) helix.run_command("server", ["doctor", r.name]); }
+function open_log() { const r = selected_row(); if (r) helix.run_command("server", ["log", r.name, "300"]); }
+function copy_bin() {
+  const r = selected_row(); if (!r) return;
+  try { helix.set_register(r.bin || r.name); helix.echo("arsenal: copied " + (r.bin || r.name)); }
+  catch (e) { helix.echo("arsenal: copy failed: " + e); }
+}
+function update_all() {
+  const items = S.rows.filter((r) => r.upgradable && r.installed && !r.local)
+    .map((r) => ({ op: "update", name: r.name, version: S.vinputs[r.name] }));
+  if (!items.length) { helix.echo("arsenal: nothing to update"); return; }
+  begin_task(items);
+}
+function open_version_picker(op) {
+  const r = selected_row(); if (!r) return;
+  let list = [];
+  try { list = helix.server.versions(r.name) || []; } catch (e) { list = []; }
+  if (!list.length) { helix.echo("arsenal: no version list — manual input"); open_version_input(r, op || "install"); return; }
+  S.verlist = { name: r.name, op: op || (r.installed ? "update" : "install"),
+    items: list.slice(0, 20).map((v) => ({ tag: v.tag, date: v.date || "" })), sel: 0 };
+  shell_version_picker();
+}
+function shell_version_picker() {
+  const st = S.verlist; if (!st) return;
+  const W = 56;
+  const body = st.items.map((it, i) => ({
+    text: (i === st.sel ? "› " : "  ") + wc_pad(wc_ell(it.tag, 22), 22) + " " + String(it.date || "").slice(0, 10),
+    style: i === st.sel ? "ui.selection" : undefined,
+  }));
+  body.push({ text: "  manual input…", style: "ui.virtual" });
+  helix.open_popup({
+    layer: LAYERS.input, position: "center", width: W, height: body.length + 3,
+    render: () => helix.el("col", build_box("版本 · " + st.name, W, body), { gap: 0 }),
+    onKey: (key) => {
+      if (!S.verlist) return "close";
+      const k = key.name;
+      if (k === "Esc") { S.verlist = null; return "close"; }
+      if (k === "j" || k === "Down") { S.verlist.sel = Math.min(S.verlist.items.length, S.verlist.sel + 1); shell_version_picker(); return "handled"; }
+      if (k === "k" || k === "Up") { S.verlist.sel = Math.max(0, S.verlist.sel - 1); shell_version_picker(); return "handled"; }
+      if (k === "m") { const s2 = S.verlist; S.verlist = null; const r2 = row_by_name(s2.name); if (r2) open_version_input(r2, s2.op); return "close"; }
+      if (k === "Enter") {
+        const s2 = S.verlist; const it = s2.items[s2.sel]; S.verlist = null;
+        const r2 = row_by_name(s2.name);
+        if (!it) { if (r2) open_version_input(r2, s2.op); return "close"; }
+        S.vinputs[s2.name] = it.tag; run_action(s2.op, s2.name); return "close";
+      }
+      return "handled";
+    },
+  });
+}
+function silent_update_check() {
+  const items = S.rows.filter((r) => r.installed && !r.local).slice(0, 12).map((r) => ({ op: "check", name: r.name }));
+  if (!items.length) return;
+  S.checking = true;
+  try { helix.server.task(items, (ev) => { if (ev.kind === "done" || ev.kind === "error") { S.checking = false; fetch_rows(); } }); }
+  catch (e) { S.checking = false; }
+}
+
 // ────────────────────────── 开关 ──────────────────────────
 
 function open_arsenal() {
@@ -685,6 +788,7 @@ function open_arsenal() {
     return;
   }
   fetch_rows();
+  silent_update_check();
   S.popup = helix.open_popup({
     layer: LAYERS.main,
     position: "center",
@@ -776,10 +880,13 @@ function handle_key(key) {
     else open_action_menu();
     return "handled";
   }
-  if (k === "i") {
-    open_info();
-    return "handled";
-  }
+  if (k === "i") { open_info(); return "handled"; }
+  if (k === "l") { lang_filter_cycle(); return "handled"; }
+  if (k === "d") { open_doctor(); return "handled"; }
+  if (k === "L") { open_log(); return "handled"; }
+  if (k === "y") { copy_bin(); return "handled"; }
+  if (k === "U") { update_all(); return "handled"; }
+  if (k === "v") { const r = selected_row(); open_version_picker(r && r.installed ? "update" : "install"); return "handled"; }
   if (k === "t") {
     toggle_mark();
     return "handled";
@@ -833,5 +940,6 @@ if (typeof module !== "undefined" && module.exports) {
     visible, status_text, move, tab_step, tab_next, tab_prev, toggle_mark,
     handle_key, main_render, row_actions, run_action, batch_run, plan_batch,
     open_remove_confirm, empty_list_text, open_arsenal, footer_text,
+    lang_filter_cycle, update_all, silent_update_check,
   };
 }

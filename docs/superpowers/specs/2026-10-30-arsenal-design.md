@@ -1,5 +1,10 @@
 # arsenal 改版设计（融合 helix 视觉 / 进度可见 / 操作优化 / 版本可选）
 
+> **状态：P0+P1+P2 已实现（2026-10-30，arsenal `version = "2.0"`）**。
+> 已知瑕疵：进程启动后**第一次** `:arsenal` 可能不绘制（再按一次或 resize 即可）；
+> 根因是首个 JS 浮层的 `JsSurface` 首帧缓存（`PluginPopup::render` 首次 refresh 得到空行），
+> 下一步在 `PluginPopup` 首帧强制 refresh 即可消除。
+>
 > 用户诉求四条：**① 样式和 helix 融合** · **② 安装要有进度条** · **③ LSP 等操作要顺**
 > · **④ 有更新要显眼、并且能自己选版本**。
 >
@@ -243,3 +248,23 @@ arsenal 收到后重绘。**不阻塞**打开窗口（现在如果同步查，80
 - 不做"自动更新"（后台静默升级）：用户须显式 `U`/`u`
 - 不引入包管理器以外的下载通道（仍只有 pip/npm/cargo/go/官方 release）
 - 不在 arsenal 里做 lint/format 的执行（那是 `:lint` / `:format`；arsenal 只负责"装/升/卸/自检"）
+
+
+---
+
+## 11. 落地记录（2026-10-30）
+
+| 项 | 实现 |
+|---|---|
+| 版本 | `helix.plugin("arsenal", { …, version: "2.0" })` |
+| ① 行内进度条 | `status_text()` 用 `████░░░░ 46%`（8 列），无字节进度时退化为阶段文字（剥掉核心的 `[i/N]` 前缀） |
+| ① 取消 / 接线反馈 | `on_task_event` 新增 `canceled`（推进队列、汇总提示）与 `wiring`（解析核心的 JSON，echo `languages.toml updated · wired N · M 处需手动接线`） |
+| ② 更新可见 | 打开时 `silent_update_check()` 对**已受管**项入队 `{op:"check"}`（核心侧 24h 缓存 ⇒ 通常瞬时）；标题变 `▲N 更新 · …`；`U` 一键升级全部可升级项 |
+| ③ 操作 | 新键 `l` 语言过滤（循环，标题显示当前语言）、`d` → `:server doctor`、`L` → `:server log`、`y` 复制 bin 路径、`U` 全升级、`v` 版本列表；页脚同步更新 |
+| ④ 版本可选 | `helix.server.versions(name)`（核心查 GitHub releases + 6h 缓存）→ 版本弹层：`› latest`、最近 20 个 tag + 日期、`manual input…`；选中即 `S.vinputs[name]=tag` 后走 install/update |
+
+**随本轮一起进核心的支撑改动**（前面几轮踩坑的产物，都已单独提交）：
+
+- `helix.server.versions(name)` / `helix.server.cancel(id)` / `task` 的 `check` op / `wiring`+`canceled` 事件
+- `Editor::clear_status()` 的 2s 最短展示期（否则 LSP 进度每秒抹掉提示）
+- 撤销 `helix.load` 里的二次宿主借用（曾导致**所有插件停摆**）
