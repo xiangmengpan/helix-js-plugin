@@ -291,6 +291,32 @@ pub struct LangRewrite {
 
 /// 重建受管段文本(不写盘)。`user_langs`/`user_ls` = 用户已在标记外定义的语言/顶层
 /// language-server 表名。返回 (段文本, servers, conflicts)。
+/// 运行时 languages.toml 里出现过的语言 id 集合。
+///
+/// 为什么需要：自动挂接会写 `[[language]] name = "objective-c"` 这种**新条目**，
+/// 而 helix 只会把它与**已存在**的同名语言合并；名字不存在时这条就是"半截配置" ⇒
+/// 启动直接报 `missing field 'scope'`（实测：objective-c 不在内置 languages.toml 里）。
+fn known_language_ids() -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for dir in helix_loader::runtime_dirs() {
+        let Ok(text) = std::fs::read_to_string(dir.join("languages.toml")) else {
+            continue;
+        };
+        for line in text.lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("name = ") {
+                // 只在 [[language]] 段内（粗判：本行 name = "…"，且上一行是 [[language]]）
+                if let Some(v) = rest.trim().trim_matches('"').split('"').next() {
+                    if !v.is_empty() {
+                        out.insert(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn build_section(
     user_langs: &[String],
     user_ls: &[String],
