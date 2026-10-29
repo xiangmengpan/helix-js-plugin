@@ -1344,6 +1344,8 @@ pub struct Editor {
     pub diff_providers: DiffProviderRegistry,
 
     pub debug_adapters: dap::registry::Registry,
+    /// `status_msg` 的**设置时刻**：用来区分"刚设置的用户/插件消息"和"早就该被进度收尾清掉的旧消息"。
+    pub status_set_at: Option<std::time::Instant>,
     /// 待派发的 DAP 动作（命令层与 Picker 回调只"排队"，由事件循环统一变成异步任务）。
     ///
     /// 为什么需要队列：命令与 Picker 回调都是**同步**的，手上只有 `&mut Editor`；
@@ -1490,6 +1492,7 @@ impl Editor {
 
         Self {
             mode: Mode::Normal,
+            status_set_at: None,
             debug_temp_breakpoint: None,
             debug_opened_docs: Default::default(),
             debug_docs_before: Default::default(),
@@ -1607,14 +1610,30 @@ impl Editor {
             .reset(Instant::now() + config.idle_timeout);
     }
 
+    /// 清状态消息 —— 但**不打断刚设置的那条**。
+    ///
+    /// 为什么：`application.rs` 在 **LSP 进度结束**时无条件调这个。clangd 这类服务器
+    /// 每秒都在结束/开始进度 ⇒ 用户或插件（arsenal/dapui）刚 echo 的提示会在 ~1s 内被
+    /// 抹掉，看起来就是"按了没反应/什么都不提示"（实测 `:echo` 也活不过 1.5s）。
+    /// 这里给一个**最短展示时长**：新消息在 2s 内免疫清理；更老的照旧清掉
+    /// （进度收尾那条语义不变）。
     pub fn clear_status(&mut self) {
+        const MIN_SHOW: std::time::Duration = std::time::Duration::from_secs(2);
+        let too_young = self
+            .status_set_at
+            .is_some_and(|t| t.elapsed() < MIN_SHOW);
+        if too_young {
+            return;
+        }
         self.status_msg = None;
+        self.status_set_at = None;
     }
 
     #[inline]
     pub fn set_status<T: Into<Cow<'static, str>>>(&mut self, status: T) {
         let status = status.into();
         log::debug!("editor status: {}", status);
+        self.status_set_at = Some(std::time::Instant::now());
         self.status_msg = Some((status, Severity::Info));
     }
 
@@ -1623,6 +1642,7 @@ impl Editor {
         let error = error.into();
         log::debug!("editor error: {}", error);
         self.last_error = Some(error.clone());
+        self.status_set_at = Some(std::time::Instant::now());
         self.status_msg = Some((error, Severity::Error));
     }
 
@@ -1630,6 +1650,7 @@ impl Editor {
     pub fn set_warning<T: Into<Cow<'static, str>>>(&mut self, warning: T) {
         let warning = warning.into();
         log::warn!("editor warning: {}", warning);
+        self.status_set_at = Some(std::time::Instant::now());
         self.status_msg = Some((warning, Severity::Warning));
     }
 
