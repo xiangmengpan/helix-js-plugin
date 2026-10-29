@@ -33,6 +33,10 @@ pub(crate) fn handle_open_popup(
     // 由事件循环在下一轮推层并渲染。
     job::dispatch_blocking(move |_editor, compositor, mut _js| {
         compositor.replace_or_push(lid, popup);
+        // **必须主动请求重绘**：推层本身不改编辑器/终端的任何状态，事件循环可能就此
+        // 闲着等输入 ⇒ 浮层"已经存在但没画出来"（实测：`:arsenal` 按了没反应，
+        // 直到窗口 resize 才出现）。
+        helix_event::request_redraw();
     });
     Ok(())
 }
@@ -46,6 +50,7 @@ pub(crate) fn handle_close_popup(ClosePopupReq { id }: ClosePopupReq) -> anyhow:
     let _ = helix_js::close_popup(id);
     job::dispatch_blocking(move |_editor, compositor, mut _js| {
         compositor.close_popup_by_id(id);
+        helix_event::request_redraw();
     });
     Ok(())
 }
