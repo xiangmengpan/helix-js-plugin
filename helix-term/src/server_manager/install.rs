@@ -281,6 +281,21 @@ pub fn install_tool_adhoc(
             .take(5)
             .collect::<Vec<_>>()
             .join("\n");
+        // 127 = 命令找不到。绝大多数是**工具链没装**（`go install gopls` 里缺 go），
+        // 直接说清"装什么"，而不是把 `sh: go: not found` 甩给用户。
+        if out.status.code() == Some(127) {
+            let tool = required_toolchain(cmd, &expanded);
+            let hint = match tool.as_deref() {
+                Some(t) => format!(
+                    "需要工具链 `{t}`（不在 PATH）。先安装 {t} 再重试；\
+                     或用系统包管理器装好该工具后 `:server unmanage {name}` 交给本机版本"
+                ),
+                None => "命令找不到（PATH 里没有需要的程序）".to_string(),
+            };
+            return Err(rollback(anyhow!(
+                "tool '{name}' 安装失败：{hint}\n  底层输出：{tail}"
+            )));
+        }
         return Err(rollback(anyhow!(
             "tool '{name}' 安装失败({}):\n{tail}",
             out.status
@@ -722,4 +737,29 @@ fn fetch_text(url: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     resp.into_string()
         .map_err(|e| anyhow::anyhow!("读响应失败: {e}"))
+}
+
+/// 从 `cmd + args` 里猜出**真正需要的工具链**（`sh -c "GOBIN=… go install …"` → `go`）。
+fn required_toolchain(cmd: &str, args: &[String]) -> Option<String> {
+    // 直接就是工具链（pip/npm/cargo/…）：但 `sh` 本身一定存在，不算
+    let direct = matches!(
+        cmd,
+        "pip" | "pip3" | "npm" | "cargo" | "go" | "gem" | "dotnet"
+    );
+    if let Some(script) = args
+        .iter()
+        .position(|a| a == "-c")
+        .and_then(|i| args.get(i + 1))
+    {
+        for tok in script.split_whitespace() {
+            if tok.contains('=') || tok.starts_with('-') || tok == "env" {
+                continue;
+            }
+            return Some(tok.to_string());
+        }
+    }
+    if direct {
+        return Some(cmd.to_string());
+    }
+    None
 }

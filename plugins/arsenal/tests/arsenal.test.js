@@ -493,7 +493,10 @@ test('单任务失败:汇总保留(失败只能靠这条看到)', () => {
   S.rows = [FIXED];
   M.run_action('install', 'gopls');
   feed('error', 'gopls', 'source not configured (registry missing url)');
-  assert.deepEqual(calls.echo, ['arsenal: batch done 0/1, failed: gopls (source not configured (registry missing url))']);
+  // 失败摘要改成一行 `name — <首行>`（核心错误可能多行，旧断言是括号包裹）
+  assert.deepEqual(calls.echo, [
+    'arsenal: batch done 0/1, failed: gopls — source not configured (registry missing url)',
+  ]);
 });
 
 test('多任务批量:逐项 done msg + 末尾汇总', () => {

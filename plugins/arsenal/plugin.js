@@ -125,7 +125,9 @@ function on_task_event(ev) {
     S.busy.idx += 1;
   } else if (ev.kind === "error") {
     if (ev.name) {
-      S.busy.fail.push(ev.name + (ev.msg ? " (" + ev.msg + ")" : ""));
+      // 失败摘要压成一行（核心的错误可能很长，含换行/提示）
+      const one = (ev.msg || "").split("\n")[0];
+      S.busy.fail.push(ev.name + (one ? " — " + (one.length > 70 ? one.slice(0, 69) + "…" : one) : ""));
       S.busy.idx += 1;
     } else {
       // 批级 panic(name="";run_batch catch 兜底事件):worker 已不执行本批剩余 item,
