@@ -699,7 +699,13 @@ function open_arsenal() {
 }
 
 function toggle_arsenal() {
-  open_arsenal();
+  // 打开失败必须可见：早先异常被吞掉 ⇒ `:arsenal` "什么都不发生"，无法诊断。
+  try {
+    open_arsenal();
+  } catch (e) {
+    helix.echo("arsenal: open failed: " + (e && e.message ? e.message : e));
+    throw e;
+  }
 }
 
 // ────────────────────────── 按键(主窗 onKey;模态搜索) ──────────────────────────
