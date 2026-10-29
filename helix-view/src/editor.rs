@@ -1316,6 +1316,14 @@ pub struct Editor {
     pub debug_help_doc: Option<DocumentId>,
     /// `:keys`（当前层完整键位表）的临时 buffer，同样复用。
     pub keys_help_doc: Option<DocumentId>,
+    /// `:server doctor` 的自检报告 buffer，同样复用。
+    pub server_doctor_doc: Option<DocumentId>,
+    /// `:server log` 的日志尾 buffer，同样复用。
+    pub server_log_doc: Option<DocumentId>,
+    /// `:server status`（含"上次失败"）的 buffer，同样复用。
+    pub server_status_doc: Option<DocumentId>,
+    /// `:server sync` 的对齐报告 buffer，同样复用。
+    pub server_sync_doc: Option<DocumentId>,
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
@@ -1488,6 +1496,10 @@ impl Editor {
             debug_log_doc: None,
             debug_help_doc: None,
             keys_help_doc: None,
+            server_doctor_doc: None,
+            server_log_doc: None,
+            server_status_doc: None,
+            server_sync_doc: None,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),

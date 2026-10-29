@@ -41,7 +41,14 @@ pub(super) fn run(
     let version = resolve_version(&spec, arg2)?;
     // 写互斥(整 op 含 rewrite):与后台 worker / :server 其它写流不交错
     let _op = server_manager::op_lock();
-    server_manager::install(name, &version)?;
+    // 跨进程：另一个 hx 正在写同一棵 managed 目录 ⇒ 直接失败（不带病继续写）
+    let _flock = server_manager::file_lock()?;
+    // 失败信息以前只在状态栏闪一下（下一次按键就没了）⇒ 落一份，供 status/doctor 显示
+    if let Err(e) = server_manager::install(name, &version) {
+        server_manager::record_error(name, &format!("{e:#}"));
+        return Err(e);
+    }
+    server_manager::clear_error(name);
     let rw = server_manager::rewrite_languages_toml()?;
     let mut msg = format!(
         "installed '{name}' {version} -> {}",

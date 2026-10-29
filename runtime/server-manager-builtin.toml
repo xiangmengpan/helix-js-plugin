@@ -80,6 +80,8 @@ order = 7
 kind = "formatter"
 languages = ["python"]
 cmd = ""
+# 约定：helix 的 formatter 走 **stdin → stdout**；`-` 表示从标准输入读
+format-args = ["-q", "-"]
 description = "Python code formatter (black)"
 homepage = "https://github.com/psf/black"
 
@@ -88,5 +90,7 @@ order = 8
 kind = "formatter"
 languages = ["javascript", "typescript", "html", "css", "json", "markdown"]
 cmd = ""
+# `%{buffer_name}` 由编辑器展开成当前文件名（prettier 靠它猜语言）
+format-args = ["--stdin-filepath", "%{buffer_name}"]
 description = "Multi-language code formatter (prettier)"
 homepage = "https://github.com/prettier/prettier"

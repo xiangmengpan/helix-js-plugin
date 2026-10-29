@@ -133,6 +133,9 @@ pub struct Spec {
     pub install: Install,
     /// 固定安装版本({version} 占位填充);None = install/update 须显式版本
     pub version: Option<String>,
+    /// `kind = "formatter"` 时写进 `languages.toml` 的 `formatter.args`
+    /// （如 `ruff format --stdin-filename {}` 这类；空 = 不写 args）
+    pub format_args: Vec<String>,
 }
 
 impl Spec {
@@ -338,6 +341,14 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         .and_then(Value::as_str)
         .unwrap_or(name)
         .to_string();
+    // formatter 的参数（其它 kind 忽略）
+    let format_args: Vec<String> = match tbl.get("format-args") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
     // **有下载源** = 单模板 url 非空 **或** 给了逐平台 asset[](Mason 形状)。
     // 早先只看 url ⇒ "只写 asset[]" 的配方会掉进占位分支:strip 被强制成 1、bin 被忽略
     // (用 bin-name),单文件归档被 strip 掉 ⇒ 报"找不到可执行"(实测踩到)。
@@ -436,6 +447,7 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         description,
         homepage,
         version,
+        format_args,
         install,
     })
 }

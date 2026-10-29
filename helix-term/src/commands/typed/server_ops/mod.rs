@@ -11,11 +11,14 @@ use super::*;
 use server_manager::registry;
 use server_manager::Availability;
 
+mod doctor;
 mod install;
 mod list;
+mod log;
 mod remove;
 mod search;
 mod status;
+mod sync;
 mod unmanage;
 mod update;
 
@@ -37,8 +40,11 @@ pub(crate) fn server_op(
         "remove" => remove::run(editor, arg),
         "unmanage" | "ignore" => unmanage::run(editor, arg),
         "status" => status::run(editor),
+        "doctor" => doctor::run(editor, arg),
+        "log" => log::run(editor, arg, arg2),
+        "sync" => sync::run(editor, arg, arg2),
         other => Err(anyhow!(
-            "unknown server subcommand '{other}'(list|search|install|update|remove|unmanage|status|panel)"
+            "unknown server subcommand '{other}'(list|search|install|update|remove|unmanage|status|doctor|log|sync|panel)"
         )),
     }
 }

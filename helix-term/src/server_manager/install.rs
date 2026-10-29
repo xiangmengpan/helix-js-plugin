@@ -484,3 +484,113 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+// ============================ 失败留存 ============================
+
+/// 记一条"这个 server 上次为什么失败"。
+///
+/// 为什么需要：安装/升级失败的信息以前只在状态栏闪一下（下一次按键就没了），
+/// 用户回头看只能翻日志。这里落一个小 JSON，`:server status`/`doctor` 直接显示。
+pub fn record_error(name: &str, msg: &str) {
+    let path = managed_root().join("last-error.json");
+    let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    map.insert(
+        name.to_string(),
+        serde_json::json!({ "msg": msg, "at": at }),
+    );
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string(&serde_json::Value::Object(map)) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+/// 上次失败原因（`msg` + unix 时间戳）；没有就 None。成功后应 `clear_error`。
+pub fn last_error(name: &str) -> Option<(String, u64)> {
+    let path = managed_root().join("last-error.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let e = v.get(name)?;
+    Some((
+        e.get("msg")?.as_str()?.to_string(),
+        e.get("at").and_then(serde_json::Value::as_u64).unwrap_or(0),
+    ))
+}
+
+/// 成功后清掉该 server 的失败记录。
+pub fn clear_error(name: &str) {
+    let path = managed_root().join("last-error.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    if let Some(map) = v.as_object_mut() {
+        map.remove(name);
+        if let Ok(t) = serde_json::to_string(&v) {
+            let _ = std::fs::write(&path, t);
+        }
+    }
+}
+
+// ============================ 跨进程锁 ============================
+
+/// 跨进程安装锁（`managed/install.lock`，flock）。
+///
+/// `op_lock()` 只是**进程内** Mutex：两个 hx 同时 `:server install` 会各自往同一个
+/// `managed/<name>/` 里写（临时文件 + rename 能挡住"半个文件"，但挡不住"两份半成品
+/// 互相覆盖"）。这里再加一把文件锁，拿不到就明确报"另一个 hx 正在装"。
+pub struct FileLock {
+    #[allow(dead_code)]
+    file: std::fs::File,
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // SAFETY: fd 属于 self.file，在 drop 期间仍然有效
+            unsafe {
+                libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
+/// 取安装锁（非阻塞）。拿不到 = 别的进程在写，返回 Err。
+pub fn file_lock() -> anyhow::Result<FileLock> {
+    let root = managed_root();
+    std::fs::create_dir_all(&root)
+        .map_err(|e| anyhow::anyhow!("创建 {} 失败: {e}", root.display()))?;
+    let path = root.join("install.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| anyhow::anyhow!("打开锁文件 {} 失败: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let ok = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if !ok {
+            anyhow::bail!(
+                "另一个 hx 正在安装/卸载 server（{} 被占用），稍后再试",
+                path.display()
+            );
+        }
+    }
+    Ok(FileLock { file })
+}

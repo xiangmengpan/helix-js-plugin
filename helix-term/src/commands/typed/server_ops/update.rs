@@ -35,10 +35,18 @@ pub(super) fn run(editor: &mut Editor, arg: Option<&str>) -> anyhow::Result<()> 
     let (mut updated, mut failed) = (0u32, Vec::new());
     // 写互斥:全量/单个 update(含末尾 rewrite)与后台 worker 写流不交错
     let _op = server_manager::op_lock();
+    // 跨进程：另一个 hx 正在写同一棵 managed 目录 ⇒ 直接失败（不带病继续写）
+    let _flock = server_manager::file_lock()?;
     for spec in targets {
         match resolve_version(&spec, None).and_then(|v| server_manager::update(&spec.name, &v)) {
-            Ok(()) => updated += 1,
-            Err(e) => failed.push(format!("{}: {e:#}", spec.name)),
+            Ok(()) => {
+                server_manager::clear_error(&spec.name);
+                updated += 1;
+            }
+            Err(e) => {
+                server_manager::record_error(&spec.name, &format!("{e:#}"));
+                failed.push(format!("{}: {e:#}", spec.name));
+            }
         }
     }
     if updated > 0 {

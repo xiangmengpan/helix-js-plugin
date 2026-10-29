@@ -10,6 +10,8 @@ pub(super) fn run(editor: &mut Editor, arg: Option<&str>) -> anyhow::Result<()> 
         Availability::Managed => {
             // remove 内部含 languages.toml 重写:整 op 持写锁
             let _op = server_manager::op_lock();
+            // 跨进程：另一个 hx 正在写同一棵 managed 目录 ⇒ 直接失败（不带病继续写）
+            let _flock = server_manager::file_lock()?;
             server_manager::remove(name)?;
             editor.set_status(format!("removed '{name}';若正被 LSP 使用,重启后生效"));
         }

@@ -12,6 +12,7 @@ pub(crate) mod archive;
 pub(crate) mod download;
 pub(crate) mod install;
 pub(crate) mod langs_toml;
+pub(crate) mod project;
 pub(crate) mod registry;
 pub(crate) mod version;
 
@@ -22,7 +23,8 @@ pub(crate) use download::{clear_download_progress, op_lock, with_download_progre
 #[cfg(test)]
 pub(crate) use download::download_progress_hook_set;
 pub(crate) use install::{
-    availability, install, is_installed, managed_root, remove, run_task, update,
+    availability, clear_error, file_lock, install, is_installed, last_error, managed_root,
+    record_error, remove, run_task, update,
 };
 pub(crate) use langs_toml::{
     apply_server_config, disk_server_manager_table, ignored_local, is_upgradable, lang_config_file,
@@ -1267,6 +1269,7 @@ url = "file://{}"
                 assets: Vec::new(),
             },
             version,
+            format_args: Vec::new(),
         };
         assert!(
             !needs_version(&mk("https://x/v{version}/t.tar.gz", Some("1.0".into()))),
@@ -1498,6 +1501,47 @@ url = "file://{}"
             out.msg
         );
         assert!(!events.is_empty(), "阶段事件照发");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 装了 formatter ⇒ languages.toml 里要写 `formatter = { command, args }`
+    /// （早先 `match kind` 只有 Lsp/Dap，formatter 走 `_ => {}`，装完什么都不写）。
+    #[test]
+    fn formatter_is_wired_into_languages_toml() {
+        let _m = sm_lock();
+        let root = tmp_root();
+        let langs = root.join("languages.toml");
+        let _md = EnvGuard::new(
+            "SM_MANAGED_DIR",
+            root.join("managed").to_string_lossy().into_owned(),
+        );
+        let _lt = EnvGuard::new("SM_LANGS_TOML", langs.to_string_lossy().into_owned());
+        apply_server_config(None).unwrap();
+
+        // 伪造"black 已受管"：managed/<name>/ + managed/bin/<bin> 软链
+        let spec = registry::get("black").expect("内置配方应有 black");
+        let dir = root.join("managed").join(&spec.name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = root.join("managed").join("bin").join(&spec.bin_name);
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        let fake = dir.join(&spec.bin_name);
+        std::fs::write(&fake, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_file(&bin);
+            std::os::unix::fs::symlink(&fake, &bin).unwrap();
+        }
+
+        let out = langs_toml::rewrite_languages_toml().expect("rewrite");
+        assert!(out.written, "应写了 languages.toml");
+        let text = std::fs::read_to_string(&langs).unwrap();
+        assert!(
+            text.contains("formatter = { command ="),
+            "formatter 必须写进 [[language]]: {text}"
+        );
+        assert!(text.contains("\"-q\""), "format-args 应写进 args: {text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

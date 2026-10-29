@@ -289,7 +289,10 @@ pub fn build_section(
     }
     let mut attached: Vec<Entry> = Vec::new();
     for spec in &all {
-        let is_attach_kind = matches!(spec.kind, registry::Kind::Lsp | registry::Kind::Dap);
+        let is_attach_kind = matches!(
+            spec.kind,
+            registry::Kind::Lsp | registry::Kind::Dap | registry::Kind::Formatter
+        );
         if !is_attach_kind {
             continue;
         }
@@ -319,7 +322,13 @@ pub fn build_section(
         }
     }
     // 按语言聚合 lsp 名与 dap 配置
-    let mut by_lang: std::collections::BTreeMap<String, (Vec<String>, Option<&registry::Spec>)> =
+    /// 每个语言聚合:（lsp 名列表, dap 配方, formatter 配方）
+    type LangSlot<'a> = (
+        Vec<String>,
+        Option<&'a registry::Spec>,
+        Option<&'a registry::Spec>,
+    );
+    let mut by_lang: std::collections::BTreeMap<String, LangSlot> =
         std::collections::BTreeMap::new();
     for e in &attached {
         for lang in &e.spec.languages {
@@ -327,11 +336,12 @@ pub fn build_section(
             match e.spec.kind {
                 registry::Kind::Lsp => slot.0.push(e.spec.name.clone()),
                 registry::Kind::Dap => slot.1 = Some(e.spec),
-                _ => {}
+                registry::Kind::Formatter => slot.2 = Some(e.spec),
+                registry::Kind::Linter => {}
             }
         }
     }
-    for (lang, (lsp, dap)) in by_lang {
+    for (lang, (lsp, dap, fmt)) in by_lang {
         let custom = user_langs.iter().any(|u| u == &lang);
         if custom {
             // 用户已自定义该语言 → 不生成条目,提示手动挂接
@@ -339,6 +349,12 @@ pub fn build_section(
                 conflicts.push(format!(
                     "语言 '{lang}' 你已自定义:请在它的 [[language]] 条目加 language-servers = [{}]",
                     toml_str(n)
+                ));
+            }
+            if let Some(s) = fmt {
+                conflicts.push(format!(
+                    "语言 '{lang}' 你已自定义:请在它的 [[language]] 条目加 formatter = {{ command = {}, args = [...] }}",
+                    toml_str(&fmt_command(s))
                 ));
             }
             if let Some(s) = dap {
@@ -354,7 +370,7 @@ pub fn build_section(
             }
             continue;
         }
-        if lsp.is_empty() && dap.is_none() {
+        if lsp.is_empty() && dap.is_none() && fmt.is_none() {
             continue;
         }
         body.push_str("[[language]]\n");
@@ -379,6 +395,25 @@ pub fn build_section(
                 toml_str(&abs_bin(&cmd).to_string_lossy())
             ));
         }
+        if let Some(s) = fmt {
+            let args = if s.format_args.is_empty() {
+                "[]".to_string()
+            } else {
+                format!(
+                    "[{}]",
+                    s.format_args
+                        .iter()
+                        .map(|a| toml_str(a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            body.push_str(&format!(
+                "formatter = {{ command = {}, args = {} }}\n",
+                toml_str(&fmt_command(s)),
+                args
+            ));
+        }
         body.push('\n');
     }
     if body.is_empty() {
@@ -390,6 +425,15 @@ pub fn build_section(
             conflicts,
         )
     }
+}
+
+/// formatter 的可执行路径：受管 bin 优先，本机已装则用 PATH 里那个。
+fn fmt_command(spec: &registry::Spec) -> String {
+    let p = match availability(&spec.name) {
+        Availability::Local(p) => p,
+        _ => spec.bin_path(),
+    };
+    abs_bin(&p).to_string_lossy().into_owned()
 }
 
 /// 剥离旧段 → 校验用户部分 TOML 合法性 → 按已装清单重建 → 原子写回。
