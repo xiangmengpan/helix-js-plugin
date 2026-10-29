@@ -4824,7 +4824,8 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         doc: "Manage LSP/DAP/linter/formatter servers (list|search|install|update|remove|status); sources from [server-manager.registry] config.",
         fun: server,
         completer: CommandCompleter::none(),
-        signature: Signature { positionals: (1, Some(3)), ..Signature::DEFAULT },
+        // 0 个位置参数 = 打开市场窗（`:server` / `:server panel` / `:server ui`）
+        signature: Signature { positionals: (0, Some(3)), ..Signature::DEFAULT },
     },
     TypableCommand {
         name: "js-permission",
@@ -5745,15 +5746,31 @@ fn server(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     if event != PromptEvent::Validate {
         return Ok(());
     }
+    // 无参 / `panel` ⇒ 打开**市场窗**（有 arsenal 插件就用它，没有回退到原生 picker）。
+    // 一个引擎（本模块）+ 两个前端：`:server <op>` 是命令行，`:arsenal` 是图形市场窗。
     let Some(sub) = args.first() else {
-        return Err(anyhow!(
-            "usage: server <list|search|install|update|remove|status|panel>"
-        ));
+        return server_ui(cx);
     };
-    if sub == "panel" {
-        return server_panel(cx);
+    if sub == "panel" || sub == "ui" {
+        return server_ui(cx);
     }
     server_op(cx.editor, sub, args.get(1), args.get(2))
+}
+
+/// `:server`（无参）/ `:server panel` / `:server ui`：打开市场窗。
+///
+/// 优先用 **arsenal 插件**（图形窗：分类页签、搜索、批量、信息、版本输入）；
+/// 插件没加载（`init.js` 没 load）时回退到核心的原生 picker，保证能力不丢。
+fn server_ui(cx: &mut compositor::Context) -> anyhow::Result<()> {
+    match run_plugin_command(cx, "arsenal", &[]) {
+        Ok(true) => Ok(()),
+        Ok(false) => server_panel(cx), // 没装 arsenal：回退原生 picker
+        Err(e) => {
+            cx.editor
+                .set_error(format!("arsenal: {e:#}（回退原生面板）"));
+            server_panel(cx)
+        }
+    }
 }
 
 /// `:server panel`:原生 picker 面板——列表/过滤(输入即搜)/状态列;

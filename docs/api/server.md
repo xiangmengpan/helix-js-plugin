@@ -1,5 +1,15 @@
 # `:server` —— LSP / DAP / linter / formatter 管理
 
+> **一个引擎，两个前端**（不是两套东西）：
+>
+> | 入口 | 是什么 |
+> |---|---|
+> | **`:server`**（无参）/ `:server panel` / `:server ui` / **`:arsenal`** | **同一个市场窗**（arsenal 插件；插件没加载时回退到核心原生 picker）|
+> | `:server <op> [args]` | **命令行**（`install/update/remove/status/doctor/log/sync/lint/…`），适合脚本与精确操作 |
+>
+> 数据完全共用：同一份 registry 配方、同一个 `managed/` 目录、同一份 `languages.toml` 接线。
+> 换句话说：**menu = arsenal，命令 = `:server <op>`** —— 名字不同是因为一个是 UI、一个是命令面。
+
 > 装、卸、升级、**自检**、按项目对齐。配方来源 `[server-manager.registry]`
 > （内置在 `runtime/server-manager-builtin.toml`，可按名字覆盖）。
 > 受管目录：`<config>/server-manager/`（`managed/bin/<name>` 软链，`languages.toml` 自动接线）。
@@ -19,7 +29,7 @@
 | **`:server log [name] [n]`** | 把 `helix.log` 里该 server 相关的尾部开成 buffer（默认 300 行） |
 | **`:server update check`** | 问**上游**有没有新版本（`latest` 源，缓存 24h）；之后 arsenal / `:server panel` 的 `▲` 才准 |
 | **`:server sync [check] [prune]`** | 按 `.helix/servers.toml` 对齐：装缺的、重写配置；`check` 只看差异，`prune` 额外卸掉多余的 |
-| `:server panel` | 面板（列表/过滤/状态列） |
+| `:server` / `:server panel` / `:server ui` | 打开**市场窗**（= `:arsenal`；无插件时回退原生 picker） |
 | **`:lint [name]`** | 跑**已装的 linter 配方**（当前文件语言），把输出变成编辑器诊断 |
 
 ## 装完会不会自动生效？

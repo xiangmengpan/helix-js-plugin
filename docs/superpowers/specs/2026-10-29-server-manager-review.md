@@ -175,3 +175,22 @@ linter 通道、项目级 registry、上游版本探测排在后面。
 `:server install ruff` → `languages.toml` 写出 `formatter = { command = "…/managed/bin/ruff", args = ["format","-"] }`
 → `:lint` → 行内出现 `● F401 [*] 'os' imported but unused`（状态栏 `lint: ruff：1 条`）
 → `:server remove ruff` → `languages.toml` 里的 ruff 条目被清掉。
+
+
+## 9. 收口："为啥又是 server 又是 arsenal"
+
+用户问到点子上了 —— 之前有**三个**图形入口（`:server panel` 原生 picker、`:arsenal` 插件市场窗、
+以及"用法提示里的 panel"），看着像三套东西。实际上一直是**一个引擎 + 两个前端**：
+
+| | 之前 | 现在 |
+|---|---|---|
+| `:server <op>` | 命令行 | 命令行（不变） |
+| `:server panel` | 核心原生 picker（第二个 UI） | **打开 arsenal**；arsenal 没加载才回退原生 picker |
+| `:server`（无参） | 报 usage | 同 `:server panel`（打开市场窗） |
+| `:arsenal` | 市场窗 | 市场窗（同一个） |
+
+顺带修掉一个真问题：`:server` 的 `Signature.positionals` 原来是 `(1, …)` ⇒ **无参直接被
+参数校验拦掉**（连 usage 分支都进不去），所以"无参打开 UI"这件事以前根本无法生效。
+
+结论（写进文档）：**menu = arsenal，命令 = `:server <op>`**，两者共用同一份 registry / managed 目录 /
+`languages.toml` 接线。
