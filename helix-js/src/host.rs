@@ -785,17 +785,11 @@ impl JsHost {
 
     /// 泵入口·按**名字**加载脚本(名字用于报错定位与热重载记录)
     pub fn load_script_named(&mut self, name: &str, src: &str) -> anyhow::Result<()> {
-        let r = self.pump(|st| crate::commands::load_script_named(st, name, src));
-        // 加载失败必须**留下痕迹**：早先这里静默返回 Err，而 `init.js` 的 safe_load 只 echo
-        // 一行状态（会被启动消息覆盖）⇒ "插件没注册"变成不可诊断的黑箱（arsenal 踩到）。
-        if let Err(e) = &r {
-            // helix-js 没有 log 依赖：走**插件可见消息**通道（`:plugin-load` 与状态栏都吃它），
-            // 这样"插件没注册"不再是黑箱
-            let _ = crate::host::try_with_messages(|q| {
-                q.push(format!("helix.load('{name}') failed: {e:#}"))
-            });
-        }
-        r
+        // ⚠ 这里**不要**在 pump 内部再借一次宿主：`load_script_named` 已经在
+        // `pump` 的 `&mut HostState` 借用里，`try_with_messages` 会撞
+        // "already borrowed" **panic** ⇒ 整个 init.js 起不来（所有插件全灭，实测）。
+        // 需要"加载失败可见"的话，改成把错误累积在 `pump` 的返回值里、由调用方显示。
+        self.pump(|st| crate::commands::load_script_named(st, name, src))
     }
 
     /// 泵入口·`pane-mode-change`(平级模式切换;与 `helix.pane_mode.*` 快照同一来源)
