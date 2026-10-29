@@ -106,13 +106,28 @@ pub fn lang_config_file() -> PathBuf {
 /// 受管已装且 detected 版本串不含配方 version → 可升级。
 /// detect_version 返回 `<bin> --version` 首行整串,常带工具名前缀
 /// (如 "rust-analyzer 2024-09-16"),故用"包含"判定同版;不做 semver。
+/// 这个受管 server 有没有"更新的版本可用"。
+///
+/// 三个来源按可信度排序：
+/// 1. 配方**钉了** version（`spec.version`）⇒ 已装（记录值或 `--version` 探测）与它不同就是可升级；
+/// 2. 配方没钉版本（动态版本，如 rust-analyzer）⇒ 看 `:server update check` 拉到的
+///    **上游最新版**缓存（24h 有效）；有缓存且 ≠ 已装 ⇒ 可升级；
+/// 3. 都没有 ⇒ 不知道（**不**谎报可升级）。
 pub fn is_upgradable(spec: &registry::Spec) -> bool {
-    match spec.version_detected() {
-        Some(v) => spec
-            .version
-            .as_deref()
-            .is_some_and(|want| !v.contains(want)),
-        None => false,
+    let recorded = super::install::installed_version(&spec.name);
+    let detected = spec.version_detected();
+    let have = recorded.clone().or_else(|| detected.clone());
+    match spec.version.as_deref() {
+        Some(want) => have.is_some_and(|v| !v.contains(want)),
+        None => {
+            let Some(latest) = super::install::latest_version(&spec.name) else {
+                return false; // 没查过上游 ⇒ 不知道
+            };
+            match have {
+                Some(v) => !v.contains(&latest) && latest != v,
+                None => false,
+            }
+        }
     }
 }
 

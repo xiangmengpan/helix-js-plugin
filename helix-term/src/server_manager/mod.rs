@@ -23,8 +23,8 @@ pub(crate) use download::{clear_download_progress, op_lock, with_download_progre
 #[cfg(test)]
 pub(crate) use download::download_progress_hook_set;
 pub(crate) use install::{
-    availability, clear_error, file_lock, install, is_installed, last_error, managed_root,
-    record_error, remove, run_task, update,
+    availability, clear_error, fetch_latest, file_lock, install, installed_version, is_installed,
+    last_error, managed_root, record_error, remove, run_task, update,
 };
 pub(crate) use langs_toml::{
     apply_server_config, disk_server_manager_table, ignored_local, is_upgradable, lang_config_file,
@@ -1269,6 +1269,7 @@ url = "file://{}"
                 assets: Vec::new(),
             },
             version,
+            latest_source: None,
             format_args: Vec::new(),
         };
         assert!(
@@ -1542,6 +1543,38 @@ url = "file://{}"
             "formatter 必须写进 [[language]]: {text}"
         );
         assert!(text.contains("\"-q\""), "format-args 应写进 args: {text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 动态版本配方（`spec.version = None`）也能判"可升级"：
+    /// 靠 `installed.json`（我装了啥）+ `latest.json`（上游最新，`update check` 写的）。
+    #[test]
+    fn upgradable_uses_recorded_and_latest_versions() {
+        let _m = sm_lock();
+        let root = tmp_root();
+        let _md = EnvGuard::new(
+            "SM_MANAGED_DIR",
+            root.join("managed").to_string_lossy().into_owned(),
+        );
+        apply_server_config(None).unwrap();
+        let spec = registry::get("rust-analyzer").expect("内置应有 rust-analyzer");
+        assert!(spec.version.is_none(), "rust-analyzer 应是动态版本配方");
+
+        // 没查过上游 ⇒ 不知道（不谎报）
+        install::record_installed_version(&spec.name, "2025-01-01");
+        assert!(!is_upgradable(&spec), "没有上游信息时不应报可升级");
+
+        // 上游有更新版本 ⇒ 可升级
+        install::record_latest_version(&spec.name, "2026-10-26");
+        assert!(
+            is_upgradable(&spec),
+            "已装 2025-01-01 vs 上游 2026-10-26 ⇒ 可升级"
+        );
+
+        // 已装就是最新 ⇒ 不可升级
+        install::record_installed_version(&spec.name, "2026-10-26");
+        assert!(!is_upgradable(&spec), "已是最新 ⇒ 不可升级");
+        install::clear_error(&spec.name);
         let _ = std::fs::remove_dir_all(&root);
     }
 

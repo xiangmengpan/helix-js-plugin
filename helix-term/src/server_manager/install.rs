@@ -158,7 +158,10 @@ pub(crate) fn install_spec(spec: &registry::Spec, version: &str) -> Result<()> {
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
             install_tool_adhoc(name, &spec.bin_name, cmd, &arg_refs, version)
         }
-    }
+    }?;
+    // 记下"我装的是哪个版本"（动态版本配方靠它判断能不能升级）
+    record_installed_version(name, version);
+    Ok(())
 }
 
 /// 安装内核(不依赖注册表;测试/自定义源走这里)
@@ -593,4 +596,130 @@ pub fn file_lock() -> anyhow::Result<FileLock> {
         }
     }
     Ok(FileLock { file })
+}
+
+// ============================ 已装版本记录 + 上游最新版 ============================
+
+/// `install` 成功后记下"我装的是哪个版本"。
+///
+/// 为什么需要：动态版本配方（`needs-version = true`，如 rust-analyzer）的 `spec.version`
+/// 是 None ⇒ 旧的 `is_upgradable()` 恒 false，装了旧版也**永远不显示可升级**，
+/// 只能靠人记得。记下实际装的版本后，"配方要的 / 上游最新 / 我装的"三者才可比。
+pub fn record_installed_version(name: &str, version: &str) {
+    if version.is_empty() {
+        return;
+    }
+    let path = managed_root().join("installed.json");
+    let mut map = read_json_map(&path);
+    map.insert(
+        name.to_string(),
+        serde_json::json!({
+            "version": version,
+            "at": now_secs(),
+        }),
+    );
+    write_json_map(&path, map);
+}
+
+/// 记下的已装版本（没记过 ⇒ None）。
+pub fn installed_version(name: &str) -> Option<String> {
+    read_json_map(&managed_root().join("installed.json"))
+        .get(name)
+        .and_then(|v| v.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// 上游最新版缓存（`:server update check` 写入，24h 内复用）。
+pub fn latest_version(name: &str) -> Option<String> {
+    let v = read_json_map(&managed_root().join("latest.json"))
+        .get(name)?
+        .clone();
+    let at = v.get("at").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if now_secs().saturating_sub(at) > 24 * 3600 {
+        return None; // 过期：当作不知道（不误导成"有新版本"）
+    }
+    v.get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+pub fn record_latest_version(name: &str, version: &str) {
+    if version.is_empty() {
+        return;
+    }
+    let path = managed_root().join("latest.json");
+    let mut map = read_json_map(&path);
+    map.insert(
+        name.to_string(),
+        serde_json::json!({ "version": version, "at": now_secs() }),
+    );
+    write_json_map(&path, map);
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn read_json_map(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn write_json_map(path: &std::path::Path, map: serde_json::Map<String, serde_json::Value>) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string(&serde_json::Value::Object(map)) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// 查上游最新版（`:server update check`）。
+///
+/// 只支持两种来源（保守）：
+/// - `github:owner/repo` → `https://api.github.com/repos/owner/repo/releases/latest` 的 `tag_name`
+/// - 其它 URL → 当作**纯文本版本号**（一行）
+///
+/// 结果写进 `latest.json`（24h 有效）。查询失败只记日志，不影响其它 server。
+pub fn fetch_latest(spec: &crate::server_manager::registry::Spec) -> Result<Option<String>> {
+    let Some(src) = spec.latest_source.as_deref() else {
+        return Ok(None);
+    };
+    let url = match src.strip_prefix("github:") {
+        Some(repo) => format!("https://api.github.com/repos/{repo}/releases/latest"),
+        None => src.to_string(),
+    };
+    let text = fetch_text(&url).with_context(|| format!("查 {} 的最新版失败", spec.name))?;
+    let version = if src.starts_with("github:") {
+        // 极简取 "tag_name":"…"（不引 serde_json 的路径遍历，够用且不依赖响应结构）
+        text.split("\"tag_name\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').nth(1))
+            .map(str::to_string)
+    } else {
+        Some(text.lines().next().unwrap_or("").trim().to_string())
+    };
+    let version = version.filter(|v| !v.is_empty());
+    if let Some(v) = &version {
+        record_latest_version(&spec.name, v);
+    }
+    Ok(version)
+}
+
+/// 最小 HTTP GET（复用已下载模块的 ureq 依赖路径）。
+fn fetch_text(url: &str) -> Result<String> {
+    let resp = ureq::get(url)
+        .set("User-Agent", "helix-server-manager")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    resp.into_string()
+        .map_err(|e| anyhow::anyhow!("读响应失败: {e}"))
 }

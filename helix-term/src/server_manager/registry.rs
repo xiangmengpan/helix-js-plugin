@@ -133,6 +133,9 @@ pub struct Spec {
     pub install: Install,
     /// 固定安装版本({version} 占位填充);None = install/update 须显式版本
     pub version: Option<String>,
+    /// 上游最新版的来源：`github:owner/repo` 或一个返回**纯文本版本号**的 URL。
+    /// 空 = 不支持查最新版（`:server update check` 会跳过并说明）。
+    pub latest_source: Option<String>,
     /// `kind = "formatter"` 时写进 `languages.toml` 的 `formatter.args`
     /// （如 `ruff format --stdin-filename {}` 这类；空 = 不写 args）
     pub format_args: Vec<String>,
@@ -341,6 +344,12 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         .and_then(Value::as_str)
         .unwrap_or(name)
         .to_string();
+    // 上游最新版来源（`github:owner/repo` / URL；空 = 不支持）
+    let latest_source = tbl
+        .get("latest")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
     // formatter 的参数（其它 kind 忽略）
     let format_args: Vec<String> = match tbl.get("format-args") {
         Some(Value::Array(a)) => a
@@ -447,6 +456,7 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         description,
         homepage,
         version,
+        latest_source,
         format_args,
         install,
     })

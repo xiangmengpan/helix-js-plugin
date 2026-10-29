@@ -149,6 +149,11 @@ linter 通道、项目级 registry、上游版本探测排在后面。
 | 7 | **期望状态 + sync** | ✅ `.helix/servers.toml`（`server = [...]` + `[version]`）；`:server sync [check] [prune]` |
 | 8 | 文档 | ✅ 新增 `docs/api/server.md`（命令表 / 接线行为 / 配方字段 / 失败与并发） |
 
-**没做**（诚实记录）：`<space>i` 的键位入口（键位路径推 picker 在那一帧不稳，已回退，
-`:server panel` 命令仍可用）；`update --check`（上游最新版本探测）、项目级 registry 的信任门禁、
-多 server 同语言的优先级 UI —— 这三个仍按原建议排在后面。
+**补做**（2026-10-29 晚）：**上游版本探测** —— 配方新增 `latest = "github:owner/repo"`
+（或返回纯文本版本号的 URL），`:server update check` 查询并缓存 24h；
+`is_upgradable()` 改成三源判定（配方钉子 / 上游最新 / 已装记录），
+动态版本配方（rust-analyzer 这类）从此**也能显示 ▲ 可升级**。实测见
+`▲ rust-analyzer 已装 2025-01-01 → 上游 2026-10-26`，arsenal 状态列同步显示 ▲。
+
+**仍没做**（诚实记录）：`<space>i` 的键位入口（键位路径推 picker 在那一帧不稳，已回退，
+`:server panel` 命令仍可用）、项目级 registry 的信任门禁、多 server 同语言的优先级 UI。

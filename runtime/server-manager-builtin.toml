@@ -20,6 +20,7 @@
 #
 # 内置 7 条此前硬编码在 server_manager.rs;迁出后内置改动=改数据文件(可选 runtime 覆盖),无需改代码。
 [server-manager.registry.rust-analyzer]
+latest = "github:rust-lang/rust-analyzer"
 order = 1
 kind = "lsp"
 languages = ["rust"]
@@ -57,6 +58,7 @@ description = "C/C++ language server (clangd, LLVM)"
 homepage = "https://clangd.llvm.org"
 
 [server-manager.registry.debugpy]
+latest = "github:microsoft/debugpy"
 order = 5
 kind = "dap"
 languages = ["python"]

@@ -21,6 +21,7 @@ mod status;
 mod sync;
 mod unmanage;
 mod update;
+mod update_check;
 
 /// server 操作核心(`:server` 命令与 JS API `helix.server.<op>` 共用)。
 /// 每次操作前从 config 的 `[server-manager]` 段重读 mirror/registry 配方(改配置即生效)。
@@ -36,7 +37,14 @@ pub(crate) fn server_op(
         "list" => list::run(editor),
         "search" => search::run(editor, arg),
         "install" => install::run(editor, arg, arg2),
-        "update" => update::run(editor, arg),
+        "update" => {
+            // `:server update check` = 只查上游（不下载）；`update [name]` 才是执行升级
+            if arg == Some("check") {
+                update_check::run(editor)
+            } else {
+                update::run(editor, arg)
+            }
+        }
         "remove" => remove::run(editor, arg),
         "unmanage" | "ignore" => unmanage::run(editor, arg),
         "status" => status::run(editor),

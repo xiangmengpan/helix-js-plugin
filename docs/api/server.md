@@ -17,6 +17,7 @@
 | `:server status` | 计数 / 受管目录 / `languages.toml` 路径；**有失败记录时开 buffer** 显示"上次失败" |
 | **`:server doctor [name]`** | 自检：可执行 / 可执行位 / **有没有被某个语言引用** |
 | **`:server log [name] [n]`** | 把 `helix.log` 里该 server 相关的尾部开成 buffer（默认 300 行） |
+| **`:server update check`** | 问**上游**有没有新版本（`latest` 源，缓存 24h）；之后 arsenal / `:server panel` 的 `▲` 才准 |
 | **`:server sync [check] [prune]`** | 按 `.helix/servers.toml` 对齐：装缺的、重写配置；`check` 只看差异，`prune` 额外卸掉多余的 |
 | `:server panel` | 面板（列表/过滤/状态列） |
 
@@ -68,7 +69,33 @@ sha256 = "…"                   # 有 url 时应给
 strip = 1
 cmd = "…"                      # 或 Tool 安装（走包管理器）
 format-args = ["-q", "-"]      # 仅 formatter：写进 formatter.args
+latest = "github:owner/repo"   # 可选：上游最新版来源（GitHub releases/latest 的 tag，
+                               # 或一个返回**纯文本版本号**的 URL；没有就查不了新版本）
 ```
 
 `format-args` 支持编辑器变量展开（如 `%{buffer_name}`）；**约定是 stdin → stdout**
 （helix 的 formatter 协议）。
+
+
+## "有没有新版本"是怎么判断的
+
+| 情况 | 判据 |
+|---|---|
+| 配方**钉了** `version` | 已装（`installed.json` 记录 → `--version` 探测）≠ 钉子 ⇒ 可升级 |
+| 配方**没钉**（动态版本，如 rust-analyzer） | `:server update check` 查到的上游最新（`latest.json`，24h 有效）≠ 已装 ⇒ 可升级 |
+| 没查过上游 / 配方没 `latest` 源 | **不知道**（不谎报 ▲） |
+
+文件（都在受管目录下）：
+
+```
+managed/installed.json   {"rust-analyzer": {"version": "2025-01-01", "at": …}}   # 我装的是哪个版本
+managed/latest.json      {"rust-analyzer": {"version": "2026-10-26", "at": …}}   # 上游最新（update check 写）
+managed/last-error.json  {"clangd": {"msg": "sha256 mismatch…", "at": …}}        # 上次失败原因
+```
+
+## 和 arsenal（`:arsenal`）的关系
+
+`arsenal` 是同一套 `helix.server.*` 的**市场窗 UI**：分类页签（all/lsp/dap/linter/formatter/
+installed/local）、`/` 搜索、`Enter` 动作菜单、`t` 批量标记、`x` 卸/unmanage、`u` 升级、`i` 信息。
+它显示的状态列就是上面的 `upgradable`（`▲` = 有新版本，靠 `:server update check` 的结果）。
+所以：**装工具用 arsenal 或 `:server install` 都行，是同一份数据。**
