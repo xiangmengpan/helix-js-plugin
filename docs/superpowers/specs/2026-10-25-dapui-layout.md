@@ -270,3 +270,186 @@ max_nodes       = 2000    # 变量树节点上限
 - 清装饰只发一条 `set_virtual_text(path)`（= Clear，VT 与 highlight 一起清）：
   `dap-continued` / `dap-terminated` / `dap-exited` 都走它。
 - 验证：node 5 条（默认开 / 关掉不写 / 派生 scope / 换主题重算 / 继续执行清装饰）。
+
+## 15. v1.2：断点进底部面板第三 tab + 变量树 `t`/`f`（2026-10-25）
+
+### 15.1 为什么把断点从 Picker 挪到底部面板
+
+§5 的 C 面原先写的是"Picker + `d`/`c`/`l`"。**这条键位在平台上不可实现**：
+
+- 核心合同（`helix-term/src/ui/picker.rs:1304-1306`）：核心不认识的键才先问插件的
+  `PickerOptions.onKey`，而**纯字符键（无 Ctrl/Alt 的 Char）永不交给插件**——拾字安全阀。
+  `d`/`c`/`l` 都是纯字符 ⇒ 插件根本收不到（旧实现里那个 `onKey` 判断 `e.key === "d"` 是死代码）。
+- 面板/弹层的 `onKey` 收全部键（REPL 就是靠这个攒输入），所以断点列表放**底部面板的第三个 tab**
+  （`REPL | Output | Breakpoints`）：既不新占屏幕，又拿得到完整键位。
+
+`:dapui-breakpoints` 仍是那个命令名，行为改成"开底面板 → 切到断点 tab"。
+
+### 15.2 键位
+
+| 面 | 键位 |
+|---|---|
+| 断点 tab | `j/k/↑↓` 移动 · `g/G` 首/尾 · `Enter` 跳到断点行 · `d` 删 · `c` 条件 · `l` 日志消息 · `e` 异常断点 · `R` 报数量 · `Esc` 关面板 |
+| tab 条 | `Tab` 循环三页 · `1/2/3` 直达（REPL 输入非空时 `1/2` 仍让给输入） |
+| 变量树（新增） | `t` 切线程 · `f` 切栈帧 · `s` 切会话 |
+
+`c`/`l` 的输入用**自己画的弹层**（`helix.open_popup` + `el` 树，与 filetree 的 `prompt` 同款）：
+核心没有 JS 的 `prompt` API。空串提交 = 清除该项；改一项时另几项**原样带上**——核心
+`set_breakpoint` 对 `opts` 是整组覆盖，少传就是清空。
+
+### 15.3 `t` / `f` 的语义
+
+只影响**本面板**的查看与求值（`T.ctx.thread/frame` → 后续 `stack_frames`/`scopes`/`variables`/
+REPL 的 `eval(expr, frame)` 都用它），不动引擎的 stepping 线程/活动帧。
+`dap-stopped` 到达时**不带 keep**，回到引擎给的线程/帧（手动选择不会被黏住）。
+
+### 15.4 顺带修的核心缺口
+
+`helix.dap.set_breakpoint` / `remove_breakpoint` / `clear_breakpoints` 之前也要求"有活动会话"，
+而 `<space>G b` 不需要 —— 于是**先打点后启动**这个最常见流程在 API 侧是坏的（`dapui` 断点页改条件
+会报"没有活动调试会话"）。现在这三条在无会话时**只改本地断点表**并成功兑现，
+有会话才顺带推 adapter；真正启动后由 `initialized` 事件全量重放。
+
+### 15.5 验证
+
+- node 26 条（新增：三 tab 循环、断点页渲染/删除/跳转/改条件带 log+hit、改日志清空、
+  `t` 多线程弹层与单线程不弹、`f` 用所选帧拉 scopes、`dap-stopped` 回归引擎线程）。
+- 真二进制（`~/.local/bin/hx`，HEAD）pty 实测：离线打点 → `:dapui-breakpoints` 看到
+  `/tmp/wkhx/sample.rs:1 ◯` → `c` 弹"条件 sample.rs:1" → 输入 `x>1` ⇒ 行变 `◯ · cond: x>1` →
+  `d` ⇒ `(没有断点…)` 且 gutter 标记同步消失。
+
+## 16. v1.3：多会话切换 / 异常断点 / 断点随编辑移动（2026-10-25）
+
+这一轮把 §11「P1 不做」之外的三个真缺口补上了，并修了两个**原来的错误行为**。
+
+### 16.1 多会话切换 UI（`s`）
+
+- 树里 `s` → 列出 `sessions()`（`#id ⏸/▶/■ 适配器名`），选中即 `helix.dap.switch_session(id)`。
+- 核心新增 `helix.dap.switch_session(id)`：**纯本地状态**（`debug_adapters.set_active_client`），
+  同步改完 → 刷快照 → 兑现 Promise（所以 `.then` 里读 `sessions()` 已经是新 active）。
+- 只有 1 个会话时不弹层，只提示（与 `t`/`f` 同一策略）。
+
+### 16.2 异常断点（`e`）
+
+- 断点页 `e` → 多选弹层（`Space` 勾选 / `Esc` 保存关闭）→ `helix.dap.set_exception_breakpoints(picked)`。
+- 过滤器来自 adapter 的 capabilities：会话快照里新增 `filters: [{filter,label,default}]`
+  （`dap_sessions_json` 直接读 `client.caps.exception_breakpoint_filters`），
+  默认勾选按 capabilities 的 `default`。
+- adapter 一个过滤器都没有时只提示，不弹空层。
+
+### 16.3 断点随编辑移动（上游那条 `TODO: need to map breakpoints over edits`）
+
+新增 `helix-view/src/breakpoint_remap.rs`：
+
+1. 钩子 `helix-term/src/handlers/dap_breakpoints.rs` 在 `DocumentDidChange`（带
+   `old_text` + `changes`）时排队 —— 那个事件**没有 `&mut Editor`**，加字段会波及所有钩子；
+2. 事件循环里 `dispatch_dap_intents` 排空队列，用 `ChangeSet::map_pos(行首, Assoc::After)`
+   算新行号，搬动断点（条件/日志保留，`verified/id/message` 清空等重推）；
+3. 有移动的文件自动入队 `DapIntent::SyncBreakpoints`。
+
+**顺带修的调度 bug**：`dispatch_dap_intents` 原先在 `pump_term_events` 的**早退判断之后**，
+而普通编辑不产生 term/LSP 事件 ⇒ 队列永远排不空（现象：插一行后断点不跟走）。
+现在移到早退之前，同时让命令里入队的 `continue/next` 不再依赖"恰好有别的事件"。
+
+### 16.4 两个错误行为的修正
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 按 `t` 时面板被"面板 1 状态丢失，已自动关闭"关掉 | `PluginPanel::handle_event` 把 **onKey 抛错**和**注册表丢失**都当僵尸自愈；真错误是 `helix.dap.threads(1)` 抛 `argument must be an object` | ① `Err` 分支先查 `popup_exists_in(host, id)`：还活着 ⇒ 把**真实 JS 报错**显示到状态栏、面板留着；② `threads(id?)` 按 `helix.d.ts` 的契约接受**数字**（也保留对象写法）|
+| 活性检查查错表 | `panel_has_onkey`/`popup_exists` 走"隐式活性宿主"解析，没有 active host 时会**新建空宿主** | 有 `cx` 的调用点一律走新加的 `panel_has_onkey_in(host.state(), id)` / `popup_exists_in(...)`（`cx.with_js`） |
+
+### 16.5 验证
+
+- Rust：`helix-view` 79（含 remap 7 条）· `helix-js` 247（含 `threads()` 数字契约 1 条）· `cargo xtask api-check` 全绿。
+- node：`dapui` 30（新增 `s`/`e` 4 条）· `which-key` 12 → 共 42。
+- 真机（`~/.local/bin/hx`，HEAD，`-gdwarf-4` 编译的 C 程序 + 真 lldb-dap）：
+  断点命中 `#1 ⏸` → `f` 列出 `#524288 bar` / `#524289 main` / `#524290 __libc_start_call_main` →
+  `t` 列出双线程、选中后 `dapui: 看线程 #45990` → `s` 切会话 `dapui: 切到会话 #2` →
+  断点页 `e` 列出 `C++ Catch/Throw`、勾选后 `dapui: 异常断点: cpp_catch` →
+  在断点上方插一行后 gutter 与断点页都变成 `remap.rs:2`。
+
+### 16.6 收尾：`commands/dap.rs` 里三条老 TODO 的处理
+
+| TODO | 处理 |
+|---|---|
+| `edit condition` / `edit log` 的**偏移稳定性**（"adapter 回填会改行号"） | ✅ 真正修了：新增 `edit_breakpoint_field()`，**优先按 adapter 分配的 `id` 定位**（`BreakpointStore::update_by_id`），只有还没起会话（没有 id）才回退到 `(path, line)`；断点已被 adapter 移除时报「断点已不存在」，不再静默改错行 |
+| 起会话后「等 `initialized` 再放行命令 / 缓冲命令」 | ❌ 明确**不缓冲**：未就绪时每条命令都有明确报错（`调试会话还没就绪（adapter 启动中）`），缓冲会让"几秒前的 next 突然执行"，更难理解；真正的初始化动作已在 `Event::Initialized` 里做完（断点重放 + `configurationDone`） |
+| 「避免重复拉配置」 | ✅ 已由 8208d0225 的**配置快照**解决（不再每帧读盘），剩下的只是 O(模板数) 的名字查找；注释已更新，不再是 TODO |
+
+### 16.7 顺带发现并修掉：展开**非当前帧**节点会抛错
+
+新的"onKey 报错要如实显示"（§16.4）把这条藏了很久的问题照了出来：
+
+```
+面板 1 onKey 出错: helix.dap.variables: 'reference' is required at expand_node
+```
+
+根因：帧节点只有 `frame` 没有 `variablesReference`，而 `expand_node` 一律调 `variables(node.ref)`。
+现在按节点类型分派：有 `ref` → `variables`；只有 `frame` → `scopes(frame)`；两者都没有 → 摘掉
+`expandable` 静默忽略（不再抛）。顺带把 scopes/variables → 树节点的映射抽成
+`map_scopes()` / `map_variables()` 两处共用。
+
+真机验证：停在 `bar` 后按 `G` 跳到最后一个帧节点 `_start`，Enter 展开出
+`Locals / Globals / Registers`（此前是报错）。
+
+## 17. 与 which-key / 布局的相处（2026-10-25）
+
+### 17.1 提示框不许盖住布局叶子（which-key 侧改）
+
+原来 which-key 固定 `bottom-right` ⇒ dapui 的右面板 + 底面板正好在那一角，三层糊在一起。
+现在（`[plugins.which-key] avoid_panels = true`，默认开）：
+
+1. 读 `helix.pane.list()`，取所有 **PluginPanel** 的 `area`（绝对单元格几何）；
+2. 估算提示框尺寸（行数 × 最长行 + 2，与核心 Info 同口径）与视口；
+3. 首选 `position`，与面板重叠就按 `bottom-right → bottom-left → top-right → top-left` 换角，
+   全重叠取重叠面积最小；**没有面板时行为与以前完全一致**（可配 `avoid_panels = false` 回到老行为）。
+
+为什么不把两者"合并"成一个东西：它们不是一类层 —— which-key 是**提示**（Info 浮层、随时出现/消失），
+dapui 是**布局叶子**（占位、有焦点、有几何）。正确关系是"提示让位给叶子"，而不是塞进同一个框。
+
+### 17.2 焦点必须能一键回来（dapui 侧改）
+
+用户反馈：调试时面板吃掉焦点，没法回编辑器看代码。根因有两个：
+
+| 根因 | 说明 | 修法 |
+|---|---|---|
+| `C-\` 在传统终端编码里 = `0x1C` = **`C-4` 同一码** | 本机 termina 解析成 `name:"4", ctrl:true`，所以 `key.name === "\\"` 永远不成立 | 两个名字都认（`is_focus_editor_key`） |
+| 硬编码 `pane.focus(0)` | 编辑器 pane 的 id 是**布局给的**，不是契约 | 从 `pane.list()` 里按 `kind === "EditorView"` 找 id，找不到才退回 0 |
+
+并且把"离开"变成**每位用户都能撞到**的键：
+
+- `Esc`（变量树 / 底部三页）= **焦点回编辑器，面板保留** —— 调试时"看一眼代码再回来"的主路径；
+- `q`（非 REPL 页）= 关面板；REPL 里 `q` 是输入字符，关面板用新命令 **`:dapui-close`**（两个面板一起关）；
+- `C-\` / `C-4` 仍然可用；底部断点页页脚也写了 `Esc 回编辑器`。
+
+`C-p`（窗口模式）→ `h/j/k/l` 从面板移动焦点也照常可用（面板对未映射的修饰键返回 `ignore` 穿透）。
+
+**反向：怎么进面板？** auto_open 现在**不抢焦点**（`focus_on_auto_open = false` 默认）——
+命中那一刻你要的是继续看代码/按 step，而不是先按 Esc 逃出来。进面板有两条路：
+
+1. `:dapui-focus` → `pane.focus_dir(编辑器id, "right")`（面板是布局叶子，用既有的方向聚焦即可，
+   不必给核心加"按面板 id 聚焦"的新 API）；
+2. `C-p` + 方向键。
+
+关面板：`q`（非 REPL 页）或 `:dapui-close`。
+
+### 17.3 提示的两种形态：浮层（可避让）与一行摘要
+
+§17.1 解决了"浮层压面板"，但浮层本身在调试布局里还是碍眼（变量树 + 底面板 + 提示三层）。
+所以 which-key 增加了两个纯展示层的开关，核心只加了一个原语：
+
+| 配置 | 行为 | 核心依赖 |
+|---|---|---|
+| `mode = "box"`（默认） | Info 浮层；`avoid_panels` 按 pane 几何换角 | 无（原能力） |
+| `max_lines = 18` | 浮层最多 N 行，超出显示「… 还有 N 个键」 | 无 |
+| `mode = "line"` | **不出浮层**，状态栏 `echo` 一行摘要（`Space ▸ f 文件选择器 · … +21`） | 新增 `set_keymap_hint → { hide: true }`（`KeymapHint::Hide` → `hint_info()` 返回 `None` → 不挂 `autoinfo`）|
+
+设计取舍：**提示不是内容**，所以它既不该压布局叶子（避让），也可以完全不占画面（line 模式）。
+摘要只列前 6 项 + 余数，避免把状态栏挤爆；同一行内容去重（sticky 子菜单每次按键都会重算）。
+
+实测（44×170 pty，`--config` 切模式）：
+
+```
+mode=line    按 space → 浮层行号集合为空；状态栏: 「Space ▸ f Open file picker · F … · …」
+mode=box     按 space → 8 行: f/F/e/./b/j/s + 「… 还有 21 个键」,位置右下(无面板时)
+```

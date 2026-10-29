@@ -19,7 +19,7 @@ helix.plugin("statusline", {
 // ============================ 配置 ============================
 
 // 默认布局 = 2.0 之前的观感（长串拆成细粒度段,顺序不变）
-const DEFAULT_LEFT = ["window", "mode", "file", "git"];
+const DEFAULT_LEFT = ["window", "layers", "mode", "file", "git"];
 const DEFAULT_CENTER = ["diagnostics"];
 const DEFAULT_RIGHT = [
   "position",
@@ -118,6 +118,19 @@ const CAP = "\ue0b6"; // 左圆角端帽(U+E0B6)
 const CAP_END = "\ue0b4"; // 右圆角端帽(U+E0B4)
 
 const SEGMENTS = {
+  // 输入层徽标（栈序，引擎 `input_router::badges` 的唯一下游）：
+  //   `[DEBUG]` / `[PANE]` / `[DEBUG│PANE]` —— "我现在在哪几个层"的唯一显示口。
+  // 为什么放在状态栏而不是 Info：Info 只在按前缀时出现，层可能一直挂着。
+  layers: () => {
+    let b = "";
+    try {
+      b = helix.input_badges ? helix.input_badges() : "";
+    } catch (e) {
+      b = "";
+    }
+    // 用**虫子图标 + 暗色**（不再用 `[DEBUG]` 方括号 + 插入态高亮 —— 那跟其它段不搭）
+    return b ? { text: `\uf188 ${b} `, style: "ui.virtual" } : null;
+  },
   // 窗口模式指示(平级窗口/面板态)：图标跟当前窗口类型
   window: (ctx) => {
     if (!ctx.window_mode) return null;

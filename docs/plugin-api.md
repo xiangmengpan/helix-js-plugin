@@ -314,7 +314,12 @@ helix.split(dir, { terminal:{cmd,size?} } | { panel:{render,onKey?,size?} }) -> 
 helix.pane.close(id)
 helix.pane.zoom(id) / helix.pane.unzoom()
 helix.pane.resize(id, ratio)
-helix.pane.focus(id)
+helix.set_readonly(on, all?)                    // 强制只读(编辑闸门;`all`=所有 buffer)
+helix.set_register(text, register?)             // 写寄存器(默认 `"`,同时写系统剪贴板)
+helix.input_badges()                            // 输入层徽标串(栈序,如 "DEBUG│PANE")
+helix.key_frecency()                            // 按键频率统计 {"space g b": 12}（which-key 排序用）
+helix.pane.focus(id)                             // 布局叶子 id
+helix.pane.focus_panel(id)                      // **面板实例 id**(open_panel 的返回值)
 helix.layout.get()                              // {tree, active, zoomed} | null
 helix.layout.restore(layoutObj)                 // 仅写缓存
 // ── 文档/构建期常见但此前漏记的(本次对账补上)──
@@ -400,7 +405,7 @@ helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
 helix.fuzzy.*   drop, run, session
 helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename
-helix.dap.*   attach, clear_breakpoints, configs, continue, eval, launch, list_breakpoints, next, pause, remove_breakpoint, request, restart, scopes, sessions, set_breakpoint, set_exception_breakpoints, stack_frames, step_in, step_out, terminate, threads, variables
+helix.dap.*   attach, clear_breakpoints, configs, continue, eval, launch, list_breakpoints, next, pause, remove_breakpoint, request, restart, scopes, sessions, set_breakpoint, set_exception_breakpoints, stack_frames, step_in, step_out, switch_session, terminate, threads, variables
 helix.server.*   install, list, remove, rows, search, status, task, update
 helix.draw.*   braille, done, fill, hline, pop, push_clip, push_scroll, rect, text, vline
 helix.text.*   pad, truncate, width
@@ -409,7 +414,7 @@ helix.text.*   pad, truncate, width
   buffer-close, buffer-open, component-event, cursor-move, cwd-change
   doc-change, layout-change, lsp-diagnostics, mode-change
   pane-mode-change, save, selection-change, startup
-  dap-breakpoint, dap-continued, dap-exited, dap-output, dap-progress
+  dap-breakpoint, dap-breakpoints, dap-continued, dap-exited, dap-output, dap-progress
   dap-session, dap-stopped, dap-terminated, dap-thread
   term-close, term-exit, term-key, term-mode-change
   term-open, term-resize, term-title, theme-change

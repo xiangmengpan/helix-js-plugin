@@ -64,7 +64,7 @@ helix.register_command("term", () => {
     size: size_of((helix.get_config("terminal") || {}).float_size, 10),
   });
   helix.set_terminal_mode(floatId, "floating");
-});
+}, '底部打开终端');
 
 // 分屏终端：vterm 右侧 / hterm 底部
 helix.register_command("vterm", () => {
@@ -73,14 +73,14 @@ helix.register_command("vterm", () => {
     side: "right",
     size: size_of((helix.get_config("terminal") || {}).vterm_size, 40),
   });
-});
+}, '右侧竖分屏开终端');
 helix.register_command("hterm", () => {
   lastId = helix.open_terminal({
     cmd: shell(),
     side: "bottom",
     size: size_of((helix.get_config("terminal") || {}).hterm_size, 15),
   });
-});
+}, '下侧横分屏开终端');
 
 // 列出所有终端（view_id + cmd）
 helix.register_command("term-list", () => {
@@ -90,7 +90,7 @@ helix.register_command("term-list", () => {
       ? terms.map((t) => "[" + t.view_id + "] " + t.cmd).join("  ")
       : "无终端"
   );
-});
+}, '列出所有终端');
 
 // 关闭终端：默认最近打开的；传参不可用（插件命令无参）——用浮动单例或最近
 helix.register_command("term-close", () => {
@@ -103,7 +103,7 @@ helix.register_command("term-close", () => {
   } else {
     helix.echo("无终端");
   }
-});
+}, '关掉当前终端');
 
 // 持久化保存终端内容（scrollback + 屏幕）到文件：默认
 // ~/.cache/helix/term-<view_id>.log；终端内 normal 模式 y 可复制可视区到剪贴板
@@ -115,7 +115,7 @@ helix.register_command("term-save", () => {
     return;
   }
   helix.term_save(t.view_id);
-});
+}, '把终端缓冲存成文件');
 
 // ============================ 事件 ============================
 

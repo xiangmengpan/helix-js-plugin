@@ -22,6 +22,8 @@ pub struct RenderContext<'a> {
     pub window_mode: bool,
     /// 平级模式名(Pane/Resize/Move/Scroll/Locked);`None` = 不在任何模式
     pub pane_mode: Option<&'static str>,
+    /// 输入层徽标串（`DEBUG│PANE`，栈序）；空串 = 没有层
+    pub input_badges: String,
     /// 活动窗口类型(状态栏窗口图标用):editor/buffer/terminal/panel
     pub active_leaf_type: &'static str,
     /// 活动窗口路径(编辑器/buffer 叶子时为当前文件路径)
@@ -48,6 +50,7 @@ impl<'a> RenderContext<'a> {
         spinners: &'a ProgressSpinners,
         window_mode: bool,
         pane_mode: Option<&'static str>,
+        input_badges: String,
         active_leaf_type: &'static str,
         active_leaf_path: Option<String>,
         js: Option<&'a mut helix_js::host::JsHost>,
@@ -60,6 +63,7 @@ impl<'a> RenderContext<'a> {
             spinners,
             window_mode,
             pane_mode,
+            input_badges,
             active_leaf_type,
             active_leaf_path,
             parts: RenderBuffer::default(),
@@ -133,7 +137,7 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         modified: context.doc.is_modified(),
         selections: context.doc.selection(context.view.id).len(),
         selections_primary: context.doc.selection(context.view.id).primary_index(),
-        read_only: context.doc.readonly,
+        read_only: context.doc.readonly || context.doc.readonly_forced,
         encoding: context.doc.encoding().name().to_string(),
         line_ending: match context.doc.line_ending {
             helix_core::LineEnding::Crlf => "CRLF",
@@ -262,6 +266,14 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     }
 
     // Left side of the status line.
+
+    // 输入层徽标：`DEBUG` / `DEBUG│PANE` …（栈序，与窗口模式指示分开——调试不是"窗口模式"）
+    if !context.input_badges.is_empty() {
+        // 不用 `ui.statusline.insert` 覆写样式：那个 scope 的 fg 与状态栏底色相同时字会"消失"
+        // （实测：窗口模式指示的 "PANE" 就看不见）。这里用基础样式保证可读。
+        let indicator = Span::from(format!("[{}] ", context.input_badges));
+        append(&mut context.parts.left, indicator, base_style);
+    }
 
     if context.window_mode {
         // 窗口模式指示：窗口图标（与 replace 模式 statusline.js 的 ICONS.mode.window 同款字符）

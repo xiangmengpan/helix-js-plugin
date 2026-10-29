@@ -44,4 +44,4 @@ helix.register_command("layout", () => {
   } catch (e) {
     helix.echo("layout " + sub + ": " + (e && e.message ? e.message : e));
   }
-});
+}, '布局方案（保存/切换/恢复）');

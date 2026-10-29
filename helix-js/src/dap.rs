@@ -262,6 +262,25 @@ pub(crate) fn js_dap_terminate(
     Ok(enqueue(ctx, "terminate", Value::Object(params)))
 }
 
+/// `helix.dap.switch_session(id)` → 把某个已存在的会话设为 active（纯本地状态）。
+pub(crate) fn js_dap_switch_session(
+    _: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let api = "helix.dap.switch_session";
+    let v = args.first().cloned().unwrap_or(JsValue::undefined());
+    if v.is_null_or_undefined() {
+        return Err(crate::js_err(format!("{api}: 'id' is required")));
+    }
+    let n: f64 = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: 'id' must be a number")))?;
+    let mut params = serde_json::Map::new();
+    params.insert("id".into(), Value::from(n as u64));
+    Ok(enqueue(ctx, "switch_session", Value::Object(params)))
+}
+
 pub(crate) fn js_dap_restart(
     _: &JsValue,
     args: &[JsValue],
@@ -307,7 +326,23 @@ pub(crate) fn js_dap_threads(
     args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    enqueue_simple(args, ctx, "threads", "helix.dap.threads")
+    // 契约是 `threads(id?: number)`（见 helix.d.ts）。`enqueue_simple` 只认对象
+    // ⇒ 之前 `threads(1)` 直接抛 "argument must be an object"，
+    // dapui 的变量树按 `t` 切线程就是这么撞上的。数字与对象两种都收。
+    const API: &str = "helix.dap.threads";
+    let mut params = serde_json::Map::new();
+    if let Some(v) = args.first() {
+        if !v.is_null_or_undefined() {
+            if v.is_object() {
+                return enqueue_simple(args, ctx, "threads", API);
+            }
+            let n: f64 = v
+                .try_js_into(ctx)
+                .map_err(|_| crate::js_err(format!("{API}: 'id' must be a number")))?;
+            params.insert("id".into(), Value::from(n as u64));
+        }
+    }
+    Ok(enqueue(ctx, "threads", Value::Object(params)))
 }
 
 /// `pause(thread?, id?)`
@@ -397,7 +432,45 @@ pub(crate) fn js_dap_variables(
     args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    frame_or_ref("variables", "reference", "helix.dap.variables")(&JsValue::undefined(), args, ctx)
+    // `variables(reference, id?, start?, count?)` —— start/count 用于**分页**
+    // （巨大数组按需加载；adapter 侧 `supportsVariablePaging` 才生效）
+    let base = frame_or_ref("variables", "reference", "helix.dap.variables")(
+        &JsValue::undefined(),
+        args,
+        ctx,
+    )?;
+    let Some(obj) = base.as_object() else {
+        return Ok(base);
+    };
+    if let Some(v) = args.get(2) {
+        if !v.is_null_or_undefined() {
+            let n: f64 = v
+                .try_js_into(ctx)
+                .map_err(|_| crate::js_err("helix.dap.variables: 'start' must be a number"))?;
+            obj.set(
+                boa_engine::property::PropertyKey::from(boa_engine::JsString::from("start")),
+                JsValue::from(n as u64),
+                true,
+                ctx,
+            )
+            .ok();
+        }
+    }
+    if let Some(v) = args.get(3) {
+        if !v.is_null_or_undefined() {
+            let n: f64 = v
+                .try_js_into(ctx)
+                .map_err(|_| crate::js_err("helix.dap.variables: 'count' must be a number"))?;
+            obj.set(
+                boa_engine::property::PropertyKey::from(boa_engine::JsString::from("count")),
+                JsValue::from(n as u64),
+                true,
+                ctx,
+            )
+            .ok();
+        }
+    }
+    Ok(base)
 }
 
 /// `eval(expr, frame?, id?)`
@@ -644,7 +717,7 @@ pub fn resolve(st: &crate::host::HostState, id: u64, outcome: DapOutcome) -> Res
 // ============================ 事件 ============================
 
 /// 9 个 DAP 事件名（白名单见 `commands.rs`，文档门禁见 `docs/plugin-api.md`）。
-pub const EVENTS: [&str; 9] = [
+pub const EVENTS: [&str; 10] = [
     "dap-session",
     "dap-stopped",
     "dap-continued",
@@ -653,6 +726,7 @@ pub const EVENTS: [&str; 9] = [
     "dap-output",
     "dap-thread",
     "dap-breakpoint",
+    "dap-breakpoints",
     "dap-progress",
 ];
 
@@ -671,12 +745,19 @@ pub fn emit_event(name: &str, payload_json: &str) {
             return;
         };
         let undefined = JsValue::undefined();
-        for handler in &handlers {
+        for (idx, handler) in handlers.iter().enumerate() {
             let Some(func) = handler.as_callable().and_then(JsFunction::from_object) else {
                 continue;
             };
-            // 处理器的属主：事件回调在注册时已绑定，这里只需按它执行（与 diagnostics 同款）
+            // 处理器的属主：**必须**在调用期间切到注册时绑定的插件名。
+            // 早先这里只注释"属主已绑定"却没真的切 ⇒ 处理函数里调受保护 API
+            // （如 `helix.run_async` / fs）会被当成"没有插件上下文"拒掉
+            // （真实现象：`dap-stopped` 里设只读报 "没有插件上下文,拒绝 'process'"）。
+            let prev = crate::permissions::set_current_owner(
+                crate::permissions::handler_owner(name, idx).as_deref(),
+            );
             let _ = func.call(&undefined, std::slice::from_ref(&payload), engine);
+            crate::permissions::restore_owner(prev);
         }
     })
 }
@@ -715,6 +796,23 @@ mod tests {
         crate::state::with_engine(|engine| engine.eval(Source::from_bytes(script.as_bytes())))
             .map(|_| ())
             .map_err(|e| format!("{e}"))
+    }
+
+    #[test]
+    fn threads_accepts_number_or_nothing() {
+        let st = crate::host::state_handle_or_init();
+        let _ = take_requests(&st);
+        eval("globalThis.__t1 = helix.dap.threads(7); globalThis.__t2 = helix.dap.threads();")
+            .expect("threads(number) 与 threads() 都不该抛");
+        let reqs = take_requests(&st);
+        assert_eq!(reqs.len(), 2, "{reqs:?}");
+        assert_eq!(reqs[0].kind, "threads");
+        assert_eq!(reqs[0].params["id"], 7);
+        assert_eq!(reqs[1].kind, "threads");
+        assert!(
+            reqs[1].params.get("id").is_none(),
+            "省略 id ⇒ 用 active 会话"
+        );
     }
 
     #[test]

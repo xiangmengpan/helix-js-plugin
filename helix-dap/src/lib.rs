@@ -3,6 +3,7 @@ mod client;
 pub mod registry;
 #[cfg(test)]
 mod tests;
+pub mod transcript;
 mod transport;
 
 pub use client::{initialize_arguments, Client, DapHandle};

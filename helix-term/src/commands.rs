@@ -332,6 +332,10 @@ impl MappableCommand {
     #[rustfmt::skip]
     static_commands!(
         no_op, "Do nothing",
+        debug_help, "Show debug-mode key hints",
+        keys_help, "Show the full keymap of the current layer (:keys)",
+        dap_run_to_cursor_key, "Continue until the line under the cursor",
+        dap_eval_under_cursor_key, "Evaluate the identifier under the cursor",
         move_char_left, "Move left",
         move_char_right, "Move right",
         move_line_up, "Move up",
@@ -695,7 +699,20 @@ impl std::str::FromStr for MappableCommand {
                         args: args.to_string(),
                     }
                 })
-                .ok_or_else(|| anyhow!("No TypableCommand named '{}'", s))
+                .ok_or_else(|| {
+                    // 常见手误：把 `@` 宏的 `<ret>` 写进了**核心命令**形式。
+                    // `":cmd"` 里是不吃的（`<ret>` 只在 `@...` 那种按键序列里有意义）。
+                    if name.contains('<') {
+                        anyhow!(
+                            "No TypableCommand named '{}' —— 核心命令写法是 \":{}\"（不带 `<ret>`；\
+                             `<ret>` 只在 `@...` 按键序列里用）",
+                            name,
+                            name.split('<').next().unwrap_or(name)
+                        )
+                    } else {
+                        anyhow!("No TypableCommand named '{}'", s)
+                    }
+                })
         } else if let Some(suffix) = s.strip_prefix('@') {
             helix_view::input::parse_macro(suffix).map(|keys| Self::Macro {
                 name: s.to_string(),
@@ -750,6 +767,189 @@ impl PartialEq for MappableCommand {
 }
 
 fn no_op(_cx: &mut Context) {}
+
+/// 调试态里的 `?`：一行键位速查（完整表在 which-key 的 `Debug` 提示与 docs/api/dap.md）。
+/// 键位入口：`R` = 跑到光标（实现见 `commands::dap::dap_run_to_cursor`）。
+fn dap_run_to_cursor_key(cx: &mut Context) {
+    crate::commands::dap::dap_run_to_cursor(cx);
+}
+
+/// 键位入口：`K` = 光标下标识符求值。
+fn dap_eval_under_cursor_key(cx: &mut Context) {
+    crate::commands::dap::dap_eval_under_cursor(cx);
+}
+
+/// `?`：把**完整键位表**开成一个窗口（早先只写一行状态栏，看不全也留不住）。
+///
+/// 内容直接从**运行时生效**的键位表生成（含 `[keys.debug]` 的覆盖），所以永远不会
+/// 跟真正的路由/提示脱节。复用同一个临时 buffer（连续按 `?` 不会堆一堆无名 buffer）。
+/// `:keys`：把**当前层**的完整键位表开成 buffer（which-key 提示里"还有 N 个（:keys 看全部）"的落点）。
+///
+/// 三层同源，绝不自己维护第二张表：
+/// - 平级模式在栈上 ⇒ `input_router::pane_hints`
+/// - 调试暂停 ⇒ `dap_keymap()`（含 `[keys.debug]` 覆盖）
+/// - 否则 ⇒ **运行时**的普通模式 keymap（`[keys.normal]` 的覆盖也在里面），递归展开
+fn keys_help(cx: &mut Context) {
+    use crate::keymap::KeyTrie;
+    let mut text = String::new();
+    let push_entries = |text: &mut String, entries: &[(String, String)], indent: &str| {
+        let w = entries
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(2)
+            .max(2);
+        for (keys, doc) in entries {
+            text.push_str(&format!("{indent}{:<w$}  {}\n", keys, doc, w = w));
+        }
+    };
+
+    let pane = crate::input_router::current_pane_mode();
+    if pane != crate::compositor::PaneMode::Normal {
+        if let Some((title, entries)) =
+            crate::input_router::hints(pane, cx.editor.is_debug_paused())
+        {
+            text.push_str(&format!("// {} 模式（Esc 退出 / 前缀键切换）\n\n", title));
+            push_entries(&mut text, &entries, "");
+        }
+    } else if cx.editor.is_debug_paused() {
+        text.push_str(
+            "// 调试暂停时的键位（表来自运行时键位，`[keys.debug]` 的覆盖也在里面）\n             // 运行中完全不接管；关掉这页：`:bc`\n\n",
+        );
+        if let KeyTrie::Node(node) = crate::keymap::default::debug_keymap().as_ref().clone() {
+            let entries: Vec<(String, String)> = node.entries();
+            push_entries(&mut text, &entries, "");
+        }
+    } else {
+        text.push_str(
+            "// 当前模式的完整键位（递归展开，缩进 = 层级；改键在 config.toml 的 [keys.*]）\n             // 关掉这页：`:bc`；想看别的层：进那个模式（如 C-p）再 `:keys`\n\n",
+        );
+        let mode = cx.editor.mode();
+        let tree = crate::keymap::runtime_keymap(mode);
+        fn dump(trie: &KeyTrie, indent: usize, text: &mut String) {
+            let KeyTrie::Node(node) = trie else { return };
+            for (keys, child) in node.iter() {
+                let doc = match child {
+                    KeyTrie::MappableCommand(cmd) => cmd.doc().to_string(),
+                    KeyTrie::Sequence(_) => "(macro)".to_string(),
+                    KeyTrie::Node(n) => format!("[{} 个键]", n.len()),
+                };
+                text.push_str(&format!(
+                    "{pad}{:<10}  {doc}\n",
+                    keys.key_sequence_format(),
+                    pad = " ".repeat(indent),
+                ));
+                if matches!(child, KeyTrie::Node(_)) && indent < 16 {
+                    dump(child, indent + 2, text);
+                }
+            }
+        }
+        dump(&tree, 0, &mut text);
+    }
+
+    // 复用同一个 buffer
+    let reuse = cx
+        .editor
+        .keys_help_doc
+        .filter(|id| cx.editor.documents.contains_key(id));
+    match reuse {
+        Some(id) => cx.editor.switch(id, helix_view::editor::Action::Replace),
+        None => {
+            cx.editor.new_file(helix_view::editor::Action::Replace);
+            let (_, doc) = helix_view::current!(cx.editor);
+            cx.editor.keys_help_doc = Some(doc.id());
+        }
+    }
+    let (view, doc) = helix_view::current!(cx.editor);
+    let transaction = helix_core::Transaction::change(
+        doc.text(),
+        std::iter::once((0, 0, Some(text.as_str().into()))),
+    );
+    doc.apply(&transaction, view.id);
+    doc.mark_saved_now();
+    doc.set_selection(view.id, helix_core::Selection::point(0));
+}
+
+fn debug_help(cx: &mut Context) {
+    use crate::keymap::KeyTrie;
+    let tree = crate::keymap::default::debug_keymap();
+    let entries = match tree.as_ref() {
+        KeyTrie::Node(node) => node.entries(),
+        _ => Vec::new(),
+    };
+    let key_width = entries
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(2)
+        .max(2);
+    let mut text = String::new();
+    text.push_str("// 调试键位（暂停时**直接在编辑器里按**；运行中完全不接管，编辑照常）\n");
+    text.push_str("// 本页由 `?` 生成；表来自运行时键位（[keys.debug] 的覆盖也在里面）\n");
+    // 关掉用 `:buffer-close`（`:q` 关的是"视图"；这是主叶子唯一的视图，会被拒绝）
+    text.push_str("// 关掉：`:buffer-close`（简写 `:bc`）。完整参考：docs/dap-usage.md\n\n");
+    // 有中文就用中文，没有就退回引擎的英文 doc（不维护第二张"键位表"，只做文案映射）
+    let zh = |cmd_doc: &str| -> Option<&'static str> {
+        Some(match cmd_doc {
+            "Restart debugging session" => "重启（会先重建）",
+            "End debug session" => "结束会话",
+            "Continue program execution" => "继续",
+            "Pause program execution" => "暂停",
+            "Step to next" => "单步跳过",
+            "Step in" => "单步进入",
+            "Step out" => "单步跳出",
+            "Switch current thread" => "切线程",
+            "Switch stack frame" => "切栈帧",
+            "Switch debug session" => "切会话",
+            "Toggle breakpoint" => "切换断点",
+            "Edit breakpoint condition on current line" => "条件断点",
+            "Edit log breakpoint message on current line" => "日志断点",
+            "Enable exception breakpoints" => "启用异常断点",
+            "Disable exception breakpoints" => "禁用异常断点",
+            "Show variable popup" => "变量弹层",
+            "Select a variable from the tree to inspect" => "变量弹层",
+            "Evaluate identifier under cursor" => "光标下求值",
+            "Continue until the line under the cursor (temporary breakpoint)" => "跑到光标",
+            "Select a debug configuration" => "启动（选择配置）",
+            _ => return None,
+        })
+    };
+    for (keys, doc) in &entries {
+        let text_doc = zh(doc).unwrap_or(doc);
+        text.push_str(&format!(
+            "{:<width$}  {}\n",
+            keys,
+            text_doc,
+            width = key_width
+        ));
+    }
+    text.push_str(
+        "\n面板里（焦点在树/底部时）\n         j k h l g G      导航/展开         Enter   展开 · 选中别的会话=切过去\n         w / W            加监视 / 清空     d       删掉当前这条监视\n         e                给当前变量设值    y       复制值（栈帧节点上是 file:line）\n         /                过滤变量          q       关面板（REPL 页 q 是普通字符）\n         Esc              焦点回编辑器\n         \n         其它入口\n         :debug-start     启动（无参=配置 picker）    :debug-build [--release]  只构建\n         :debug-remote    远程 attach                 :debug-log [N|clear]      协议流水\n         :dapui / :dapui-repl / :dapui-output / :dapui-breakpoints / :dapui-close\n         A-1 / A-2        焦点进树 / 底部（可自行改键）\n",
+    );
+    // 复用同一个临时 buffer
+    let reuse = cx
+        .editor
+        .debug_help_doc
+        .filter(|id| cx.editor.documents.contains_key(id));
+    match reuse {
+        Some(id) => cx.editor.switch(id, helix_view::editor::Action::Replace),
+        None => {
+            cx.editor.new_file(helix_view::editor::Action::Replace);
+            let (_, doc) = helix_view::current!(cx.editor);
+            cx.editor.debug_help_doc = Some(doc.id());
+        }
+    }
+    let (view, doc) = helix_view::current!(cx.editor);
+    let transaction = helix_core::Transaction::change(
+        doc.text(),
+        std::iter::once((0, 0, Some(text.as_str().into()))),
+    );
+    doc.apply(&transaction, view.id);
+    // 生成的内容不算"未保存的修改"（否则 `:q` 会拦你、buffer 名后面挂 `[+]`）
+    doc.mark_saved_now();
+    // 从头开始看（光标放到第 0 字节）
+    doc.set_selection(view.id, helix_core::Selection::point(0));
+}
 
 type MoveFn =
     fn(RopeSlice, Range, Direction, usize, Movement, &TextFormat, &mut TextAnnotations) -> Range;
@@ -3155,6 +3355,13 @@ fn enter_insert_mode(cx: &mut Context) {
 
 // inserts at the start of each selection
 fn insert_mode(cx: &mut Context) {
+    // 只读（`:read-only` / 调试态）时明确拦一下：`Document::apply` 那道闸门会静默丢事务，
+    // 用户会觉得"按键没反应"，所以进插入模式这一步先给一条消息。
+    if doc!(cx.editor).readonly_forced {
+        cx.editor
+            .set_error("Buffer is read-only (`:read-only` 解除)");
+        return;
+    }
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
 
@@ -3650,10 +3857,13 @@ pub fn command_palette(cx: &mut Context) {
                         }),
                 )
                 .chain(helix_js::command_names().into_iter().map(|name| {
+                    // 插件命令的说明来自 `helix.register_command(name, fn, doc)` 的第三参
+                    // （早先这里写死空串 ⇒ 面板里插件命令的 doc 列永远是空的）
+                    let doc = helix_js::command_doc(&name).unwrap_or_default();
                     MappableCommand::Typable {
                         name,
                         args: String::new(),
-                        doc: String::new(),
+                        doc,
                     }
                 }));
 
@@ -3668,21 +3878,34 @@ pub fn command_palette(cx: &mut Context) {
                 ui::PickerColumn::new(
                     "bindings",
                     |item: &MappableCommand, keymap: &crate::keymap::ReverseKeymap| {
-                        keymap
+                        let seq = |bind: &Vec<helix_view::input::KeyEvent>| {
+                            bind.iter()
+                                .map(|k| k.key_sequence_format())
+                                .collect::<String>()
+                        };
+                        let mut out: Vec<String> = keymap
                             .get(item.name())
-                            .map(|bindings| {
-                                bindings.iter().fold(String::new(), |mut acc, bind| {
-                                    if !acc.is_empty() {
-                                        acc.push(' ');
-                                    }
-                                    for key in bind {
-                                        acc.push_str(&key.key_sequence_format());
-                                    }
-                                    acc
+                            .map(|b| b.iter().map(seq).collect())
+                            .unwrap_or_default();
+                        // 插件命令通常被绑成**宏**（`@:cmd<ret>`，config 里写不了裸命令名）
+                        // ⇒ 把指向 `:name` 的宏也列出来，否则这一列对插件永远是空的。
+                        // 宏形态：`@:cmd<ret>`（无参）或 `@:cmd arg<ret>`（带参）
+                        let cmd_name = item.name();
+                        for (name, binds) in keymap.iter() {
+                            let targets = name
+                                .strip_prefix('@')
+                                .and_then(|m| m.split_once(':'))
+                                .map(|(_, rest)| {
+                                    let cmd = rest.split(['<', ' ']).next().unwrap_or("");
+                                    cmd == cmd_name
                                 })
-                            })
-                            .unwrap_or_default()
-                            .into()
+                                .unwrap_or(false);
+                            if !targets {
+                                continue;
+                            }
+                            out.extend(binds.iter().map(seq));
+                        }
+                        out.join(" ").into()
                     },
                 ),
                 ui::PickerColumn::new("doc", |item: &MappableCommand, _| item.doc().into()),

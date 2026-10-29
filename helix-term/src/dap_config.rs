@@ -46,11 +46,13 @@ pub struct LaunchConfig {
     pub adapter: Option<String>,
     /// 请求参数（`program`/`args`/`cwd`/`env`/…，变量已替换）
     pub args: Value,
+    /// 启动前要跑的构建命令（`None` = 不构建）。变量已替换，`${program}` 可用。
+    pub build: Option<String>,
     pub source: Source,
 }
 
 /// 变量替换的上下文。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct VarCtx {
     /// 工作区根（`${workspaceFolder}`）
     pub workspace: PathBuf,
@@ -58,6 +60,36 @@ pub struct VarCtx {
     pub file: Option<PathBuf>,
     /// 当前工作目录（`${cwd}`）
     pub cwd: PathBuf,
+    /// Cargo 目标名（`${cargoBin}`）；非 Rust 项目为 None
+    pub cargo_bin: Option<String>,
+    /// `debug` | `release`（`${cargoProfile}`）
+    pub cargo_profile: String,
+    /// 已解析的 program（**只在展开 `build` 时**可用：`${program}`）
+    pub program: Option<String>,
+}
+
+impl Default for VarCtx {
+    fn default() -> Self {
+        Self {
+            workspace: PathBuf::new(),
+            file: None,
+            cwd: PathBuf::new(),
+            cargo_bin: None,
+            cargo_profile: "debug".to_string(),
+            program: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl VarCtx {
+    /// 测试便利：设置路径字段（其余保持已给定的值）。
+    fn with_paths(mut self, workspace: impl AsRef<Path>, file: Option<impl AsRef<Path>>) -> Self {
+        self.workspace = workspace.as_ref().to_path_buf();
+        self.cwd = workspace.as_ref().to_path_buf();
+        self.file = file.map(|f| f.as_ref().to_path_buf());
+        self
+    }
 }
 
 impl VarCtx {
@@ -67,13 +99,16 @@ impl VarCtx {
 }
 
 /// 支持的 VS Code 变量（最小集）。`${env:VAR}` 单独处理。
-const VARS: [&str; 6] = [
+const VARS: [&str; 9] = [
     "workspaceFolder",
     "file",
     "fileBasename",
     "fileDirname",
     "fileBasenameNoExtension",
     "cwd",
+    "cargoBin",
+    "cargoProfile",
+    "program",
 ];
 
 /// VS Code 里有、我们**明确不支持**的字段（遇到就报错，不静默）。
@@ -157,6 +192,23 @@ pub fn load(
                 continue;
             }
         }
+        // `build` 里的 `${program}` 要等 args 展完才知道 ⇒ 第二遍，带 program 展开
+        if let Some(build) = cfg.build.take() {
+            let mut ctx2 = ctx.clone();
+            ctx2.program = cfg
+                .args
+                .get("program")
+                .and_then(|p| p.as_str())
+                .map(str::to_string);
+            match expand(&Value::String(build), &ctx2) {
+                Ok(Value::String(b)) => cfg.build = Some(b),
+                Ok(_) => unreachable!("expand 对 String 只会返回 String"),
+                Err(err) => {
+                    warnings.push(format!("配置 {:?}: build: {err}", cfg.name));
+                    continue;
+                }
+            }
+        }
         configs.push(cfg);
     }
 
@@ -178,6 +230,7 @@ pub fn load(
             language: language.map(str::to_string),
             adapter: None,
             args,
+            build: None,
             source: Source::Lang,
         });
     }
@@ -254,9 +307,22 @@ pub fn parse_toml(text: &str) -> Result<(Vec<LaunchConfig>, Vec<String>), String
             .and_then(|v| v.as_str())
             .map(str::to_string);
 
+        let build = table
+            .get("build")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if table.contains_key("build") && build.is_none() {
+            warnings.push(format!(
+                "配置 {name:?}: `build` 必须是字符串（已按未设置处理）"
+            ));
+        }
+
         let mut args = Map::new();
         for (key, val) in table {
-            if matches!(key.as_str(), "name" | "request" | "language" | "type") {
+            if matches!(
+                key.as_str(),
+                "name" | "request" | "language" | "type" | "build"
+            ) {
                 continue;
             }
             args.insert(key.clone(), toml_to_json(val));
@@ -267,6 +333,7 @@ pub fn parse_toml(text: &str) -> Result<(Vec<LaunchConfig>, Vec<String>), String
             language,
             adapter,
             args: Value::Object(args),
+            build,
             source: Source::Toml,
         });
     }
@@ -351,9 +418,17 @@ pub fn parse_json(text: &str) -> Result<(Vec<LaunchConfig>, Vec<String>), String
             .and_then(|v| v.as_str())
             .map(str::to_string);
 
+        // `build` 是本仓的扩展（VS Code 的 launch.json 没有它，也没有 preLaunchTask 支持）
+        let build = table
+            .get("build")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let mut args = Map::new();
         for (key, val) in table {
-            if matches!(key.as_str(), "name" | "request" | "type" | "language") {
+            if matches!(
+                key.as_str(),
+                "name" | "request" | "type" | "language" | "build"
+            ) {
                 continue;
             }
             args.insert(key.clone(), val.clone());
@@ -364,6 +439,7 @@ pub fn parse_json(text: &str) -> Result<(Vec<LaunchConfig>, Vec<String>), String
             language,
             adapter,
             args: Value::Object(args),
+            build,
             source: Source::Json,
         });
     }
@@ -490,6 +566,16 @@ fn resolve(name: &str, ctx: &VarCtx) -> Result<String, String> {
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| "${fileBasenameNoExtension} 需要一个当前文件".to_string()),
         "cwd" => Ok(ctx.cwd.to_string_lossy().into_owned()),
+        "cargoBin" => ctx
+            .cargo_bin
+            .clone()
+            .ok_or_else(|| "${cargoBin} 只在 Rust 项目里可用（没找到 Cargo.toml）".to_string()),
+        "cargoProfile" => Ok(ctx.cargo_profile.clone()),
+        // 只在 `build` 里展开（先算 program，再带着它展开 build）
+        "program" => ctx
+            .program
+            .clone()
+            .ok_or_else(|| "${program} 只能用在上启动的 `build` 命令里".to_string()),
         other => Err(format!(
             "未知变量 ${{{other}}}（支持: {} 与 ${{env:VAR}}）",
             VARS.join(" / ")
@@ -504,10 +590,12 @@ mod tests {
 
     fn ctx() -> VarCtx {
         VarCtx {
-            workspace: PathBuf::from("/proj"),
-            file: Some(PathBuf::from("/proj/src/main.rs")),
-            cwd: PathBuf::from("/proj"),
+            cargo_bin: Some("mycrate".to_string()),
+            cargo_profile: "debug".to_string(),
+            program: None,
+            ..VarCtx::default()
         }
+        .with_paths("/proj", Some("/proj/src/main.rs"))
     }
 
     // ── launch.toml ──
@@ -644,11 +732,7 @@ mod tests {
         let err = expand(&json!("${nope}"), &ctx()).unwrap_err();
         assert!(err.contains("未知变量") && err.contains("nope"), "{err}");
         // 需要文件但没文件 ⇒ 报错（不静默留字面量）
-        let no_file = VarCtx {
-            workspace: PathBuf::from("/proj"),
-            file: None,
-            cwd: PathBuf::from("/proj"),
-        };
+        let no_file = VarCtx::default().with_paths("/proj", None::<&std::path::Path>);
         assert!(expand(&json!("${file}"), &no_file).is_err());
         // 没闭合的 ${ 原样保留（不算变量）
         assert_eq!(expand(&json!("a${b"), &ctx()).unwrap(), "a${b");

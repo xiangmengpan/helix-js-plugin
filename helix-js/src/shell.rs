@@ -866,14 +866,36 @@ pub(crate) fn js_read_tree(
     Ok(promise.into())
 }
 
+thread_local! {
+    /// 是否正处在一次 `run_jobs` 里。**重入会挂死**：boa 的 job 队列不是可重入的
+    /// （实测：python 会话停止后 `helix.dap.*` 的 `.then` 在泵内再触发一次泵 ⇒ 整个
+    /// 事件循环卡住，按键全部不响应）。
+    static IN_PUMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 当前是否在泵里（`resolve` 侧据此决定"泵一次"还是"只请求重绘"）。
+pub fn in_pump() -> bool {
+    IN_PUMP.with(|f| f.get())
+}
+
 /// 泵 boa promise job 队列（.then/.catch/await 恢复）。主线程每帧调用；空队列即返回。
+///
+/// 带**重入保护**：已经在泵里时直接返回（外层那次 `run_jobs` 会排空队列）。
+/// 重入 boa 的 job 队列会挂死事件循环（实测：调试会话停止后 `.then` 里再触发一次泵）。
 pub fn pump_jobs() -> Result<()> {
     crate::init();
-    crate::state::with_engine(|engine| {
+    if in_pump() {
+        // 重入：本次不泵，交给外层那次循环（`run_jobs` 会一直排空到队列空）
+        return Ok(());
+    }
+    IN_PUMP.with(|f| f.set(true));
+    let res = crate::state::with_engine(|engine| {
         engine
             .run_jobs()
             .map_err(|e| anyhow!("promise job queue: {e}"))
-    })
+    });
+    IN_PUMP.with(|f| f.set(false));
+    res
 }
 
 /// 取走全部待处理进程事件（主线程轮询用）

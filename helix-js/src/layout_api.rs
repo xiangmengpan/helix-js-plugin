@@ -214,6 +214,78 @@ pub(crate) fn js_focus_leaf(
     Ok(JsValue::undefined())
 }
 
+/// `helix.set_register(text, register?)`：写寄存器（默认未命名寄存器 `"`）。
+///
+/// 为什么需要:插件拿不到剪贴板/寄存器（"复制这个变量的值"这种操作做不了）。
+pub(crate) fn js_set_register(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let text: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err("set_register: 'text' must be a string"))?;
+    let register = args
+        .get(1)
+        .map(|v| v.try_js_into::<String>(ctx))
+        .transpose()
+        .map_err(|_| crate::js_err("set_register: 'register' must be a string"))?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::SetRegister(SetRegisterReq { text, register }));
+    Ok(JsValue::undefined())
+}
+
+/// `helix.set_readonly(on, all?)`：切换强制只读（`Document::apply` / `:write` 都检查）。
+pub(crate) fn js_set_readonly(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let on: bool = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err("set_readonly: 'on' must be a boolean"))?;
+    let all = args
+        .get(1)
+        .map(|v| v.try_js_into::<bool>(ctx))
+        .transpose()
+        .map_err(|_| crate::js_err("set_readonly: 'all' must be a boolean"))?
+        .unwrap_or(false);
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::SetReadonly(SetReadonlyReq { on, all }));
+    Ok(JsValue::undefined())
+}
+
+/// `helix.pane.focus_panel(id)`：按**面板实例 id**（`open_panel` 的返回值）聚焦。
+pub(crate) fn js_focus_panel(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::FocusPanel(FocusPanelReq { id }));
+    Ok(JsValue::undefined())
+}
+
 /// helix.layout_resize(id, "h"|"v", delta)：方向感知调整叶子份额。
 /// delta>0 增大该叶子（clamp 0.05~0.95）；方向与直接父 Split 不匹配则不生效。
 pub(crate) fn js_resize_leaf_dir(

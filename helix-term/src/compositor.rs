@@ -312,6 +312,8 @@ pub struct Compositor {
     /// 批量模式下的待发意图(每项 = 一次 `sync_layout_cache`;`None` = 该次没标种类)。
     /// 逐点模式下**恒为空**。
     pending_layout_changes: Vec<Option<&'static str>>,
+    /// 上一帧的"调试是否暂停"（用于"暂停瞬间弹一次 Debug 键位提示"）
+    last_debug_paused: bool,
 }
 
 impl Compositor {
@@ -327,6 +329,7 @@ impl Compositor {
             last_picker: None,
             full_redraw: false,
             pane_mode: PaneMode::Normal,
+            last_debug_paused: false,
             tabbar_diff: Default::default(),
             layout_change_stash: None,
             layout_change_batch: false,
@@ -355,6 +358,8 @@ impl Compositor {
         // 打开弹窗/菜单时自动退模式:不退出的话弹窗按键会被 pane_mode_key 吞掉
         if self.pane_mode != PaneMode::Normal && layer.id().is_some() {
             self.pane_mode = PaneMode::Normal;
+            // 全局镜像：`:keys` 这类拿不到 compositor 的命令要读它
+            crate::input_router::set_current_pane_mode(PaneMode::Normal);
         }
         // immediately clear last_picker field to avoid excessive memory
         // consumption for picker with many items
@@ -488,47 +493,46 @@ impl Compositor {
             }
         }
 
-        use helix_view::input::{KeyCode, KeyModifiers};
-        // ── zellij 式平级模式(阶段①)──────────────────────────────
-        // 前缀:C-g Locked / C-p Pane / C-n Resize / C-h Move / C-y Scroll。
-        // 拦截规则(设计 §4.2):`C-g` 在所有状态下都拦(否则从终端 insert 直通里
-        // 根本进不了 Locked);其余前缀在 insert / 终端直通时放行给叶子
-        // (`C-h` 在 insert 里是删词,不豁免会毁掉退格)。
-        if self.pane_mode != PaneMode::Normal {
-            if let Event::Key(key) = event {
-                return self.pane_mode_key(key, cx);
-            }
-            return false;
-        }
+        // ── 输入层路由（唯一决策点）──────────────────────────────────────────
+        // 平级模式 / 调试层 / 前缀键的"谁先拿键"全部由 `input_router::plan()` 决定；
+        // 这里只负责**执行**（它要 `&mut self` 与 `cx`，纯函数做不了）。
         if let Event::Key(key) = event {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                let ch = match key.code {
-                    KeyCode::Char(c) => Some(c),
-                    _ => None,
-                };
-                if ch == Some('g') {
-                    self.set_pane_mode(PaneMode::Locked, cx);
+            // 前缀键的"让路"条件只剩两条：输入态层在前、插入模式。
+            // 终端直通不再在这里判断 —— 它已经是 `plan_layered` 里的一层（`Plan::Terminal`）。
+            let allow_prefix = !self.input_layer_active() && cx.editor.mode() != Mode::Insert;
+            let terminal_insert = self.terminal_passthrough();
+            match crate::input_router::plan_layered(
+                self.pane_mode,
+                cx.editor.is_debug_paused(),
+                terminal_insert,
+                *key,
+                allow_prefix,
+            ) {
+                crate::input_router::Plan::Toggle(m) => {
+                    self.set_pane_mode(
+                        if self.pane_mode == m {
+                            PaneMode::Normal
+                        } else {
+                            m
+                        },
+                        cx,
+                    );
                     return true;
                 }
-                // 输入态层在前(命令行/提示/选择器/菜单/补全)时前缀键归该层:
-                // C-n/C-p 在命令行与补全里是"下一个/上一个",不能被模式抢走。
-                // (insert 豁免盖不住这种情况——命令行时编辑器不是 Insert 模式)
-                if !self.input_layer_active()
-                    && cx.editor.mode() != Mode::Insert
-                    && !self.terminal_passthrough()
-                {
-                    let next = match ch {
-                        Some('p') => Some(PaneMode::Pane),
-                        Some('n') => Some(PaneMode::Resize),
-                        Some('h') => Some(PaneMode::Move),
-                        Some('y') => Some(PaneMode::Scroll),
-                        _ => None,
-                    };
-                    if let Some(m) = next {
-                        self.set_pane_mode(m, cx);
-                        return true;
-                    }
+                crate::input_router::Plan::Pop => {
+                    self.set_pane_mode(PaneMode::Normal, cx);
+                    return true;
                 }
+                crate::input_router::Plan::PaneKey(mode, _) => {
+                    return self.pane_mode_key(mode, key, cx);
+                }
+                crate::input_router::Plan::Debug(_cmd) => {
+                    // 调试键交给编辑器叶子里的接管逻辑（它需要 commands::Context：
+                    // count/register/callback 都在那一层），这里不重复实现。
+                }
+                // 终端直通：什么都不做 ⇒ 事件继续流向叶子（终端组件把键转给 PTY）
+                crate::input_router::Plan::Terminal => {}
+                crate::input_router::Plan::Pass => {}
             }
         }
 
@@ -663,12 +667,37 @@ impl Compositor {
             };
             layer.render(layer_area, surface, cx);
         }
+        // 调试层进入的**边沿**：暂停那一刻弹一次 Debug 键位提示（层有了、提示也要有）。
+        // 退出时不弹（避免"继续之后屏幕闪一下"）。
+        {
+            let paused = cx.editor.is_debug_paused();
+            if paused && !self.last_debug_paused {
+                self.pane_mode_hint(self.pane_mode, cx);
+            } else if !paused && self.last_debug_paused {
+                // 继续执行 ⇒ 收起提示（否则那行 Debug 表会一直挂在屏幕上）
+                if self.pane_mode == PaneMode::Normal {
+                    cx.editor.autoinfo = None;
+                }
+            }
+            self.last_debug_paused = paused;
+        }
+
         // 全局状态栏：永远屏幕最底 1 行
         let statusline_area = area.clip_top(area.height.saturating_sub(1)).clip_bottom(1);
         let spinners = crate::ui::ProgressSpinners::default();
         let is_focused = self.main_tree.active() == 0;
         let (active_leaf_type, active_leaf_path) = self.active_leaf_info(cx);
         let (view, doc) = current_ref!(cx.editor);
+        // 输入层徽标（栈序）同步给插件（`helix.input_badges()`）：which-key 的 line 提示要用
+        let terminal_insert = self.terminal_passthrough();
+        let badges = crate::input_router::badges_with_terminal(
+            self.pane_mode,
+            cx.editor.is_debug_paused(),
+            terminal_insert,
+        );
+        if let Some(host) = cx.js.as_deref_mut() {
+            helix_js::cache_input_badges(host.state(), &badges);
+        }
         let mut context = crate::ui::statusline::RenderContext::new(
             cx.editor,
             doc,
@@ -684,6 +713,7 @@ impl Compositor {
                 PaneMode::Move => Some("MOVE"),
                 PaneMode::Scroll => Some("SCROLL"),
             },
+            badges,
             active_leaf_type,
             active_leaf_path,
             cx.js.as_deref_mut(),
@@ -1026,6 +1056,20 @@ impl Compositor {
         self.main_tree.rail_leaf()
     }
 
+    /// 把面板**停靠到底部**（横跨整宽）。与 `register_panel`（左右 rail）对称。
+    pub fn register_bottom_panel(
+        &mut self,
+        panel: crate::ui::PluginPanel,
+        size: u16,
+        js: Option<&mut helix_js::host::JsHost>,
+    ) -> Option<u64> {
+        let height = self.area.height.max(1) as f32;
+        let share = (size as f32 / height).clamp(0.08, 0.9);
+        let id = self.main_tree.register_dock_bottom(Box::new(panel), share);
+        self.sync_layout_cache(js);
+        Some(id)
+    }
+
     /// 打开路径到新叶（buffer_open/:vsplit path/gf 共用落点）：editor.open(Load) 建/取 doc
     /// → open_buffer_leaf 挂叶。失败 set_error。返回是否成功。
     pub fn open_doc_in_new_leaf(
@@ -1257,6 +1301,7 @@ impl Compositor {
     /// 切换平级模式:置位 + 显示/清除键位提示(``Normal`` 时清掉)
     fn set_pane_mode(&mut self, mode: PaneMode, cx: &mut Context) {
         self.pane_mode = mode;
+        crate::input_router::set_current_pane_mode(mode);
         // 插件侧可见性:helix.pane_mode.* + pane-mode-change 事件(单一来源)
         Self::publish_pane_mode(mode, cx.js.as_deref_mut());
         if mode == PaneMode::Normal {
@@ -1266,59 +1311,14 @@ impl Compositor {
         }
     }
 
-    /// 平级模式的键位表(单一来源):(模式显示名, [(键, 说明, 是否已实现)])。
-    /// 内置提示与 `helix.pane_mode.keymap()` 都从这里取,避免两处硬编码漂移。
+    /// 平级模式的键位表(单一来源在 `input_router::pane_hints`)。
+    ///
+    /// 保留这个薄包装:内置 Info 与 `publish_pane_mode` 都从这里取,而表的**定义**搬到了
+    /// 输入层模块(与徽标/路由放在一起,避免又出现"表在这里、语义在那里")。
     fn pane_mode_entries(
         mode: PaneMode,
     ) -> (&'static str, Vec<(&'static str, &'static str, bool)>) {
-        match mode {
-            PaneMode::Normal => ("Normal", Vec::new()),
-            PaneMode::Locked => (
-                "C-g",
-                vec![("C-g", "退出 locked(其余键原样交给当前窗口)", true)],
-            ),
-            PaneMode::Pane => (
-                "C-p",
-                vec![
-                    ("h j k l", "聚焦(左/下/上/右)", true),
-                    ("H J K L", "交换", true),
-                    ("p / P / Tab", "切到下一个/上一个窗口", true),
-                    ("n / d / r", "新分屏 / 下分 / 右分", true),
-                    ("x", "关闭窗口", true),
-                    ("f", "最大化/还原", true),
-                    ("z", "最小化/还原", true),
-                    ("w / e", "浮动 / 收回平铺", true),
-                    ("i", "pin(浮动时置顶)", true),
-                    ("s", "堆叠(与兄弟窗合并)", true),
-                    ("Esc / C-p", "退出", true),
-                ],
-            ),
-            PaneMode::Resize => (
-                "C-n",
-                vec![
-                    ("h j k l", "向该方向增大(浮窗:改尺寸)", true),
-                    ("H J K L", "向该方向减小", true),
-                    ("= / - / +", "宽度 ±5%", true),
-                    ("Esc / C-n", "退出", true),
-                ],
-            ),
-            PaneMode::Move => (
-                "C-h",
-                vec![
-                    ("h j k l", "与方向邻居交换(浮窗:搬位置)", true),
-                    ("Esc / C-h", "退出", true),
-                ],
-            ),
-            PaneMode::Scroll => (
-                "C-y",
-                vec![
-                    ("j / k", "行滚动", true),
-                    ("d / u", "半页", true),
-                    ("C-f C-b / h l", "整页", true),
-                    ("Esc / C-y", "退出", true),
-                ],
-            ),
-        }
+        crate::input_router::pane_hints(mode)
     }
 
     /// 把模式快照推给插件:helix.pane_mode.current()/keymap() 读它,
@@ -1345,26 +1345,18 @@ impl Compositor {
         }
     }
 
-    /// 平级模式的键位提示(经 `keymap_hint` 可由 JS `set_keymap_hint` 接管,
-    /// 缺省用内置文本)。各模式的条目与 `pane_mode_key` 里的键位表一一对应。
+    /// 键位提示（`input_router::hints()` 是唯一来源）：调试层优先，其次平级模式。
+    /// 经 `keymap_hint` 可由 JS `set_keymap_hint` 接管，缺省用内置文本。
     fn pane_mode_hint(&mut self, mode: PaneMode, cx: &mut Context) {
         use helix_view::info::Info;
-        let (key, entries) = Self::pane_mode_entries(mode);
-        if entries.is_empty() {
+        let debug = cx.editor.is_debug_paused();
+        let Some((title, owned)) = crate::input_router::hints(mode, debug) else {
             return;
-        }
-        let owned: Vec<(String, String)> = entries
-            .iter()
-            .map(|(k, d, enabled)| {
-                let d = if *enabled {
-                    (*d).to_string()
-                } else {
-                    format!("{d}(阶段② 余下)")
-                };
-                (k.to_string(), d)
-            })
-            .collect();
-        let (text, position) = helix_js::keymap_hint(key, &owned).unwrap_or_else(|| {
+        };
+        // 标题可能是动态的（"Debug"/"C-n"…）⇒ 交给 JS 时给 `&str`，`Info` 的 title 用 `Cow`
+        let key: &str = title.as_str();
+        // `keymap_hint` 返回 `KeymapHint`（which-key 的 line 模式会回 `Hide`：自己 echo）
+        let builtin = || {
             (
                 owned
                     .iter()
@@ -1373,11 +1365,16 @@ impl Compositor {
                     .join("\n"),
                 "bottom-left".to_string(),
             )
-        });
+        };
+        let (text, position) = match helix_js::keymap_hint(key, &owned) {
+            Some(helix_js::KeymapHint::Text { text, position }) => (text, position),
+            Some(helix_js::KeymapHint::Hide) => return,
+            None => builtin(),
+        };
         let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         let height = text.lines().count() as u16;
         cx.editor.autoinfo = Some(Info {
-            title: std::borrow::Cow::Borrowed(key),
+            title: std::borrow::Cow::Owned(title.clone()),
             text,
             width: width.saturating_add(2),
             height,
@@ -1396,50 +1393,25 @@ impl Compositor {
     }
 
     /// 平级模式内的按键。返回 `true` = 已消费;`false` = 放行给叶子(仅 `Locked`)。
-    fn pane_mode_key(&mut self, key: &helix_view::input::KeyEvent, cx: &mut Context) -> bool {
-        use helix_view::input::{KeyCode, KeyModifiers};
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    /// 执行一次"平级模式内的按键"（决策已由 `input_router::plan()` 做完）。
+    ///
+    /// 这里只留**动作分发**（要 `&mut self` 的方法）；前缀键切换与 `Esc` 弹层都在
+    /// `plan()` 里，避免"同一语义两处实现"。
+    fn pane_mode_key(
+        &mut self,
+        mode: PaneMode,
+        key: &helix_view::input::KeyEvent,
+        cx: &mut Context,
+    ) -> bool {
+        use helix_view::input::KeyCode;
         let ch = match key.code {
             KeyCode::Char(c) => Some(c),
             _ => None,
         };
-
-        // 前缀键在任一模式下直接切换;按同一个键回 Normal(zellij 语义)
-        if ctrl {
-            let next = match ch {
-                Some('g') => Some(PaneMode::Locked),
-                Some('p') => Some(PaneMode::Pane),
-                Some('n') => Some(PaneMode::Resize),
-                Some('h') => Some(PaneMode::Move),
-                Some('y') => Some(PaneMode::Scroll),
-                _ => None,
-            };
-            if let Some(m) = next {
-                // Locked 只能靠 C-g 进出:其余前缀在 Locked 内不响应(全部放行给叶子)
-                if self.pane_mode == PaneMode::Locked && m != PaneMode::Locked {
-                    return false;
-                }
-                self.set_pane_mode(
-                    if self.pane_mode == m {
-                        PaneMode::Normal
-                    } else {
-                        m
-                    },
-                    cx,
-                );
-                return true;
-            }
-        }
-
-        if self.pane_mode == PaneMode::Locked {
-            return false; // 除 C-g 外全部原样交给当前叶子
-        }
-        if matches!(key.code, KeyCode::Esc) {
-            self.set_pane_mode(PaneMode::Normal, cx);
-            return true;
-        }
-
-        match self.pane_mode {
+        debug_assert_eq!(mode, self.pane_mode, "plan 与当前模式应一致");
+        // 前缀键切换 / `Esc` 弹层 / Locked 放行 —— 都在 `input_router::plan()` 里做过了，
+        // 走到这里只剩"这个模式的键位动作分发"。
+        match mode {
             PaneMode::Pane => match ch {
                 Some(c @ ('h' | 'j' | 'k' | 'l')) => self.window_mode_focus(c, cx),
                 Some('H') => self.window_mode_swap('h', cx.js.as_deref_mut()),
@@ -1825,6 +1797,25 @@ impl Compositor {
     /// 标注"接下来的布局变更属于哪种"(在变更**前**调用;由 UI 请求臂/命令用)
     pub(crate) fn set_layout_change_kind(&mut self, kind: &'static str) {
         self.layout_change_stash = Some(kind);
+    }
+
+    /// 按**面板实例 id** 聚焦面板叶子（`helix.pane.focus_panel`）。
+    ///
+    /// 与 `focus_leaf` 的区别：那个收的是**布局叶子 id**，这个收的是 JS `open_panel` 的返回值。
+    pub fn focus_panel_by_id(
+        &mut self,
+        panel_id: u64,
+        js: Option<&mut helix_js::host::JsHost>,
+    ) -> bool {
+        use crate::ui::plugin_panel::PluginPanel;
+        let Some(leaf_id) = self
+            .main_tree
+            .find_leaf_id::<PluginPanel>(|p| p.id() == panel_id)
+        else {
+            return false;
+        };
+        self.focus_leaf(leaf_id, js);
+        true
     }
 
     pub fn focus_leaf(&mut self, id: u64, js: Option<&mut helix_js::host::JsHost>) {

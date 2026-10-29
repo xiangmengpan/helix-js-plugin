@@ -198,3 +198,41 @@ test('外部段:段函数抛错不得拖掉整条状态栏', () => {
   assert.ok(line.includes('a.rs'), `其它段必须还在: ${line}`);
   assert.ok(line.includes('!boom'), `坏掉的那格标出来: ${line}`);
 });
+
+test('powerline 多模式端帽共存:切模式不抹掉前一个模式的派生 scope', () => {
+  // 这条是回归测试：`set_theme` 曾经是**整体替换**语义，于是 normal 注册完再切 insert，
+  // 后一次调用会把 `statusline.cap.normal` 抹掉（端帽掉色）。改成合并语义后两者共存。
+  // 桩的 `set_theme` 也按合并实现（Object.assign），与真实 API 一致。
+  const styles = {
+    'ui.statusline': { bg: '#101010' },
+    'ui.statusline.normal': { fg: '#fff', bg: '#0000ff' },
+    'ui.statusline.insert': { fg: '#000', bg: '#00ff00' },
+  };
+  const cap = load({ corners: 'powerline' }, styles);
+
+  // 第一次渲染：normal 模式 → 注册 cap.normal
+  const normal = ctx();
+  normal.mode = 'normal';
+  cap.render(normal);
+  assert.deepEqual(cap.theme['statusline.cap.normal'], { fg: '#0000ff', bg: '#101010' });
+
+  // 切到 insert：注册 cap.insert，**不能**把 cap.normal 抹掉
+  const insert = ctx();
+  insert.mode = 'insert';
+  const parts = cap.render(insert);
+  assert.deepEqual(cap.theme['statusline.cap.insert'], { fg: '#00ff00', bg: '#101010' });
+  assert.deepEqual(
+    cap.theme['statusline.cap.normal'],
+    { fg: '#0000ff', bg: '#101010' },
+    `切模式后前一个模式的 cap scope 必须还在: ${JSON.stringify(cap.theme)}`,
+  );
+
+  // 再切回 normal：用的还是自己的 scope（不是 insert 的）
+  const back = cap.render(normal);
+  const capPart = back.find((p) => p.text === '\ue0b6');
+  assert.equal(capPart.style, 'statusline.cap.normal');
+
+  // insert 那次渲染的端帽也用自己那条
+  const insertCap = parts.find((p) => p.text === '\ue0b6');
+  assert.equal(insertCap.style, 'statusline.cap.insert');
+});

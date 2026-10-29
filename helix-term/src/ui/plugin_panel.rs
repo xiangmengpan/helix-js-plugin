@@ -117,8 +117,19 @@ impl Component for PluginPanel {
         }
         // 无 onKey 的面板：缺省全 Ignore，不调 popup_key（其缺省 Esc→Close 语义只适用于弹窗）。
         // 面板在 JS 注册表已丢失（reload/状态丢失的僵尸）：自动移除自愈
-        if !helix_js::panel_has_onkey(self.surface.id) {
-            if !helix_js::popup_exists(self.surface.id) {
+        // 活性检查必须问**同一个宿主**（`cx.js`）。走隐式解析时若当前没有 active host,
+        // 解析会建一个空的新宿主 ⇒ 面板被判成僵尸（真实现象：按 `t` 时面板被自愈关掉）。
+        let id = self.surface.id;
+        let alive = cx
+            .with_js(|host| {
+                (
+                    helix_js::panel_has_onkey_in(host.state(), id),
+                    helix_js::popup_exists_in(host.state(), id),
+                )
+            })
+            .unwrap_or_else(|| (helix_js::panel_has_onkey(id), helix_js::popup_exists(id)));
+        if !alive.0 {
+            if !alive.1 {
                 return self.zombie_selfheal();
             }
             return EventResult::Ignored(None);
@@ -151,7 +162,21 @@ impl Component for PluginPanel {
             // 穿透给编辑器；Err 仅发生在 JS 侧异常时（popup 已不在 JS 注册表——热重载/状态
             // 丢失后的僵尸面板）：自动移除面板自愈，否则渲染报错 + 按键穿透无法关闭
             Ok(PopupKeyResult::Ignored) => EventResult::Ignored(None),
-            Err(_) => self.zombie_selfheal(),
+            // 这里原先一律当"僵尸面板"自愈 —— 但 `js_popup_key` 的 Err 也包含
+            // **onKey 自己抛异常**（两层含义不同，混起来会把真错误报成"面板状态丢失"）。
+            Err(err) => {
+                let id = self.surface.id;
+                let registered = cx
+                    .with_js(|host| helix_js::popup_exists_in(host.state(), id))
+                    .unwrap_or_else(|| helix_js::popup_exists(id));
+                if !registered {
+                    self.zombie_selfheal()
+                } else {
+                    // 面板还活着：把 JS 的真实报错显示出来，层留着（用户还能按 Esc 关）
+                    cx.editor.set_error(format!("面板 {id} onKey 出错: {err}"));
+                    EventResult::Consumed(None)
+                }
+            }
         }
     }
 

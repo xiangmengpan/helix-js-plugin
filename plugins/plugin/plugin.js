@@ -330,7 +330,7 @@ function runOp(sub, arg) {
 helix.register_command("plugin", () => {
   const a = helix.command_args();
   runOp(a[0] || "status", a[1]);
-});
+}, '插件管理面板（加载/卸载/重载）');
 
 // ── 兼容层(§13;探测已证:原生 `helix.plugin` 对象可挂、也可覆盖既有属性)──
 // 迁移后由 JS 侧提供这三个入口 ⇒ **公开 API `helix.plugin.*` 不变更** ✓

@@ -20,7 +20,7 @@ mod shell;
 mod state;
 // 快照按需序列化的门控(helix-term 的帧路径用):`snapshot_wanted` 问"有人读吗",
 // `SnapshotKind` 是位标记的种类,`snapshot_stats` 是"做了几次"的可观测计数。
-pub use state::{snapshot_stats, snapshot_wanted, SnapshotKind};
+pub use state::{set_key_frecency_source, snapshot_stats, snapshot_wanted, SnapshotKind};
 mod theme;
 mod types;
 
@@ -48,11 +48,12 @@ pub use shell::*;
 // 外部无法分辨边界,而且新增一个内部访问器就会自动变成公共 API。
 // 现在新增导出必须在这里加一行 —— 边界是可见的。
 pub use state::{
-    cache_buffers, cache_configs, cache_diagnostics, cache_layout, cache_pane_mode, cache_panes,
-    cache_plugin_overrides, clear_command_args, config_schemas, register_component_state,
-    seed_config_schema, set_command_args, set_layouts_dir, set_picker_state, set_plugin_roots,
-    set_runtime_dirs, set_term_wake, set_viewport, statusline_replaces, statusline_zones,
-    take_messages, take_ui_requests, unregister_component_state,
+    cache_buffers, cache_configs, cache_diagnostics, cache_input_badges, cache_layout,
+    cache_pane_mode, cache_panes, cache_plugin_overrides, clear_command_args, config_schemas,
+    register_component_state, seed_config_schema, set_command_args, set_layouts_dir,
+    set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake, set_viewport,
+    statusline_replaces, statusline_zones, take_messages, take_ui_requests,
+    unregister_component_state,
 };
 // **L3 过渡入口**:helix-term 的"无宿主分支"与 `Drop` 实现拿不到 `&HostState` ⇒
 // 这些 `*_current` 是同一批访问器的隐式版本。它们**只**给 helix-term 的边界用,

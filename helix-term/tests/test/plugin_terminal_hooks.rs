@@ -466,6 +466,17 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
         joined.contains("焦") && joined.contains("化"),
         "Pane 模式中文键位表: {joined:?}"
     );
+    // space G → DAP 子菜单。引擎里它的标题是 "Debug (experimental)"(default.rs),
+    // 不是 "Debug" —— 前缀键表写错标题就丢掉前缀,退回单键匹配,
+    // l/v/c/i/o/n/s 会显示成 z/g/编辑/选择 里的别人的中文(曾经的真实现象)。
+    pump(&mut app, "<esc>").await?;
+    pump(&mut app, "<space>G").await?;
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 160, 30));
+    let joined = rows.join("\n");
+    assert!(
+        joined.contains("断") && joined.contains("步"),
+        "DAP 子菜单中文说明(切换断点 / 单步…): {joined:?}"
+    );
     Ok(())
 }
 

@@ -1288,6 +1288,11 @@ pub enum DapIntent {
     SwitchThread(helix_dap::ThreadId),
     /// 变量视图：拉 scopes + variables 后开弹层
     Variables { frame_id: usize },
+    /// 发 `launch`/`attach`（在客户端插入注册表**之后**；debugpy 要等 configurationDone）
+    StartRequest {
+        request: String,
+        args: serde_json::Value,
+    },
 }
 
 use futures_util::stream::{Flatten, Once};
@@ -1297,6 +1302,20 @@ type Diagnostics = BTreeMap<Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>>;
 pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
+    /// "跑到光标"用的**临时断点**（path, row）。命中后由 `Event::Stopped` 摘掉，
+    /// 所以它不会残留在用户的断点表里。
+    pub debug_temp_breakpoint: Option<(std::path::PathBuf, usize)>,
+    /// 调试会话**自己打开**的文档（停下时跳进去的源文件、`:debug-log` 的临时 buffer）。
+    /// 会话结束就关掉它们 —— 否则单步进几层 libc 之后左边会堆一列 buffer。
+    pub debug_opened_docs: std::collections::HashSet<DocumentId>,
+    /// 会话**开始时**已经开着的文档。这些永远不自动关（用户自己的文件）。
+    pub debug_docs_before: std::collections::HashSet<DocumentId>,
+    /// `:debug-log` 用的那个临时 buffer（**复用**，不然每敲一次就多一个无名 buffer）。
+    pub debug_log_doc: Option<DocumentId>,
+    /// `?`（调试键位速查）用的临时 buffer，同样复用。
+    pub debug_help_doc: Option<DocumentId>,
+    /// `:keys`（当前层完整键位表）的临时 buffer，同样复用。
+    pub keys_help_doc: Option<DocumentId>,
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
@@ -1463,6 +1482,12 @@ impl Editor {
 
         Self {
             mode: Mode::Normal,
+            debug_temp_breakpoint: None,
+            debug_opened_docs: Default::default(),
+            debug_docs_before: Default::default(),
+            debug_log_doc: None,
+            debug_help_doc: None,
+            keys_help_doc: None,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
@@ -2107,6 +2132,15 @@ impl Editor {
         id
     }
 
+    /// 调试是否处于暂停（有活动栈帧）。gdb 式调试键只在暂停时接管编辑器按键——
+    /// 运行中按 `n` 应该是编辑器的"下一个匹配"，不是"单步"。
+    pub fn is_debug_paused(&self) -> bool {
+        self.debug_adapters
+            .get_active_client()
+            .map(|c| c.is_paused())
+            .unwrap_or(false)
+    }
+
     pub fn new_file(&mut self, action: Action) -> DocumentId {
         self.new_file_from_document(
             action,
@@ -2200,6 +2234,35 @@ impl Editor {
         }
         self.tree.remove(id);
         self._refresh();
+    }
+
+    /// 关掉**调试会话自己打开**的文档（停下时跳进去的源文件、`:debug-log` 的临时 buffer）。
+    ///
+    /// 规则：
+    /// - 只关"会话开始后才出现"的（`debug_docs_before` 里没有的）；
+    /// - **改过的**不关（用户可能正在看/正在改）；
+    /// - 至少留一个文档（不能把编辑器关成空的）。
+    pub fn close_debug_opened_docs(&mut self) {
+        let before = std::mem::take(&mut self.debug_docs_before);
+        let opened = std::mem::take(&mut self.debug_opened_docs);
+        for id in opened {
+            if before.contains(&id) {
+                continue;
+            }
+            if self.documents.len() <= 1 {
+                break;
+            }
+            let unmodified = self
+                .documents
+                .get(&id)
+                .map(|d| !d.is_modified())
+                .unwrap_or(false);
+            if !unmodified {
+                continue;
+            }
+            // `force=false`：万一还有别的错误（比如文件被外部删了），不 panic，跳过即可
+            let _ = self.close_document(id, false);
+        }
     }
 
     pub fn close_document(&mut self, doc_id: DocumentId, force: bool) -> Result<(), CloseError> {

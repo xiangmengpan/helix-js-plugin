@@ -55,22 +55,28 @@ impl KeyTrieNode {
         Info::new(self.name.clone(), &self.entries())
     }
 
-    /// 前缀提示:优先 JS set_keymap_hint 回调(文本 + 位置),无回调/返回 null → 内置 Info
-    pub fn hint_info(&self) -> Info {
-        if let Some((text, position)) = helix_js::keymap_hint(&self.name, &self.entries()) {
-            let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
-            let height = text.lines().count() as u16;
-            let mut info = Info {
-                title: Cow::Owned(self.name.clone()),
-                text,
-                width: width.saturating_add(2),
-                height,
-                position: Default::default(),
-            };
-            info.position = hint_position(&position);
-            return info;
+    /// 前缀提示:优先 JS `set_keymap_hint` 回调。
+    ///
+    /// `None` = **不画**（两种来源：JS 显式 `{hide: true}`；或当前模式没有键位条目）。
+    /// 无回调/回调返回 null ⇒ 内置 Info（英文 doc 兜底）。
+    pub fn hint_info(&self) -> Option<Info> {
+        match helix_js::keymap_hint(&self.name, &self.entries()) {
+            Some(helix_js::KeymapHint::Hide) => None,
+            Some(helix_js::KeymapHint::Text { text, position }) => {
+                let width = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+                let height = text.lines().count() as u16;
+                let mut info = Info {
+                    title: Cow::Owned(self.name.clone()),
+                    text,
+                    width: width.saturating_add(2),
+                    height,
+                    position: Default::default(),
+                };
+                info.position = hint_position(&position);
+                Some(info)
+            }
+            None => Some(self.infobox()),
         }
-        self.infobox()
     }
 
     /// 键位条目：(键组合, 说明)——JS keymap 提示(set_keymap_hint)与内置 Info 共用数据
@@ -212,10 +218,22 @@ impl<'de> serde::de::Visitor<'de> for KeyTrieVisitor {
 
 impl KeyTrie {
     pub fn reverse_map(&self) -> ReverseKeymap {
+        /// 取一个叶节点的名字（命令名 / 宏名）。
+        fn node_cmd_name(node: &KeyTrie) -> String {
+            match node {
+                KeyTrie::MappableCommand(cmd) => cmd.name().to_string(),
+                _ => String::new(),
+            }
+        }
         // recursively visit all nodes in keymap
         fn map_node(cmd_map: &mut ReverseKeymap, node: &KeyTrie, keys: &mut Vec<KeyEvent>) {
             match node {
-                KeyTrie::MappableCommand(MappableCommand::Macro { .. }) => {}
+                // 宏（`@:cmd<ret>` 这种）也要进反查表：插件命令通常这么绑，
+                // 早先整类跳过 ⇒ 命令面板里插件命令的"绑定"列永远是空的。
+                KeyTrie::MappableCommand(MappableCommand::Macro { .. }) => {
+                    let name = node_cmd_name(node);
+                    cmd_map.entry(name).or_default().push(keys.clone())
+                }
                 KeyTrie::MappableCommand(cmd) => {
                     let name = cmd.name();
                     if name != "no_op" {
@@ -439,6 +457,40 @@ impl Default for Keymaps {
 }
 
 /// Merge default config keys with user overwritten keys for custom user config.
+/// 运行时普通模式 keymap 的快照（`Application` 建 Keymaps 时写入）。
+///
+/// `:keys` 需要"用户覆盖后的表"，但它只有 `&mut Editor`，拿不到 `EditorView::keymaps`
+/// ⇒ 学 `debug_keymap()` 那套：配置加载后把合并结果存一份全局。
+static RUNTIME_KEYMAPS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<Mode, std::sync::Arc<KeyTrie>>>,
+> = std::sync::OnceLock::new();
+
+fn runtime_slot(
+) -> &'static std::sync::RwLock<std::collections::HashMap<Mode, std::sync::Arc<KeyTrie>>> {
+    RUNTIME_KEYMAPS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// 配置加载后写入（`Application::new`）。
+pub fn set_runtime_keymaps(keys: &std::collections::HashMap<Mode, KeyTrie>) {
+    let snapshot: std::collections::HashMap<Mode, std::sync::Arc<KeyTrie>> = keys
+        .iter()
+        .map(|(m, t)| (*m, std::sync::Arc::new(t.clone())))
+        .collect();
+    *runtime_slot().write().unwrap_or_else(|e| e.into_inner()) = snapshot;
+}
+
+/// 取某个模式的运行时 keymap（没写过就退回内置默认）。
+pub fn runtime_keymap(mode: Mode) -> std::sync::Arc<KeyTrie> {
+    if let Some(t) = runtime_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&mode)
+    {
+        return t.clone();
+    }
+    std::sync::Arc::new(default::default()[&mode].clone())
+}
+
 pub fn merge_keys(dst: &mut HashMap<Mode, KeyTrie>, mut delta: HashMap<Mode, KeyTrie>) {
     for (mode, keys) in dst {
         keys.merge_nodes(
@@ -730,5 +782,34 @@ is_sticky = false
         ));
 
         assert_eq!(toml::from_str(keys), Ok(expectation));
+    }
+}
+
+#[cfg(test)]
+mod reverse_macro_tests {
+    use super::{KeyTrie, KeyTrieNode, Mode};
+    use indexmap::indexmap;
+
+    /// 宏（`@:cmd<ret>`）也要出现在反查表里 —— 命令面板据此显示插件命令的绑定。
+    #[test]
+    fn reverse_map_includes_macros() {
+        use std::str::FromStr;
+        let cmd = crate::commands::MappableCommand::from_str("@:dapui-focus tree<ret>").unwrap();
+        let k: helix_view::input::KeyEvent = "A-1".parse().unwrap();
+        let trie = KeyTrie::Node(KeyTrieNode::new(
+            "test",
+            indexmap! { k => KeyTrie::MappableCommand(cmd) },
+        ));
+        let rev = trie.reverse_map();
+        let _ = Mode::Normal;
+        let hit = rev
+            .iter()
+            .find(|(name, _)| name.contains("dapui-focus"))
+            .map(|(name, _)| name.clone());
+        assert!(
+            hit.is_some(),
+            "宏应进反查表: {:?}",
+            rev.keys().collect::<Vec<_>>()
+        );
     }
 }

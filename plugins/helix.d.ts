@@ -304,6 +304,8 @@ interface DapSessionInfo {
   thread?: number | null;
   /** 当前栈帧（`line`/`column` **0 起始**） */
   frame?: { id: number; name: string; line: number; column: number } | null;
+  /** adapter 声明的异常断点过滤器（`default` 来自 capabilities，UI 用来画勾选表） */
+  filters: { filter: string; label: string; default: boolean }[];
 }
 
 /** `dap.configs()` 的一项：可用调试配置。P1 只有 `source: "lang"`（`languages.toml` 模板）。 */
@@ -375,6 +377,8 @@ interface DapNamespace {
   launch(name?: string, args?: Record<string, unknown>, id?: number): Promise<DapSessionInfo>;
   attach(name?: string, args?: Record<string, unknown>, id?: number): Promise<DapSessionInfo>;
   terminate(id?: number): Promise<void>;
+  /** 把某个**已存在**的会话设为 active（纯本地状态；省略 `id` 会报错） */
+  switch_session(id: number): Promise<void>;
   restart(id?: number): Promise<void>;
   continue(id?: number): Promise<void>;
   pause(thread?: number, id?: number): Promise<void>;
@@ -384,7 +388,11 @@ interface DapNamespace {
   threads(id?: number): Promise<DapThread[]>;
   stack_frames(thread: number, id?: number): Promise<DapStackFrame[]>;
   scopes(frame: number, id?: number): Promise<DapScope[]>;
-  variables(reference: number, id?: number): Promise<DapVariable[]>;
+  /**
+   * 取变量。`start`/`count` 用于**分页**（需要 adapter 声明 `supportsVariablePaging`；
+   * lldb-dap 支持）。省略 = 一次全取。
+   */
+  variables(reference: number, id?: number, start?: number, count?: number): Promise<DapVariable[]>;
   eval(expr: string, frame?: number, id?: number): Promise<{ result: string; type?: string | null; variablesReference: number }>;
   set_breakpoint(
     path: string,
@@ -644,6 +652,9 @@ type EventName =
   | "dap-output"
   | "dap-thread"
   | "dap-breakpoint"
+  /** 断点表**本地**变了（切花/删除/条件/日志/编辑重映射）——没有会话也会发，
+   *  插件据此重画行首标记（`dap-breakpoint` 只在 adapter 回 `setBreakpoints` 时才有）。 */
+  | "dap-breakpoints"
   | "dap-progress";
 
 // ────────────────────────── 主接口 ──────────────────────────
@@ -797,6 +808,7 @@ interface Helix {
   on(event: "dap-output", fn: (payload: { id: number; category?: string | null; output: string }) => void): void;
   on(event: "dap-thread", fn: (payload: { id: number; reason: string; thread_id: number }) => void): void;
   on(event: "dap-breakpoint", fn: (payload: { id: number; path: string; line: number; verified: boolean; message?: string | null; removed?: boolean }) => void): void;
+  on(event: "dap-breakpoints", fn: (payload: Record<string, never>) => void): void;
   on(event: "dap-progress", fn: (payload: { id: number; kind: "start" | "update" | "end"; text?: string | null; percentage?: number | null }) => void): void;
   /** `cursor-move`:光标移动 */
   on(event: "cursor-move", fn: (docId: number, ev: { row: number; col: number; mode: string }, payload: EventCursorMove) => void): void;
@@ -932,7 +944,56 @@ interface Helix {
   set_completion_icon(fn: (kindNum: number) => string): void;
   set_completion_render(fn: (ctx: CompletionCtx) => (string | StyledText)[] | ElNode): void;
   set_diagnostic_icons(icons: { error?: string; warning?: string; info?: string; hint?: string }): void;
-  set_keymap_hint(fn: ((ctx: unknown) => { text: string; position?: string } | null) | null): void;
+  /**
+   * 键位前缀提示（which-key）。
+   *
+   * 回调返回：
+   * - `string` → 多行文本，默认位置；
+   * - `{ text, position? }` → 指定位置（`bottom-right|bottom-left|top-right|top-left|center`）；
+   * - **`{ hide: true }` → 一个格子都不画**（提示放在状态栏/面板页脚时用；核心不会拿内置
+   *   Info 兜底）；
+   * - `null` → 退回核心内置 Info（英文 doc）。
+   */
+  /**
+   * 切换**强制只读**（编辑闸门：`Document::apply` / `:write` 都检查它；与文件权限位的
+   * `readonly` 无关）。
+   *
+   * - `on = true` 后：`i/a/d/粘贴`、插件 `doc.insert/replace/delete`、LSP code action、
+   *   `:w` **全部**被拒（命令层会给出 "Buffer is read-only" 提示）；
+   * - `all = true` 时作用于所有打开的 buffer，否则只作用当前 buffer；
+   * - 状态栏会显示 `[readonly]`；解除用 `set_readonly(false, …)` 或 `:read-only`。
+   */
+  set_readonly(on: boolean, all?: boolean): void;
+
+  /**
+   * 写寄存器（默认未命名寄存器 `"`，同时写系统剪贴板 `+`）。
+   *
+   * 插件拿不到剪贴板，所以"复制这个变量的值"这类操作必须走它；
+   * 之后用户在编辑器里按 `p` 就能粘贴。
+   */
+  set_register(text: string, register?: string): void;
+
+  /**
+   * 当前**输入层**徽标串（栈序，如 `"DEBUG│PANE"`；空串 = 没有层）。
+   *
+   * 层由引擎的 `input_router` 统一算出（调试暂停 → 平级模式 → 编辑模式），
+   * 插件拿它做状态栏/提示的"我现在在哪个层"显示，避免各自猜。
+   */
+  input_badges(): string;
+  /**
+   * 按键频率统计（`{"space g b": 12, "j": 30}`）：**成功命中的键序列 → 次数**。
+   *
+   * which-key 用它给候选排序（截断时先丢不常用的）。数据由引擎在按键命中时累加，
+   * 每次增量 25 次落盘到 `~/.cache/helix/keys-frecency.json`；没有数据时返回 `{}`。
+   */
+  key_frecency(): Record<string, number>;
+  set_keymap_hint(
+    fn:
+      | ((
+          ctx: unknown,
+        ) => string | { text: string; position?: string } | { hide: true } | null)
+      | null,
+  ): void;
 
   // ── 终端 ──
   open_terminal(opts: TerminalOptions): number; // 返回 view_id
@@ -1014,6 +1075,13 @@ interface Helix {
    *  关**面板**用 `helix.close_panel(id)` ✓ */
   close(id: number): void;
     focus(id: number): void;
+    /**
+     * 按**面板实例 id**（`open_panel` 的返回值）聚焦。
+     *
+     * 与 `focus(id)` 的区别：那个收的是**布局叶子 id**（`pane.list()` 里的 id），插件拿不到
+     * 自己面板的叶子 id；auto_open 不抢焦点之后，"我开着的面板，把焦点给我"就靠这个。
+     */
+    focus_panel(id: number): void;
     focus_dir(id: number, dir: SplitDir): void;
     /** 与方向邻居交换(浮窗则搬位置) */
     move(id: number, dir: SplitDir): void;

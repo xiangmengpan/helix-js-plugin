@@ -213,14 +213,27 @@ impl Application {
         );
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
+        // 启动时也把"可忽略但要说一声"的配置问题显示出来（如未知的 `[keys.debug]`）——
+        // 早先这类段名会让整份 config 解析失败；现在降级成一条可见警告。
+        if let Some(first) = config.load().warnings.first().cloned() {
+            editor.set_warning(first);
+        }
+
         // 每个 app 从自己的 config.keys（已含默认+用户合并）建键位槽：进程内多个 app
         // （集成测试并行构造）互不污染，插件 helix.map 绑定经 job 通道写入同一槽。
         // ponytail: 启动快照——config-reload 不再热更新键位（需重启才能重载插件绑定）。
+        // `:keys` 需要"用户覆盖后的表"：存一份全局快照（与 `debug_keymap()` 同一套做法）
+        crate::keymap::set_runtime_keymaps(&config.load().keys);
         let editor_view = Box::new(ui::EditorView::new(Keymaps::new(
             config.load().keys.clone(),
         )));
         // 编辑器成为布局树的主叶子（id=0）
         compositor.set_main_editor(editor_view);
+
+        // which-key 的候选排序数据（按键频率）：启动读一次，之后按需增量落盘
+        crate::frecency::load();
+        // which-key 通过 `helix.key_frecency()` 读它（回调式：只在渲染提示时取一次）
+        helix_js::set_key_frecency_source(Box::new(crate::frecency::snapshot_json));
 
         let jobs = Jobs::new();
 
@@ -414,6 +427,11 @@ impl Application {
             if let Err(e) = js_host.emit_startup(&ctx, open_paths) {
                 log::warn!("startup event failed: {e}");
             }
+            // 配置里的"可忽略但要说一声"的问题（如 `[keys.debug]` 之外写错的段名）
+            // 要在 startup 事件**之后**再设一次：dashboard 之类会往同一行写消息，早设会被盖掉。
+            if let Some(first) = config.load().warnings.first().cloned() {
+                editor.set_warning(first);
+            }
         }
 
         // 叶=窗口:收编启动期遗留的 view-tree 分裂(启动多文件/空文件路径仍走 core split)
@@ -483,10 +501,42 @@ impl Application {
             None => helix_js::dap::take_requests(&helix_js::host::state_handle_or_init()),
         };
         // 会话事件（`dap-*`）在这里统一发给插件：`Editor` 不依赖 helix-js，只排队。
+        // 构建/调试输出的**流式**通道：worker 线程 push、这里 drain 成事件
+        // （空则 no-op；每帧一次，成本是一个空 Vec 的分配）
+        let streamed = crate::dap_output::drain();
+        if !streamed.is_empty() {
+            for line in streamed {
+                self.editor.emit_dap_event(
+                    "dap-output",
+                    serde_json::json!({
+                        "id": 0,
+                        "category": line.category,
+                        "output": format!("{}\n", line.line),
+                    }),
+                );
+            }
+        }
+
         let dap_events = std::mem::take(&mut self.editor.pending_dap_events);
+        if !dap_events.is_empty() {
+            // **先刷快照再发事件**：`helix.dap.sessions()/list_breakpoints()` 读的是缓存快照，
+            // 而快照平时只在"有 DAP 请求完成"时刷新。会话结束时没有任何请求 ⇒ 插件拿到的
+            // 还是"会话还在"的旧快照（现象：按 `T` 之后面板收了，状态栏还挂着 `#1 ⏸ t…`）。
+            crate::commands::dap::refresh_dap_snapshots(&self.editor, None);
+        }
         for (name, payload) in &dap_events {
             helix_js::dap::emit_event(name, payload);
         }
+        // DAP 动作队列：命令与 Picker 回调只"排队"，这里（唯一同时握有 `&mut Editor` 与
+        // `&mut Jobs` 的地方）把它们变成异步任务。
+        //
+        // **必须放在下面的早退判断之前**：
+        // ① 它同时排空"编辑导致的断点行号重映射"队列，而普通编辑不产生 term/LSP 事件
+        //    ⇒ 放在早退之后的话，改一行文本永远等不到回放（实测：插行后断点不跟走）；
+        // ② 命令里入队的 continue/next 之类也不再依赖"恰好有别的 I/O 事件"才被派发。
+        // 也因为它在 `pump_jobs` 之前，同一帧新入队的 job 会被立刻泵到（与注释意图一致）。
+        crate::commands::dap::dispatch_dap_intents(&mut self.editor, &mut self.jobs);
+
         if term_events.is_empty()
             && async_events.is_empty()
             && lsp_results.is_empty()
@@ -624,9 +674,6 @@ impl Application {
         if let Err(err) = pumped {
             log::error!("promise job pump: {err}");
         }
-        // DAP 动作队列：命令与 Picker 回调只"排队"，这里（唯一同时握有 `&mut Editor` 与
-        // `&mut Jobs` 的地方）把它们变成异步任务。放 `pump_jobs` 之前：新入队的 job 同一帧就跑。
-        crate::commands::dap::dispatch_dap_intents(&mut self.editor, &mut self.jobs);
         let cursor_reqs = helix_js::take_cursor_requests();
         if !cursor_reqs.is_empty() {
             if let Err(err) =
@@ -951,6 +998,10 @@ impl Application {
             );
             if let Some(first) = errors.first().cloned() {
                 self.editor.set_error(first);
+            } else if let Some(first) = default_config.warnings.first().cloned() {
+                // 配置里"可忽略但要说一声"的问题（如 `[keys.debug]` 这种未知段名）：
+                // 早先会让整份配置解析失败，现在降级成一条可见警告。
+                self.editor.set_warning(first);
             }
             // Store new config
             self.config.store(Arc::new(default_config));
@@ -1143,8 +1194,14 @@ impl Application {
             js: self.js_host.as_deref_mut(),
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
-        // idle 是 worker 完成后的主要唤醒点；泵过事件时必须重绘（仅 idle 本身不触发渲染）
-        if should_render || self.editor.needs_redraw || self.pump_term_events() {
+        // idle 是 worker 完成后的主要唤醒点；泵过事件时必须重绘（仅 idle 本身不触发渲染）。
+        //
+        // **先无条件泵一次**再判断要不要渲染：`||` 是短路求值，`should_render`/`needs_redraw`
+        // 为真时 `pump_term_events()` 根本不会跑 —— 而它里面才有 `pump_jobs()`。
+        // 现象：插件在 `.then(...)` 里更新 UI（监视值/变量树刷新）要等用户下一次按键才生效
+        // （实测：加监视后 ⌚ 行停在 `…`，按一下 j 才变成 `5 :int`）。
+        let pumped = self.pump_term_events();
+        if should_render || self.editor.needs_redraw || pumped {
             self.render().await;
         }
     }

@@ -239,6 +239,9 @@ pub struct Document {
     pub focused_at: std::time::Instant,
 
     pub readonly: bool,
+    /// **强制只读**（`:read-only` / 调试态自动置位）。与 `readonly`（文件权限位）分开：
+    /// 后者只影响状态栏指示，这个是真的**编辑闸门**（`apply_inner` early-return）。
+    pub readonly_forced: bool,
 
     pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
@@ -793,6 +796,7 @@ impl Document {
             version_control_head: None,
             focused_at: std::time::Instant::now(),
             readonly: false,
+            readonly_forced: false,
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -1689,6 +1693,11 @@ impl Document {
         view_id: ViewId,
         emit_lsp_notification: bool,
     ) -> bool {
+        // **只读闸门**：命令编辑 / 插件 `doc.insert` / LSP code action 最终都走这里
+        // ⇒ 一处 early-return 就能全覆盖（`:w` 在命令层另有一道检查）。
+        if self.readonly_forced && !transaction.changes().is_empty() {
+            return false;
+        }
         // store the state just before any changes are made. This allows us to undo to the
         // state just before a transaction was applied.
         if self.changes.is_empty() && !transaction.changes().is_empty() {
@@ -1893,6 +1902,16 @@ impl Document {
             current_revision
         );
         current_revision != self.last_saved_revision || !self.changes.is_empty()
+    }
+
+    /// 把"当前内容"当作**已保存**：清 changeset + 重置修订号。
+    ///
+    /// `reset_modified` 只动修订号，`is_modified()` 还会看 `changes` 是否为空 ⇒
+    /// 由代码**生成**的 buffer（`?` 的键位速查、`:debug-log` 的流水）会一直挂着 `[+]`，
+    /// 连 `:q` 都拒绝关。这里把 changeset 也重置掉。
+    pub fn mark_saved_now(&mut self) {
+        self.reset_modified();
+        self.changes = ChangeSet::new(self.text().slice(..));
     }
 
     /// Save modifications to history, and so [`Self::is_modified`] will return false.

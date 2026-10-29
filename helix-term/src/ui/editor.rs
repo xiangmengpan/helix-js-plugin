@@ -1016,9 +1016,30 @@ impl EditorView {
         event: KeyEvent,
     ) -> Option<KeymapResult> {
         let mut last_mode = mode;
+
+        // ── gdb 式调试键接管 ────────────────────────────────────────────────
+        // 会话**暂停**时，`dap_keymap()` 里的键在 Normal 模式直接生效：
+        // 不进任何"模式"、不看焦点在哪（面板未消费的键会冒泡到这里的编辑器叶子）。
+        // 表里没有的键（`i`、`a`、`d`…）完全照旧 ⇒ 编辑不受影响。
+        if mode == Mode::Normal
+            && cxt.editor.count.is_none()
+            && self.keymaps.pending().is_empty()
+            && self.pseudo_pending.is_empty()
+            && cxt.editor.is_debug_paused()
+        {
+            if let Some(cmd) = crate::input_router::debug_key(event) {
+                cmd.execute(cxt);
+                helix_event::dispatch(PostCommand {
+                    command: &cmd,
+                    cx: cxt,
+                });
+                return None;
+            }
+        }
+
         self.pseudo_pending.extend(self.keymaps.pending());
         let key_result = self.keymaps.get(mode, event);
-        cxt.editor.autoinfo = self.keymaps.sticky().map(|node| node.hint_info());
+        cxt.editor.autoinfo = self.keymaps.sticky().and_then(|node| node.hint_info());
 
         let mut execute_command = |command: &commands::MappableCommand| {
             command.execute(cxt);
@@ -1047,10 +1068,14 @@ impl EditorView {
 
         match &key_result {
             KeymapResult::Matched(command) => {
+                // frecency：记下这次**完整**的键序列（`space g b` / `n` …）。
+                // `pseudo_pending` 里是这次按键之前还挂着的部分前缀。
+                crate::frecency::record_sequence(&self.pseudo_pending, event);
                 execute_command(command);
             }
-            KeymapResult::Pending(node) => cxt.editor.autoinfo = Some(node.hint_info()),
+            KeymapResult::Pending(node) => cxt.editor.autoinfo = node.hint_info(),
             KeymapResult::MatchedSequence(commands) => {
+                crate::frecency::record_sequence(&self.pseudo_pending, event);
                 for command in commands {
                     execute_command(command);
                 }

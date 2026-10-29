@@ -50,6 +50,8 @@ pub struct LayoutTree {
     rects_dirty: bool,
     /// 固定叶子 id 集合（fixed：不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
     fixed: std::collections::HashSet<u64>,
+    /// 底部停靠叶(`register_dock_bottom`)：恒为 root 的直接子叶（V 分屏的下半，占全宽）。
+    dock: Option<u64>,
     /// rail(侧栏轨道)叶子:恒为 root 的直接子叶(H 分屏边缘侧,占全高)。
     /// 不参与分裂/换位/最小化/放大等窗口操作;窗口操作只发生在 main 子树。
     rail: Option<u64>,
@@ -234,6 +236,7 @@ impl Default for LayoutTree {
             stacks: std::collections::HashMap::new(),
             minimized: None,
             fixed: Default::default(),
+            dock: None,
             rail: None,
             leaf_rects: Default::default(),
             rects_dirty: false,
@@ -264,6 +267,32 @@ impl LayoutTree {
     /// id 是否为 rail
     pub fn is_rail(&self, id: u64) -> bool {
         self.rail == Some(id)
+    }
+
+    /// 把组件**停靠到底部**：整棵树包成上下两半（底部那半是新叶）。
+    ///
+    /// 与 `register_rail` 对称：rail 是"贴边的全高列"，dock 是"贴底的全宽行"。
+    /// 为什么需要它：面板默认是**在当前活动叶上分裂**的 —— 焦点在右栏时开底部，
+    /// 底部只会裂在编辑器那一列里（半宽），视觉上很怪。
+    pub fn register_dock_bottom(&mut self, component: Box<dyn Component>, share: f32) -> u64 {
+        let did = self.next_id_for_split();
+        self.components.insert(did, component);
+        let main_root = std::mem::replace(&mut self.root, LayoutNode::Leaf { id: did });
+        self.root = LayoutNode::Split {
+            dir: SplitDir::V,
+            // ratio = **第一个子**（上面的 main）占的比例
+            ratio: (1.0 - share).clamp(0.1, 0.95),
+            first: Box::new(main_root),
+            second: Box::new(LayoutNode::Leaf { id: did }),
+        };
+        self.dock = Some(did);
+        self.active = did;
+        did
+    }
+
+    /// 这个叶是不是"底部停靠"。
+    pub fn is_dock(&self, id: u64) -> bool {
+        self.dock == Some(id)
     }
 
     /// 把组件注册为 rail(贴 root 边缘):先取除旧 rail(若有),再把当前 root 包成 main 子树。

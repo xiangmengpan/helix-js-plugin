@@ -1756,6 +1756,22 @@ pub fn panel_has_onkey(id: u64) -> bool {
     crate::state::with_popups_current(|p| p.get(&id).map(|cb| cb.on_key.is_some()).unwrap_or(false))
 }
 
+/// 显式宿主版：[`panel_has_onkey`] 的 `ctx` 路径。
+///
+/// **有 `cx` 的地方必须用这个**：`panel_has_onkey` 走的是"隐式活性宿主"解析，
+/// 那个解析在没有 active host 时会建一个**新的默认宿主** ⇒ 查的是另一张表
+/// （真实现象：面板明明还活着，按键时被判成僵尸、连带 `close_panel_state` 把真表里的兄弟条目也清掉）。
+pub fn panel_has_onkey_in(st: &crate::host::HostState, id: u64) -> bool {
+    crate::state::with_popups(st, |p| {
+        p.get(&id).map(|cb| cb.on_key.is_some()).unwrap_or(false)
+    })
+}
+
+/// 显式宿主版：[`popup_exists`] 的 `ctx` 路径。
+pub fn popup_exists_in(st: &crate::host::HostState, id: u64) -> bool {
+    crate::state::with_popups(st, |p| p.contains_key(&id))
+}
+
 /// 面板/弹窗是否在 JS 注册表（存在但无 onKey 与完全丢失区分：僵尸面板检测用）
 pub fn popup_exists(id: u64) -> bool {
     // 查询:同上,无宿主 ⇒ false
@@ -1995,9 +2011,20 @@ pub(crate) fn js_set_keymap_hint(
     Ok(JsValue::undefined())
 }
 
-/// keymap 前缀提示:调用注册回调,返回 (多行文本, 位置字符串)。
-/// 回调返回字符串 → 默认位置;对象 {text, position} → 指定位置;null/无回调/抛错 → None(用内置 Info)。
-pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String, String)> {
+/// `set_keymap_hint` 回调的返回。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeymapHint {
+    /// 画一个 Info 框(文本 + 位置字符串)
+    Text { text: String, position: String },
+    /// **什么都不画**。给"把提示放进状态栏/面板页脚"的形态用
+    /// (which-key 的 `mode = "line"`:自己 `echo` 一行摘要,浮层一个格子都不占)。
+    Hide,
+}
+
+/// keymap 前缀提示:调用注册回调。
+/// 回调返回字符串 → 默认位置;对象 `{text, position}` → 指定位置;
+/// 对象 `{hide: true}` → [`KeymapHint::Hide`];null/无回调/抛错 → None(用内置 Info)。
+pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<KeymapHint> {
     // 查询:无宿主 ⇒ 没有 JS 提示 ⇒ None(**不得**为回答它而建宿主)
     if !crate::host::engine_exists() {
         return None;
@@ -2045,10 +2072,22 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
         }
         // 字符串 → 默认位置
         if let Ok(s) = ret.clone().try_js_into::<String>(engine) {
-            return Some((s, "bottom-right".to_string()));
+            return Some(KeymapHint::Text {
+                text: s,
+                position: "bottom-right".to_string(),
+            });
         }
-        // 对象 {text, position}
         let obj = ret.as_object()?;
+        // {hide: true} ⇒ 一个格子都不画
+        if let Ok(hide) = obj
+            .get(JsString::from("hide"), engine)
+            .and_then(|v| v.try_js_into::<bool>(engine))
+        {
+            if hide {
+                return Some(KeymapHint::Hide);
+            }
+        }
+        // {text, position}
         let text: String = obj
             .get(JsString::from("text"), engine)
             .ok()?
@@ -2059,7 +2098,7 @@ pub fn keymap_hint(title: &str, entries: &[(String, String)]) -> Option<(String,
             .ok()
             .and_then(|v| v.try_js_into::<String>(engine).ok())
             .unwrap_or_else(|| "bottom-right".to_string());
-        Some((text, position))
+        Some(KeymapHint::Text { text, position })
     })
 }
 

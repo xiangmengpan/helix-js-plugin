@@ -1088,6 +1088,55 @@ pub fn cache_panes(st: &HostState, json: &str) {
     *st.panes.borrow_mut() = json.to_string();
 }
 
+/// 写输入层徽标串（`DEBUG│PANE`）。只在变化时写（compositor 每帧调）。
+pub fn cache_input_badges(st: &HostState, badges: &str) {
+    let mut slot = st.input_badges.borrow_mut();
+    if slot.as_str() != badges {
+        *slot = badges.to_string();
+    }
+}
+
+/// `helix.input_badges()`：当前输入层徽标串（`DEBUG│PANE`，空串 = 没有层）。
+/// `helix.key_frecency()` 的数据源（由 helix-term 注入：它才知道按键统计）。
+///
+/// 为什么是**回调**而不是缓存值：统计随每次按键变化，缓存就得每键序列化一遍
+/// （512 条约 10KB）；而真正读它的只有 which-key 渲染提示那一瞬间。
+static KEY_FRECENCY_SOURCE: std::sync::OnceLock<Box<dyn Fn() -> String + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+pub fn set_key_frecency_source(f: Box<dyn Fn() -> String + Send + Sync>) {
+    let _ = KEY_FRECENCY_SOURCE.set(f);
+}
+
+pub(crate) fn js_key_frecency(
+    _this: &boa_engine::JsValue,
+    _args: &[boa_engine::JsValue],
+    ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<boa_engine::JsValue> {
+    let json = KEY_FRECENCY_SOURCE
+        .get()
+        .map(|f| f())
+        .unwrap_or_else(|| "{}".to_string());
+    // JSON → JS 对象（非法/空都退化成 `{}`，绝不让 which-key 因为统计坏了而崩）
+    Ok(crate::layout_api::js_json_parse(json, ctx, "key_frecency")
+        .unwrap_or_else(|_| boa_engine::JsValue::undefined()))
+}
+
+pub(crate) fn js_input_badges(
+    _this: &boa_engine::JsValue,
+    _args: &[boa_engine::JsValue],
+    _ctx: &mut boa_engine::Context,
+) -> boa_engine::JsResult<boa_engine::JsValue> {
+    Ok(boa_engine::JsValue::from(boa_engine::JsString::from(
+        input_badges_str(),
+    )))
+}
+
+/// 读输入层徽标串（`helix.input_badges()` 的唯一来源）。
+pub(crate) fn input_badges_str() -> String {
+    crate::host::with_host_ref(|h| h.input_badges.borrow().clone())
+}
+
 /// 平级模式快照(宿主字段;1b 同上)。模式切换时写,`helix.pane_mode.current()/keymap()` 读。
 /// 历史:值取自它 ⇒ which-key 曾渲染出**别的用例的**键位(实测 2/2 复现)。
 pub fn cache_pane_mode(st: &HostState, json: &str) {

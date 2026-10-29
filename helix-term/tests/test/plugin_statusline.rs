@@ -420,3 +420,103 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
     assert_eq!(Some(buf.content[89].fg), expect_r, "右段样式未生效");
     Ok(())
 }
+
+/// 真插件 + 真 `set_theme`：**多模式 powerline 端帽共存**。
+///
+/// 回归目标：`set_theme` 曾经是"整体替换"，于是 normal 注册完再切 insert，后一次调用会把
+/// `statusline.cap.normal` 抹掉 ⇒ 切回 normal 时端帽掉色（默认样式）。改成合并语义后应共存。
+///
+/// 断言看的是**渲染出来的格子颜色**（不是内部表）：端帽字符 `` 的 fg 必须等于该模式的底色。
+#[tokio::test(flavor = "multi_thread")]
+async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
+    use helix_term::ui::statusline::RenderContext;
+    use tui::style::Color;
+
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("st.txt");
+    std::fs::write(&file, "data\n")?;
+
+    // ① 默认主题没有 ui.statusline.normal/insert ⇒ 先造两个模式底色
+    let setup = dir.path().join("setup.js");
+    std::fs::write(
+        &setup,
+        r##"
+        helix.set_theme({
+            "ui.statusline.normal": { fg: "#ffffff", bg: "#0000ff" },
+            "ui.statusline.insert": { fg: "#000000", bg: "#00ff00" },
+        });
+        "##,
+    )?;
+
+    // ② `corners = "powerline"` 走 config.toml 注入（插件启动时读）
+    let mut plugins = toml::Table::new();
+    let mut sl = toml::Table::new();
+    sl.insert("corners".into(), toml::Value::String("powerline".into()));
+    plugins.insert("statusline".into(), toml::Value::Table(sl));
+    let config = helix_term::config::Config {
+        plugins: Some(plugins),
+        ..Default::default()
+    };
+
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(config)
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", setup.display())).await?;
+    let plugin = format!(
+        "{}/../plugins/statusline/plugin.js",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
+
+    // 把状态栏渲染成一行格子，返回左端帽的 fg 颜色
+    let cap_fg = |app: &mut helix_term::application::Application| -> Option<Color> {
+        let (view, doc) = current_ref!(app.editor);
+        let area = helix_view::graphics::Rect::new(0, 0, 200, 1);
+        let mut buf = tui::buffer::Buffer::empty(area);
+        let spinners = helix_term::ui::ProgressSpinners::default();
+        let mut rc = RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            None,
+            "editor",
+            None,
+            None,
+        )
+        .with_state(helix_js::host::state_handle());
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+        buf.content
+            .iter()
+            .find(|c| c.symbol == "\u{e0b6}")
+            .map(|c| c.style.fg)
+    };
+
+    let normal_fg = cap_fg(&mut app);
+    assert_eq!(
+        normal_fg,
+        Some(Color::Rgb(0, 0, 255)),
+        "normal 模式端帽 fg 应等于 mode 底色"
+    );
+
+    // 切 insert：注册 cap.insert
+    pump(&mut app, "i").await?;
+    let insert_fg = cap_fg(&mut app);
+    assert_eq!(
+        insert_fg,
+        Some(Color::Rgb(0, 255, 0)),
+        "insert 模式端帽用自己的底色"
+    );
+
+    // 切回 normal：**这条是关键** —— 如果 cap.normal 被抹掉了，这里就拿不到蓝色
+    pump(&mut app, "<esc>").await?;
+    assert_eq!(
+        cap_fg(&mut app),
+        Some(Color::Rgb(0, 0, 255)),
+        "切回 normal 端帽仍应着色（多模式 cap scope 必须共存）"
+    );
+    Ok(())
+}

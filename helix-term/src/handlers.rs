@@ -18,6 +18,7 @@ use self::document_links::DocumentLinksHandler;
 mod auto_save;
 mod code_action_hint;
 pub mod completion;
+mod dap_breakpoints;
 pub mod diagnostics;
 mod document_colors;
 mod document_highlight;
@@ -61,6 +62,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     diagnostics::register_hooks(&handlers);
     snippet::register_hooks(&handlers);
     document_colors::register_hooks(&handlers);
+    dap_breakpoints::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);

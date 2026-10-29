@@ -118,6 +118,8 @@ pub struct HostState {
 
     /// 平级模式快照 JSON(1b)
     pub(crate) pane_mode: RefCell<String>,
+    /// 输入层徽标串（`DEBUG│PANE`，栈序）。compositor 每帧在写状态栏时同步一次。
+    pub(crate) input_badges: RefCell<String>,
 
     /// pane 清单快照 JSON(1b)
     pub(crate) panes: RefCell<String>,
@@ -313,6 +315,7 @@ impl JsHost {
             snapshot_reads: Cell::new(0),
             serialized: Cell::new((0, 0)),
             pane_mode: RefCell::new(String::new()),
+            input_badges: RefCell::new(String::new()),
             panes: RefCell::new(String::new()),
             open_terms: RefCell::new(HashMap::new()),
             plugin_roots: RefCell::new(&[]),

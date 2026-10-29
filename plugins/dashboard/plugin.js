@@ -223,7 +223,7 @@ function close_dashboard() {
 }
 
 // ── 命令(永远可用,不依赖 startup ✓)──────────────────────────────────────
-helix.register_command("dashboard", () => open_dashboard());
+helix.register_command("dashboard", () => open_dashboard(), '回到启动面板');
 helix.register_command("dashboard-close", () => close_dashboard());
 /// 自诊断:把"居中/触发"依赖的事实打出来 ✓
 helix.register_command("dashboard-diag", () => {

@@ -6,9 +6,14 @@ pub mod args;
 pub mod commands;
 pub mod compositor;
 pub mod config;
+pub mod dap_build;
 pub mod dap_config;
+pub mod dap_output;
 pub mod events;
+/// 按键频率统计（which-key 排候选用）
+pub mod frecency;
 pub mod health;
+pub mod input_router;
 pub mod job;
 pub mod keymap;
 pub mod logging;

@@ -1292,13 +1292,28 @@ fn keymap_hint_hook() {
     )
     .unwrap();
     let entries = vec![("h".to_string(), "move_char_left".to_string())];
-    let (text, pos) = keymap_hint("g", &entries).unwrap();
-    assert!(text.contains("h 左移"), "回调返回文本: {text:?}");
-    assert_eq!(pos, "bottom-right", "字符串返回默认位置");
+    match keymap_hint("g", &entries).unwrap() {
+        KeymapHint::Text { text, position } => {
+            assert!(text.contains("h 左移"), "回调返回文本: {text:?}");
+            assert_eq!(position, "bottom-right", "字符串返回默认位置");
+        }
+        other => panic!("期望 Text,得到 {other:?}"),
+    }
     // 对象返回 → 指定位置
-    let (text, pos) = keymap_hint("x", &entries).unwrap();
-    assert_eq!(text, "x 提示");
-    assert_eq!(pos, "bottom-left", "对象指定位置");
+    match keymap_hint("x", &entries).unwrap() {
+        KeymapHint::Text { text, position } => {
+            assert_eq!(text, "x 提示");
+            assert_eq!(position, "bottom-left", "对象指定位置");
+        }
+        other => panic!("期望 Text,得到 {other:?}"),
+    }
+    // {hide: true} → 一个格子都不画
+    load_script(r#"helix.set_keymap_hint((ctx) => (ctx.title === "h" ? { hide: true } : null));"#)
+        .unwrap();
+    assert_eq!(keymap_hint("h", &entries), Some(KeymapHint::Hide));
+    // 回到原回调
+    load_script(r#"helix.set_keymap_hint((ctx) => (ctx.title === "g" ? "h 左移" : null));"#)
+        .unwrap();
     // 其他前缀 → null → None
     assert_eq!(keymap_hint("z", &entries), None);
     // 清除

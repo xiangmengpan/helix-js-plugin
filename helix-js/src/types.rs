@@ -85,6 +85,28 @@ pub struct FocusBufferReq {
 }
 
 #[derive(Debug)]
+pub struct SetRegisterReq {
+    /// 要写入的文本（写未命名寄存器 `"`；有系统剪贴板 provider 时一并写 `+`）
+    pub text: String,
+    /// 目标寄存器（默认 `"`）
+    pub register: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct SetReadonlyReq {
+    /// `true` = 上锁，`false` = 解除
+    pub on: bool,
+    /// `true` = 所有打开的 buffer；`false` = 当前 buffer
+    pub all: bool,
+}
+
+#[derive(Debug)]
+pub struct FocusPanelReq {
+    /// `open_panel` 返回的**面板实例 id**（与 `pane.*` 的叶子 id 不同）。
+    pub id: u64,
+}
+
+#[derive(Debug)]
 pub struct MovePanelReq {
     pub id: u64,
     pub side: String,
@@ -360,6 +382,15 @@ pub enum UiRequest {
     OpenScratchFile(OpenScratchFileReq),
     FocusBuffer(FocusBufferReq),
     MovePanel(MovePanelReq),
+    /// `helix.set_readonly(on, all?)`：切换**强制只读**（编辑闸门，不是文件权限位）。
+    SetReadonly(SetReadonlyReq),
+    /// `helix.set_register(text, register?)`：写寄存器（默认未命名寄存器）。
+    SetRegister(SetRegisterReq),
+    /// `helix.pane.focus_panel(id)`：按**面板实例 id**聚焦（`open_panel` 的返回值）。
+    ///
+    /// 为什么需要：`pane.focus`/`focus_dir` 收的是**布局叶子 id**，插件拿不到自己面板的叶子 id；
+    /// 而"我已经开着的面板，把焦点给我"是 aut o_open 不抢焦点之后最常用的动作。
+    FocusPanel(FocusPanelReq),
     MapKey(MapKeyReq),
     /// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
     /// pty_id 是内部 spawn 的 pty 进程 id（term_write/term_resize/关闭时 kill 用）。

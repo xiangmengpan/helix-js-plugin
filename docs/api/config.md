@@ -34,7 +34,27 @@ refresh_ms  = 200
 
 [plugins.which-key]
 position = "center"
+language = "zh-CN"   # 或 "en"(用引擎原始英文说明)
+avoid_panels = true  # 自动躲开 dapui/filetree 等插件面板(见下)
+mode = "box"         # box=浮层 / line=一行摘要进状态栏,不出浮层
+max_lines = 18       # box 模式的行数上限(0=不限);超出显示「… 还有 N 个键」
 ```
+
+三种形态：
+
+| `mode` | 浮层 | 状态栏 | 适用 |
+|---|---|---|---|
+| `box`（默认） | 完整键位表（`max_lines` 收口 + 避让面板） | — | 想要"看一眼全部键" |
+| `line`（推荐） | **1 行，只列键名**（`f F e . b j …`） | 一行带说明的摘要（`Space ▸ f 文件选择器 · …`） | 常用：不挡内容，且**不会被别的消息吞掉** |
+| `status` | 不画（核心 `{ hide: true }`） | 一行带说明的摘要 | 极致干净，但状态栏是共享消息位，可能被 dap/LSP 的消息盖掉 |
+
+`line` 为什么还要留一行浮层：状态栏是**共享**的，调试时 dap 的 `set_status` 一多，
+纯状态栏提示会一闪就没（实测）；1 行浮层的宽度只有几十列、高度 1，配合 `avoid_panels`
+几乎总能找到空位，而且在按键期间是持久的。
+
+`avoid_panels`(默认开):提示框按 `helix.pane.list()` 里各 **PluginPanel** 的 `area` 挑一个
+不重叠的角(首选仍是 `position`,其次另外三个角,全重叠时取重叠面积最小的)。
+不开就是老行为 —— 固定 `position`,在 dapui 面板开着时会被糊住。
 
 - `[plugins]` 的**顶层键**是全局插件设置(如 `plugin_dir`),不是某个插件的配置。
 - 类型 / 枚举写错:该键报错并回退默认值,其余键照常生效 ——
@@ -95,7 +115,7 @@ schema 是在**插件脚本执行时**才注册的,所以"合并结果"必须在
 | `[plugins.statusline]` | `left` / `center` / `right`(段名数组)· `zones`(比例数组)· `corners` |
 | `[plugins.tabbar]` | `max_labels` |
 | `[plugins.terminal]` | `shell` / `float_size` / `vterm_size` / `hterm_size` |
-| `[plugins.which-key]` | `position` / `show_docs` |
+| `[plugins.which-key]` | `position` / `language` / `show_docs` / `avoid_panels` / `mode` / `max_lines` |
 
 ### 6.1 `[plugins.statusline]` —— 内容、位置、圆角
 

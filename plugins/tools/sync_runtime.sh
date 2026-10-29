@@ -21,12 +21,18 @@ for dst in "$runtime" "$user"; do
   [ -d "$dst" ] || { echo "  跳过(不存在): $dst"; continue; }
   n=0
   for f in "$src"/*/*.js "$src"/*/*.json "$src"/*/*.md \
+           "$src"/*/tests/*.js \
            "$src"/*.js "$src"/*.json "$src"/*.md "$src"/*.d.ts; do
     [ -e "$f" ] || continue
     rel="${f#"$src"/}"
     case "$rel" in tools/*|examples/*) continue;; esac   # 开发用,不装 ✓
     if [ -e "$dst/$rel" ]; then
       cmp -s "$f" "$dst/$rel" || { cp "$f" "$dst/$rel"; n=$((n+1)); echo "  更新 $rel → $dst"; }
+    elif [ -e "$dst/${rel%%/*}" ]; then
+      # 源里新增的**插件目录**不代建(那是安装的活);但已存在的插件目录下的新文件
+      # (典型:`<plugin>/tests/*.js`)必须镜像 —— `cargo xtask api-check` 会比对它们。
+      mkdir -p "$(dirname "$dst/$rel")"
+      cp "$f" "$dst/$rel"; n=$((n+1)); echo "  新增 $rel → $dst"
     fi
   done
   echo "  $dst: 更新 $n 个文件"

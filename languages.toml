@@ -1180,6 +1180,18 @@ language-servers = ["ty", "ruff", "jedi", "pylsp", "zuban"]
 # TODO: pyls needs utf-8 offsets
 indent = { tab-width = 4, unit = "    " }
 
+[language.debugger]
+name = "debugpy"
+transport = "stdio"
+command = "python3"
+args = ["-m", "debugpy.adapter"]
+
+[[language.debugger.templates]]
+name = "script"
+request = "launch"
+completion = [ { name = "file", completion = "filename" } ]
+args = { program = "{0}", justMyCode = true, console = "internalConsole" }
+
 [[grammar]]
 name = "python"
 source = { git = "https://github.com/tree-sitter/tree-sitter-python", rev = "293fdc02038ee2bf0e2e206711b69c90ac0d413f" }

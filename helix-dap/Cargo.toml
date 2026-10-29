@@ -13,9 +13,12 @@ homepage.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+libc = "0.2"
 helix-stdx = { path = "../helix-stdx" }
 helix-core = { path = "../helix-core" }
 helix-dap-types = { path = "../helix-dap-types" }
+# 栈帧名 demangle（Rust 的 v0 mangling lldb 不认，见 docs/superpowers/specs/2026-10-28-dap-frame-names-design.md）
+rustc-demangle = "0.1"
 
 anyhow = "1.0"
 log = "0.4"

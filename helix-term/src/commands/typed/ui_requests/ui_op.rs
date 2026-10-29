@@ -38,6 +38,17 @@ pub(crate) enum UiOp {
         id: u64,
         side: ui::PanelSide,
     },
+    FocusPanel {
+        id: u64,
+    },
+    SetReadonly {
+        on: bool,
+        all: bool,
+    },
+    SetRegister {
+        text: String,
+        register: Option<String>,
+    },
     SplitLeaf {
         id: u64,
         dir: SplitDir,
@@ -134,9 +145,13 @@ impl UiOp {
                 rail,
             } => {
                 let panel = ui::PluginPanel::new(id, side, focusable);
-                // rail:true + left/right → 注册 rail(贴边全高);否则维持普通叶分裂
+                // rail:true + left/right → 注册 rail(贴边全高)
+                // rail:true + bottom    → 停靠到底部(贴底全宽)
+                // 否则维持"在当前活动叶上分裂"
                 if rail && matches!(side, ui::PanelSide::Left | ui::PanelSide::Right) {
                     compositor.register_panel(panel, side, size, js.as_deref_mut());
+                } else if rail && matches!(side, ui::PanelSide::Bottom) {
+                    compositor.register_bottom_panel(panel, size, js.as_deref_mut());
                 } else {
                     let (dir, first) = match side {
                         ui::PanelSide::Right => (SplitDir::H, false),
@@ -157,6 +172,34 @@ impl UiOp {
                 // 先清 render 注册表(幂等),再按实例 id 关掉树里的面板叶
                 let _ = helix_js::close_popup(id);
                 compositor.close_panel_by_id(id, js.as_deref_mut());
+            }
+            UiOp::SetRegister { text, register } => {
+                // 目标寄存器：默认未命名 `"`；顺带写系统剪贴板（`+`）—— 与 `y` 后
+                // 主剪贴板一致的行为（用户按 `p` 就能粘贴）
+                let name = register
+                    .as_deref()
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('"');
+                if editor.registers.write(name, vec![text.clone()]).is_ok() && name != '+' {
+                    let _ = editor.registers.write('+', vec![text]);
+                }
+            }
+            UiOp::SetReadonly { on, all } => {
+                let ids: Vec<_> = if all {
+                    editor.documents.keys().copied().collect()
+                } else {
+                    vec![helix_view::current_ref!(editor).0.doc]
+                };
+                for id in ids {
+                    if let Some(doc) = editor.documents.get_mut(&id) {
+                        doc.readonly_forced = on;
+                    }
+                }
+            }
+            UiOp::FocusPanel { id } => {
+                if !compositor.focus_panel_by_id(id, js.as_deref_mut()) {
+                    editor.set_error("focus_panel: 没有这个面板");
+                }
             }
             UiOp::MovePanel { id, side } => {
                 if !compositor.set_panel_side(id, side, js.as_deref_mut()) {

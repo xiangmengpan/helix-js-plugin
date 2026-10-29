@@ -605,7 +605,7 @@ function on_buffer_open(doc) {
 // ============================ 注册（node 环境跳过） ============================
 
 if (typeof helix !== "undefined") {
-  helix.register_command("filetree", toggle_panel, "切换文件树面板");
+  helix.register_command("filetree", toggle_panel, "切换文件树面板", '切换文件树面板');
   helix.register_command("filetree-reveal", (ctx) => {
     // 命令 ctx 形状是 { doc: { path, ... }, cursor, selection }（兼容旧顶层 path）
     const p = ctx && (ctx.doc ? ctx.doc.path : ctx.path);
@@ -613,7 +613,7 @@ if (typeof helix !== "undefined") {
       if (S.panel_id === null) open_panel();
       reveal(p);
     }
-  }, "文件树定位当前文件");
+  }, "文件树定位当前文件", '在文件树里定位当前文件');
   helix.on("buffer-open", on_buffer_open);
   // `:cd` / `:lcd` 之后跟着换根（事件发在真 chdir 之后 ⇒ `helix.cwd()` 已是新目录）。
   // 面板没开时只丢根、不动状态：下次 open_panel 会自己取新目录。

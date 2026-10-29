@@ -28,6 +28,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
 
         "w" => move_next_word_start,
         "b" => move_prev_word_start,
+        // 调试：F9 = 在当前行切换断点（比 `<space>G b` 顺手；调试键在暂停时也可直接按 `b`）
+        "F9" => dap_toggle_breakpoint,
         "e" => move_next_word_end,
 
         "W" => move_next_long_word_start,
@@ -213,27 +215,34 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "g" => changed_file_picker,
             "a" => code_action,
             "'" => last_picker,
-            "G" => { "Debug (experimental)" sticky=true
+            // 调试键位菜单（与暂停时的接管表是**同一张表**，见下 `dap_keymap()`；
+            // 有单测 `dap_keymap_matches_space_g` 钉住两者一致）。
+            // **不 sticky**：按完一个动作立刻回到普通模式 —— 否则菜单会一直挂着，
+            // 未绑定的键（j/k/…）被吞掉，感觉"按了 space G 之后什么都动不了"。
+            // `K` = Keys：当前层的**完整**键位表（`:keys` 的键位入口；
+            // which-key 提示里"还有 N 个（:keys 看全部）"就是它）
+            "K" => keys_help,
+            "G" => { "Debug" sticky=false
                 "l" => dap_launch,
                 "r" => dap_restart,
-                "b" => dap_toggle_breakpoint,
+                "T" => dap_terminate,
                 "c" => dap_continue,
-                "h" => dap_pause,
-                "i" => dap_step_in,
-                "o" => dap_step_out,
+                "p" => dap_pause,
                 "n" => dap_next,
-                "v" => dap_variables,
-                "t" => dap_terminate,
+                "s" => dap_step_in,
+                "o" => dap_step_out,
+                "t" => dap_switch_thread,
+                "f" => dap_switch_stack_frame,
+                "S" => dap_sessions,
+                "b" => dap_toggle_breakpoint,
                 "C-c" => dap_edit_condition,
                 "C-l" => dap_edit_log,
-                "s" => { "Switch"
-                    "t" => dap_switch_thread,
-                    "f" => dap_switch_stack_frame,
-                    // sl, sb
-                },
-                "S" => dap_sessions,
                 "e" => dap_enable_exceptions,
                 "E" => dap_disable_exceptions,
+                "v" => dap_variables,
+                "K" => dap_eval_under_cursor_key,
+                "R" => dap_run_to_cursor_key,
+                "?" => debug_help,
             },
             "w" => { "Window"
                 "C-w" | "w" => rotate_view,
@@ -387,4 +396,107 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         Mode::Select => select,
         Mode::Insert => insert,
     )
+}
+
+/// 暂停时接管的调试键（**唯一来源**）。
+///
+/// 比 `space G` 菜单少一个 `l`（launch）：① 暂停时没有"启动"可做；② 面板里 `l` 是"展开节点"
+/// （j/k/h/l 树导航），保留它才不会出现"同键异义"。菜单仍是这些键的超集。
+pub fn dap_keymap() -> KeyTrie {
+    keymap!({ "Debug" sticky=true
+        "r" => dap_restart,
+        "T" => dap_terminate,
+        "c" => dap_continue,
+        "p" => dap_pause,
+        "n" => dap_next,
+        "s" => dap_step_in,
+        "o" => dap_step_out,
+        "t" => dap_switch_thread,
+        "f" => dap_switch_stack_frame,
+        "S" => dap_sessions,
+        "b" => dap_toggle_breakpoint,
+        "C-c" => dap_edit_condition,
+        "C-l" => dap_edit_log,
+        "e" => dap_enable_exceptions,
+        "E" => dap_disable_exceptions,
+        "v" => dap_variables,
+        "K" => dap_eval_under_cursor_key,
+        "R" => dap_run_to_cursor_key,
+        "?" => debug_help,
+    })
+}
+
+/// 运行时生效的调试键表（`dap_keymap()` + `[keys.debug]` 覆盖）。
+///
+/// 为什么用全局缓存:`input_router::debug_key()` 在**每次按键**上被调用，而它拿不到
+/// `Config`（keymap 在 `EditorView` 里、config 在 `Application` 里）。所以配置加载时把
+/// 合并结果存这里，按键时只做一次廉价 clone。
+static DEBUG_KEYMAP: std::sync::OnceLock<
+    std::sync::RwLock<std::sync::Arc<crate::keymap::KeyTrie>>,
+> = std::sync::OnceLock::new();
+
+fn debug_keymap_slot() -> &'static std::sync::RwLock<std::sync::Arc<crate::keymap::KeyTrie>> {
+    DEBUG_KEYMAP.get_or_init(|| std::sync::RwLock::new(std::sync::Arc::new(dap_keymap())))
+}
+
+/// 配置加载/重载时写入（`Config::load` 调）。`None` = 回到内置表。
+pub fn set_debug_keymap(tree: Option<crate::keymap::KeyTrie>) {
+    let next = std::sync::Arc::new(tree.unwrap_or_else(dap_keymap));
+    *debug_keymap_slot()
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = next;
+}
+
+/// 当前生效的调试键表（含用户 `[keys.debug]` 覆盖）。
+pub fn debug_keymap() -> std::sync::Arc<crate::keymap::KeyTrie> {
+    debug_keymap_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+#[cfg(test)]
+mod dap_keymap_tests {
+    use crate::key;
+    use crate::keymap::KeyTrie;
+
+    fn keys_of(tree: &KeyTrie) -> Vec<String> {
+        let KeyTrie::Node(root) = tree else {
+            panic!("应该是 Node");
+        };
+        root.entries().into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// 暂停接管表 ⊆ `space G` 菜单，且菜单只多一个 `l`（launch）。
+    #[test]
+    fn dap_keymap_matches_space_g() {
+        let maps = super::default();
+        let menu = maps
+            .get(&helix_view::document::Mode::Normal)
+            .cloned()
+            .expect("Normal 键位表");
+        use std::str::FromStr;
+        let space_key = helix_view::input::KeyEvent::from_str("space").expect("space 键");
+        let space = menu.search(&[space_key]);
+        assert!(space.is_some(), "应有 space 前缀");
+        let g = space.unwrap().search(&[key!('G')]).expect("space G 存在");
+        let mut paused = keys_of(&super::dap_keymap());
+        let mut menu = keys_of(g);
+        menu.retain(|k| k != "l"); // 菜单多一个 launch
+        paused.sort();
+        menu.sort();
+        assert_eq!(paused, menu, "两边键集必须一致（菜单只多 `l`）");
+    }
+
+    /// 表本身钉住：删/加键必须是有意的（gdb 式单键，无两键序列）。
+    #[test]
+    fn dap_keymap_keys_are_stable() {
+        assert_eq!(
+            keys_of(&super::dap_keymap()),
+            vec![
+                "r", "T", "c", "p", "n", "s", "o", "t", "f", "S", "b", "C-c", "C-l", "e", "E", "v",
+                "K", "R", "?"
+            ]
+        );
+    }
 }

@@ -11,7 +11,7 @@ use boa_engine::{Context, JsString, JsValue, Source};
 /// 事件名白名单：helix.on 只接受这些事件。
 /// 通知型（save/buffer-*/theme-* 等）用 emit_event；终端钩子（term-*）用 emit_hook，
 /// 其中 term-key/term-close 的返回值参与决策（见 emit_term_key / emit_hook）。
-pub(crate) const EVENT_WHITELIST: [&str; 30] = [
+pub(crate) const EVENT_WHITELIST: [&str; 31] = [
     "save",
     "mode-change",
     "cwd-change", // 工作目录真的变了（:cd / :lcd / :pop-directory）——插件据此重取根目录
@@ -41,6 +41,7 @@ pub(crate) const EVENT_WHITELIST: [&str; 30] = [
     "dap-output",
     "dap-thread",
     "dap-breakpoint",
+    "dap-breakpoints",
     "dap-progress",
 ];
 

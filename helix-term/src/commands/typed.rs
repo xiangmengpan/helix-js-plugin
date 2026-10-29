@@ -16,12 +16,13 @@ use helix_core::line_ending;
 use helix_js::CommandContext;
 use helix_js::{
     CacheLayoutReq, CloseLeafReq, ClosePanelReq, ClosePopupReq, EqualizeLeafReq, FocusBufferReq,
-    FocusLeafDirReq, FocusLeafReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq, MovePanelReq,
-    OpenBufferLeafReq, OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq, OpenScratchFileReq,
-    OpenTerminalReq, PaneEmbedReq, PaneFloatReq, PanePinReq, PaneRaiseReq, ResizeLeafDirReq,
-    ResizeLeafReq, ServerListRowsReq, ServerOpReq, ServerTaskReq, SetThemeReq, SplitLeafReq,
-    StackActivateReq, StackCreateReq, StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq,
-    TermCloseReq, TermFeedReq, TermModeReq, TermResizeReq, TermSaveReq, ZoomLeafReq,
+    FocusLeafDirReq, FocusLeafReq, FocusPanelReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq,
+    MovePanelReq, OpenBufferLeafReq, OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq,
+    OpenScratchFileReq, OpenTerminalReq, PaneEmbedReq, PaneFloatReq, PanePinReq, PaneRaiseReq,
+    ResizeLeafDirReq, ResizeLeafReq, ServerListRowsReq, ServerOpReq, ServerTaskReq, SetReadonlyReq,
+    SetRegisterReq, SetThemeReq, SplitLeafReq, StackActivateReq, StackCreateReq, StackRemoveReq,
+    SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq, TermFeedReq, TermModeReq,
+    TermResizeReq, TermSaveReq, ZoomLeafReq,
 };
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
@@ -568,6 +569,11 @@ fn write_impl(
     let doc_id = doc.id();
     let view_id = view.id;
 
+    // 只读闸门（`:read-only` / 调试态自动置位）：写入也不许
+    if doc.readonly_forced {
+        bail!("Buffer is read-only (`:read-only` 解除)");
+    }
+
     if doc.trim_trailing_whitespace() {
         trim_trailing_whitespace(doc, view_id);
     }
@@ -712,6 +718,45 @@ pub struct WriteOptions {
     pub force: bool,
     pub auto_format: bool,
     pub code_actions: bool,
+}
+
+/// `:read-only [all]`：切换**强制只读**（当前 buffer / 全部打开的 buffer）。
+///
+/// 与 `readonly`（文件权限位）无关：这是编辑闸门（`Document::apply` + `:write` 都检查）。
+fn set_read_only(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let all = args.first().is_some_and(|a| a == "all");
+    let ids: Vec<_> = if all {
+        cx.editor.documents.keys().copied().collect()
+    } else {
+        vec![helix_view::current_ref!(cx.editor).0.doc]
+    };
+    if ids.is_empty() {
+        bail!("没有打开的 buffer");
+    }
+    // 目标状态：当前是否全都只读 ⇒ 取反
+    let all_on = ids
+        .iter()
+        .filter_map(|id| cx.editor.documents.get(id))
+        .all(|d| d.readonly_forced);
+    let target = !all_on;
+    for id in &ids {
+        if let Some(doc) = cx.editor.documents.get_mut(id) {
+            doc.readonly_forced = target;
+        }
+    }
+    cx.editor.set_status(if target {
+        "只读（编辑被拦；`:read-only` 解除）"
+    } else {
+        "只读已解除"
+    });
+    Ok(())
 }
 
 fn write(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -2496,11 +2541,143 @@ fn debug_start(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     }
 
     let mut args: Vec<_> = args.into_iter().collect();
+    // `:debug-start --release` 只对**语言模板 / 项目检测**那条路生效
+    // （launch.toml 的 build 请自己写 profile；要 `${cargoProfile}` 就写 --release 的 build）
+    let release = args.first().is_some_and(|a| a == "--release");
+    if release {
+        args.remove(0);
+    }
     let name = match args.len() {
         0 => None,
         _ => Some(args.remove(0)),
     };
-    dap_start_impl(cx, name.as_deref(), None, Some(args))
+    dap_start_impl(cx, name.as_deref(), None, Some(args), release)
+}
+
+/// `:debug-build [--release]`：按项目检测 / launch 配置里的 `build` 跑一次构建（不启动会话）。
+fn debug_build(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let release = args.first().is_some_and(|a| a == "--release");
+    crate::commands::dap::dap_build_run(cx.editor, cx.jobs, release, None, None);
+    Ok(())
+}
+
+/// `:debug-log [n|clear]`：把最近 n 条（默认全部）DAP 协议流水开成临时 buffer。
+///
+/// 比翻 `~/.cache/helix/helix.log` 快得多：`-vv` 才有日志，而这条命令当场就能看。
+/// `:keys`：当前层的完整键位表（which-key 提示里"还有 N 个（:keys 看全部）"的落点）。
+fn keys_help_cmd(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        // typed 命令拿到的是 compositor::Context；`keys_help` 要 commands::Context
+        let mut cxt = crate::commands::Context {
+            register: None,
+            count: None,
+            editor: cx.editor,
+            callback: Vec::new(),
+            on_next_key_callback: None,
+            jobs: cx.jobs,
+            js: cx.js.as_deref_mut(),
+        };
+        crate::commands::keys_help(&mut cxt);
+    }
+    Ok(())
+}
+
+fn debug_log(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let arg = args.first();
+    if arg == Some("clear") {
+        helix_dap::transcript::clear();
+        cx.editor.set_status("DAP 流水已清空");
+        return Ok(());
+    }
+    let n = arg.and_then(|a| a.parse::<usize>().ok()).unwrap_or(0);
+    let lines = helix_dap::transcript::tail(n);
+    if lines.is_empty() {
+        bail!("DAP 流水为空（还没有调试会话，或者已经被 clear）");
+    }
+    let mut text = String::from("// DAP transcript (newest last) — `:debug-log N` 只看最近 N 条\n");
+    for l in &lines {
+        text.push_str(l);
+        text.push('\n');
+    }
+    // 用一个**无路径的临时文档**装流水（`:new` 同款；不会被自动保存）。
+    // **复用**同一个 buffer：早先每次都 `new_file` ⇒ 敲三次就有三个无名 buffer。
+    let reuse = cx
+        .editor
+        .debug_log_doc
+        .filter(|id| cx.editor.documents.contains_key(id));
+    match reuse {
+        Some(id) => cx.editor.switch(id, helix_view::editor::Action::Replace),
+        None => {
+            cx.editor.new_file(helix_view::editor::Action::Replace);
+            let (_, doc) = helix_view::current!(cx.editor);
+            cx.editor.debug_log_doc = Some(doc.id());
+        }
+    }
+    {
+        let (view, doc) = helix_view::current!(cx.editor);
+        let transaction = helix_core::Transaction::change(
+            doc.text(),
+            std::iter::once((0, 0, Some(text.as_str().into()))),
+        );
+        doc.apply(&transaction, view.id);
+        doc.mark_saved_now(); // 生成的内容不算"未保存修改"（不然 `:q` 会拦）
+    }
+    cx.editor.set_status(format!("DAP 流水 {} 条", lines.len()));
+    Ok(())
+}
+
+/// `:debug-run-to-cursor`：跑到光标所在行（临时断点 + continue）。
+fn debug_run_to_cursor(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let mut c = crate::commands::Context {
+        editor: cx.editor,
+        count: None,
+        register: None,
+        callback: Vec::new(),
+        on_next_key_callback: None,
+        jobs: cx.jobs,
+        js: cx.js.as_deref_mut(),
+    };
+    crate::commands::dap::dap_run_to_cursor(&mut c);
+    Ok(())
+}
+
+/// `:debug-eval-under-cursor`：对光标下的标识符求值（结果进状态栏）。
+fn debug_eval_under_cursor(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let mut c = crate::commands::Context {
+        editor: cx.editor,
+        count: None,
+        register: None,
+        callback: Vec::new(),
+        on_next_key_callback: None,
+        jobs: cx.jobs,
+        js: cx.js.as_deref_mut(),
+    };
+    crate::commands::dap::dap_eval_under_cursor(&mut c);
+    Ok(())
 }
 
 fn debug_remote(
@@ -2521,7 +2698,7 @@ fn debug_remote(
         0 => None,
         _ => Some(args.remove(0)),
     };
-    dap_start_impl(cx, name.as_deref(), address, Some(args))
+    dap_start_impl(cx, name.as_deref(), address, Some(args), false)
 }
 
 fn abort_goto_line_number_preview(cx: &mut compositor::Context) {
@@ -3500,6 +3677,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "read-only",
+        aliases: &["readonly"],
+        doc: "Toggle forced read-only (edits are blocked) for the current buffer, or `all` open buffers.",
+        fun: set_read_only,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "write",
         aliases: &["w"],
         doc: "Write changes to disk. Accepts an optional path (:write some/path.txt)",
@@ -4124,6 +4312,52 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: debug_sessions,
         completer: CommandCompleter::none(),
         signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "keys",
+        aliases: &["keymap"],
+        doc: "Open the full keymap of the current layer as a buffer (same source as which-key hints).",
+        fun: keys_help_cmd,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-log",
+        aliases: &[],
+        doc: "Open the recent DAP protocol transcript in a scratch buffer (`debug-log 50`, `debug-log clear`).",
+        fun: debug_log,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-run-to-cursor",
+        aliases: &[],
+        doc: "Continue until the line under the cursor (temporary breakpoint, auto-removed on hit).",
+        fun: debug_run_to_cursor,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-eval-under-cursor",
+        aliases: &[],
+        doc: "Evaluate the identifier under the cursor and show the result in the status line.",
+        fun: debug_eval_under_cursor,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "debug-build",
+        aliases: &["dbgb"],
+        doc: "Build the debug target (auto-detected: cargo/cmake/make/cc/go); no session is started.",
+        fun: debug_build,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
     },
     TypableCommand {
         name: "debug-start",
@@ -5258,6 +5492,9 @@ pub(crate) fn apply_ui_requests(
             helix_js::UiRequest::OpenScratchFile(req) => doc::handle_open_scratch_file(req)?,
             helix_js::UiRequest::OpenFile(req) => doc::handle_open_file(req)?,
             helix_js::UiRequest::MovePanel(req) => dispatch(pane::handle_move_panel(req)?),
+            helix_js::UiRequest::FocusPanel(req) => dispatch(pane::handle_focus_panel(req)?),
+            helix_js::UiRequest::SetReadonly(req) => dispatch(pane::handle_set_readonly(req)?),
+            helix_js::UiRequest::SetRegister(req) => dispatch(pane::handle_set_register(req)?),
             helix_js::UiRequest::OpenTerminal(req) => term::handle_open_terminal(&mut js, req)?,
             helix_js::UiRequest::TermMode(req) => term::handle_term_mode(req)?,
             helix_js::UiRequest::TermClose(req) => term::handle_term_close(req)?,

@@ -51,6 +51,24 @@ pub(crate) fn handle_move_panel(
     Ok(Some(UiOp::MovePanel { id, side }))
 }
 
+pub(crate) fn handle_set_register(
+    SetRegisterReq { text, register }: SetRegisterReq,
+) -> anyhow::Result<Option<UiOp>> {
+    Ok(Some(UiOp::SetRegister { text, register }))
+}
+
+pub(crate) fn handle_set_readonly(
+    SetReadonlyReq { on, all }: SetReadonlyReq,
+) -> anyhow::Result<Option<UiOp>> {
+    Ok(Some(UiOp::SetReadonly { on, all }))
+}
+
+pub(crate) fn handle_focus_panel(
+    FocusPanelReq { id }: FocusPanelReq,
+) -> anyhow::Result<Option<UiOp>> {
+    Ok(Some(UiOp::FocusPanel { id }))
+}
+
 pub(crate) fn handle_split_leaf(
     SplitLeafReq {
         id,

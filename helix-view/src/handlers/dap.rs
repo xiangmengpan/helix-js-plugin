@@ -1,3 +1,4 @@
+use crate::editor::DapIntent;
 use crate::editor::{Action, Breakpoint};
 use crate::{align_view, Align, Editor};
 use anyhow::bail;
@@ -72,6 +73,11 @@ pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
     }
 
     let (view, doc) = current!(editor);
+    // 记下来：会话结束时把"我们打开、且用户没改过"的文档关掉
+    let opened_id = doc.id();
+    if !editor.debug_docs_before.contains(&opened_id) {
+        editor.debug_opened_docs.insert(opened_id);
+    }
 
     let text_end = doc.text().len_chars().saturating_sub(1);
     let start = dap_pos_to_pos(doc.text(), frame.line, frame.column).unwrap_or(0);
@@ -165,6 +171,19 @@ impl Editor {
                         all_threads_stopped,
                         ..
                     }) => {
+                        // "跑到光标"的临时断点：命中就摘掉（不留进用户的断点表）
+                        // 注意：要在取 `&mut debugger` **之前**做 —— `self` 的其它字段
+                        // 和 `debug_adapters` 的可变借用不能同时活着。
+                        if let Some((path, row)) = self.debug_temp_breakpoint.take() {
+                            self.breakpoints.remove(&path, row);
+                            self.dap_intents
+                                .push(DapIntent::SyncBreakpoints(path.clone()));
+                            self.set_status(format!(
+                                "已到光标：{}:{}（临时断点已移除）",
+                                path.display(),
+                                row + 1
+                            ));
+                        }
                         let debugger = match self.debug_adapters.get_client_mut(id) {
                             Some(debugger) => debugger,
                             None => return false,
@@ -180,20 +199,30 @@ impl Editor {
                                 for thread in response.threads {
                                     fetch_stack_trace(debugger, thread.id).await;
                                 }
-                                select_thread_id(self, thread_id.unwrap_or_default(), false).await;
                             }
-                        } else if let Some(thread_id) = thread_id {
-                            debugger.thread_states.insert(thread_id, reason.clone()); // TODO: dap uses "type" || "reason" here
-
-                            fetch_stack_trace(debugger, thread_id).await;
-                            // whichever thread stops is made "current" (if no previously selected thread).
-                            select_thread_id(self, thread_id, false).await;
+                        } else if let Some(tid) = thread_id {
+                            debugger.thread_states.insert(tid, reason.clone()); // TODO: dap uses "type" || "reason"
+                            fetch_stack_trace(debugger, tid).await;
                         }
+
+                        // gdb 式：记下"停在哪"（这是借用 `debugger` 的**最后一处** —— 之后
+                        // 才能 `select_thread_id(self, …)` 与移动光标）
+                        let stop_point = debugger.current_stack_frame().and_then(|f| {
+                            let path = f.source.as_ref()?.path.as_ref()?.clone();
+                            Some((f.name.clone(), path, f.line))
+                        });
 
                         let scope = match thread_id {
                             Some(id) => format!("Thread {}", id),
                             None => "Target".to_owned(),
                         };
+
+                        // 借用结束：选线程（会动 self）
+                        if all_threads_stopped {
+                            select_thread_id(self, thread_id.unwrap_or_default(), false).await;
+                        } else if let Some(tid) = thread_id {
+                            select_thread_id(self, tid, false).await;
+                        }
 
                         let text_for_event = text.clone();
                         let mut status = format!("{} stopped because of {}", scope, reason);
@@ -207,6 +236,23 @@ impl Editor {
                             status.push_str(" (all threads stopped)");
                         }
 
+                        // 状态栏："函数 — Thread N  file:line"（比只报 reason 有用），
+                        // 并把光标/视口跟到停止行 —— gdb 单步后你总看得见自己在哪
+                        if let Some((name, path, row)) = stop_point {
+                            status =
+                                format!("{}  —  {}  {}:{}", name, scope, path.display(), row + 1);
+                            let (view, doc) = crate::current!(self);
+                            if doc.path().map(|p| p.to_path_buf()).as_deref()
+                                == Some(path.as_path())
+                            {
+                                let text = doc.text().slice(..);
+                                let last = text.len_lines().saturating_sub(1);
+                                let line_start = text.line_to_char(row.min(last));
+                                let view_id = view.id;
+                                doc.set_selection(view_id, Selection::point(line_start));
+                                align_view(doc, view, Align::Center);
+                            }
+                        }
                         self.set_status(status);
                         // 事件放在栈帧抓取**之后**（上面那段已经 await 完）：插件收到事件立刻
                         // `stack_frames()` 才拿得到新帧。
@@ -461,6 +507,7 @@ impl Editor {
                         // 把已有断点全量推给 adapter。`debug_adapters`（不可变借）与
                         // `breakpoints`（可变借）是**不同字段** ⇒ 同时借是合法的，不用先克隆客户端。
                         let paths = self.breakpoints.paths();
+                        log::debug!("dap: initialized -> 重放 {} 个文件的断点", paths.len());
                         let mut failure = None;
                         for path in paths {
                             let Some(debugger) = self.debug_adapters.get_client(id) else {
@@ -484,11 +531,20 @@ impl Editor {
                             self.set_error(format!("Debugger configuration failed: {}", err));
                         } else {
                             self.set_status("Debugged application started");
+                            // 会话此刻才算真正开始：记下**已经开着**的文档，
+                            // 结束时只关"这次会话新打开的"（见 `close_debug_opened_docs`）
+                            self.debug_docs_before = self.documents.keys().copied().collect();
+                            self.debug_opened_docs.clear();
                         }
 
                         self.debug_adapters.set_active_client(id);
                     }
                     Event::Terminated(terminated) => {
+                        // 跑到光标没命中就结束了 ⇒ 临时断点也要摘掉（别留在用户断点表里）
+                        if let Some((path, row)) = self.debug_temp_breakpoint.take() {
+                            self.breakpoints.remove(&path, row);
+                            self.dap_intents.push(DapIntent::SyncBreakpoints(path));
+                        }
                         // 先发事件再取可变借用：`public_id` 只读 registry，顺序反了会撞借用检查
                         let public = self.debug_adapters.public_id(adapter_id).unwrap_or(0);
                         let restart_for_event = terminated.as_ref().and_then(|t| t.restart.clone());
@@ -496,6 +552,7 @@ impl Editor {
                             "dap-terminated",
                             json!({ "id": public, "restart": restart_for_event }),
                         );
+                        self.close_debug_opened_docs();
                         let debugger = match self.debug_adapters.get_client_mut(id) {
                             Some(debugger) => debugger,
                             None => return false,
@@ -563,6 +620,10 @@ impl Editor {
                         }
                     }
                     Event::Exited(resp) => {
+                        if let Some((path, row)) = self.debug_temp_breakpoint.take() {
+                            self.breakpoints.remove(&path, row);
+                            self.dap_intents.push(DapIntent::SyncBreakpoints(path));
+                        }
                         let exit_code = resp.exit_code;
                         let public = self.debug_adapters.public_id(id).unwrap_or(0);
                         self.emit_dap_event(
