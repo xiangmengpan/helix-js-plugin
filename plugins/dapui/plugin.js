@@ -1525,13 +1525,13 @@ const REPL_FS = { path: null };
 /**
  * 懒加载历史（第一次打开 REPL 页时；**同步**读——`run_async` 的 promise 在插件
  * 初始化/页面切换这些时机不一定泵得到，实测 then/catch 都不进，会静默丢历史）。
- * `printf %s "$HOME"` 阻塞 ~1ms，换来确定性。
+ * 家目录用 `helix.home_dir()`（跨平台，不经过 shell）；要的是"现在就确定"，不要 promise。
  */
 function repl_history_load() {
   if (B.hist_loaded) return;
   B.hist_loaded = true;
   try {
-    const home = String(helix.run('printf %s "$HOME"') || "").trim();
+    const home = String(helix.home_dir() || "").trim();
     if (!home) return;
     REPL_FS.path = `${home}/.cache/helix/dapui-repl-history`;
     const text = helix.read_file(REPL_FS.path);
@@ -1575,7 +1575,7 @@ function watches_load() {
   WATCH_FS.loaded = true;
   if (bool_opt("persist_watches", true) === false) return;
   try {
-    const home = String(helix.run('printf %s "$HOME"') || "").trim();
+    const home = String(helix.home_dir() || "").trim();
     if (!home) return;
     WATCH_FS.path = `${home}/.cache/helix/dapui-watches-${workspace_slug()}`;
     const text = helix.read_file(WATCH_FS.path);
@@ -1595,9 +1595,9 @@ function watches_load() {
 function watches_save() {
   if (bool_opt("persist_watches", true) === false) return;
   if (!WATCH_FS.path) {
-    // 还没解析过 HOME（例如刚启动就加监视）：先解析一次
+    // 还没解析过家目录（例如刚启动就加监视）：先解析一次
     try {
-      const home = String(helix.run('printf %s "$HOME"') || "").trim();
+      const home = String(helix.home_dir() || "").trim();
       if (home) WATCH_FS.path = `${home}/.cache/helix/dapui-watches-${workspace_slug()}`;
     } catch (e) {
       return;

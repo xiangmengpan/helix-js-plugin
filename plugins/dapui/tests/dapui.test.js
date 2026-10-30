@@ -114,6 +114,8 @@ function make_host(opts) {
       calls.ran_async.push(cmd);
       return o.home || '/home/test';
     },
+    // 跨平台家目录（插件已从 `helix.run('printf %s "$HOME"')` 换成它）
+    home_dir: () => o.home || '/home/test',
     read_file: (path) => {
       calls.reads.push(path);
       if (o.history === undefined) throw new Error('ENOENT');

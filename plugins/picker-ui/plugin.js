@@ -297,7 +297,16 @@ let buffer_items = [];
 /// 输出全是**相对路径** ⇒ 按 load 时的 cwd 拼成绝对(=同一个道理:存绝对)
 function sync_fallback() {
   const prefix = cwd_now();
-  for (const cmd of ["rg --files", "git ls-files", "find . -type f -not -path './.git/*'"]) {
+  // 全部走 **argv**（不经 shell）：参数不拆词、不转义。
+  // 第三条刻意用 `sh -c` 包着：`find` 在 Windows 上是**另一个程序**（字符串搜索），
+  // 直接按 argv 调用会静默给出错误结果；包了 sh 之后 Windows 上直接失败 ⇒ guard 跳过，
+  // 而不是拿错误结果污染 file 列表。
+  const sources = [
+    ["rg", "--files"],
+    ["git", "ls-files"],
+    ["sh", "-c", "find . -type f -not -path './.git/*'"],
+  ];
+  for (const cmd of sources) {
     const out = guard(() => helix.run(cmd), null);
     if (typeof out === "string" && out.length > 0) {
       all = out

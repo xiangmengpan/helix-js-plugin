@@ -1332,6 +1332,9 @@ interface Helix {
   cwd(): string;
   /** 用户层插件根目录;未推入根时 null。注意写入**只落最后一个根**(用户层) */
   plugins_dir(): string | null;
+  /** 家目录（跨平台：Unix `$HOME` / Windows `USERPROFILE`）；定位不到 → `null`。
+   *  用它替代 `helix.run('printf %s "$HOME"')` 这类**只有 Unix 成立**的写法。 */
+  home_dir(): string | null;
   /** 已加载脚本名(按加载顺序;与 `:plugin list` 同一数据源) */
   loaded_plugins(): string[];
   /** 往插件根写文件(父目录按需创建),返回**写入的绝对路径**;

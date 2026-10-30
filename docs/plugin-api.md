@@ -329,6 +329,7 @@ helix.command_args()                            // 当前键入命令的参数�
 helix.loaded_plugins()                          // **已加载**插件名数组(与 `:plugin list` 同源)
 helix.plugins_dir()                             // 插件目录绝对路径(未推入 → null)
 helix.cwd()                                     // **当前**工作目录绝对路径(每次现取;跟随:`helix.on("cwd-change", …)`)
+helix.home_dir()                                // 家目录(跨平台:Unix `$HOME`/Windows `USERPROFILE`;定位不到 → null)
 helix.draw.rect(x,y,w,h,{border,title,fill,style}) // 立即模式绘制:边框盒子/填充(最后必须 `return helix.draw.done()`)
 helix.draw.fill(x,y,w,h,{style,ch})             // 无边框填充块(缺省铺带样式的空格)
 helix.draw.hline(x,y,len,{ch,style})            // 水平线(缺省 ─)

@@ -258,6 +258,21 @@ pub(crate) fn js_cwd(
     )))
 }
 
+/// `helix.home_dir()` —— 家目录（跨平台）。定位不到时返回 `null`（不编一个假路径出来）。
+///
+/// 为什么要有它：插件此前只能 `helix.run('printf %s "$HOME"')` —— 那是**只有 Unix 成立**的
+/// 写法（Windows 用 `USERPROFILE`，且根本没有 `printf`）。路径类的东西应当由核心给。
+pub(crate) fn js_home_dir(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    Ok(match helix_stdx::path::home_dir() {
+        Ok(home) => JsValue::from(JsString::from(home.to_string_lossy().into_owned())),
+        Err(_) => JsValue::null(),
+    })
+}
+
 pub(crate) fn js_plugins_dir(
     _this: &JsValue,
     _args: &[JsValue],

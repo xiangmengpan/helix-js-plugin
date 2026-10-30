@@ -18,7 +18,7 @@
 //      "已安装"(manifest)作为**附加**一行给出,不混淆两者。
 //   3. ~~`install` 被挡住~~ → **已解锁**:新增限域接口 `helix.write_plugin_file(rel, text)`
 //      (父目录按需创建;只相对路径、拒 `..`)后,本地文件/目录安装可在 JS 侧完成;
-//      git 源走 `helix.run("git clone …")`。
+//      git 源走 `helix.run(["git","clone", …])`（argv 形态，不经 shell ⇒ 跨平台、免转义）。
 //   5. **缺同步写 API**:`helix-js` 只有 `write_file_async` ✗ ⇒ **写路径**(install/remove/pin/update)
 //      仍须 `await`。**读路径已全程同步**(`helix.read_file`,本轮新增)⇒ 只读流程(`list`/`status`)
 //      不再产生续体,**构造性地**避开 §14 的引擎重入 ✓。要彻底解决,需再加同步 `write_file`。
@@ -43,11 +43,6 @@ function hasProcess() {
 /// 统一的"没有 process 时"的提示(两处 git 调用共用,措辞一致)
 function noProcessMsg(what) {
   return "plugin " + what + ": 当前能力清单没有 process(在 manifest 声明 permissions.process,或用 :js-permission allow <plugin> process)";
-}
-
-/// shell 单引号引用(与 statusline 插件同款)
-function shq(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
 /// manifest 路径:`helix.plugins_dir()`(= 用户层插件根,`config_dir/plugins`)
@@ -199,7 +194,8 @@ function runOp(sub, arg) {
         const base = arg.replace(/\/+$/, "").split("/").pop().replace(/\.git$/, "");
         const dest = mp + "/" + base;
         try {
-          helix.run("git clone --depth 1 " + shq(arg) + " " + shq(dest));
+          // argv 形态：不经 shell ⇒ 路径里有空格/引号/`%` 都不用转义，Windows 同样成立
+          helix.run(["git", "clone", "--depth", "1", arg, dest]);
         } catch (e) {
           helix.echo("plugin install: git clone 失败: " + e);
           break;
@@ -294,10 +290,10 @@ function runOp(sub, arg) {
         }
         const dir = mp + "/" + t;
         try {
-          helix.run(
-            "git -C " + shq(dir) + " fetch --quiet && git -C " + shq(dir) + " merge --ff-only --quiet FETCH_HEAD"
-          );
-          const head = helix.run("git -C " + shq(dir) + " rev-parse HEAD");
+          // `&&` 串联换成两条 argv：不经 shell，失败语义仍由各自 throw 表达
+          helix.run(["git", "-C", dir, "fetch", "--quiet"]);
+          helix.run(["git", "-C", dir, "merge", "--ff-only", "--quiet", "FETCH_HEAD"]);
+          const head = helix.run(["git", "-C", dir, "rev-parse", "HEAD"]);
           e.commit = (head || "").trim();
           n++;
         } catch (err) {

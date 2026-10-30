@@ -979,6 +979,16 @@ pub static API: &[Entry] = &[
         "js_cwd",
         &[],
     ),
+    // 家目录（跨平台：Unix `$HOME` / Windows `USERPROFILE`）。给插件用，替代
+    // `helix.run('printf %s "$HOME"')` 这类只有 Unix 成立的写法。
+    e(
+        Target::Root,
+        "home_dir",
+        0,
+        crate::commands::js_home_dir,
+        "js_home_dir",
+        &[],
+    ),
     e(
         Target::Root,
         "plugins_dir",

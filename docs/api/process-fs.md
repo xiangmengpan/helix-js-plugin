@@ -13,6 +13,8 @@ const cwd = helix.cwd();   // 不缓存：:cd 之后立即变
 - **不要**用 `helix.run("pwd")` 取 cwd：那需要 `process` 能力，而且旧习惯把它在加载时缓存一次 ⇒ `:cd` 之后永远陈旧。
 - 需要**跟随**变更时监听 `cwd-change`（见 [`events.md`](events.md)）。
 - 不要求任何能力（纯元信息，与 `helix.plugins_dir()` 同级）。
+- 要**家目录**用 `helix.home_dir()`（跨平台：Unix `$HOME` / Windows `USERPROFILE`，定位不到返回 `null`）——
+  **不要**写 `helix.run('printf %s "$HOME"')`：那只有 Unix 成立，Windows 上既没有 `printf` 也没有 `$HOME`。
 - 相对路径（`read_dir(".")` / `read_tree(".")` / `run("rg …")` / `open_file("a.txt")`）一律基于**当前** cwd。
 
 ## 进程执行
