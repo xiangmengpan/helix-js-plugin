@@ -22,8 +22,11 @@ pub fn managed_root() -> PathBuf {
     if let Ok(dir) = std::env::var("SM_MANAGED_DIR") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".local/share/helix/managed")
+    // 跨平台取 home:`HOME` 只在 Unix 有(Windows 是 `USERPROFILE`),读不到时
+    // 会静默变成 `/.local/share/…`(绝对路径但挂在根上)⇒ 受管工具全落空。
+    helix_stdx::path::home_dir()
+        .unwrap_or_default()
+        .join(".local/share/helix/managed")
 }
 
 /// 某工具的受管目录(未创建)

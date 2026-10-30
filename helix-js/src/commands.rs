@@ -1886,9 +1886,15 @@ pub(crate) fn js_term_state(
     Ok(JsValue::undefined())
 }
 
-fn term_state_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
+/// 终端状态文件路径（跨平台）。
+///
+/// 为什么不直接读 `HOME`:`HOME` 是 Unix 约定,Windows 用 `USERPROFILE` ⇒ 读不到时
+/// 这里会静默回退,状态文件就落进**当前工作目录**。`home_dir()` 按平台选变量
+/// (Unix 仍读 `$HOME`,所以 `term_state_persist_roundtrip` 的临时 HOME 隔离照旧有效)。
+/// 路径形状保持原样(`~/.local/state/helix/…`),规范化另立一项。
+pub(crate) fn term_state_path() -> PathBuf {
+    helix_stdx::path::home_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
         .join(".local/state/helix")
         .join("term-state.json")
 }

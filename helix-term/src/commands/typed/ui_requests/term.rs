@@ -111,10 +111,14 @@ pub(crate) fn handle_term_save(TermSaveReq { view_id, path }: TermSaveReq) -> an
             return;
         };
         let path = if path.is_empty() {
-            format!(
-                "{}/.cache/helix/term-{view_id}.log",
-                std::env::var("HOME").unwrap_or_default()
-            )
+            // 跨平台取 home:`HOME` 只在 Unix 有(Windows 是 `USERPROFILE`),直接读环境
+            // 变量会在 Windows 上拼出 `/.cache/helix/…`。路径形状保持原样。
+            helix_stdx::path::home_dir()
+                .unwrap_or_default()
+                .join(".cache/helix")
+                .join(format!("term-{view_id}.log"))
+                .to_string_lossy()
+                .into_owned()
         } else {
             path
         };

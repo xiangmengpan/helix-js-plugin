@@ -546,6 +546,21 @@ fn term_state_persist_roundtrip() {
     drop(dir);
 }
 
+/// 回归:状态文件路径必须是**绝对路径**。
+///
+/// 修前直接读 `HOME`;Windows 没有这个变量 ⇒ 回退 `.` ⇒ 状态文件落进当前工作目录
+/// (相对路径,跨项目互相污染)。`home_dir()` 按平台选变量(Unix `$HOME` / Windows
+/// `USERPROFILE`)—— 这是本仓库唯一能在非 Windows 机器上钉住这条的断言。
+/// 不取 `TEST_LOCK`:纯函数,不碰全局状态。
+#[test]
+fn term_state_path_is_absolute() {
+    assert!(
+        crate::commands::term_state_path().is_absolute(),
+        "term_state_path 必须是绝对路径(否则状态文件写进 cwd):{:?}",
+        crate::commands::term_state_path()
+    );
+}
+
 /// term-exit 钩子:crate::host::with_state_or_init(|st| resolve_term_event(st, Exit)) → emit_term_exit(消息)
 #[test]
 fn term_exit_hook_via_resolve() {
