@@ -250,6 +250,9 @@ pub struct HostState {
 
     pub(crate) next_popup_id: Cell<u64>,
 
+    // 非 unix 没有流式 worker（`spawn`/`run_async`/pty 都报错）⇒ 该计数器暂时无人读。
+    // ConPTY + Windows 读线程落地后自动恢复。
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) next_term_id: Cell<u64>,
 
     pub(crate) next_terminal_view_id: Cell<u64>,

@@ -16,7 +16,6 @@ mod register;
 mod permissions;
 // 平台门面:shell 形态(`sh -c` / `cmd /C`)与 argv 命令构造的唯一出口。
 mod platform;
-#[cfg(unix)]
 mod pty;
 mod shell;
 mod state;

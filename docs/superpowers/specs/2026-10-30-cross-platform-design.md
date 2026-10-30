@@ -365,3 +365,42 @@ string），不写成"应该的样子"。
 `87815cbe5` 的 commit message 记着：把 `CC_<target>` / `AR_<target>` 指向一个「只 touch 产物」的
 **假 C 编译器**，就能对 `--workspace --all-targets` 做 Windows/macOS 交叉 check —— 这绕过了
 tree-sitter 的 C 依赖，也就是本 spec §7.2 里那条「待实测」的答案。P7 照抄即可。
+
+### P4 拆成两刀（实测后修正 §4 的假设）
+
+**P4·1**（`782cd8b1a`）：19 个 Windows 错误里 **18 个不在 pty 里**，而在**共享读路径**
+（`Pipe`/`set_nonblocking`/`libc::poll` 主循环 —— 它同时服务 pipe 模式的 `run_async`/`spawn`）。
+这刀把它们整体收进 `#[cfg(unix)]`，两个流式入口给「一份实现 + 一个明确错误桩」：
+19 → 1 error。
+
+**P4·2**（本次）：把最后 1 个（注册表引用 `#[cfg(unix)]` 函数）连同 §4.2 的抽象一起做掉。
+
+#### 与 §4.2 的两处偏离（都是"实测比设计更省"，记录理由）
+
+1. **只抽了 `PtyResize`，没抽 `PtyMaster`/`ChildStdio`。**
+   §4.2 原本要把 `spawn_pty_worker` 泛化成接 trait 对象，但那整条路径（`setsid`/`TIOCSCTTY`/
+   `tcsetpgrp`/`kill(-pgid)`/fd 所有权）在 ConPTY 落地前**只有 unix 一份实现**，
+   泛化它等于为一个不存在的第二种实现改动 fd 生命周期 —— 收益为零、风险不为零。
+   真正需要跨平台的是**注册表**：`TERM_MASTERS` 之前直接存 `RawFd`，所以 `term_resize`/
+   `js_term_resize` 被迫 `#[cfg(unix)]`，而 `api.rs` 的 `term_resize` 表项是无条件的
+   ⇒ API 表在 Windows 上不成立。抽 `PtyResize` 正好切在这儿：句柄与平台无关，
+   实现（裸 fd / 将来的 `HPCON`）留在平台模块里。
+2. **`popup.rs` 的两半 cfg 没合并成一份。** §4.4 原本想用 `is_supported()` 收敛，
+   但 unix 那半调用 `pty::open_pty()` + `spawn_pty_worker()`（都是 unix 签名），
+   在 ConPTY 落地前无法共用一份函数体。改为：保留两半，但把非 unix 的错误信息换成
+   人话（说清缺 ConPTY、给替代方案、指向文档），并加 `debug_assert!(!is_supported())`
+   当"ConPTY 落地时会被提醒"的哨兵。
+
+#### DoD 达成（比原计划更强的一条）
+
+原定 DoD 是 `cargo check --target …` 为 0。实际达成的是**带头 `-D warnings` 的 clippy**：
+
+```bash
+cargo clippy -p helix-js --all-targets --target x86_64-pc-windows-msvc -- -D warnings   # 干净
+```
+
+顺带清掉的 Windows dead code：`next_term_id`（字段 + 函数）、`TermCtrl::Write` 的载荷
+（非 unix 没有 worker 读它）—— 都按仓库既有先例用 `#[cfg_attr(not(unix), allow(dead_code))]`
+加注释标注，而不是硬塞 `#[allow]`。另外 `tests/worker_threads.rs` 整个文件只有 Linux 断言，
+改成在 `tests/mod.rs` 里按 `target_os = "linux"` 门整个模块（否则 macOS/Windows 上
+文件里 0 个测试、`use super::*;` 变成 unused import）。

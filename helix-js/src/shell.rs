@@ -7,7 +7,6 @@ use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue};
 
 use crate::commands::emit_term_exit;
-#[cfg(unix)]
 use crate::pty;
 
 use crate::state::with_async_promises;
@@ -509,18 +508,19 @@ pub(crate) fn js_spawn(
     crate::state::with_term_workers(|m| m.insert(id, tx));
     let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
     if pty {
-        #[cfg(unix)]
-        {
-            let (master, slave) =
-                pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
-            // 先注册 master fd 再起 worker：spawn 返回后 JS 立即可 term_resize
-            crate::state::with_term_masters(|m| m.insert(id, master.fd()));
-            spawn_pty_worker(id, &cmd, term_tx, rx, master, slave);
+        // 能力查询而不是 `#[cfg(not(unix))]` 死分支：本函数已是 unix-only（见下方桩），
+        // 那半永远编不进来；用 `is_supported()` 表达「这条路要求什么」，ConPTY 落地时
+        // 只需让 `is_supported()` 变真。
+        if !pty::is_supported() {
+            return Err(crate::js_err(
+                "helix.spawn: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）",
+            ));
         }
-        #[cfg(not(unix))]
-        {
-            return Err(crate::js_err("helix.spawn: pty requires a unix platform"));
-        }
+        let (master, slave) =
+            pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
+        // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
+        crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
+        spawn_pty_worker(id, &cmd, term_tx, rx, master, slave);
     } else {
         spawn_worker(id, &cmd, false, term_tx, rx);
     }
@@ -616,18 +616,18 @@ pub fn term_kill_with(st: &HostState, id: u64) -> Result<()> {
     Ok(())
 }
 
-/// 调整 PTY 窗口尺寸（rows/cols）。直连 master fd 做 TIOCSWINSZ：
-/// winsize 是 tty 设备属性，spawn 后立即调用也在子进程启动前生效，无消息时序竞态。
-/// 非 pty worker / 未知 id → Err。
-#[cfg(unix)]
+/// 调整 PTY 窗口尺寸（rows/cols）。
+///
+/// winsize 是 tty 设备属性（Unix 走 TIOCSWINSZ），spawn 后立即调用也在子进程启动前生效，
+/// 无消息时序竞态。句柄与平台无关 ⇒ 本函数**跨平台**存在：非 pty worker / 未知 id / 本平台
+/// 没有 pty（Windows）一律 Err，错误信息由具体实现给。
 pub fn term_resize(id: u64, rows: u16, cols: u16) -> Result<()> {
     crate::init();
-    let fd = crate::state::with_term_masters(|m| m.get(&id).copied())
+    let handle = crate::state::with_term_masters(|m| m.get(&id).cloned())
         .ok_or_else(|| anyhow!("term_resize: unknown id (not a pty worker)"))?;
-    pty::set_winsize(fd, rows, cols)
+    handle.resize(pty::TermSize { rows, cols })
 }
 
-#[cfg(unix)]
 pub(crate) fn js_term_resize(
     _this: &JsValue,
     args: &[JsValue],
@@ -648,9 +648,10 @@ pub(crate) fn js_term_resize(
         .unwrap_or(&JsValue::undefined())
         .try_js_into(ctx)
         .map_err(|_| crate::js_err("helix.term_resize: cols must be a number"))?;
-    let fd = crate::state::with_term_masters(|m| m.get(&id).copied())
-        .ok_or_else(|| crate::js_err("helix.term_resize: unknown id"))?;
-    pty::set_winsize(fd, rows, cols)
+    let handle = crate::state::with_term_masters(|m| m.get(&id).cloned())
+        .ok_or_else(|| crate::js_err("helix.term_resize: unknown id (not a pty worker)"))?;
+    handle
+        .resize(pty::TermSize { rows, cols })
         .map_err(|e| crate::js_err(format!("helix.term_resize: {e}")))?;
     Ok(JsValue::undefined())
 }

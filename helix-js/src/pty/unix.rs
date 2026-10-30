@@ -1,7 +1,10 @@
 use std::fs::File;
 use std::os::fd::{FromRawFd, RawFd};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+
+use super::{PtyResize, TermSize};
 
 /// master fd 包装：Drop 时 close（worker 线程持有时保证 fd 生命周期）
 pub(crate) struct Master(RawFd);
@@ -16,6 +19,25 @@ impl Master {
         let fd = self.0;
         std::mem::forget(self);
         unsafe { File::from_raw_fd(fd) }
+    }
+
+    /// 注册进 `TERM_MASTERS` 的 resize 句柄。
+    ///
+    /// 只持**裸 fd**（Copy，不 own）：注册表不拥有 fd，因此没有生命周期问题；
+    /// worker 先退出、清理后发生 resize → fd 陈旧 → EBADF → Err，良性（见 `state.rs` 注释）。
+    pub(crate) fn resize_handle(&self) -> Arc<dyn PtyResize> {
+        Arc::new(UnixResize { fd: self.0 })
+    }
+}
+
+/// `TERM_MASTERS` 里存的句柄：把「调整尺寸」这件事与平台类型（`RawFd`/`HPCON`）解耦。
+struct UnixResize {
+    fd: RawFd,
+}
+
+impl PtyResize for UnixResize {
+    fn resize(&self, size: TermSize) -> Result<()> {
+        set_winsize(self.fd, size.rows, size.cols)
     }
 }
 
@@ -84,7 +106,7 @@ pub(crate) fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

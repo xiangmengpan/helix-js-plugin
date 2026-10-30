@@ -550,6 +550,8 @@ pub(crate) fn next_terminal_view_id(st: &HostState) -> u64 {
     v
 }
 
+// 非 unix：见 `host.rs` 同名字段的说明（没有流式 worker ⇒ 暂时无人调用）。
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn next_term_id(st: &HostState) -> u64 {
     let c = &st.next_term_id;
     let v = c.get();
@@ -927,11 +929,13 @@ thread_local! {
     // 分配，若 map 全局则并发线程的同 id 互相覆盖（与 TERM_EVENTS 同模式）；
     // worker 线程不访问此表，只在发起线程的 Sender 克隆上发事件。
     static TERM_WORKERS: RefCell<HashMap<u64, std::sync::mpsc::Sender<TermCtrl>>> = RefCell::new(HashMap::new());
-    // 进程 id → pty master fd（term_resize 直连 ioctl 用）。
+    // 进程 id → pty resize 句柄（term_resize 用）。
     // 生命周期：worker 线程持 master 所有权；表在 Exit 清理时移除条目。
     // worker 先退出、清理后发生 resize → fd 陈旧返回 EBADF → Err，良性。
-    #[cfg(unix)]
-    static TERM_MASTERS: RefCell<HashMap<u64, std::os::fd::RawFd>> = RefCell::new(HashMap::new());
+    // 存的是**与平台无关**的句柄（`Arc<dyn PtyResize>`），不是 `RawFd` ——
+    // 平台差异应当在实现里，不在注册表里。
+    static TERM_MASTERS: RefCell<HashMap<u64, std::sync::Arc<dyn crate::pty::PtyResize>>> =
+        RefCell::new(HashMap::new());
     // 异步 fs 事件通道：与 TERM_EVENTS 同模式——发起线程持有 Sender 克隆，
     // 一次性 worker 线程发结果，发起线程 drain 消费。
     static ASYNC_EVENTS: RefCell<Option<WakeSender<AsyncEvent>>> = const { RefCell::new(None) };
@@ -964,10 +968,9 @@ pub(crate) fn with_term_workers<T>(
     TERM_WORKERS.with(|t| f(&mut t.borrow_mut()))
 }
 
-#[cfg(unix)]
-/// 访问 TERM_MASTERS（进程 id → pty master fd）
+/// 访问 TERM_MASTERS（进程 id → pty resize 句柄）
 pub(crate) fn with_term_masters<T>(
-    f: impl FnOnce(&mut HashMap<u64, std::os::fd::RawFd>) -> T,
+    f: impl FnOnce(&mut HashMap<u64, std::sync::Arc<dyn crate::pty::PtyResize>>) -> T,
 ) -> T {
     TERM_MASTERS.with(|t| f(&mut t.borrow_mut()))
 }

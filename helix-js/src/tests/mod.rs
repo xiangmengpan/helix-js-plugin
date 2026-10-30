@@ -133,4 +133,7 @@ mod pane_stack;
 mod plugin;
 mod popup_panel;
 mod term_pty;
+// 整个文件只含 Linux 专属断言（线程数探针）⇒ 连模块一起门掉，
+// 否则 macOS/Windows 上文件里 0 个测试而 `use super::*;` 变成 unused import。
+#[cfg(target_os = "linux")]
 mod worker_threads;

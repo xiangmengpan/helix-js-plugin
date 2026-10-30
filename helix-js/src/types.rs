@@ -571,6 +571,8 @@ pub enum AsyncEvent {
 
 /// 主线程 → worker 线程的控制指令（stdin 写入 / 杀进程）
 pub(crate) enum TermCtrl {
+    // 非 unix 没有 worker 读这条指令（`term_write` 会以 "unknown id" 失败）⇒ 载荷无人读。
+    #[cfg_attr(not(unix), allow(dead_code))]
     Write(String),
     Kill,
 }

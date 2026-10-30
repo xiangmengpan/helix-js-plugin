@@ -7,7 +7,6 @@ use boa_engine::property::Attribute;
 use boa_engine::Source;
 use boa_engine::{Context, JsString, JsValue};
 
-#[cfg(unix)]
 use crate::pty;
 #[cfg(unix)]
 use crate::shell::spawn_pty_worker;
@@ -537,7 +536,7 @@ pub(crate) fn js_open_terminal(
             crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
         let (master, slave) =
             pty::open_pty().map_err(|e| crate::js_err(format!("open_terminal: pty: {e}")))?;
-        crate::state::with_term_masters(|m| m.insert(pty_id, master.fd()));
+        crate::state::with_term_masters(|m| m.insert(pty_id, master.resize_handle()));
         spawn_pty_worker(pty_id, &cmd, term_tx, rx, master, slave);
         UI_REQUESTS
             .get()
@@ -556,7 +555,14 @@ pub(crate) fn js_open_terminal(
     #[cfg(not(unix))]
     {
         let _ = (cmd, side, size, on_exit);
-        Err(crate::js_err("open_terminal: requires a unix platform"))
+        // 不静默降级、也不假装可用：说清缺什么、有没有替代。
+        // 注意 `pty::is_supported()` 在这里必为 false（编译期 cfg）——写成断言是为了
+        // 将来 ConPTY 落地时，这里会立刻被编译器提醒“该改这段了”。
+        debug_assert!(!pty::is_supported());
+        Err(crate::js_err(
+            "open_terminal: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）；\
+             同步命令请用 helix.run([...])；详见 docs/api/process-fs.md",
+        ))
     }
 }
 
