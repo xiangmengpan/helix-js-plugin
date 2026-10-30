@@ -1,6 +1,10 @@
 | Name | Description | Default keybinds |
 | --- | --- | --- |
 | `no_op` | Do nothing |  |
+| `debug_help` | Show debug-mode key hints | normal: `` <space>G? ``, select: `` <space>G? `` |
+| `keys_help` | Show the full keymap of the current layer (:keys) | normal: `` <space>K ``, select: `` <space>K `` |
+| `dap_run_to_cursor_key` | Continue until the line under the cursor | normal: `` <space>GR ``, select: `` <space>GR `` |
+| `dap_eval_under_cursor_key` | Evaluate the identifier under the cursor | normal: `` <space>GK ``, select: `` <space>GK `` |
 | `move_char_left` | Move left | normal: `` h ``, `` <left> ``, insert: `` <left> `` |
 | `move_char_right` | Move right | normal: `` l ``, `` <right> ``, insert: `` <right> `` |
 | `move_line_up` | Move up | normal: `` gk `` |
@@ -281,18 +285,19 @@
 | `goto_prev_paragraph` | Goto previous paragraph | normal: `` [p ``, select: `` [p `` |
 | `dap_launch` | Launch debug target | normal: `` <space>Gl ``, select: `` <space>Gl `` |
 | `dap_restart` | Restart debugging session | normal: `` <space>Gr ``, select: `` <space>Gr `` |
-| `dap_toggle_breakpoint` | Toggle breakpoint | normal: `` <space>Gb ``, select: `` <space>Gb `` |
+| `dap_toggle_breakpoint` | Toggle breakpoint | normal: `` <F9> ``, `` <space>Gb ``, select: `` <F9> ``, `` <space>Gb `` |
 | `dap_continue` | Continue program execution | normal: `` <space>Gc ``, select: `` <space>Gc `` |
-| `dap_pause` | Pause program execution | normal: `` <space>Gh ``, select: `` <space>Gh `` |
-| `dap_step_in` | Step in | normal: `` <space>Gi ``, select: `` <space>Gi `` |
+| `dap_pause` | Pause program execution | normal: `` <space>Gp ``, select: `` <space>Gp `` |
+| `dap_step_in` | Step in | normal: `` <space>Gs ``, select: `` <space>Gs `` |
 | `dap_step_out` | Step out | normal: `` <space>Go ``, select: `` <space>Go `` |
 | `dap_next` | Step to next | normal: `` <space>Gn ``, select: `` <space>Gn `` |
 | `dap_variables` | List variables | normal: `` <space>Gv ``, select: `` <space>Gv `` |
-| `dap_terminate` | End debug session | normal: `` <space>Gt ``, select: `` <space>Gt `` |
+| `dap_terminate` | End debug session | normal: `` <space>GT ``, select: `` <space>GT `` |
 | `dap_edit_condition` | Edit breakpoint condition on current line | normal: `` <space>G<C-c> ``, select: `` <space>G<C-c> `` |
 | `dap_edit_log` | Edit breakpoint log message on current line | normal: `` <space>G<C-l> ``, select: `` <space>G<C-l> `` |
-| `dap_switch_thread` | Switch current thread | normal: `` <space>Gst ``, select: `` <space>Gst `` |
-| `dap_switch_stack_frame` | Switch stack frame | normal: `` <space>Gsf ``, select: `` <space>Gsf `` |
+| `dap_switch_thread` | Switch current thread | normal: `` <space>Gt ``, select: `` <space>Gt `` |
+| `dap_switch_stack_frame` | Switch stack frame | normal: `` <space>Gf ``, select: `` <space>Gf `` |
+| `dap_sessions` | Switch debug session | normal: `` <space>GS ``, select: `` <space>GS `` |
 | `dap_enable_exceptions` | Enable exception breakpoints | normal: `` <space>Ge ``, select: `` <space>Ge `` |
 | `dap_disable_exceptions` | Disable exception breakpoints | normal: `` <space>GE ``, select: `` <space>GE `` |
 | `shell_pipe` | Pipe selections through shell command | normal: `` \| ``, select: `` \| `` |

@@ -13,6 +13,7 @@
 | `:buffer-close-all!`, `:bca!`, `:bcloseall!` | Force close all buffers ignoring unsaved changes without quitting. |
 | `:buffer-next`, `:bn`, `:bnext` | Goto next buffer. |
 | `:buffer-previous`, `:bp`, `:bprev` | Goto previous buffer. |
+| `:read-only`, `:readonly` | Toggle forced read-only (edits are blocked) for the current buffer, or `all` open buffers. |
 | `:write`, `:w` | Write changes to disk. Accepts an optional path (:write some/path.txt) |
 | `:write!`, `:w!` | Force write changes to disk creating necessary subdirectories. Accepts an optional path (:write! some/path.txt) |
 | `:write-buffer-close`, `:wbc` | Write changes to disk and closes the buffer. Accepts an optional path (:write-buffer-close some/path.txt) |
@@ -62,6 +63,21 @@
 | `:tree-sitter-scopes` | Display tree sitter scopes, primarily for theming and development. |
 | `:tree-sitter-highlight-name` | Display name of tree-sitter highlight scope under the cursor. |
 | `:tree-sitter-layers` | Display language names of tree-sitter injection layers under the cursor. |
+| `:debug-toggle-breakpoint`, `:dbgb` | Toggle a breakpoint on the current line. |
+| `:debug-continue`, `:dbgc` | Continue the debuggee (resume execution). |
+| `:debug-next`, `:dbgn` | Step over (next). |
+| `:debug-step-in`, `:dbgi` | Step in. |
+| `:debug-step-out`, `:dbgo` | Step out. |
+| `:debug-terminate`, `:dbgq` | Terminate the debug session. |
+| `:debug-restart` | Restart the debug session. |
+| `:debug-variables`, `:dbgv` | Show variables of the current stack frame. |
+| `:debug-sessions` | Switch the active debug session. |
+| `:lint` | Run installed linter recipes for the current file and show their diagnostics (`lint <name>` for one). |
+| `:keys`, `:keymap` | Open the full keymap of the current layer as a buffer (same source as which-key hints). |
+| `:debug-log` | Open the recent DAP protocol transcript in a scratch buffer (`debug-log 50`, `debug-log clear`). |
+| `:debug-run-to-cursor` | Continue until the line under the cursor (temporary breakpoint, auto-removed on hit). |
+| `:debug-eval-under-cursor` | Evaluate the identifier under the cursor and show the result in the status line. |
+| `:debug-build`, `:dbgb` | Build the debug target (auto-detected: cargo/cmake/make/cc/go); no session is started. |
 | `:debug-start`, `:dbg` | Start a debug session from a given template with given parameters. |
 | `:debug-remote`, `:dbg-tcp` | Connect to a debug adapter by TCP address and start a debugging session from a given template with given parameters. |
 | `:debug-eval` | Evaluate expression in current debug context. |
@@ -101,6 +117,7 @@
 | `:workspace-untrust` | Revoke the current workspace's trust grant or exclusion. |
 | `:workspace-exclude` | Mark the current workspace as never-prompt. Never prompts for trust again. |
 | `:plugin-reload` | Reload all loaded JavaScript plugins. |
+| `:plugin-unload` | Unload a single JavaScript plugin (its commands/keymaps/hooks/theme overrides go away). |
 | `:plugin-load` | Load a JavaScript plugin file. |
 | `:server` | Manage LSP/DAP/linter/formatter servers (list|search|install|update|remove|status); sources from [server-manager.registry] config. |
 | `:js-permission` | Plugin capabilities (C-2): list | allow <plugin> <cap> | deny <plugin> <cap>. Caps: process, fs_read, fs_write. |

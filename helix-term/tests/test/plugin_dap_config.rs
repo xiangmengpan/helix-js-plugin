@@ -199,6 +199,8 @@ async fn debug_eval_without_session_errors_clearly() -> anyhow::Result<()> {
         status.contains("没有活动调试会话"),
         "没有会话时应给出明确错误: {status:?}"
     );
-    assert!(!app.editor.is_err() || true);
+    // `!x || true` 恒真 —— 是个占位断言（clippy::overly_complex_bool_expr 会抓）。
+    // 真正要不变量在这:没有会话时**报错即可,不该 panic**;跑到这里说明没 panic,
+    // 而上面那条断言已经钉住了"明确错误"。故直接去掉这行假断言。
     Ok(())
 }
