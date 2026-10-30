@@ -35,6 +35,12 @@ pub fn book_gen() -> PathBuf {
     project_root().join("book/src/generated/")
 }
 
+/// 内置插件**源**目录（仓库 `plugins/`，git 跟踪）。运行时副本不在这里 —— 见
+/// `cargo xtask install-plugins` / `sync-runtime`。
+pub fn plugins_source() -> PathBuf {
+    project_root().join("plugins")
+}
+
 pub fn runtime() -> PathBuf {
     project_root().join("runtime")
 }

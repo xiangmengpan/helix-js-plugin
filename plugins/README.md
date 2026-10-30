@@ -76,8 +76,8 @@ plugins/
 
 | 目的 | 做法 |
 |---|---|
-| 把本目录装成**内置层** | `sh contrib/install-plugins.sh [<runtime>]`(`DRY_RUN=1` 预览) |
-| 同步到**用户层** | `plugins/tools/sync_runtime.sh`(只更新**已有**文件,不新建 —— 首次安装用上面那条) |
+| 把本目录装成**内置层** | **`cargo xtask install-plugins [<runtime>] [--dry-run]`**（跨平台）· 旧路径 `sh contrib/install-plugins.sh` 仍可用（薄封装） |
+| 同步到**用户层** | **`cargo xtask sync-runtime`**（跨平台）· 旧路径 `plugins/tools/sync_runtime.sh` 仍可用。只更新**已有**文件,不新建 —— 首次安装用上面那条 |
 | 让某个插件**开机加载** | 在自己的 `~/.config/helix/init.js` 里加一行 `safe_load("<name>")` |
 | 装**第三方**插件 | `:plugin install <path\|git-url>`(管理链/来源追踪见 [`docs/api/plugin.md`](../docs/api/plugin.md)) |
 | 用户**覆盖**某个内置插件 | 在 `~/.config/helix/plugins/<name>/` 放自己的版本(整目录覆盖) |
@@ -105,7 +105,7 @@ helix.export({ helper: () => {} });                        // 可选:供别的�
 |---|---|---|
 | `check_api_surface.mjs` | **注册表 ↔ `helix.d.ts` 对账**(少写的 API / 不存在的名字 / 位置过时的旧名 / 由插件补的名字)+ `runtime/plugins` 与源**逐文件**一致 | **`cargo xtask api-check`**(门禁入口)/`node plugins/tools/check_api_surface.mjs` 等价 |
 | `check_signatures.mjs` | 插件 JS 语法 + `icons` 6 个函数的参数名/函数体使用/导出一致性 | `node plugins/tools/check_signatures.mjs` |
-| `sync_runtime.sh` | 把源的**已有副本**更新到最新:`.js` + `helix.d.ts` / `README.md` / `jsconfig.json`(**只更新,不新建**)| `bash plugins/tools/sync_runtime.sh` |
+| `sync-runtime`（Rust）/ `sync_runtime.sh`（薄封装） | 把源的**已有副本**更新到最新:`.js` + `helix.d.ts` / `README.md` / `jsconfig.json`(**只更新,不新建**)| `cargo xtask sync-runtime` |
 
 > 为什么要有这两个 `check_*`:它们都是**一次事故**固化下来的 —— 前者因为 `helix.d.ts` 是手工维护且曾**说谎**
 > (声明了核心没注册的名字),后者因为一次机械替换改坏了函数参数名而事后没人能复跑。

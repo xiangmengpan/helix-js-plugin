@@ -17,7 +17,11 @@ mod api_describe;
 mod docgen;
 mod highlight;
 mod indent;
+mod install_plugins;
+// 共享小工具（非任务）：两个 plugins 任务对目录/`--dry-run`/比对必须得出同一答案。
+mod plugins_fs;
 mod query;
+mod sync_runtime;
 mod theme;
 
 use crate::DynError;
@@ -79,6 +83,25 @@ pub const TASKS: &[Task] = &[
                capability checkpoints** with the JS API registered from Rust\n\
                (helix-js/src/lib.rs · icons.rs · commands.rs); fails on drift.\n\
                Requires `node` on PATH.",
+    },
+    Task {
+        name: "install-plugins",
+        run: install_plugins::run,
+        help: "Install the repo's plugins/ into helix's runtime dir (the layer\n\
+               shipped with the editor; <config>/plugins/ overrides it wholesale).\n\
+               Copies the whole tree (incl. lib/ examples/ tools/).\n\
+               Usage: install-plugins [<runtime-dir>] [--runtime <dir>] [--dry-run]\n\
+               Env: HELIX_RUNTIME / DRY_RUN",
+    },
+    Task {
+        name: "sync-runtime",
+        run: sync_runtime::run,
+        help: "Mirror the repo's plugins/ onto the runtime + user copies that\n\
+               already exist: updates existing files only (a file inside an\n\
+               already-installed plugin dir may be created — api-check compares\n\
+               those). Skips tools/ examples/.\n\
+               Usage: sync-runtime [--runtime <dir>] [--config <dir>] [--dry-run]\n\
+               Env: HELIX_RUNTIME / HELIX_CONFIG / DRY_RUN",
     },
 ];
 

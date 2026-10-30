@@ -423,3 +423,31 @@ cargo clippy -p helix-js -p helix-stdx --all-targets --target x86_64-pc-windows-
   还原 ⇒ 绿。
 - **未做（P7b）**：整仓（含 `helix-term`）的 Windows 交叉 check，需要先解决 tree-sitter 的 C 依赖；
   做了才有资格说「整个 workspace 在 Windows 上编得过」。
+
+### P5/P6 落地：`.sh` → `cargo xtask install-plugins` / `sync-runtime`
+
+两个任务共用 `tasks/plugins_fs.rs`（目录决议 / `--dry-run` / 比对），任务本体仍各自一个文件
+（G5 的"一任务一文件"只约束 dispatch 与 help，两者仍由 `TASKS` 一张表驱动）。
+
+**等价性证据（不是"看着像"）**：
+
+| 检查 | 结果 |
+|---|---|
+| dry-run 的「将安装」文件清单 | 旧 `.sh` 与 xtask **各 32 条，排序后 diff 为空** |
+| 真装一棵树 | `diff -r` 两棵树**逐字节一致**；摘要同为「已安装文件数: 32」 |
+| 改一个已存在文件 | 报 `更新 statusline/plugin.js`，内容被还原 |
+| 删掉 `<plugin>/tests/x.js` | 报 `新增 filetree/tests/filetree.test.js`（只在**已存在**的插件目录下建） |
+| 改 `tools/` 里的文件 | **不动**（`tools/`、`examples/` 不在分发面） |
+| 目标目录不存在 | 打印 `跳过(不存在)` |
+| `--dry-run` | 打印报告但**不写盘**（实测脏文件仍脏） |
+| 旧路径 `sh contrib/install-plugins.sh <dir>` | 装出同样的 32 个文件（薄封装 `exec cargo xtask …`） |
+
+**两处有意差异**（都写进了 help / 注释）：
+
+1. 默认目录：`$HOME/.config/helix/runtime`（硬编码）→ `helix_loader::config_dir()`
+   ⇒ Windows 上变成 `%APPDATA%\helix`。这是全案唯一一处用户可见变化。
+2. 输出：插件目录列表**排序**（旧脚本是 `find` 顺序，不确定；排序便于比对与 diff）。
+
+`contrib/install-plugins.sh` 与 `plugins/tools/sync_runtime.sh` 降为 3–5 行薄封装
+（`cd` 到仓库根后 `exec cargo xtask …`），参数与环境变量原样转发 —— 保证 README/docs 里
+那些路径继续有效（D5）。
