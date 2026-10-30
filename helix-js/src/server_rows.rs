@@ -72,6 +72,18 @@ fn row_to_js(row: &ServerRow, engine: &mut Context) -> Result<JsValue> {
             .push(JsValue::from(JsString::from(l.clone())), engine)
             .map_err(|e| anyhow!("row langs build: {e}"))?;
     }
+    // 先把 requires / missing_requires 两个数组建好（ObjectInitializer 期间不能再借 engine）
+    let reqs = JsArray::new(engine).map_err(|e| anyhow!("JsArray::new: {e}"))?;
+    for x in &row.requires {
+        reqs.push(JsValue::from(JsString::from(x.clone())), engine)
+            .map_err(|e| anyhow!("row requires build: {e}"))?;
+    }
+    let missing = JsArray::new(engine).map_err(|e| anyhow!("JsArray::new: {e}"))?;
+    for x in &row.missing_requires {
+        missing
+            .push(JsValue::from(JsString::from(x.clone())), engine)
+            .map_err(|e| anyhow!("row missing build: {e}"))?;
+    }
     let item = ObjectInitializer::new(engine)
         .property(
             JsString::from("name"),
@@ -126,6 +138,16 @@ fn row_to_js(row: &ServerRow, engine: &mut Context) -> Result<JsValue> {
         .property(
             JsString::from("needs_version"),
             JsValue::from(row.needs_version),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("requires"),
+            JsValue::from(reqs.clone()),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("missing_requires"),
+            JsValue::from(missing.clone()),
             Attribute::all(),
         )
         .property(JsString::from("bin"), opt_str(&row.bin), Attribute::all())
@@ -221,6 +243,8 @@ mod tests {
                 installable: true,
                 upgradable: true,
                 needs_version: false,
+                requires: Vec::new(),
+                missing_requires: Vec::new(),
                 bin: Some("/m/bin/ra".into()),
                 source: Some("https://x/v{version}/ra.gz".into()),
             }],

@@ -251,6 +251,9 @@ function status_text(r) {
     }
     return (busy.phase || "…").replace(/^\[\d+\/\d+\]\s*/, "");
   }
+  // 缺前置工具链先于"可装 –"显示：否则用户点了才失败（mason 的 prerequisite）
+  const need = r.missing_requires || [];
+  if (!r.installed && need.length) return "需 " + need.join("/");
   if (r.installed && r.local) return r.version ? "local " + r.version : "local";
   if (r.installed) return (r.upgradable ? "▲ " : "✓ ") + (r.version || "");
   if (r.installable) return "–";

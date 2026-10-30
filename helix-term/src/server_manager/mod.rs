@@ -1681,3 +1681,19 @@ url = "file://{}"
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+#[cfg(test)]
+mod requires_tests {
+    #[test]
+    fn gopls_declares_requires() {
+        let all = super::registry::builtin_specs();
+        let g = all.iter().find(|s| s.name == "gopls").expect("gopls 配方");
+        assert_eq!(
+            g.requires,
+            vec!["go".to_string()],
+            "gopls 应声明 requires = [\"go\"]"
+        );
+        let n = all.iter().filter(|s| !s.requires.is_empty()).count();
+        assert!(n >= 10, "至少 10 条配方应声明 requires（现在 {n}）");
+    }
+}

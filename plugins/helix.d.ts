@@ -230,6 +230,10 @@ interface ServerRow {
   installable: boolean;
   upgradable: boolean;
   needs_version: boolean;
+  /** 安装所需工具链（配方 requires） */
+  requires: string[];
+  /** 其中当前**不在 PATH** 的（UI 标 `需 go`） */
+  missing_requires: string[];
   bin: string | null;
   source: string | null;
 }

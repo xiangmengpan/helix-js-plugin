@@ -493,6 +493,10 @@ pub struct ServerRow {
     pub bin: Option<String>,
     /// 下载源(archive url_template 原文;Tool/惰性 = None;仅显示用)
     pub source: Option<String>,
+    /// 安装所需工具链（配方 `requires`；空 = 无要求）
+    pub requires: Vec<String>,
+    /// 其中**当前不在 PATH** 的（空 = 齐了 / 无需工具链）——UI 直接标 `需 go`
+    pub missing_requires: Vec<String>,
 }
 
 /// 后台任务的一项(JS → term):op 为 server_manager 任务名(install/update/remove/unmanage),name 为配方名

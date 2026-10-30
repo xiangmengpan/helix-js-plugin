@@ -92,6 +92,13 @@ pub(crate) fn handle_server_list_rows(
                 needs_version: server_manager::needs_version(&spec),
                 bin,
                 source,
+                requires: spec.requires.clone(),
+                missing_requires: spec
+                    .requires
+                    .iter()
+                    .filter(|t| helix_stdx::env::which(t).is_err())
+                    .cloned()
+                    .collect(),
             }
         })
         .collect();
