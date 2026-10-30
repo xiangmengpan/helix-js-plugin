@@ -45,6 +45,7 @@ async fn plugin_statusline_renders() -> anyhow::Result<()> {
                         &spinners,
                         false,
                         None,
+                        String::new(), // input_badges（RenderContext::new 第 8 个参数）
                         "editor",
                         None,
                         None,
@@ -107,6 +108,7 @@ async fn plugin_statusline_replace_mode() -> anyhow::Result<()> {
             &spinners,
             false,
             None,
+            String::new(), // input_badges（RenderContext::new 第 8 个参数）
             "editor",
             None,
             None,
@@ -191,6 +193,7 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
             &spinners,
             false,
             None,
+            String::new(), // input_badges（RenderContext::new 第 8 个参数）
             "editor",
             None,
             None,
@@ -246,6 +249,7 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
             &spinners,
             false,
             None,
+            String::new(), // input_badges（RenderContext::new 第 8 个参数）
             "editor",
             None,
             None,
@@ -294,6 +298,7 @@ async fn plugin_statusline_window_mode_field() -> anyhow::Result<()> {
                         &spinners,
                         true,
                         None,
+                        String::new(), // input_badges（RenderContext::new 第 8 个参数）
                         "editor",
                         None, // window_mode=true
                         None,
@@ -342,8 +347,9 @@ async fn plugin_statusline_window_leaf_fields() -> anyhow::Result<()> {
         view,
         true,
         &spinners,
-        true, // window_mode
-        None, // pane_mode
+        true,          // window_mode
+        None,          // pane_mode
+        String::new(), // input_badges（RenderContext::new 第 8 个参数）
         "editor",
         Some("/tmp/a.rs".to_string()),
         None,
@@ -401,6 +407,7 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
             &spinners,
             false,
             None,
+            String::new(), // input_badges（RenderContext::new 第 8 个参数）
             "editor",
             None,
             None,
@@ -430,7 +437,7 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
     use helix_term::ui::statusline::RenderContext;
-    use tui::style::Color;
+    use helix_view::theme::Color;
 
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("st.txt");
@@ -483,6 +490,7 @@ async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
             &spinners,
             false,
             None,
+            String::new(), // input_badges（RenderContext::new 第 8 个参数）
             "editor",
             None,
             None,
@@ -491,8 +499,8 @@ async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
         buf.content
             .iter()
-            .find(|c| c.symbol == "\u{e0b6}")
-            .map(|c| c.style.fg)
+            .find(|c| c.symbol.as_str() == "\u{e0b6}")
+            .and_then(|c| c.style().fg) // Style::fg 本身是 Option<Color>
     };
 
     let normal_fg = cap_fg(&mut app);
