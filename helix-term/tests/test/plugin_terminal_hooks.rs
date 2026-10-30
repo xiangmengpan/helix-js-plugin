@@ -473,9 +473,13 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
     pump(&mut app, "<space>G").await?;
     let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 160, 30));
     let joined = rows.join("\n");
+    // which-key v2 起**分页**:首屏只放前几条,其余折成 `… +N（:keys 看全部）`。
+    // DAP 前几条是「继续 / 切换栈帧 / 切换线程 / 结束会话 / 变量弹层 / 右移一字符」
+    // ⇒ 断言取首屏里 DAP 独有的字(`续`/`栈`),而 `断点`/`单步` 已落到第二页。
+    // 判别力不变:若前缀标题对不上而退回单键匹配,这几个字会变成别人的中文。
     assert!(
-        joined.contains("断") && joined.contains("步"),
-        "DAP 子菜单中文说明(切换断点 / 单步…): {joined:?}"
+        joined.contains("续") && joined.contains("栈"),
+        "DAP 子菜单中文说明(首屏:继续 / 切换栈帧…): {joined:?}"
     );
     Ok(())
 }
