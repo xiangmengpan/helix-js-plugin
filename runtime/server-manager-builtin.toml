@@ -44,6 +44,7 @@ description = "Rust language server"
 homepage = "https://github.com/rust-lang/rust-analyzer"
 
 [server-manager.registry.gopls]
+requires = ["go"]
 order = 2
 kind = "lsp"
 languages = ["go"]
@@ -54,6 +55,7 @@ description = "Go official language server (go install)"
 homepage = "https://github.com/golang/tools"
 
 [server-manager.registry.pyright]
+requires = ["npm"]
 order = 3
 kind = "lsp"
 languages = ["python"]
@@ -73,6 +75,7 @@ description = "C/C++ language server (clangd)。随 LLVM/apt/brew 提供：sudo 
 homepage = "https://clangd.llvm.org"
 
 [server-manager.registry.typescript-language-server]
+requires = ["npm"]
 order = 5
 kind = "lsp"
 languages = ["javascript", "typescript"]
@@ -83,6 +86,7 @@ description = "TS/JS language server (npm)"
 homepage = "https://github.com/typescript-language-server/typescript-language-server"
 
 [server-manager.registry.vscode-langservers]
+requires = ["npm"]
 order = 6
 kind = "lsp"
 languages = ["json", "css", "html"]
@@ -93,6 +97,7 @@ description = "JSON/CSS/HTML servers（一个包提供三个：vscode-json/css/h
 homepage = "https://github.com/hrsh7th/vscode-langservers-extracted"
 
 [server-manager.registry.yaml-language-server]
+requires = ["npm"]
 order = 7
 kind = "lsp"
 languages = ["yaml"]
@@ -103,6 +108,7 @@ description = "YAML language server (npm)"
 homepage = "https://github.com/redhat-developer/yaml-language-server"
 
 [server-manager.registry.bashls]
+requires = ["npm"]
 order = 8
 kind = "lsp"
 languages = ["bash"]
@@ -125,6 +131,7 @@ description = "Lua language server（linux-x64 资产）"
 homepage = "https://github.com/LuaLS/lua-language-server"
 
 [server-manager.registry.taplo]
+requires = ["cargo"]
 order = 10
 kind = "lsp"
 languages = ["toml"]
@@ -141,11 +148,13 @@ kind = "lsp"
 languages = ["cmake"]
 bin-name = "cmake-language-server"
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check cmake-language-server && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/cmake-language-server {prefix}/bin/cmake-language-server"]
 description = "CMake language server (pip)"
 homepage = "https://github.com/regen100/cmake-language-server"
 
 [server-manager.registry.sqls]
+requires = ["go"]
 order = 12
 kind = "lsp"
 languages = ["sql"]
@@ -156,6 +165,7 @@ description = "SQL language server (go install)"
 homepage = "https://github.com/sqls-server/sqls"
 
 [server-manager.registry.intelephense]
+requires = ["npm"]
 order = 13
 kind = "lsp"
 languages = ["php"]
@@ -243,6 +253,7 @@ description = "Python debug adapter（`pip install debugpy`；adapter 走 `pytho
 homepage = "https://github.com/microsoft/debugpy"
 
 [server-manager.registry.delve]
+requires = ["go"]
 order = 32
 kind = "dap"
 languages = ["go"]
@@ -264,6 +275,7 @@ languages = ["python"]
 bin-name = "ruff"
 latest = "github:astral-sh/ruff"
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check ruff && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/ruff {prefix}/bin/ruff"]
 format-args = ["format", "-"]
 description = "Python formatter（ruff format，与 ruff linter 同一个二进制）"
@@ -274,6 +286,7 @@ order = 51
 kind = "formatter"
 languages = ["python"]
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check black && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/black {prefix}/bin/black"]
 # 约定：helix 的 formatter 走 **stdin → stdout**；`-` 表示从标准输入读
 format-args = ["-q", "-"]
@@ -281,6 +294,7 @@ description = "Python code formatter (black)"
 homepage = "https://github.com/psf/black"
 
 [server-manager.registry.prettier]
+requires = ["npm"]
 order = 52
 kind = "formatter"
 languages = ["javascript", "typescript", "html", "css", "json", "yaml", "markdown"]
@@ -305,6 +319,7 @@ description = "Lua formatter (stylua)"
 homepage = "https://github.com/JohnnyMorganz/StyLua"
 
 [server-manager.registry.taplo-fmt]
+requires = ["cargo"]
 order = 54
 kind = "formatter"
 languages = ["toml"]
@@ -316,6 +331,7 @@ description = "TOML formatter (taplo fmt)"
 homepage = "https://taplo.tamasfe.dev"
 
 [server-manager.registry.goimports]
+requires = ["go"]
 order = 55
 kind = "formatter"
 languages = ["go"]
@@ -327,6 +343,7 @@ description = "Go formatter（goimports；读 stdin）"
 homepage = "https://pkg.go.dev/golang.org/x/tools/cmd/goimports"
 
 [server-manager.registry.yamlfmt]
+requires = ["go"]
 order = 56
 kind = "formatter"
 languages = ["yaml"]
@@ -343,6 +360,7 @@ kind = "formatter"
 languages = ["sql"]
 bin-name = "sqlfluff"
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check sqlfluff && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/sqlfluff {prefix}/bin/sqlfluff"]
 format-args = ["format", "-"]
 description = "SQL formatter/linter (sqlfluff)"
@@ -354,6 +372,7 @@ kind = "formatter"
 languages = ["cmake"]
 bin-name = "cmake-format"
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check cmakelang && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/cmake-format {prefix}/bin/cmake-format"]
 format-args = ["-"]
 description = "CMake formatter (cmake-format，pip 包名 cmakelang)"
@@ -460,12 +479,14 @@ languages = ["python"]
 bin-name = "ruff"
 latest = "github:astral-sh/ruff"
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check ruff && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/ruff {prefix}/bin/ruff"]
 lint-cmd = "ruff check --output-format=concise --no-fix %{file_path_absolute}"
 description = "Python linter + formatter (ruff)"
 homepage = "https://github.com/astral-sh/ruff"
 
 [server-manager.registry.eslint]
+requires = ["npm"]
 order = 71
 kind = "linter"
 languages = ["javascript", "typescript"]
@@ -482,12 +503,14 @@ kind = "linter"
 languages = ["yaml"]
 bin-name = "yamllint"
 cmd = "sh"
+requires = ["pip"]
 args = ["-c", "pip install --prefix {prefix} --disable-pip-version-check yamllint && mkdir -p {prefix}/bin && ln -sf {prefix}/local/bin/yamllint {prefix}/bin/yamllint"]
 lint-cmd = "yamllint -f parsable %{file_path_absolute}"
 description = "YAML linter (yamllint)"
 homepage = "https://github.com/adrienverge/yamllint"
 
 [server-manager.registry.markdownlint]
+requires = ["npm"]
 order = 73
 kind = "linter"
 languages = ["markdown"]

@@ -117,6 +117,24 @@ pub fn install(name: &str, version: &str) -> Result<()> {
 /// (D8 实测:`install("asset-ra")` 间歇报 unknown server)。拿着 `&Spec` 安装就没有这个窗口。
 pub(crate) fn install_spec(spec: &registry::Spec, version: &str) -> Result<()> {
     let name = spec.name.as_str();
+    // **先查工具链**（mason 的 prerequisite 模型）：缺了就直说缺哪个，别等 shell 报 127。
+    let missing: Vec<&str> = spec
+        .requires
+        .iter()
+        .map(String::as_str)
+        .filter(|t| helix_stdx::env::which(t).is_err())
+        .collect();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "安装 '{name}' 需要工具链 {}（不在 PATH）。装好后重试；\
+             或用系统包管理器装好它再 `:server unmanage {name}` 交给本机版本",
+            missing
+                .iter()
+                .map(|t| format!("`{t}`"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
     match &spec.install {
         registry::Install::Archive {
             url_template,

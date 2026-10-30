@@ -140,6 +140,9 @@ pub struct Spec {
     /// 其余=args）。为空 ⇒ 用受管/local 的 bin 路径直接跑。
     /// 典型：debugpy 的 adapter 是 `python3 -m debugpy.adapter`，不是那个 console script。
     pub dap_cmd: Option<Vec<String>>,
+    /// 安装**需要的外部工具链**（`["go"]` / `["npm"]` / `["pip"]` …）。
+    /// 显式声明比"跑起来 127 再猜"强：装之前就能说清缺什么（同 mason 的 prerequisite）。
+    pub requires: Vec<String>,
     /// `kind = "linter"` 时要执行的命令（**shell 串**，支持 `%{file_path_absolute}` 等
     /// 编辑器变量展开）；`:lint` 跑它、按 gcc 风格解析输出。
     pub lint_cmd: Option<String>,
@@ -357,6 +360,14 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|s| !s.is_empty());
+    // 安装所需的工具链（显式声明；缺省空 ⇒ 退化为"127 时按命令猜"）
+    let requires: Vec<String> = match tbl.get("requires") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
     // DAP 启动命令（数组；仅 dap）
     let dap_cmd: Option<Vec<String>> = match tbl.get("dap-cmd") {
         Some(Value::Array(a)) => Some(
@@ -481,6 +492,7 @@ pub fn parse_ext_recipe(name: &str, tbl: &toml::Table) -> Result<Spec> {
         version,
         latest_source,
         dap_cmd,
+        requires,
         lint_cmd,
         format_args,
         install,

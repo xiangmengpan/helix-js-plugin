@@ -1317,6 +1317,7 @@ url = "file://{}"
             version,
             latest_source: None,
             dap_cmd: None,
+            requires: Vec::new(),
             lint_cmd: None,
             format_args: Vec::new(),
         };

@@ -185,6 +185,32 @@ fn check_spec(spec: &registry::Spec, eff: &Effective) -> Vec<Check> {
             },
         });
     }
+    // ②b 安装所需工具链（mason 的 prerequisite）：缺了根本装不了
+    if !spec.requires.is_empty() {
+        let missing: Vec<&str> = spec
+            .requires
+            .iter()
+            .map(String::as_str)
+            .filter(|t| helix_stdx::env::which(t).is_err())
+            .collect();
+        out.push(Check {
+            ok: missing.is_empty(),
+            what: "工具链".into(),
+            detail: if missing.is_empty() {
+                format!("{} 都在 PATH", spec.requires.join(", "))
+            } else {
+                format!(
+                    "缺 {}（装好后才能 :server install {}）",
+                    missing
+                        .iter()
+                        .map(|t| format!("`{t}`"))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    spec.name
+                )
+            },
+        });
+    }
     // ③ 有没有被配置引用（这才是"装了不生效"的头号原因）
     match spec.kind {
         registry::Kind::Lsp => {
