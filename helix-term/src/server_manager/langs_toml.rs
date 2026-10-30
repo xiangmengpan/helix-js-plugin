@@ -385,7 +385,18 @@ pub fn build_section(
             }
         }
     }
+    let known = known_language_ids();
     for (lang, (lsp, dap, fmt)) in by_lang {
+        // 内置 languages.toml 里不存在的语言**不能**写 `[[language]]`：
+        // 它不会与任何条目合并 ⇒ 生成"半截配置"⇒ 启动报 missing field `scope`（实测 objective-c）。
+        if !known.is_empty() && !known.contains(&lang) {
+            for n in lsp.iter().chain(dap.iter().map(|s| &s.name)) {
+                conflicts.push(format!(
+                    "语言 '{lang}' 不在内置 languages.toml 里（{n} 未自动挂接；如需请手动添加完整条目）"
+                ));
+            }
+            continue;
+        }
         let custom = user_langs.iter().any(|u| u == &lang);
         if custom {
             // 用户已自定义该语言 → 不生成条目,提示手动挂接

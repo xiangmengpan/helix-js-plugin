@@ -40,6 +40,9 @@ pub fn detect(file: Option<&Path>, workspace: &Path, release: bool) -> Detected 
     if let Some(d) = detect_cmake(workspace) {
         return d;
     }
+    if let Some(d) = detect_meson(workspace) {
+        return d;
+    }
     if let Some(d) = detect_make(workspace) {
         return d;
     }
@@ -104,6 +107,42 @@ fn cargo_bin_name(text: &str) -> Option<String> {
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str())
         .map(|s| s.to_string())
+}
+
+// ============================ Meson ============================
+
+/// `meson.build` → `meson setup build`（首次）+ `meson compile -C build`；
+/// 产物从 `build/` 下探测（meson 默认把可执行放在 build 根）。
+fn detect_meson(workspace: &Path) -> Option<Detected> {
+    if !is_file(&workspace.join("meson.build")) {
+        return None;
+    }
+    let build_dir = workspace.join("build");
+    let configured = build_dir.join("build.ninja").is_file()
+        || build_dir.join("build.ninja").exists()
+        || build_dir.join("meson-info").is_dir();
+    let (build, reason) = if configured {
+        (
+            "meson compile -C build".to_string(),
+            "meson.build · 已有 build/".to_string(),
+        )
+    } else {
+        (
+            "meson setup build && meson compile -C build".to_string(),
+            "meson.build（首次配置）".to_string(),
+        )
+    };
+    let candidates = if configured {
+        executables_under(&build_dir)
+    } else {
+        Vec::new()
+    };
+    Some(Detected {
+        build: Some(build),
+        program: candidates.first().cloned(),
+        candidates,
+        reason,
+    })
 }
 
 // ============================ CMake ============================
@@ -615,5 +654,31 @@ mod tests {
         let got = detect(None, d.path(), false);
         assert!(got.build.is_none());
         assert!(got.reason.contains("没认出"), "{}", got.reason);
+    }
+}
+
+#[cfg(test)]
+mod meson_tests {
+    use super::*;
+
+    #[test]
+    fn detects_meson_and_prefers_compile_when_configured() {
+        let root = std::env::temp_dir().join(format!("hx-meson-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("meson.build"), "project('demo', 'c')").unwrap();
+
+        let d = detect(None, &root, false);
+        assert_eq!(
+            d.build.as_deref(),
+            Some("meson setup build && meson compile -C build")
+        );
+        assert!(d.reason.contains("meson.build"));
+
+        // 已有 build/（meson-info 目录是配置完成的标志）⇒ 只 compile
+        std::fs::create_dir_all(root.join("build/meson-info")).unwrap();
+        let d2 = detect(None, &root, false);
+        assert_eq!(d2.build.as_deref(), Some("meson compile -C build"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

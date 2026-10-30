@@ -877,6 +877,32 @@ pub fn take_pending_launches() -> Vec<PendingLaunch> {
     PENDING_LAUNCH.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
+/// 构建命令**首个可执行名**（`meson setup build && …` → `meson`）。
+fn build_tool(cmd: &str) -> String {
+    cmd.split_whitespace()
+        .next()
+        .unwrap_or(cmd)
+        .to_string()
+}
+
+/// 起不来（spawn 失败）时的文案：模块缺失/权限这类要让用户知道**缺哪个程序**。
+fn toolchain_hint(build: &str, err: &str) -> String {
+    let tool = build_tool(build);
+    format!("构建命令无法执行：需要工具链 `{tool}`（不在 PATH？）—— {err}")
+}
+
+/// 非 0 退出：127 视为"命令找不到"（= 缺工具链），其余照旧报 exit code。
+fn build_failure_text(build: &str, status: std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(127) => format!(
+            "构建失败：找不到命令 `{}`（不在 PATH？装好工具链后重试）",
+            build_tool(build)
+        ),
+        Some(code) => format!("构建失败（exit {code}）"),
+        None => "构建失败（被信号终止）".to_string(),
+    }
+}
+
 fn shell_command(cmd: &str) -> (String, Vec<String>) {
     if cfg!(windows) {
         ("cmd".to_string(), vec!["/C".to_string(), cmd.to_string()])
@@ -998,7 +1024,7 @@ pub fn dap_build_run(
         };
         let call: Callback = Callback::EditorCompositor(Box::new(
             move |editor, _c, _js| match out {
-                Err(err) => editor.set_error(format!("构建命令无法执行: {err}")),
+                Err(err) => editor.set_error(toolchain_hint(&build, &err.to_string())),
                 Ok(status) => {
                     if status.success() {
                         // 构建成功了，但"要启动什么"未必知道：没有 program 时给一条可执行的提示，
@@ -1023,11 +1049,8 @@ pub fn dap_build_run(
                         }
                     } else {
                         editor.set_error(format!(
-                            "构建失败（{}）；先看 Output（:dapui-output）",
-                            status
-                                .code()
-                                .map(|c| format!("exit {c}"))
-                                .unwrap_or_else(|| "被信号终止".to_string())
+                            "{}；先看 Output（:dapui-output）",
+                            build_failure_text(&build, status)
                         ));
                     }
                 }
@@ -3037,5 +3060,19 @@ mod js_debug_probe_tests {
         assert!(find_js_debug_server_in(&empty).is_none());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod build_tool_hint_tests {
+    #[test]
+    fn build_tool_hint_names_the_tool() {
+        assert_eq!(
+            super::build_tool("meson setup build && meson compile -C build"),
+            "meson"
+        );
+        assert_eq!(super::build_tool("cargo build"), "cargo");
+        let hint = super::toolchain_hint("meson compile -C build", "No such file or directory");
+        assert!(hint.contains("meson"), "{hint}");
     }
 }
