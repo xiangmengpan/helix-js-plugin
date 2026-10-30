@@ -54,11 +54,14 @@ helix.echo(out.trim());
 
 **优缺点**：优点：不阻塞;await 语法自然。局限：无流式输出(等命令结束);子进程无超时(挂死命令一直占 worker)。
 
-> ⚠ **本轮只支持字符串形态**（过平台 shell）。要 argv 形态的异步执行，暂用
-> `helix.run([...])`（同步）或 `helix.spawn({ cmd })` + 自己拆词——**不推荐后者**。
-> 为什么没一起做：`run_async` 与 `spawn` 共用同一个 worker（`spawn_worker` 目前接的是
-> "一段待过 shell 的字符串"），改成接 `Command` 要和 pty 路径一起动，见
-> [`../../superpowers/specs/2026-10-30-cross-platform-design.md`](../../superpowers/specs/2026-10-30-cross-platform-design.md) §1.2 N3。
+参数与 `helix.run` **同一套**语义与校验（`string | string[]`；空数组抛错；argv 不经 shell）：
+
+```js
+const out = await helix.run_async(["git", "status", "--short"]);
+```
+
+> ⚠ `helix.spawn({ cmd })` 的 `cmd` **仍然只接字符串**：它要走 pty/流式路径，
+> 与 argv 一起做才有意义（`docs/superpowers/specs/2026-10-30-cross-platform-design.md` N3）。
 
 ### `helix.spawn({ cmd, pty?, onChunk, onExit })` — 流式进程
 

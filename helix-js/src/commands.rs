@@ -2034,27 +2034,54 @@ fn parse_sel_pos(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<(usize,
 /// shell 执行输出截断上限（防失控输出冻结状态栏）
 const RUN_OUTPUT_LIMIT: usize = 65536;
 
-/// 把 JS 的 `string[]` 取成 `Vec<String>`（`helix.run` 的 argv 形态）。
+/// 把 JS 的 `string[]` 取成 `Vec<String>`（argv 形态）。`what` 只用于错误前缀。
 ///
 /// 逐元素取而不是整数组强转：报错要指到**哪个下标**不是字符串。
-fn js_argv(value: &JsValue, context: &mut Context) -> boa_engine::JsResult<Vec<String>> {
+fn js_argv(
+    what: &str,
+    value: &JsValue,
+    context: &mut Context,
+) -> boa_engine::JsResult<Vec<String>> {
     let arr = value
         .as_object()
         .filter(|o| o.is_array())
         .and_then(|o| JsArray::from_object(o.clone()).ok())
-        .ok_or_else(|| crate::js_err("helix.run: argv must be an array of strings"))?;
+        .ok_or_else(|| crate::js_err(format!("{what}: argv must be an array of strings")))?;
     let len = arr
         .length(context)
-        .map_err(|e| crate::js_err(format!("helix.run: argv: {e}")))?;
+        .map_err(|e| crate::js_err(format!("{what}: argv: {e}")))?;
+    if len == 0 {
+        return Err(crate::js_err(format!(
+            "{what}: empty argv（空数组不会静默成功）"
+        )));
+    }
     let mut argv = Vec::with_capacity(len as usize);
     for i in 0..len {
         let item = arr.get(i, context)?;
         let arg = item
             .try_js_into::<String>(context)
-            .map_err(|_| crate::js_err(format!("helix.run: argv[{i}] must be a string")))?;
+            .map_err(|_| crate::js_err(format!("{what}: argv[{i}] must be a string")))?;
         argv.push(arg);
     }
     Ok(argv)
+}
+
+/// `string | string[]` → [`crate::platform::Cmd`]（`run` / `run_async` 共用）。
+///
+/// 校验都发生在这里 ⇒ 两个入口的错误文案一致、行为一致（不再各写一份 union 判断）。
+pub(crate) fn js_cmd(
+    what: &str,
+    value: &JsValue,
+    context: &mut Context,
+) -> boa_engine::JsResult<crate::platform::Cmd> {
+    if value.as_object().is_some_and(|o| o.is_array()) {
+        Ok(crate::platform::Cmd::Argv(js_argv(what, value, context)?))
+    } else {
+        let cmd: String = value
+            .try_js_into(context)
+            .map_err(|_| crate::js_err(format!("{what}: command must be a string or string[]")))?;
+        Ok(crate::platform::Cmd::Shell(cmd))
+    }
 }
 
 /// `helix.run(cmd)` —— 同步执行，返回 stdout。
@@ -2071,14 +2098,9 @@ pub(crate) fn js_run(
 ) -> boa_engine::JsResult<JsValue> {
     // C-2 检查点:起进程需要 `process` 能力（在 `api.rs` 派发点统一检查，实现里不再各自 check）
     let arg = args.first().cloned().unwrap_or(JsValue::undefined());
-    let mut command = if arg.as_object().is_some_and(|o| o.is_array()) {
-        let argv = js_argv(&arg, context)?;
-        crate::platform::argv_command(&argv)
-            .map_err(|e| crate::js_err(format!("helix.run: {e}")))?
-    } else {
-        let cmd: String = arg.try_js_into(context)?;
-        crate::platform::shell_command(&cmd)
-    };
+    let mut command = js_cmd("helix.run", &arg, context)?
+        .to_command()
+        .map_err(|e| crate::js_err(format!("helix.run: {e}")))?;
     let output = command
         .output()
         .map_err(|e| crate::js_err(format!("helix.run: failed to spawn: {e}")))?;

@@ -537,7 +537,14 @@ pub(crate) fn js_open_terminal(
         let (master, slave) =
             pty::open_pty().map_err(|e| crate::js_err(format!("open_terminal: pty: {e}")))?;
         crate::state::with_term_masters(|m| m.insert(pty_id, master.resize_handle()));
-        spawn_pty_worker(pty_id, &cmd, term_tx, rx, master, slave);
+        spawn_pty_worker(
+            pty_id,
+            crate::platform::Cmd::Shell(cmd.clone()), // 下面 OpenTerminalReq 还要用
+            term_tx,
+            rx,
+            master,
+            slave,
+        );
         UI_REQUESTS
             .get()
             .unwrap()

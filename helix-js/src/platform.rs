@@ -46,6 +46,28 @@ pub(crate) fn argv_command(argv: &[String]) -> anyhow::Result<Command> {
     Ok(command)
 }
 
+/// 一条待执行的命令：两种形态。
+///
+/// 为什么要这个枚举：`helix.run` / `run_async` / `spawn` / pty worker 都要「起一个子进程」，
+/// 而两种形态（过 shell / argv）的构造逻辑只能有一处 —— 否则迟早出现"某个入口忘了走门面"。
+#[derive(Clone, Debug)]
+pub(crate) enum Cmd {
+    /// 过平台 shell（`sh -c` / `cmd /C`）：语法随平台变
+    Shell(String),
+    /// argv，**不经 shell**：跨平台插件用它
+    Argv(Vec<String>),
+}
+
+impl Cmd {
+    /// 造 `Command`。空 argv 也算错（上层通常已在 JS 边界拦过，这里兜底）。
+    pub(crate) fn to_command(&self) -> anyhow::Result<Command> {
+        match self {
+            Cmd::Shell(cmd) => Ok(shell_command(cmd)),
+            Cmd::Argv(argv) => argv_command(argv),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

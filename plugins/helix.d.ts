@@ -865,7 +865,8 @@ interface Helix {
    *   （`$VAR` vs `%VAR%`、引号/管道/重定向全不同）⇒ 只在确实需要 shell 语法且单平台时用。
    */
   run(cmd: string | string[]): string;
-  run_async(cmd: string): Promise<string>; // 失败 reject Error；本轮**只**支持字符串形态
+  /** 同 `run`（`string | string[]`），但在 worker 线程执行、不阻塞。失败 reject `Error`。 */
+  run_async(cmd: string | string[]): Promise<string>;
   spawn(opts: SpawnOptions): number; // 返回 id
   /** 同步列目录（不递归、按名排序）。**传文件 → `[]`**（没有子项）；路径非法才 throw */
   read_dir(path: string): DirEntry[];

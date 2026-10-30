@@ -184,18 +184,24 @@ fn set_nonblocking(fd: std::os::fd::RawFd) {
 #[cfg(unix)]
 fn spawn_worker(
     id: u64,
-    cmd: &str,
+    cmd: crate::platform::Cmd,
     aggregate: bool,
     tx: WakeSender<TermEvent>,
     stdin_rx: std::sync::mpsc::Receiver<TermCtrl>,
 ) {
-    let cmd = cmd.to_string();
     std::thread::spawn(move || {
         use std::io::Write;
         use std::process::Stdio;
         crate::state::js_dbg(format_args!("worker start id={id}"));
-        // 字符串形态过平台 shell（Unix `sh -c` / Windows `cmd /C`）——见 crate::platform
-        let mut command = crate::platform::shell_command(&cmd);
+        // 两种形态的构造只有一处：`platform::Cmd::to_command`（过 shell / argv 不经 shell）
+        let mut command = match cmd.to_command() {
+            Ok(c) => c,
+            Err(e) => {
+                crate::state::js_dbg(format_args!("worker command FAILED id={id}: {e}"));
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -306,7 +312,13 @@ pub(crate) fn spawn_worker_for_test(
     tx: WakeSender<TermEvent>,
     stdin_rx: std::sync::mpsc::Receiver<TermCtrl>,
 ) {
-    spawn_worker(id, cmd, aggregate, tx, stdin_rx);
+    spawn_worker(
+        id,
+        crate::platform::Cmd::Shell(cmd.to_string()),
+        aggregate,
+        tx,
+        stdin_rx,
+    );
 }
 
 /// PTY worker：子进程 stdin/stdout/stderr 接 slave；父线程读 master 发 Chunk（流式），
@@ -321,13 +333,12 @@ use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 pub(crate) fn spawn_pty_worker(
     id: u64,
-    cmd: &str,
+    cmd: crate::platform::Cmd,
     tx: WakeSender<TermEvent>,
     ctrl_rx: std::sync::mpsc::Receiver<TermCtrl>,
     master: pty::Master,
     slave: std::fs::File,
 ) {
-    let cmd = cmd.to_string();
     std::thread::spawn(move || {
         use std::io::Write;
         use std::process::Stdio;
@@ -348,7 +359,14 @@ pub(crate) fn spawn_pty_worker(
             }
         };
         let mut child = {
-            let mut command = crate::platform::shell_command(&cmd);
+            let mut command = match cmd.to_command() {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(TermEvent::Exit(id, 127, None));
+                    crate::state::js_dbg(format_args!("pty command FAILED id={id}: {e}"));
+                    return;
+                }
+            };
             command
                 .env("TERM", "xterm-256color")
                 .stdin(Stdio::from(stdin_slave))
@@ -450,11 +468,9 @@ pub(crate) fn js_run_async(
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let cmd: String = args
-        .first()
-        .unwrap_or(&JsValue::undefined())
-        .try_js_into(context)
-        .map_err(|_| crate::js_err("helix.run_async: command must be a string"))?;
+    // `string | string[]`，与 `helix.run` 同一套校验（空数组/非字符串元素在这里就报错）
+    let arg = args.first().cloned().unwrap_or(JsValue::undefined());
+    let cmd = crate::commands::js_cmd("helix.run_async", &arg, context)?;
     // C-2 检查点:异步起进程同属 `process`(与 helix.run 同一能力)
     // 返回 promise：Exit 事件经 resolve_term_event 调 resolve/reject 兑现；.then/.catch 由 pump_jobs 泵
     let (promise, resolving) = JsPromise::new_pending(context);
@@ -467,7 +483,7 @@ pub(crate) fn js_run_async(
     crate::state::with_term_workers(|m| m.insert(id, tx.clone()));
     let term_tx = crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
     crate::state::js_dbg(format_args!("spawn term id={id} (run_async)"));
-    spawn_worker(id, &cmd, true, term_tx, rx);
+    spawn_worker(id, cmd, true, term_tx, rx);
     Ok(promise.into())
 }
 
@@ -520,9 +536,17 @@ pub(crate) fn js_spawn(
             pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
         // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
         crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
-        spawn_pty_worker(id, &cmd, term_tx, rx, master, slave);
+        spawn_pty_worker(
+            id,
+            crate::platform::Cmd::Shell(cmd),
+            term_tx,
+            rx,
+            master,
+            slave,
+        );
     } else {
-        spawn_worker(id, &cmd, false, term_tx, rx);
+        // `spawn` 目前只接字符串（与 pty 路径一起做 argv 才有意义，见 spec N3）
+        spawn_worker(id, crate::platform::Cmd::Shell(cmd), false, term_tx, rx);
     }
     Ok(JsValue::from(id))
 }

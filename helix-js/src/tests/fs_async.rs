@@ -213,6 +213,48 @@ fn argv_run() {
     }
 }
 
+/// `run_async` 的 **argv 形态**：与 `run` 同一套校验与语义（参数不经 shell）。
+///
+/// 判别式同 `argv_run`：两个空格必须保留 —— 走 `sh -c` 会塌成一个。
+#[test]
+fn argv_run_async() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+
+    // 空数组：在 JS 边界就报错（不会起进程、也不会留下半注册状态）
+    let err = load_script(r#"helix.run_async([]);"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("empty argv"), "err: {err}");
+
+    #[cfg(unix)]
+    {
+        load_script(
+            r#"
+        helix.run_async(["echo", "a  b"]).then((out) => {
+            helix.echo("cb:" + out.replace(/\n$/, ""));
+        });
+        "#,
+        )
+        .unwrap();
+        let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
+        let TermEvent::Exit(id, code, stdout) = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(*code, 0);
+        crate::host::with_state_or_init(|st| {
+            resolve_term_event(st, *id, TermEvent::Exit(*id, *code, stdout.clone()))
+        })
+        .unwrap();
+        pump_jobs().unwrap();
+        assert_eq!(
+            take_messages(),
+            vec!["cb:a  b"],
+            "两个空格必须原样保留（argv 不经 shell）"
+        );
+    }
+}
+
 #[test]
 fn async_run_and_spawn() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
