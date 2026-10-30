@@ -167,6 +167,52 @@ fn shell_run() {
     );
 }
 
+/// `helix.run` 的 **argv 形态**（`string[]`，不经 shell）。
+///
+/// 与 `shell_run` 分开：这里钉的是「参数不再被 shell 解释」——跨平台插件唯一正确的用法。
+/// 单跑（不进 shell 的解释器）的断言走 `crate::platform` 的单元测试；这里验的是 JS 侧取参与报错。
+#[test]
+fn argv_run() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    let ctx = CommandContext {
+        docs: vec![],
+        path: None,
+        text: String::new(),
+        cursor: (0, 0),
+        selection: ((0, 0), (0, 0)),
+    };
+
+    // 空数组必须报错（静默成功会让插件以为命令跑过了）
+    load_script(r#"helix.register_command("a1", () => { helix.run([]); });"#).unwrap();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "a1", &ctx))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("empty argv"), "err: {err}");
+
+    // 非字符串元素：报错要指到具体下标
+    load_script(r#"helix.register_command("a2", () => { helix.run(["echo", 42]); });"#).unwrap();
+    let err = crate::host::with_state_or_init(|st| run_command(st, "a2", &ctx))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("argv[1]"), "应当点名出错的下标: {err}");
+
+    // 端到端：带空格的参数原样到达（走 `sh -c` 会被拆词/合并空格；argv 不会）
+    #[cfg(unix)]
+    {
+        load_script(
+            r#"helix.register_command("a3", () => { helix.echo(helix.run(["echo", "a  b"])); });"#,
+        )
+        .unwrap();
+        assert!(crate::host::with_state_or_init(|st| run_command(st, "a3", &ctx)).unwrap());
+        assert_eq!(
+            take_messages(),
+            vec!["a  b\n"],
+            "两个空格必须原样保留（被 shell 处理会成一个）"
+        );
+    }
+}
+
 #[test]
 fn async_run_and_spawn() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

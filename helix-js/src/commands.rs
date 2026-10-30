@@ -2034,21 +2034,52 @@ fn parse_sel_pos(v: &JsValue, ctx: &mut Context) -> boa_engine::JsResult<(usize,
 /// shell 执行输出截断上限（防失控输出冻结状态栏）
 const RUN_OUTPUT_LIMIT: usize = 65536;
 
-// ponytail: 同步阻塞 + sh -c，仅 Unix；未来要 Windows 支持需改 cmd.exe /C。
+/// 把 JS 的 `string[]` 取成 `Vec<String>`（`helix.run` 的 argv 形态）。
+///
+/// 逐元素取而不是整数组强转：报错要指到**哪个下标**不是字符串。
+fn js_argv(value: &JsValue, context: &mut Context) -> boa_engine::JsResult<Vec<String>> {
+    let arr = value
+        .as_object()
+        .filter(|o| o.is_array())
+        .and_then(|o| JsArray::from_object(o.clone()).ok())
+        .ok_or_else(|| crate::js_err("helix.run: argv must be an array of strings"))?;
+    let len = arr
+        .length(context)
+        .map_err(|e| crate::js_err(format!("helix.run: argv: {e}")))?;
+    let mut argv = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let item = arr.get(i, context)?;
+        let arg = item
+            .try_js_into::<String>(context)
+            .map_err(|_| crate::js_err(format!("helix.run: argv[{i}] must be a string")))?;
+        argv.push(arg);
+    }
+    Ok(argv)
+}
+
+/// `helix.run(cmd)` —— 同步执行，返回 stdout。
+///
+/// 两种形态（见 `docs/api/process-fs.md`）：
+/// * `string` —— 过平台 shell（Unix `sh -c` / Windows `cmd /C`），**语法随平台变**；
+/// * `string[]` —— **argv，不经 shell**：跨平台插件应当用这个（参数不拆、不转义）。
+///
+/// ponytail: 同步阻塞主线程，只用于短命令。
 pub(crate) fn js_run(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    use std::process::Command;
-    // C-2 检查点:起进程需要 `process` 能力
-    let cmd: String = args
-        .first()
-        .unwrap_or(&JsValue::undefined())
-        .try_js_into(context)?;
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
+    // C-2 检查点:起进程需要 `process` 能力（在 `api.rs` 派发点统一检查，实现里不再各自 check）
+    let arg = args.first().cloned().unwrap_or(JsValue::undefined());
+    let mut command = if arg.as_object().is_some_and(|o| o.is_array()) {
+        let argv = js_argv(&arg, context)?;
+        crate::platform::argv_command(&argv)
+            .map_err(|e| crate::js_err(format!("helix.run: {e}")))?
+    } else {
+        let cmd: String = arg.try_js_into(context)?;
+        crate::platform::shell_command(&cmd)
+    };
+    let output = command
         .output()
         .map_err(|e| crate::js_err(format!("helix.run: failed to spawn: {e}")))?;
     if !output.status.success() {

@@ -181,16 +181,15 @@ fn spawn_worker(
     let cmd = cmd.to_string();
     std::thread::spawn(move || {
         use std::io::Write;
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
         crate::state::js_dbg(format_args!("worker start id={id}"));
-        let mut child = match Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+        // 字符串形态过平台 shell（Unix `sh -c` / Windows `cmd /C`）——见 crate::platform
+        let mut command = crate::platform::shell_command(&cmd);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+            .stderr(Stdio::piped());
+        let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
                 // T7 诊断：spawn 失败（EAGAIN/ENOMEM 在高并发测试里真会撞上）会伪装成"事件没回来"
@@ -320,7 +319,7 @@ pub(crate) fn spawn_pty_worker(
     let cmd = cmd.to_string();
     std::thread::spawn(move || {
         use std::io::Write;
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
         let mut master = master.into_file();
         // 子进程 stdin/stdout/stderr 都是 slave（dup 三份，spawn 后父侧副本关闭）
         let stdin_slave = match slave.try_clone() {
@@ -338,10 +337,8 @@ pub(crate) fn spawn_pty_worker(
             }
         };
         let mut child = {
-            let mut command = Command::new("sh");
+            let mut command = crate::platform::shell_command(&cmd);
             command
-                .arg("-c")
-                .arg(&cmd)
                 .env("TERM", "xterm-256color")
                 .stdin(Stdio::from(stdin_slave))
                 .stdout(Stdio::from(stdout_slave))

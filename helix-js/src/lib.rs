@@ -14,6 +14,8 @@ mod register;
 // pty.rs 是纯 POSIX 实现(openpt / ioctl / winsize + 裸 fd):只在 unix 编译。
 // 调用点(shell.rs / popup.rs)各自已有 cfg(unix) / cfg(not(unix)) 分支 ✓
 mod permissions;
+// 平台门面:shell 形态(`sh -c` / `cmd /C`)与 argv 命令构造的唯一出口。
+mod platform;
 #[cfg(unix)]
 mod pty;
 mod shell;
