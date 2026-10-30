@@ -929,6 +929,8 @@ pub static API: &[Entry] = &[
         "js_run_command",
         &[],
     ),
+    // 两种形态（`docs/api/process-fs.md`）：`string[]` = argv（不经 shell，跨平台插件用它）；
+    // `string` = 过平台 shell（语法随平台变）。`arity` 恒为 1（一个 union 参数）。
     e(
         Target::Root,
         "run",

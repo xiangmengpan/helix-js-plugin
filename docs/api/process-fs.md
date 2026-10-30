@@ -19,13 +19,27 @@ const cwd = helix.cwd();   // 不缓存：:cd 之后立即变
 
 ### `helix.run(cmd)` — 同步（慎用）
 
-同步执行 shell 命令并返回 stdout。**阻塞编辑器主线程**——只用于短命令。
+同步执行并返回 stdout。**阻塞编辑器主线程**——只用于短命令。
+
+**两种形态**，选错形是跨平台翻车的头号原因：
 
 ```js
-const out = helix.run("git status --short");
+// ① argv 形态：[可执行名, ...参数]，**不经 shell**。跨平台插件只用这种。
+const out = helix.run(["git", "status", "--short"]);
+
+// ② 字符串形态：过平台 shell（Unix `sh -c` / Windows `cmd /C`）
+const out2 = helix.run("git status --short | head -5");
 ```
 
-**优缺点**：优点：结果即用,简单。局限：**阻塞主线程**,重命令卡 UI;stdout 截断 64KB;Unix-only。
+| 形态 | 行为 | 什么时候用 |
+|---|---|---|
+| `string[]` | `Command::new(argv[0]).args(argv[1..])`；**参数不拆词、不转义**；`argv[0]` 走 `PATH`（Windows 自动 PATHEXT） | **默认选它**，尤其要传含空格/引号/`%`/`$` 的字符串时 |
+| `string` | Unix `sh -c <str>` / Windows `cmd /C <str>`。**语法随平台变**（`$VAR` vs `%VAR%`、引号/管道/重定向转义规则全不同） | 只在**确实需要 shell 语法**且**只在单个平台**跑时 |
+
+- 空数组 `[]` → throw（不静默成功）；数组里有非字符串 → throw，消息点名 `argv[i]`。
+- 非 0 退出码 → throw（消息含 exit code；被信号杀死时为 `signal`）。
+
+**优缺点**：优点：结果即用，argv 形态跨平台安全。局限：**阻塞主线程**，重命令卡 UI；stdout 截断 65536 **字符**（不是字节）。
 
 ### `helix.run_async(cmd)` — 异步（返回 Promise）
 
@@ -39,6 +53,12 @@ helix.echo(out.trim());
 - 成功 resolve stdout(字符串);非 0 退出码 reject `Error`(`e.message` 含 exit code)。
 
 **优缺点**：优点：不阻塞;await 语法自然。局限：无流式输出(等命令结束);子进程无超时(挂死命令一直占 worker)。
+
+> ⚠ **本轮只支持字符串形态**（过平台 shell）。要 argv 形态的异步执行，暂用
+> `helix.run([...])`（同步）或 `helix.spawn({ cmd })` + 自己拆词——**不推荐后者**。
+> 为什么没一起做：`run_async` 与 `spawn` 共用同一个 worker（`spawn_worker` 目前接的是
+> "一段待过 shell 的字符串"），改成接 `Command` 要和 pty 路径一起动，见
+> [`../../superpowers/specs/2026-10-30-cross-platform-design.md`](../../superpowers/specs/2026-10-30-cross-platform-design.md) §1.2 N3。
 
 ### `helix.spawn({ cmd, pty?, onChunk, onExit })` — 流式进程
 

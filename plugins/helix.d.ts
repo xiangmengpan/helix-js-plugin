@@ -856,8 +856,16 @@ interface Helix {
   set_highlight(path: string, sr: number, sc: number, er: number, ec: number, style?: string | null): void;
 
   // ── 进程与异步 fs ──
-  run(cmd: string): string; // 同步,阻塞主线程
-  run_async(cmd: string): Promise<string>; // 失败 reject Error
+  /**
+   * 同步执行，返回 stdout（阻塞主线程，只用于短命令）。
+   *
+   * - `string[]`：**argv，不经 shell** —— 参数不拆词、不转义，`argv[0]` 走 `PATH`。
+   *   **跨平台插件只用这种。**
+   * - `string`：过平台 shell（Unix `sh -c` / Windows `cmd /C`）。**语法随平台变**
+   *   （`$VAR` vs `%VAR%`、引号/管道/重定向全不同）⇒ 只在确实需要 shell 语法且单平台时用。
+   */
+  run(cmd: string | string[]): string;
+  run_async(cmd: string): Promise<string>; // 失败 reject Error；本轮**只**支持字符串形态
   spawn(opts: SpawnOptions): number; // 返回 id
   /** 同步列目录（不递归、按名排序）。**传文件 → `[]`**（没有子项）；路径非法才 throw */
   read_dir(path: string): DirEntry[];

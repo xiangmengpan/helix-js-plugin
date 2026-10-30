@@ -318,3 +318,50 @@ cargo check -p helix-js -p helix-stdx --all-targets --target x86_64-pc-windows-m
 - `runtime/**`（红线：改的是源，同步靠 `cargo xtask sync-runtime`）；
 - `CHANGELOG.md`（发布流程填）；
 - 上游遗留跨平台代码（`helix-view/src/clipboard.rs`、`helix-loader/src/grammar.rs`、`helix-tui/src/backend/crossterm.rs`）。
+
+---
+
+## 11. 实施记录（按时间追加，不覆盖上面的计划）
+
+### 2026-10-30 · 执行前的意外发现，两条计划被现实修正
+
+**① 「A 档已达成（Windows 能编译）」这个前提是错的。**
+本 spec §1 把「能编译」列为已达成，依据是 `e9b78c87e`（10-13）的交叉 check 记录。实测
+`cargo check -p helix-js --target x86_64-pc-windows-msvc` → **236 个 error**：
+
+- 根因不是「谁知道漏了」，而是**一次插入把属性挪位**：`9d7eee12d`（10-16）把
+  `mod permissions;` 插到了 `#[cfg(unix)]` 与 `mod pty;` 之间，属性于是落到 `permissions`
+  上，`pty` 反而裸奔 ⇒ 一头 `crate::permissions` 全 unresolved，另一头 `pty.rs` 的
+  `std::os::fd` 编不过。
+- 已修：`c79064496`（2 行），**236 → 19 error**；unix 侧零回归（`test -p helix-js` 248 绿）。
+
+**② 因此 P4 的 DoD 从「能编译」升级成一条可复跑的命令**（原来那句无法证伪）：
+
+```bash
+cargo check -p helix-js --target x86_64-pc-windows-msvc   # 当前基线：19 error → 目标 0
+```
+
+剩下 19 个错正是 P4 要治的东西，且分两类 —— 这个分类本身就是 P4 的施工地图：
+- **实现层**（`shell.rs` 的 `set_nonblocking` / poll 读循环、`libc::{fcntl,poll,pollfd,POLL*}`）→ 移进 `pty/unix.rs`；
+- **注册表层**：`api.rs` 的 `term_resize` 表项**无条件**引用一个 `#[cfg(unix)]` 的函数 ⇒
+  API 表在 Windows 上不成立。**平台差异必须落在实现，不能落在注册表**（这是 B 项的核心判据）。
+
+**③ 集成测试自 10-29 起编不过，本次顺带修复。**
+`plugin_statusline.rs` 没跟上 `RenderContext::new` 的第 8 个参数（`input_badges`）⇒
+`helix-term (test "integration")` 11 个错。修好后 `422 passed / 6 failed`，那 6 条是**被编译错
+遮蔽的旧债**（arsenal ×4、which-key ×1、powerline caps ×1），不在本 spec 范围。
+
+### P2 实施记录：`run_async` 的 argv 半边**推迟**
+
+§1.1 的 G1 写的是 `run` / `run_async` 都接受 `string[]`。实际只做了 `run`：
+`run_async` 与 `spawn` 共用 `spawn_worker`，而它现在接的是「一段待过 shell 的字符串」；
+改成接 `Command` 必须和 pty 路径一起动（N3 已把 `spawn` 排除）。⇒ 单独一项，等 P4 之后。
+
+`docs/api/process-fs.md` 与 `helix.d.ts` 已按**实际实现**写（`run` 是 union、`run_async` 是
+string），不写成"应该的样子"。
+
+### P7 的手法已有先例，不必重新摸索
+
+`87815cbe5` 的 commit message 记着：把 `CC_<target>` / `AR_<target>` 指向一个「只 touch 产物」的
+**假 C 编译器**，就能对 `--workspace --all-targets` 做 Windows/macOS 交叉 check —— 这绕过了
+tree-sitter 的 C 依赖，也就是本 spec §7.2 里那条「待实测」的答案。P7 照抄即可。
