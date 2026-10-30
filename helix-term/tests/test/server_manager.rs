@@ -290,7 +290,6 @@ fn write_fake_tar_gz(path: &std::path::Path, bin_name: &str, version: &str) -> a
 // 引入的「需 <tool>」状态列与其配套断言**从未被执行过**。修好编译后它们一起掉了出来,
 // 症状见各自的 `#[ignore]` 理由。它们属于 arsenal 功能本身,与"跨平台改造"无关 ——
 // 保留测试(不是删掉),先把门禁恢复成「能反映新回归」的状态。
-#[ignore = "P0.6 遗留:后台安装任务一条事件都没发出来(seq 为空);被测物是 arsenal 的后台任务管道,待其所有者定位"]
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<()> {
     let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
@@ -345,50 +344,46 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
         "#,
     )?;
 
-    test_key_sequences(
-        &mut AppBuilder::new().with_file(file, None).build()?,
-        vec![
-            (
-                Some(&format!(":plugin-load {}<ret>", plugin_path.display())),
-                None,
-            ),
-            // 提交后台任务:worker 异步执行;file:// 假源毫秒级。提交后不再发任何键——
-            // 事件在本 pump 的 idle 窗口内 resolve(I1 起 push 即唤醒;集成下至少单 idle
-            // 收敛,真实区别见 helix-js push_event_fires_registered_wake 单测 + 报告局限)
-            (
-                Some(":arsenal-e2e<ret>"),
-                Some(&|app| {
-                    assert!(
-                        !app.editor.is_err(),
-                        "任务提交不应报错, got: {:?}",
-                        app.editor.get_status()
-                    );
-                }),
-            ),
-            // 收敛断言:事件序列(JS 侧累积,不受状态栏覆写影响)
-            (
-                Some(":arsenal-e2e-dump<ret>"),
-                Some(&|app| {
-                    let (status, _) = app.editor.get_status().unwrap();
-                    let seq = status.as_ref();
-                    assert!(!app.editor.is_err(), "后台安装不应报错, got: {seq}");
-                    assert!(
-                        seq.contains("seq:ev:phase:demo-bin")
-                            && seq.contains("ev:progress:demo-bin:")
-                            && seq.contains("ev:done:demo-bin"),
-                        "事件序列应含 phase/progress/done, got: {seq}"
-                    );
-                    assert!(
-                        seq.find("ev:phase:demo-bin").unwrap_or(0)
-                            < seq.find("ev:done:demo-bin").unwrap_or(usize::MAX),
-                        "phase 应先于 done, got: {seq}"
-                    );
-                }),
-            ),
-        ],
-        false,
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
     )
     .await?;
+
+    // 提交后台任务:worker 异步执行;file:// 假源毫秒级 —— 但**完成时刻没有保证**。
+    // 原实现只给它一个 idle 窗口就断言,靠运气(表现为 seq 全空);这里改成**有界轮询**,
+    // 与 `server_arsenal_batch_two_installs` 的 `wait_until_rows` 同一思路。
+    pump(&mut app, ":arsenal-e2e<ret>").await?;
+    assert!(
+        !app.editor.is_err(),
+        "任务提交不应报错, got: {:?}",
+        app.editor.get_status()
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut seq;
+    loop {
+        pump(&mut app, ":arsenal-e2e-dump<ret>").await?;
+        let (status, _) = app.editor.get_status().unwrap();
+        seq = status.as_ref().to_string();
+        assert!(!app.editor.is_err(), "后台安装不应报错, got: {seq}");
+        if seq.contains("ev:done:demo-bin") || std::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        seq.contains("seq:ev:phase:demo-bin")
+            && seq.contains("ev:progress:demo-bin:")
+            && seq.contains("ev:done:demo-bin"),
+        "事件序列应含 phase/progress/done(60s 内未收敛), got: {seq}"
+    );
+    assert!(
+        seq.find("ev:phase:demo-bin").unwrap_or(0)
+            < seq.find("ev:done:demo-bin").unwrap_or(usize::MAX),
+        "phase 应先于 done, got: {seq}"
+    );
 
     // 状态收敛:受管 bin 落盘(软链)→ 目标存在;languages.toml 出现受管 [language-server.demo-bin]
     let bin = managed.join("bin").join("demo-bin");
@@ -469,7 +464,6 @@ async fn wait_until_rows(
 // i 信息弹窗(命令路径/下载源占位替换为真实行字段)→ 假源安装收敛(行 ✓)→
 // 改 bin 检测版本重开 → ▲ 可升级标记(upgradable 字段)→ 动作菜单(update/remove)开/关 →
 // q 关闭 → 编辑器仍响应。
-#[ignore = "P0.6 遗留:「内置 + 注入配方行可见」失败 —— 50/50 计数正常,但注入配方行没进可视窗(排序/过滤语义变化待定)"]
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
@@ -520,10 +514,17 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     );
     let text = arsenal_text(&mut app);
     assert!(text.contains("arsenal"), "浮层标题应渲染: {text:?}");
+    // 行序是「内置按文件 order，扩展配方**追加在末尾**」(registry.rs 的 `all()`)，而一帧只放得下
+    // ~24 行、内置有 49 条 ⇒ 注入行**必然在可视区之外**，不能要求同帧同时出现。
+    // 两段断言：① 首帧有内置行；② `/`-搜索过滤到注入行（顺带覆盖搜索模态本身）。
+    assert!(text.contains("rust-analyzer"), "内置配方行可见: {text:?}");
+    pump(&mut app, "/demo-bin").await?;
+    let filtered = arsenal_text(&mut app);
     assert!(
-        text.contains("rust-analyzer") && text.contains("demo-bin"),
-        "内置 + 注入配方行可见: {text:?}"
+        filtered.contains("demo-bin"),
+        "注入配方行经 `/` 搜索可见: {filtered:?}"
     );
+    pump(&mut app, "<esc>").await?; // Esc:清过滤 + sel 归 0（下面 Enter 瞄的是 rust-analyzer）
 
     // 2. Enter 在 rust-analyzer(sel0;缺失+installable+needs_version)→ 版本输入弹窗(install 单项直达)
     pump(&mut app, "<ret>").await?;
@@ -585,12 +586,16 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         "Esc+q 应关闭浮层主窗"
     );
     pump(&mut app, ":arsenal<ret>").await?;
-    // 重开后过滤为空、sel=0(rust-analyzer);demo-bin 行在列表内(9 行 < 可视高度)
+    // 重开后过滤为空、sel=0(rust-analyzer)。demo-bin 追加在 49 条内置之后 ⇒ 在可视区外,
+    // 先 `/`-搜索把它调出来再断言(搜索前的全表断言见第 1 步)。
+    pump(&mut app, "/demo").await?;
     let text = arsenal_text(&mut app);
     assert!(
         text.contains("▲ 9.9"),
         "检测版本 9.9 ≠ 配方 1.0.0 → ▲ 9.9(剥前缀): {text:?}"
     );
+    // 退出搜索(清过滤)—— 否则下面的 `/demo` 会因为"已在 SEARCH 态、`/` 被吞"而拼成 `demodemo`
+    pump(&mut app, "<esc>").await?;
 
     // 7. / 过滤 'demo' 选中 demo-bin → Enter → 动作菜单(update/remove);Esc 关菜单后
     //    Esc 清搜索 → Tab 切页签 lsp 仍响应(主窗按键在无过滤下正常)
@@ -637,7 +642,6 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
 // 宽字符回归:注入 CJK 描述(64 显示列,超 desc 列宽)配方 → 行内描述按显示列宽截断
 // 并以 … 收尾,描述尾部哨兵不得溢出到渲染(状态列右锚不被推出,无 render error)。
 // v2 行模型按列宽截断(旧 slice() 字符截断会让 CJK 把行撑出可视区)。
-#[ignore = "P0.6 遗留:宽描述截断/状态列右锚的断言未跟上「需 <tool>」状态列(本文件 :666 断言)"]
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()> {
     let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
@@ -670,10 +674,12 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
     pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
     pump(&mut app, ":arsenal<ret>").await?;
     assert!(!app.editor.is_err(), "市场窗打开不应报错");
+    // 注入配方追加在 49 条内置之后 ⇒ 先 `/`-搜索到它，再看这一行的截断行为
+    pump(&mut app, "/wide-desc-tool").await?;
     let text = arsenal_text(&mut app);
     assert!(
         text.contains("wide-desc-tool"),
-        "CJK 描述行应可见: {text:?}"
+        "CJK 描述行应经搜索可见: {text:?}"
     );
     assert!(text.contains("…"), "超长描述应以 … 收尾: {text:?}");
     assert!(
@@ -702,7 +708,6 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
 
 // Arsenal 批量:t 标记两个注入配方(均为未装+可装)→ Enter 直接批量(集合快照)→
 // 单 worker 串行安装两件 → 收敛后两行均 ✓;managed/bin 落盘断言。
-#[ignore = "P0.6 遗留:批量装两件的收敛断言失败(与后台任务事件缺失同源)"]
 #[tokio::test(flavor = "multi_thread")]
 async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     let _sm_guard = SERVER_MANAGER_TEST_LOCK.lock().await;
@@ -747,14 +752,18 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
         text.contains("demo-bin") && text.contains("demob"),
         "两注入配方应可见: {text:?}"
     );
-    // Esc 清搜索回 NORMAL(sel=0=rust-analyzer);**内置配方在前** → j×(内置数) 到 demo-bin 再标记两件
+    // Esc 清搜索回 NORMAL(sel=0);**内置配方在前** → j×(内置条数) 到 demo-bin 再标记两件
     // (标记/导航须在 NORMAL 态:字母是命令)
     //
-    // ⚠️ 这里的 `j` 次数 = 内置配方条数(现在是 8:`lldb-dap` 进内置后加的一条)。
-    // 加/删内置配方时**必须跟着改** —— 否则会标记到别的行,表现为"批量安装只装了一个"。
-    // 条数本身有单测钉住:`server_manager::tests::builtin_specs_all_have_description_and_homepage`。
+    // `j` 次数**从数据源现算**,不写死:原先写死 8,配方扩充到 49 条后就在静默标记别人的行
+    // (表现是"批量只装了一个")。内置条数 = `runtime/server-manager-builtin.toml` 的条目数
+    // (它就是 `registry::builtin_specs()` 的数据源)。
+    let builtin_count = include_str!("../../../runtime/server-manager-builtin.toml")
+        .lines()
+        .filter(|l| l.starts_with("[server-manager.registry."))
+        .count();
     pump(&mut app, "<esc>").await?;
-    pump(&mut app, "jjjjjjjj").await?; // sel → demo-bin(内置 8 条之后的第 9 行)
+    pump(&mut app, &"j".repeat(builtin_count)).await?; // sel → demo-bin(第 builtin_count+1 行)
     pump(&mut app, "t").await?; // 标记 demo-bin
     pump(&mut app, "j").await?; // sel → demob
     pump(&mut app, "t").await?; // 标记 demob

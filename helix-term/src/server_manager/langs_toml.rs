@@ -116,7 +116,11 @@ pub fn lang_config_file() -> PathBuf {
 pub fn is_upgradable(spec: &registry::Spec) -> bool {
     let recorded = super::install::installed_version(&spec.name);
     let detected = spec.version_detected();
-    let have = recorded.clone().or_else(|| detected.clone());
+    // **先信检测值**：状态列显示的就是 `detected`（`handle_server_list_rows` 里
+    // `strip_bin_prefix(version_detected())`）。若这里先信安装记录，就会出现
+    // 「行里显示 9.9、却按记录 1.0.0 判为不可升级」的自相矛盾（集成测试
+    // `server_arsenal_ui_smoke` 的 ▲ 断言就是钉这条）。检测失败时才退回记录。
+    let have = detected.clone().or_else(|| recorded.clone());
     match spec.version.as_deref() {
         Some(want) => have.is_some_and(|v| !v.contains(want)),
         None => {

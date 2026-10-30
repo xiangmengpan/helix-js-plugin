@@ -434,11 +434,20 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
 /// `statusline.cap.normal` 抹掉 ⇒ 切回 normal 时端帽掉色（默认样式）。改成合并语义后应共存。
 ///
 /// 断言看的是**渲染出来的格子颜色**（不是内部表）：端帽字符 `` 的 fg 必须等于该模式的底色。
-// ⚠ P0.6 遗留:端帽实际着色为 `Rgb(40,23,51)`(非测试设的 `Rgb(0,0,255)`)。
-// 事实:端帽**渲染出来了**(字符能找到、fg 有值),但不是插件 `capScope()` 算出来的那个颜色
-// ⇒ 问题在「插件 set_theme 写 `statusline.cap.<mode>` 之后,`helix.get_style` 读回来的是什么」。
-// 这需要一次语义拍板(plugin 主题合并后 get_style 该反映哪一层),不是测试写法问题,故先标注。
-#[ignore = "P0.6 遗留:cap 着色与插件 set_theme 的期望不一致(见上);需定 get_style 的合并语义"]
+// ⚠ 两个**互相独立**的问题,都还没修:
+//
+// ① 套件里跑:端帽 fg 是 `Rgb(40,23,51)`(= 默认主题 `ui.statusline.normal` 的 bg),
+//    不是测试设的 `Rgb(0,0,255)`。原因已定位到线索:statusline 插件把
+//    `statusline.cap.<mode>` 的**颜色**缓存进了模块级 `capScopes`(只缓存 scope 名,颜色由
+//    首次渲染时的 `helix.get_style` 决定) ⇒ 同一进程里先跑过 statusline 的用例(默认主题)
+//    之后,本用例只改 `ui.statusline.normal`、不改 `statusline.cap.normal` ⇒ 端帽沿用旧色。
+//    修法要选一条:插件侧不缓存颜色 / 用例侧显式设 `statusline.cap.normal` / 核心在
+//    `set_theme` 后清插件缓存。这是**产品语义选择**,不擅自定。
+// ② 单独跑会**挂住**(实测 20 分钟不返回)⇒ 另有测试隔离问题(`:plugin-load` 在本用例的
+//    初始状态下卡在某个等待点),需单独定位。
+//
+// 保留测试(不删):它钉的行为(多模式 cap 共存)仍然有效,只是现在跑不动。
+#[ignore = "两个独立问题:①套件里 cap 颜色被 capScopes 缓存串味 ②单独跑会挂住;见上方注释"]
 #[tokio::test(flavor = "multi_thread")]
 async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
     use helix_term::ui::statusline::RenderContext;

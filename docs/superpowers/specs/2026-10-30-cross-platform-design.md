@@ -493,3 +493,37 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 
 **边界（必须说清）**：这只证明「编得过 + 过 lint」。运行期正确性（pty/进程/路径/家目录）
 仍然需要 Windows runner 或实机 —— 门禁不替代实跑。
+
+### P0.6 收尾：4 条 arsenal 用例**修好了**，1 条留证
+
+上一节把这 5 条标了 `#[ignore]` 是为了先把门禁恢复成"能反映新回归"。这一节把它们处理完：
+
+| 用例 | 结论 |
+|---|---|
+| `server_arsenal_wide_desc_truncated_inside_frame` | ✅ **修好**（测试） |
+| `server_arsenal_ui_smoke` | ✅ **修好**（测试 + 一处核心语义） |
+| `server_arsenal_batch_two_installs` | ✅ **修好**（测试） |
+| `server_arsenal_task_install_background_file_source` | ✅ **修好**（测试） |
+| `powerline_caps_coexist_across_modes` | ⏸ 仍 `#[ignore]`，但**理由已从"待定"升级成"已定位"** |
+
+三个真根因（都不是"改断言让它绿"）：
+
+1. **行序假设过期**：`registry::all()` 的语义是「内置按文件 `order`，扩展配方**追加在末尾**」，
+   而内置已扩到 **49** 条、一帧只放得下 ~24 行 ⇒ 注入配方**必然在可视区外**。
+   原用例要求"内置 + 注入同帧可见"，是写的时候内置只有 8 条。
+   修法：用 `/`-搜索把目标行调出来（顺带覆盖搜索模态本身），而不是放宽断言。
+2. **`batch_two_installs` 写死了 `jjjjjjjj`**(8 次)—— 配方扩充后它在静默标记别人的行,
+   表现为"批量只装了一个"。改成**从数据源现算**：`include_str!("runtime/server-manager-builtin.toml")`
+   里 `[server-manager.registry.` 的行数。
+3. **`task_install_background_file_source` 靠"单 idle 窗口"断言** —— worker 完成时刻没有保证，
+   靠运气（表现为 `seq` 全空）。改成**有界轮询**（60s 上限），与 `wait_until_rows` 同一思路。
+
+一处**核心语义**修正（不是测试）：
+
+4. `is_upgradable()` 原来 `have = recorded.or(detected)` —— 先信**安装记录**。但状态列显示的是
+   **检测值**，于是出现「行里显示 9.9、却按记录 1.0.0 判为不可升级」的自相矛盾。
+   改成 `detected.or(recorded)`（检测失败才退回记录），与显示口径统一。
+
+剩下那条（`powerline_caps`）的两个症状都已定位，但**修法要选一条产品语义**，故保留 `#[ignore]`：
+① 套件里 cap 颜色被插件的模块级 `capScopes` 缓存串味（先跑过的用例用默认主题把
+`statusline.cap.<mode>` 的颜色定了）；② 单独跑会挂住（另有隔离问题）。
