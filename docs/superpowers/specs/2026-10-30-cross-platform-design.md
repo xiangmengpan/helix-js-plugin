@@ -465,3 +465,31 @@ cargo clippy -p helix-js -p helix-stdx --all-targets --target x86_64-pc-windows-
 统一说明写进了 `server_manager.rs` 的测试文件头注释：这 4 条是**被编译错暴露**的，不是这次改造引入的。
 门禁因此恢复成「能反映新回归」的状态 —— **一个红着却没人看的门禁比没有门禁更糟**
 （`plugin_statusline.rs` 编不过 14 天就是这么被忽略的）。
+
+### P7b 落地：整仓 Windows 门禁（比 P7a 计划的更强）
+
+P7a 只守 `helix-js` + `helix-stdx`（19→0 的那两个 crate）。P7b 用 `87815cbe5` 记的
+「假 C 编译器」手法把门禁扩到**整个 workspace**：
+
+```bash
+HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1 \
+CC_x86_64_pc_windows_gnu=contrib/ci/fake-cc.sh \
+AR_x86_64_pc_windows_gnu=contrib/ci/fake-ar.sh \
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+```
+
+三个细节（都是实测踩出来的）：
+
+1. `HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1` 是必需的一半：`helix-term/build.rs` 会为**所有**语言
+   编译 tree-sitter 语法（几十个 C 文件），那才是交叉编译的大头，且与类型检查无关。
+2. 假 CC/AR 处理剩下的两个真 C 依赖（`zstd-sys`、`tree-house-bindings`）——
+   `check`/`clippy` 不链接，产物不会被消费，造空文件即可。
+3. **整仓只能用 `-gnu`**：`-msvc` 下 cc-rs 拒绝通用假编译器（实测 `tree-house-bindings` 直接失败）。
+   所以门禁是两道：`-msvc` 守 fork 的平台敏感 crate（发布 target），`-gnu` 守整仓类型/lint。
+
+**首跑就抓到真东西**：`helix-tui/src/backend/crossterm.rs` 两处
+`io::Error::new(io::ErrorKind::Other, …)`（Windows 专属分支，`clippy::io_other_error`）——
+这些代码在 Linux CI 上**永远不会被 lint**。已改成 `io::Error::other(…)`（MSRV 1.90 支持）。
+
+**边界（必须说清）**：这只证明「编得过 + 过 lint」。运行期正确性（pty/进程/路径/家目录）
+仍然需要 Windows runner 或实机 —— 门禁不替代实跑。
