@@ -10,9 +10,14 @@ use crate::commands::emit_term_exit;
 #[cfg(unix)]
 use crate::pty;
 
-use crate::state::{with_async_promises, with_terms, WakeSender};
+use crate::state::with_async_promises;
+// `with_terms`/`WakeSender` 只被 unix 的流式 worker（`spawn_worker`）用到；非 unix 没有任何
+// 调用点 ⇒ 分开 import，避免 Windows 上 unused warning。
+#[cfg(unix)]
+use crate::state::{with_terms, WakeSender};
 
-/// worker 读块大小
+/// worker 读块大小（只有 unix 的 Pipe / read_stream 用它）
+#[cfg(unix)]
 const TERM_CHUNK_SIZE: usize = 4096;
 
 use crate::types::*;
@@ -20,12 +25,14 @@ use crate::types::*;
 /// 一路管道（stdout 或 stderr）的 UTF-8 尾部状态。
 ///
 /// 为什么按流各存一份:两条流是**独立字节流**,把它们的半截 UTF-8 拼在一起会造出假字符。
+#[cfg(unix)]
 #[derive(Default)]
 struct EmitState {
     /// 跨块的不完整 UTF-8 尾部（最长序列 3 字节）
     tail: Vec<u8>,
 }
 
+#[cfg(unix)]
 impl EmitState {
     /// 把刚读到的一块字节交给事件层（聚合模式只拼缓冲，不发事件）
     fn push(
@@ -82,6 +89,7 @@ impl EmitState {
 
 /// 阻塞读干一条流（PTY worker 用:master 是单 fd,不需要 poll）。
 /// 与 [`EmitState`] 共用同一套 UTF-8 尾部语义，避免两份实现漂移。
+#[cfg(unix)]
 fn read_stream<R: std::io::Read>(
     mut stream: R,
     id: u64,
@@ -105,12 +113,14 @@ fn read_stream<R: std::io::Read>(
 }
 
 /// 一条管道的最小状态:fd + 对应的 Reader（EOF 后置 None）
+#[cfg(unix)]
 struct Pipe<R: std::io::Read + std::os::fd::AsRawFd> {
     stream: Option<R>,
     fd: libc::c_int,
     emit: EmitState,
 }
 
+#[cfg(unix)]
 impl<R: std::io::Read + std::os::fd::AsRawFd> Pipe<R> {
     fn new(stream: R) -> Self {
         let fd = stream.as_raw_fd();
@@ -159,6 +169,7 @@ impl<R: std::io::Read + std::os::fd::AsRawFd> Pipe<R> {
 }
 
 /// 设 O_NONBLOCK（只为单线程 poll 服务；失败时退化成本线程阻塞读，行为不变）
+#[cfg(unix)]
 fn set_nonblocking(fd: std::os::fd::RawFd) {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);
@@ -171,6 +182,7 @@ fn set_nonblocking(fd: std::os::fd::RawFd) {
 /// 启动 worker 线程：sh -c 跑子进程，读线程逐块发 Chunk（或聚合进 stdout）；
 /// 主线程轮询控制通道（写 stdin / kill）与读线程完成信号，全部读完才收尾发 Exit。
 /// 控制通道由 term_write/term_kill 发消息；无人发 Kill 且子进程不退出时 worker 一直存活（终端会话语义）。
+#[cfg(unix)]
 fn spawn_worker(
     id: u64,
     cmd: &str,
@@ -287,7 +299,7 @@ fn spawn_worker(
 }
 
 /// 仅供线程数探针使用（单线程化前后对比）：转调私有 [`spawn_worker`]。
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn spawn_worker_for_test(
     id: u64,
     cmd: &str,
@@ -433,6 +445,7 @@ pub(crate) fn spawn_pty_worker(
     });
 }
 
+#[cfg(unix)]
 pub(crate) fn js_run_async(
     _this: &JsValue,
     args: &[JsValue],
@@ -459,6 +472,7 @@ pub(crate) fn js_run_async(
     Ok(promise.into())
 }
 
+#[cfg(unix)]
 pub(crate) fn js_spawn(
     _this: &JsValue,
     args: &[JsValue],
@@ -511,6 +525,36 @@ pub(crate) fn js_spawn(
         spawn_worker(id, &cmd, false, term_tx, rx);
     }
     Ok(JsValue::from(id))
+}
+
+/// 非 unix：**流式**进程读取尚未实现。
+///
+/// 为什么不在这一层糊一个"能编译但跑不对"的实现：`spawn_worker` 的单线程读依赖
+/// `poll` + `O_NONBLOCK`（都是 POSIX）。Windows 的管道无法设为非阻塞 ⇒ 要改成
+/// "每条流一个阻塞读线程"，那是独立一项（线程模型换了，得单独验）。
+/// **同步的 `helix.run([...])` 已经跨平台**，不受此限。
+#[cfg(not(unix))]
+pub(crate) fn js_run_async(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    Err(crate::js_err(
+        "helix.run_async: 本平台尚未实现流式读取(poll/O_NONBLOCK)；同步场景请用 helix.run([...])",
+    ))
+}
+
+/// 非 unix：同 [`js_run_async`] —— `spawn` 的 pipe 与 pty 两条路径都依赖 POSIX
+/// （pipe 要 `poll`+`O_NONBLOCK`，pty 要 `openpt`/`ioctl`）。
+#[cfg(not(unix))]
+pub(crate) fn js_spawn(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    Err(crate::js_err(
+        "helix.spawn: 本平台尚未实现流式进程(poll/O_NONBLOCK + 伪终端)；同步场景请用 helix.run([...])",
+    ))
 }
 
 pub(crate) fn js_term_write(
