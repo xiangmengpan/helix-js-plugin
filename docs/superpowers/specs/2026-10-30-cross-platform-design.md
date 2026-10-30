@@ -404,3 +404,22 @@ cargo clippy -p helix-js --all-targets --target x86_64-pc-windows-msvc -- -D war
 加注释标注，而不是硬塞 `#[allow]`。另外 `tests/worker_threads.rs` 整个文件只有 Linux 断言，
 改成在 `tests/mod.rs` 里按 `target_os = "linux"` 门整个模块（否则 macOS/Windows 上
 文件里 0 个测试、`use super::*;` 变成 unused import）。
+
+### P7a 落地：Windows 编译面门禁（只守 `helix-js` + `helix-stdx`）
+
+`build.yml` 的 `lints` job 加了：
+
+```bash
+rustup target add x86_64-pc-windows-msvc
+cargo clippy -p helix-js -p helix-stdx --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+```
+
+- **为什么只守这两个 crate**：整仓会被 tree-sitter 的 C 依赖拦住（需"假 C 编译器"手法，见上方
+  `87815cbe5` 的记录），而这两个 crate 恰好是 fork 新增的平台敏感面（pty / poll / 子进程 / 家目录）。
+- **为什么 clippy 而不是 check**：`-D warnings` 能连带拦下「非 unix 侧 unused import / dead_code」
+  这类只在 Windows 才现形的噪音 —— 本次 P4 就清掉了 3 处。
+- **反证过**（照仓库既有习惯）：把 `js_term_resize` 临时改回 `#[cfg(unix)]`（正是 `9d7eee12d` 那类
+  让 Windows 编不过两周的 bug 形状）⇒ 门禁立刻 `E0425 could not find value js_term_resize` 变红；
+  还原 ⇒ 绿。
+- **未做（P7b）**：整仓（含 `helix-term`）的 Windows 交叉 check，需要先解决 tree-sitter 的 C 依赖；
+  做了才有资格说「整个 workspace 在 Windows 上编得过」。

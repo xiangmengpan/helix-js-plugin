@@ -102,6 +102,19 @@ jobs:
       - name: Run cargo clippy (release cfg)
         run: cargo clippy --release --workspace -- -D warnings
 
+      # Windows 编译面:**不靠 Windows runner** 也能拦住「Windows 专有编译错」。
+      # 由来(真实事故):`pty` 的 `#[cfg(unix)]` 被一次插入挤到了 `mod permissions;` 上
+      #   (`9d7eee12d`,10-16) ⇒ Windows 从那天起编不过,而**两周无人察觉**;
+      #   2026-10-30 手工跑一次才发现是 **236 个 error**。
+      # 为什么只守 helix-js + helix-stdx:整仓会被 tree-sitter 的 C 依赖拦住(需"假 C 编译器"
+      #   手法,另议);而这两个 crate 是 fork 新增的平台敏感面(pty/poll/子进程/家目录)。
+      # 成本:clippy/check 不链接 ⇒ 不需要 Windows linker,ubuntu 上直接跑(增量 ~7s,冷 ~40s)。
+      # 口径与本地同一行命令:`cargo clippy -p helix-js -p helix-stdx --all-targets --target x86_64-pc-windows-msvc -- -D warnings`
+      - name: Check Windows compile surface (helix-js · helix-stdx)
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo clippy -p helix-js -p helix-stdx --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
       - name: Run cargo doc
         run: cargo doc --no-deps --workspace --document-private-items
         env:
