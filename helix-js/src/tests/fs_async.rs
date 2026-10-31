@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// 把路径变成**能安全嵌进 JS 源码**的字符串。
+///
+/// Windows 路径带反斜杠，直接塞进 `"…"` 里会变成转义序列（`C:\Users` → `\U` ⇒
+/// `SyntaxError: invalid Hexadecimal escape sequence`，实测就是这么红的）。统一成正斜杠：
+/// helix 在 Windows 上同样接受 `/`，而且这也更接近用户写配置的习惯。
+fn js_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// 同步 `helix.read_file`:① 正常读到内容 ② 缺文件时**抛错且文案含路径**
 /// (与 `read_dir` 同款约定)
 #[test]
@@ -15,7 +24,7 @@ fn read_file_sync_roundtrip_and_error() {
     let _ = take_messages();
     load_script(&format!(
         r#"helix.echo(helix.read_file("{}"));"#,
-        f.display()
+        js_path(&f)
     ))
     .unwrap();
     assert!(
@@ -26,7 +35,7 @@ fn read_file_sync_roundtrip_and_error() {
     let _ = take_messages();
     load_script(&format!(
         r#"try {{ helix.read_file("{}/nope.txt"); }} catch (e) {{ helix.echo(String(e).includes("nope.txt") ? "caught" : "no-path-in-msg"); }}"#,
-        dir.path().display()
+        js_path(dir.path())
     ))
     .unwrap();
     assert!(
@@ -106,6 +115,9 @@ fn fs_read_covers_stat_glob_tree_and_watch() {
     }
 }
 
+// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
+// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
+#[cfg(unix)]
 #[test]
 fn shell_run() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -216,6 +228,9 @@ fn argv_run() {
 /// `run_async` 的 **argv 形态**：与 `run` 同一套校验与语义（参数不经 shell）。
 ///
 /// 判别式同 `argv_run`：两个空格必须保留 —— 走 `sh -c` 会塌成一个。
+// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
+// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
+#[cfg(unix)]
 #[test]
 fn argv_run_async() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -255,6 +270,9 @@ fn argv_run_async() {
     }
 }
 
+// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
+// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
+#[cfg(unix)]
 #[test]
 fn async_run_and_spawn() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -398,6 +416,9 @@ fn async_run_and_spawn() {
     assert!(crate::host::with_state_or_init(|st| run_command(st, "badid", &ctx)).is_err());
 }
 
+// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
+// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
+#[cfg(unix)]
 #[test]
 fn async_utf8_across_chunks() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -595,6 +595,9 @@ fn min_editor_warns_and_loads() {
 
 /// C-2:能力检查覆盖**同族 API** —— 声明了 `process` 就能 `run_async`/`spawn`;
 /// 声明了 `fs_read` 就能 `read_dir`;没声明的仍走"问一次"。
+// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
+// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
+#[cfg(unix)]
 #[test]
 fn capability_covers_sibling_apis() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

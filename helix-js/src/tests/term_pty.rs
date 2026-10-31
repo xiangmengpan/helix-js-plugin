@@ -5,6 +5,8 @@ use super::*;
 /// v13 任务简报验证测试：read_dir 排序/is_dir、open_file、move_panel 入队 + 校验。
 /// 简报原文断言 count:2，但设置创建 3 个条目（a.txt、b.js、sub/）→ 按实际调整为 count:3；
 /// 排序断言 entries[0].name < entries[1].name 不受影响（a.txt < b.js）。
+// Windows:pty 未实现(`is_supported()` 为 false,见 `pty/windows.rs`)⇒ 跳过。
+#[cfg(unix)]
 #[test]
 fn term_wake_fires_on_event() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -43,6 +45,8 @@ fn term_wake_fires_on_event() {
     );
 }
 
+// Windows:pty 未实现(`is_supported()` 为 false,见 `pty/windows.rs`)⇒ 跳过。
+#[cfg(unix)]
 #[test]
 fn open_terminal_api() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -79,6 +83,8 @@ fn open_terminal_api() {
 
 /// 交互 bash 启动不应报 "cannot set terminal process group"（缺 setsid/控制终端）。
 /// 修复前：bash job control 初始化失败向 stderr 打印该错误。
+// Windows:pty 未实现(`is_supported()` 为 false,见 `pty/windows.rs`)⇒ 跳过。
+#[cfg(unix)]
 #[test]
 fn pty_bash_interactive_no_error() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -146,6 +152,8 @@ fn pty_bash_interactive_no_error() {
     );
 }
 
+// Windows:pty 未实现(`is_supported()` 为 false,见 `pty/windows.rs`)⇒ 跳过。
+#[cfg(unix)]
 #[test]
 fn open_terminal_after_kill_repro() {
     // 关闭（term_kill，模拟 Esc/q 关闭终端）后再 open_terminal：应能正常打开。
@@ -256,6 +264,8 @@ fn sidecar_apis() {
     assert!(crate::host::with_state_or_init(|st| run_command(st, "bad3", &ctx)).is_err());
 }
 
+// Windows:pty 未实现(`is_supported()` 为 false,见 `pty/windows.rs`)⇒ 跳过。
+#[cfg(unix)]
 #[test]
 fn terminal_modes_api() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -514,8 +524,13 @@ fn term_state_persist_roundtrip() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init();
     let dir = tempfile::tempdir().unwrap();
-    let old_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", dir.path());
+    // 家目录变量按平台选：`helix_stdx::path::home_dir()` 在 Unix 读 `HOME`、Windows 读 `USERPROFILE`
+    #[cfg(windows)]
+    const HOME_VAR: &str = "USERPROFILE";
+    #[cfg(not(windows))]
+    const HOME_VAR: &str = "HOME";
+    let old_home = std::env::var(HOME_VAR).ok();
+    std::env::set_var(HOME_VAR, dir.path());
     load_script(
         r#"
         globalThis.__st = helix.term_state(42, "cwd");   // 不存在 → undefined
@@ -541,7 +556,7 @@ fn term_state_persist_roundtrip() {
         );
     });
     if let Some(old) = old_home {
-        std::env::set_var("HOME", old);
+        std::env::set_var(HOME_VAR, old);
     }
     drop(dir);
 }

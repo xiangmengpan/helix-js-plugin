@@ -639,3 +639,53 @@ DBG after statusline 插件:  normal={"fg":"#dbbfef","bg":"#281733"}
 - `plugin_` 过滤集连跑 **3 次**：188 passed / 0 failed（修前同一命令时过时挂）；
 - 全量 `cargo integration-test`：**428 passed / 0 failed / 0 ignored**（0 ignore 是第一次达到）；
 - `cargo test -p helix-js`：253 passed（`get_style`/`theme_info` 的既有用例覆盖了这次搬迁）。
+
+### **Windows 运行期验证真的做成了**（WSL2 interop + 免 root 的 mingw）
+
+之前一直说"必须有 Windows 实机"—— **这句话错了**。本机是 **WSL2**，Windows 可执行文件能通过
+interop 直接跑；缺的只是一个能**链接**出 PE 的编译器。免 root 解决：
+
+```bash
+# 1) 免 root 装 mingw（~/.local/mingw，不需要 sudo）
+mkdir -p /tmp/mingw-pkgs && cd /tmp/mingw-pkgs
+for p in binutils-mingw-w64-x86-64 gcc-mingw-w64-base gcc-mingw-w64-x86-64 \
+         gcc-mingw-w64-x86-64-posix mingw-w64-common mingw-w64-x86-64-dev; do
+  apt-get download "$p"
+done
+for d in *.deb; do dpkg-deb -x "$d" "$HOME/.local/mingw"; done
+
+# 2) 构建 + 直接运行（interop）
+export PATH="$HOME/.local/mingw/usr/bin:$PATH"
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc-posix
+export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc-posix
+export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
+export HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1
+cargo build --target x86_64-pc-windows-gnu -p helix-term        # 2m37s
+./target/x86_64-pc-windows-gnu/debug/hx.exe --version            # → helix 25.07.1 (e2d57555)
+cargo test  --target x86_64-pc-windows-gnu -p helix-js --lib     # 真跑 Windows 二进制
+```
+
+**首次真实数据**：`helix-js` 单测在 Windows 上 **228 passed / 20 failed / 7 ignored**。
+逐类处理后的现状 **229 passed / 9 failed / 7 ignored**：
+
+| 已修（12 条） | 修法 |
+|---|---|
+| `fs_async::{shell_run, argv_run_async, async_run_and_spawn, async_utf8_across_chunks}` | 走 `spawn_worker`（poll+O_NONBLOCK），Windows 无此实现 ⇒ `#[cfg(unix)]` |
+| `term_pty::{open_terminal_api, pty_bash_interactive_no_error, open_terminal_after_kill_repro, term_wake_fires_on_event, terminal_modes_api}` | pty 未实现 ⇒ `#[cfg(unix)]` |
+| `plugin::capability_covers_sibling_apis` | 测的是 `helix.spawn` 的能力门控 ⇒ `#[cfg(unix)]` |
+| `fs_async::read_file_sync_roundtrip_and_error` | **真 bug**：Windows 路径的反斜杠被当 JS 转义（`\U` ⇒ SyntaxError）。新增 `js_path()` 统一成正斜杠 |
+| `term_pty::term_state_persist_roundtrip` | 家目录变量按平台选（Unix `HOME` / Windows `USERPROFILE`），不再只设 `HOME` |
+
+**剩余 9 条（都是夹具的 POSIX 假设，不是产品 bug）**：
+
+| 用例 | 症状 |
+|---|---|
+| `state::dir_override_tests::prefer_falls_back_without_root` | 期望 `/tmp/abs.js`，Windows 得到 `C:/tmp/abs.js`（drive-relative 语义） |
+| `state::write_plugin_file_tests::scoped_write_rejects_escapes…` | `/abs/x.js` 在 Windows 是**绝对**路径，越界判定因此不触发 |
+| `doc_edit::{by_path_reads_other_buffer, by_path_edits_target_other_buffer}` | JS 侧 `Error: null`（`_target` 路径匹配用 `/` 拼/比） |
+| `fs_async::async_fs` / `glob_bare_pattern` | glob 语义：`literal_separator` 与 `\` 分隔符（裸 `*` 不跨分隔符的断言） |
+| `plugin::{circular_runtime_load_errors_not_crash, reload_after_init_midway…}` | 夹具报 `helix.load: plugins dir not set`（插件根路径拼接） |
+| `popup_panel::decorations_queue_and_take` | 断言值不等（待逐字看） |
+
+下一步：这 9 条逐条把"路径拼接/比较"改成平台中立（用 `PathBuf::join`、`js_path`、或断言用
+`Path::new(...).components()` 比较），而不是 gate 掉 —— 它们测的行为在 Windows 上也该成立。
