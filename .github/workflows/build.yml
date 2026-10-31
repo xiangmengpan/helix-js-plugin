@@ -128,7 +128,10 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-gnu
           chmod +x contrib/ci/fake-cc.sh contrib/ci/fake-ar.sh
-          cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+          # `--features integration`:把**集成测试目标**也编进 Windows 检查。
+          # 不加时那些文件整个被 cfg 掉 ⇒ 曾经的 8 个 Windows 编译错(测试里的
+          # `std::os::unix::fs::PermissionsExt`、无条件 `termina::event` 导入)一直是隐形的。
+          cargo clippy --workspace --all-targets --features integration --target x86_64-pc-windows-gnu -- -D warnings
 
       - name: Run cargo doc
         run: cargo doc --no-deps --workspace --document-private-items

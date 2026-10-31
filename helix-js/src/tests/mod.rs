@@ -18,6 +18,8 @@ use std::sync::Mutex;
 // 放大机制就是这条 —— 根因往往只有一个超时。
 pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+// 只在 unix 用例里用到（pty/流式路径在 Windows 未实现）
+#[cfg_attr(not(unix), allow(dead_code))]
 /// 轮询 drain_term_events 直到谓词命中或超时（async 测试需要）。
 /// 累积自调用以来的全部事件返回：进程事件是 Chunk(s)→Exit 的顺序流，
 /// 命中谓词的那次 drain 之前可能已有事件被取走，须一并保留按序 resolve。
@@ -34,6 +36,8 @@ fn describe_term_event(e: &TermEvent) -> String {
     }
 }
 
+// 只在 unix 用例里用到（pty/流式路径在 Windows 未实现）
+#[cfg_attr(not(unix), allow(dead_code))]
 fn wait_for_term_event(pred: impl Fn(&TermEvent) -> bool) -> Vec<TermEvent> {
     // 超时上界是 60s 而不是 5s:CI 用**并行** `cargo test --workspace`,而本 crate 里
     // **三个**测试模块会各自 spawn 进程(picker/pty/lib)⇒ 慢机上"spawn 进程 + 收
@@ -64,6 +68,8 @@ fn wait_for_term_event(pred: impl Fn(&TermEvent) -> bool) -> Vec<TermEvent> {
     }
 }
 
+// 只在 unix 用例里用到（pty/流式路径在 Windows 未实现）
+#[cfg_attr(not(unix), allow(dead_code))]
 /// 轮询 drain_async_events 直到谓词命中或超时，事件累积进调用方传入的 vec
 /// （跨调用共享累积：异步 fs 四个操作并发发送，后几次 wait 必须能看到先前已 drain 的事件）。
 fn wait_for_async(all: &mut Vec<AsyncEvent>, pred: impl Fn(&AsyncEvent) -> bool) {

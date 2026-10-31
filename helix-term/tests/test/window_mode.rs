@@ -5,7 +5,10 @@ use helix_term::ui::plugin_panel::PanelSide;
 use helix_term::ui::PluginPanel;
 use helix_view::current_ref;
 
+// Windows 上这些用例的 `Event`/`KeyEvent` 用法已随 pty/流式路径 gate 掉 ⇒
+// 导入留着但允许未使用（否则整仓 Windows gate 会因 warning 变红）。
 #[cfg(windows)]
+#[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
 
 #[tokio::test(flavor = "multi_thread")]

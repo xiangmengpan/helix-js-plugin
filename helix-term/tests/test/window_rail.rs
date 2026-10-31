@@ -3,7 +3,10 @@ use super::*;
 use helix_term::application::Application;
 use helix_term::job::Jobs;
 
+// Windows 上这些用例的 `Event`/`KeyEvent` 用法已随 pty/流式路径 gate 掉 ⇒
+// 导入留着但允许未使用（否则整仓 Windows gate 会因 warning 变红）。
 #[cfg(windows)]
+#[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
 
 // open_panel(left) 插件脚本(模拟 filetree):注册 rail

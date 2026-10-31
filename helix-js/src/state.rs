@@ -1288,6 +1288,8 @@ mod entry_key_tests {
 
 #[cfg(test)]
 mod dir_override_tests {
+    // Windows 上本模块的用例都 gate 成 unix ⇒ 这里允许未使用
+    #[cfg_attr(not(unix), allow(unused_imports))]
     use super::*;
 
     /// §4-2 要治的病:**用户的 plugin.js 不能配内置的同名 sibling**
@@ -1444,6 +1446,8 @@ mod remove_plugin_file_tests {
 
 #[cfg(test)]
 mod write_plugin_file_tests {
+    // Windows 上本模块的用例都 gate 成 unix ⇒ 这里允许未使用
+    #[cfg_attr(not(unix), allow(unused_imports))]
     use super::*;
 
     /// 限域写入的三条硬要求:**只相对路径** · **拒 `..`** · **只落用户层(最后一个根)**

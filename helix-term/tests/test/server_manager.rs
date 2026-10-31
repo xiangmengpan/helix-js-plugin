@@ -181,6 +181,8 @@ async fn server_local_short_circuit_and_unmanage() -> anyhow::Result<()> {
     std::fs::create_dir_all(&bins)?;
     let ra = bins.join("rust-analyzer");
     std::fs::write(&ra, "#!/bin/sh\necho rust-analyzer 9.9\n")?;
+    // 可执行位只有 unix 有；Windows 靠扩展名判断，测试里这份假 bin 也不会被执行
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&ra, std::fs::Permissions::from_mode(0o755))?;
@@ -409,7 +411,9 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
 
 use helix_term::application::Application;
 
+// Windows 上这些辅助的 `Event`/`KeyEvent` 用法已随 pty 路径 gate 掉 ⇒ 允许未使用
 #[cfg(windows)]
+#[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
 
 // ────────────────────────── arsenal M4 冒烟本地辅助（渲染到 buffer 读浮层文本） ──────────────────────────
@@ -574,6 +578,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     assert!(!app.editor.is_err(), "后台安装不应报错");
 
     // 6. 改 bin 检测版本 → 重开市场 → ▲ 可升级标记(upgradable 字段驱动)
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         let bin = dir.path().join("managed").join("bin").join("demo-bin");

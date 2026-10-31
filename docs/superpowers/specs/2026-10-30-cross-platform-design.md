@@ -689,3 +689,29 @@ cargo test  --target x86_64-pc-windows-gnu -p helix-js --lib     # 真跑 Window
 
 下一步：这 9 条逐条把"路径拼接/比较"改成平台中立（用 `PathBuf::join`、`js_path`、或断言用
 `Path::new(...).components()` 比较），而不是 gate 掉 —— 它们测的行为在 Windows 上也该成立。
+
+### Windows **集成测试**第一次真正跑起来（341 passed / 83 failed，含一条重要前提）
+
+把集成测试目标编到 Windows，暴露出**8 个只有 Windows 才有的编译错**（Linux 上永远看不到）：
+
+| 位置 | 症状 |
+|---|---|
+| `helix-term/tests/integration.rs` | `mod plugin_terminal_view` 无条件编译，而它用 `termina::event`（pty 后端）⇒ Windows 上 import 不到 |
+| `helix-term/tests/test/server_manager.rs` ×2 | `std::os::unix::fs::PermissionsExt` / `from_mode`（给假 `#!/bin/sh` 夹具加可执行位） |
+
+修法：`plugin_terminal_view` 整模块 `#[cfg(unix)]`（它测的就是 pty）；两处 chmod 包进 `#[cfg(unix)]`
+（Windows 不看可执行位）。**同时把 CI 的 Windows 整仓门禁加上 `--features integration`** ——
+不加时这些文件整块被 cfg 掉，正是它们隐形的原因。
+
+跑起来之后（428 条）：**341 passed / 83 failed / 4 超时未跑完**。
+
+⚠ **这 83 条不能直接当成"Windows 坏了"**：本次构建用了 `HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1`
+（为了跳过几十个 tree-sitter 语法的 C 编译），于是所有 tree-sitter 相关用例（`movement::*`、
+`match_bracket`、`surround_replace_ts`…）都因为**没有语法**而失败 —— 那是构建配置的产物。
+剩余失败集中在四类：symlink 写入、`#!/bin/sh` 脚本夹具、pty / 流式 spawn（Windows 未实现）、
+以及依赖前三者的 filetree / decorations / fsasync / cross_buffer 等。
+
+下一步（按代价排）：
+1. **带语法**重建（mingw 编 ~200 个 grammar，估计 10+ 分钟），拿到不含该噪声的数字；
+2. 把 4 条超时的用例单独跑，定位是"等 promise 永远不 resolve"还是死循环；
+3. 把 `#!/bin/sh` 类夹具改成平台中立（`cmd /C` 或直接造受管目录），这是最大的一类。

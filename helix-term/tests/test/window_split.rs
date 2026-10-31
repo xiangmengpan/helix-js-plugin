@@ -4,7 +4,10 @@ use helix_term::application::Application;
 use helix_term::job::Jobs;
 use helix_view::current_ref;
 
+// Windows 上这些用例的 `Event`/`KeyEvent` 用法已随 pty/流式路径 gate 掉 ⇒
+// 导入留着但允许未使用（否则整仓 Windows gate 会因 warning 变红）。
 #[cfg(windows)]
+#[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
 
 // P2: :vsplit/:hsplit 改道——无参分裂产生 LayoutTree 叶子(同 doc 双视图),

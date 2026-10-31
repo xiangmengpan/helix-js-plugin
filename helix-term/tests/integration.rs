@@ -58,6 +58,9 @@ mod test {
     mod plugin_statusline;
     mod plugin_terminal_hooks;
     mod plugin_terminal_modes;
+    // 原生终端视图走 pty（`is_supported()` 在 Windows 为 false）⇒ 整模块 unix-only；
+    // ConPTY 落地后去掉这行 gate。
+    #[cfg(unix)]
     mod plugin_terminal_view;
     mod plugin_theme;
     mod plugin_unload;

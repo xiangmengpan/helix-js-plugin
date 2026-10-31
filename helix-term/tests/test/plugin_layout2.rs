@@ -2,7 +2,10 @@ use super::*;
 
 use helix_term::job::Jobs;
 
+// Windows 上这些用例的 `Event`/`KeyEvent` 用法已随 pty/流式路径 gate 掉 ⇒
+// 导入留着但允许未使用（否则整仓 Windows gate 会因 warning 变红）。
 #[cfg(windows)]
+#[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
 
 /// 布局树里 split 出的面板：事件循环渲染后再向新 buffer 渲染应完整重画。

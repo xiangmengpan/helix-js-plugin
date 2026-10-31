@@ -9,7 +9,10 @@ use helix_term::ui::layout::SplitDir;
 use helix_term::ui::plugin_panel::PanelSide;
 use helix_term::ui::PluginPanel;
 
+// Windows 上这些用例的 `Event`/`KeyEvent` 用法已随 pty/流式路径 gate 掉 ⇒
+// 导入留着但允许未使用（否则整仓 Windows gate 会因 warning 变红）。
 #[cfg(windows)]
+#[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
 
 /// Pane 模式:`w`/`e` 切换浮动态(阶段② 接通),`i` 对浮窗 pin
