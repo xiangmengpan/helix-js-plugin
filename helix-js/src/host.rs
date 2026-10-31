@@ -96,6 +96,13 @@ pub struct HostState {
     /// 主题覆盖的属主(scope → 插件名)。`:plugin-unload` 按它回收该插件的覆盖。
     pub(crate) theme_owners: RefCell<HashMap<String, String>>,
 
+    /// scope → 当前样式查询回调。**按宿主**：原先是进程级 `OnceLock`，多 app 并行时
+    /// A 的插件会读到 B 的主题（于是 `helix.get_style` 在集成测试里时对时错）。
+    pub(crate) style_source: RefCell<Option<Box<crate::theme::StyleQuery>>>,
+
+    /// 当前主题名 + 可用主题列表。**按宿主**（同上）。
+    pub(crate) theme_info_source: RefCell<Option<Box<crate::theme::ThemeInfoQuery>>>,
+
     /// 键位绑定的属主((mode, key) → 插件名)。卸载时对每条入队 `MapKey{unbind}`。
     pub(crate) keymap_owners: RefCell<HashMap<(String, String), String>>,
 
@@ -311,6 +318,8 @@ impl JsHost {
             config_overrides: RefCell::new(String::new()),
             configs: RefCell::new(String::new()),
             theme_owners: RefCell::new(HashMap::new()),
+            style_source: RefCell::new(None),
+            theme_info_source: RefCell::new(None),
             keymap_owners: RefCell::new(HashMap::new()),
             unload_hooks: RefCell::new(HashMap::new()),
             fuzzy_sessions: RefCell::new(HashMap::new()),

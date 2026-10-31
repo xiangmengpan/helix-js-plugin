@@ -3,7 +3,6 @@
 //! set_theme_name → 切换基准主题（UI 请求）。
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use boa_engine::{Context, JsString, JsValue};
 
@@ -26,21 +25,25 @@ pub struct StyleInfo {
     pub modifiers: Vec<String>,
 }
 
-type StyleQuery = dyn Fn(&str) -> Option<StyleInfo> + Send + Sync;
-type ThemeQuery = dyn Fn() -> (String, Vec<String>) + Send + Sync;
-
 /// scope → 当前样式查询回调（helix-term 注册；返回 None 表示 scope 未知）
-static STYLE_SOURCE: OnceLock<std::sync::Arc<StyleQuery>> = OnceLock::new();
+pub type StyleQuery = dyn Fn(&str) -> Option<StyleInfo>;
 
 /// 当前主题名 + 可用主题列表回调（helix-term 注册）
-static THEME_SOURCE: OnceLock<std::sync::Arc<ThemeQuery>> = OnceLock::new();
+pub type ThemeInfoQuery = dyn Fn() -> (String, Vec<String>);
 
+/// 注册「scope → 当前样式」回调 —— **装进当前宿主**（每 app 一份）。
+///
+/// 为什么不再是 `OnceLock` 静态：集成测试**并行**跑多个 app，而这条回调读的是"当前主题"。
+/// 静态 + `OnceLock` 的语义="只注册一次"⇒ 在多 app 下等价于"注册到第一个 app 上"，
+/// 于是 A 的插件 `get_style` 会读到 B 的主题（实测：`plugin_statusline::powerline_caps_*`
+/// 同一份二进制时过时挂）。与 `config_schemas` / `theme_owners` 等字段同一条修法：搬进宿主。
 pub fn set_theme_style_cb(f: Box<StyleQuery>) {
-    let _ = STYLE_SOURCE.set(std::sync::Arc::from(f));
+    crate::host::with_state_or_init(|st| *st.style_source.borrow_mut() = Some(f));
 }
 
-pub fn set_theme_info_cb(f: Box<ThemeQuery>) {
-    let _ = THEME_SOURCE.set(std::sync::Arc::from(f));
+/// 注册「当前主题名 + 可用主题列表」回调 —— 同样**按宿主**（理由同上）。
+pub fn set_theme_info_cb(f: Box<ThemeInfoQuery>) {
+    crate::host::with_state_or_init(|st| *st.theme_info_source.borrow_mut() = Some(f));
 }
 
 /// 解析覆盖值：字符串 = fg；对象 = { fg?, bg?, modifiers?: [...] }（未知字段忽略）
@@ -201,11 +204,17 @@ pub(crate) fn js_get_style(
         return Err(crate::js_err("helix.get_style: expected a scope string"));
     };
     let scope = scope.to_std_string_escaped();
-    let Some(src) = STYLE_SOURCE.get() else {
-        return Ok(JsValue::null());
-    };
-    let Some(info) = src(&scope) else {
-        return Ok(JsValue::null());
+    // 借用只在这个块里：后面要用 `ctx`（可变）建 JS 对象
+    let info = {
+        let st = crate::host::host_state(ctx);
+        let source = st.style_source.borrow();
+        let Some(src) = source.as_ref() else {
+            return Ok(JsValue::null());
+        };
+        let Some(info) = src(&scope) else {
+            return Ok(JsValue::null());
+        };
+        info
     };
     let fg = match &info.fg {
         Some(c) => JsValue::from(JsString::from(c.clone())),
@@ -247,9 +256,14 @@ pub(crate) fn js_theme_info(
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let (name, themes) = match THEME_SOURCE.get() {
-        Some(src) => src(),
-        None => (String::new(), Vec::new()),
+    // 同上：借用只在块内，避免与后面 `ctx` 的可变借用冲突
+    let (name, themes) = {
+        let st = crate::host::host_state(ctx);
+        let source = st.theme_info_source.borrow();
+        match source.as_ref() {
+            Some(src) => src(),
+            None => (String::new(), Vec::new()),
+        }
     };
     let arr = boa_engine::object::builtins::JsArray::new(ctx)?;
     for t in &themes {

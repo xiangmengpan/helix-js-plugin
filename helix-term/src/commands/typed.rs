@@ -51,25 +51,26 @@ pub(crate) fn sync_theme_snapshot(editor: &Editor) {
     if AVAILABLE_THEMES.lock().expect("themes lock").is_empty() {
         *AVAILABLE_THEMES.lock().expect("themes lock") = editor.theme_loader.names();
     }
-    helix_js::set_theme_style_cb(Box::new(|scope| {
-        let theme = CURRENT_THEME.lock().expect("theme snapshot lock").clone()?;
-        let st = theme.get(scope);
-        Some(helix_js::StyleInfo {
-            fg: st.fg.and_then(color_to_hex),
-            bg: st.bg.and_then(color_to_hex),
-            modifiers: style_modifiers(&st),
-        })
-    }));
-    helix_js::set_theme_info_cb(Box::new(|| {
-        let name = CURRENT_THEME
-            .lock()
-            .expect("theme snapshot lock")
-            .as_ref()
-            .map(|t| t.name().to_string())
-            .unwrap_or_default();
+    // 回调**捕获这个 app 的主题**（`Rc<Theme>`），不读进程级 `CURRENT_THEME`：
+    // 集成测试并行跑多个 app 时，读全局等于读到别人的主题（`get_style` 时对时错）。
+    // 回调现在装在**当前宿主**里（`helix_js::set_theme_style_cb`），每 app 一份。
+    let theme = std::rc::Rc::new(editor.theme.clone());
+    {
+        let theme = theme.clone();
+        helix_js::set_theme_style_cb(Box::new(move |scope| {
+            let st = theme.get(scope);
+            Some(helix_js::StyleInfo {
+                fg: st.fg.and_then(color_to_hex),
+                bg: st.bg.and_then(color_to_hex),
+                modifiers: style_modifiers(&st),
+            })
+        }));
+    }
+    {
+        let name = theme.name().to_string();
         let themes = AVAILABLE_THEMES.lock().expect("themes lock").clone();
-        (name, themes)
-    }));
+        helix_js::set_theme_info_cb(Box::new(move || (name.clone(), themes.clone())));
+    }
 }
 
 /// Color → hex 字符串（named/Reset → None）

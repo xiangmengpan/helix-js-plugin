@@ -617,3 +617,25 @@ DBG after statusline 插件:  normal={"fg":"#dbbfef","bg":"#281733"}
 
 插件侧的两个改动仍保留（都已验证）：① 断掉 cap 派生 scope 的自激环（单跑 ∞ → 4.2s）；
 ② node 测试的 `get_style` 桩对齐引擎语义（否则"按主题实际值判断"这条逻辑根本走不到）。
+
+### 完成：`STYLE_SOURCE`/`THEME_SOURCE` 搬进 `HostState`（"隐式宿主"最后一块）
+
+上一条定位到根因后，这一条把它修掉了。改动很小，但性质是**架构修正**而非补丁：
+
+| 之前 | 现在 |
+|---|---|
+| `static STYLE_SOURCE: OnceLock<Arc<dyn Fn(&str) -> Option<StyleInfo> + Send + Sync>>` | `HostState.style_source: RefCell<Option<Box<dyn Fn(&str) -> Option<StyleInfo>>>>` |
+| `static THEME_SOURCE: OnceLock<...>` | `HostState.theme_info_source: RefCell<Option<Box<dyn Fn() -> (String, Vec<String>)>>>` |
+| 回调读进程级 `CURRENT_THEME` | 回调**捕获本 app 的 `Rc<Theme>`**（`sync_theme_snapshot` 里建） |
+
+为什么这解决了问题：`OnceLock` 的"只注册一次"在多 app 并行下等价于"注册到第一个 app 上"；
+而 `CURRENT_THEME` 本身也是进程级的 ⇒ 后建的 app 会把快照覆盖掉，先建的 app 的插件就读到别人的主题。
+改成按宿主后，每个 app 的 `get_style` 只可能读到自己的主题。
+
+`CURRENT_THEME` 静态保留：它服务的是 helix-term 自己的渲染钩子（补全行等），不在 JS 侧；
+那部分同属"每 app 一份"的范畴，但要一次单独的收口，不在本次范围内。
+
+**验证**（这是重点，因为原 bug 是"时过时挂"）：
+- `plugin_` 过滤集连跑 **3 次**：188 passed / 0 failed（修前同一命令时过时挂）；
+- 全量 `cargo integration-test`：**428 passed / 0 failed / 0 ignored**（0 ignore 是第一次达到）；
+- `cargo test -p helix-js`：253 passed（`get_style`/`theme_info` 的既有用例覆盖了这次搬迁）。
