@@ -730,3 +730,26 @@ cargo test  --target x86_64-pc-windows-gnu -p helix-js --lib     # 真跑 Window
 ⇒ 补丁**已还原**（未验证的代码不留）。这条继续往下挖需要单独一轮：
 先看 `build_grammar` 里编译器是怎么起的，再把 target 的 CC/AR 与 `-fPIC`/`--target` 旗标补齐。
 在此之前，Windows 集成测试的数字必须**带着这个噪声读**（0 语法 ⇒ tree-sitter 用例必红）。
+
+### **Windows 上 `run_async` / `spawn` 真跑通了**（流式读的平台实现）
+
+之前这两个 API 在 Windows 上是"明确报错"。现在有了真实现，而且是**在 Windows 二进制上验过的**：
+
+| 之前 | 现在 |
+|---|---|
+| `spawn_worker` 整体 `#[cfg(unix)]`（poll + O_NONBLOCK） | **两份实现**：unix 保持单线程 poll；**非 unix 每条流一个阻塞读线程** |
+| `js_run_async` / `js_spawn` 在非 unix 返回 Err | 两个平台都实现；`spawn` 只把 **pty 分支**留 unix（`is_supported()` 先拦） |
+| `read_stream` / `EmitState` 只在 unix 编 | 纯 std，跨平台（这正是能复用的部分，避免两套 UTF-8 尾部逻辑漂移） |
+
+为什么必须两份而不是一个 cfg 分支：Windows 的**匿名管道无法设为非阻塞**（`O_NONBLOCK` 是 termios
+概念），单线程 poll 在那边不成立；而 unix 侧当年正是为了把「1 主 + 2 读」压成 1 线程才改成 poll 的
+（并行测试线程饥饿，`spawn_worker` 注释里有原委）。
+
+**验证（Windows 二进制上真跑）**：
+- `helix-js` 单测 **233 passed / 0 failed**（Windows）/ 253（Linux）；
+- `argv_run_async` 现在**两个平台都跑**：它断言 `run_async(["echo","a  b"])` 的**两个空格保留**
+  —— 这条在 Windows 上跑过，等于证明"流式读 + argv 不经 shell"在 Windows 成立；
+- `async_run_and_spawn` 仍留 unix：它的夹具用**sh 语法**（`echo boom >&2; exit 3`）与 `cat`，
+  `cmd /C` 下语义不同 —— 已写明"流式验证由 `argv_run_async` 覆盖"。
+- 顺带发现并记录：Windows 上 `cmd /C` 在 **UNC 工作目录**（WSL 里跑 Windows 二进制时 cwd 是
+  `\\wsl.localhost\…`）会先打一段"不支持 UNC 路径"的提示 ⇒ 断言改成"包含关键内容"而不是整串相等。

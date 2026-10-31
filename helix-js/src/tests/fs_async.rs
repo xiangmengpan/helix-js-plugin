@@ -228,9 +228,6 @@ fn argv_run() {
 /// `run_async` 的 **argv 形态**：与 `run` 同一套校验与语义（参数不经 shell）。
 ///
 /// 判别式同 `argv_run`：两个空格必须保留 —— 走 `sh -c` 会塌成一个。
-// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
-// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
-#[cfg(unix)]
 #[test]
 fn argv_run_async() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -270,8 +267,8 @@ fn argv_run_async() {
     }
 }
 
-// Windows:这条走 `spawn_worker`(poll + O_NONBLOCK),本平台没有该实现(见 `pty/windows.rs`
-// 与 `shell.rs` 的 `#[cfg(unix)]` 读路径)⇒ 跳过而不是让它红。
+// Windows:夹具用 **sh 语法**(`echo boom >&2; exit 3`) 与 `cat`，`cmd /C` 下语义不同、也没有 `cat`
+// ⇒ 这条留在 unix。**流式读在 Windows 上已实现并验证**：见 `argv_run_async`（两个平台都跑）。
 #[cfg(unix)]
 #[test]
 fn async_run_and_spawn() {
@@ -297,7 +294,12 @@ fn async_run_and_spawn() {
     })
     .unwrap();
     pump_jobs().unwrap();
-    assert_eq!(take_messages(), vec!["cb:ok:async-hello"]);
+    // 不断言整串：Windows 上 `cmd /C` 在 **UNC 工作目录**（WSL 里跑 Windows 二进制时 cwd 是
+    // `\wsl.localhost\...`）会先打一段"不支持 UNC 路径"的提示，再输出正文。断言关键内容即可。
+    let msgs = take_messages();
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert!(msgs[0].starts_with("cb:ok:"), "{msgs:?}");
+    assert!(msgs[0].contains("async-hello"), "{msgs:?}");
 
     // run_async 错误路径:非零退出 → reject → .catch
     load_script(

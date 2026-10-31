@@ -10,13 +10,11 @@ use crate::commands::emit_term_exit;
 use crate::pty;
 
 use crate::state::with_async_promises;
-// `with_terms`/`WakeSender` 只被 unix 的流式 worker（`spawn_worker`）用到；非 unix 没有任何
-// 调用点 ⇒ 分开 import，避免 Windows 上 unused warning。
-#[cfg(unix)]
-use crate::state::{with_terms, WakeSender};
+// `WakeSender` 两个平台都用（非 unix 的 worker 也要发事件）。
+// `with_terms` 现在全部走全路径 `crate::state::with_terms(...)`（js_spawn 也跨平台了）⇒ 不再 import。
+use crate::state::WakeSender;
 
-/// worker 读块大小（只有 unix 的 Pipe / read_stream 用它）
-#[cfg(unix)]
+/// worker 读块大小（`Pipe`(unix poll) 与非 unix 的 `read_stream` 线程都用）
 const TERM_CHUNK_SIZE: usize = 4096;
 
 use crate::types::*;
@@ -24,14 +22,12 @@ use crate::types::*;
 /// 一路管道（stdout 或 stderr）的 UTF-8 尾部状态。
 ///
 /// 为什么按流各存一份:两条流是**独立字节流**,把它们的半截 UTF-8 拼在一起会造出假字符。
-#[cfg(unix)]
 #[derive(Default)]
 struct EmitState {
     /// 跨块的不完整 UTF-8 尾部（最长序列 3 字节）
     tail: Vec<u8>,
 }
 
-#[cfg(unix)]
 impl EmitState {
     /// 把刚读到的一块字节交给事件层（聚合模式只拼缓冲，不发事件）
     fn push(
@@ -88,7 +84,8 @@ impl EmitState {
 
 /// 阻塞读干一条流（PTY worker 用:master 是单 fd,不需要 poll）。
 /// 与 [`EmitState`] 共用同一套 UTF-8 尾部语义，避免两份实现漂移。
-#[cfg(unix)]
+///
+/// 跨平台：非 unix 的 `spawn_worker` 也用它（每条流一个线程，见那里的说明）。
 fn read_stream<R: std::io::Read>(
     mut stream: R,
     id: u64,
@@ -303,6 +300,108 @@ fn spawn_worker(
     });
 }
 
+/// 非 unix 的 worker：**每条流一个阻塞读线程**。
+///
+/// 为什么与 unix 分开：unix 那边为了把「1 主 + 2 读」压成 1 个线程才用 `poll` + `O_NONBLOCK`；
+/// 而 Windows 的匿名管道**无法设为非阻塞**（`O_NONBLOCK` 是 termios 概念），只能回到
+/// 每流一个线程。所以这里是 unix 实现的孪生体，而不是同一个函数里的 cfg 分支
+/// （共享的只有 `read_stream` / `EmitState` / `Cmd`）。
+#[cfg(not(unix))]
+fn spawn_worker(
+    id: u64,
+    cmd: crate::platform::Cmd,
+    aggregate: bool,
+    tx: WakeSender<TermEvent>,
+    stdin_rx: std::sync::mpsc::Receiver<TermCtrl>,
+) {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        use std::process::Stdio;
+        use std::sync::{Arc, Mutex};
+
+        let mut command = match cmd.to_command() {
+            Ok(c) => c,
+            Err(e) => {
+                crate::state::js_dbg(format_args!("worker command FAILED id={id}: {e}"));
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                crate::state::js_dbg(format_args!("worker spawn FAILED id={id}: {e}"));
+                let _ = tx.send(TermEvent::Exit(id, 127, None));
+                return;
+            }
+        };
+
+        let mut stdin = child.stdin.take();
+        // 聚合缓冲共享给两条读线程（聚合模式下顺序不保证，与 unix 的单线程读差别仅此）
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let mut readers = 0usize;
+        let streams: [Option<Box<dyn std::io::Read + Send>>; 2] = [
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        ];
+        for stream in streams.into_iter().flatten() {
+            readers += 1;
+            let tx = tx.clone();
+            let output = output.clone();
+            let done_tx = done_tx.clone();
+            std::thread::spawn(move || {
+                read_stream(stream, id, aggregate, &output, &tx);
+                let _ = done_tx.send(());
+            });
+        }
+        drop(done_tx);
+
+        let mut finished = 0usize;
+        loop {
+            while let Ok(msg) = stdin_rx.try_recv() {
+                match msg {
+                    TermCtrl::Write(text) => {
+                        if let Some(s) = stdin.as_mut() {
+                            let _ = s.write_all(text.as_bytes());
+                            let _ = s.flush();
+                        }
+                    }
+                    TermCtrl::Kill => {
+                        let _ = child.kill();
+                    }
+                }
+            }
+            while done_rx.try_recv().is_ok() {
+                finished += 1;
+            }
+            if finished >= readers {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(stdin); // 关 stdin → 仍等输入的子进程读到 EOF 后退出
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let stdout = if aggregate {
+            Some(String::from_utf8_lossy(&output.lock().unwrap()).into_owned())
+        } else {
+            None
+        };
+        let _ = tx.send(TermEvent::Exit(id, code, stdout));
+        crate::state::js_dbg(format_args!("worker end id={id}"));
+    });
+}
+
 /// 仅供线程数探针使用（单线程化前后对比）：转调私有 [`spawn_worker`]。
 #[cfg(all(test, unix))]
 pub(crate) fn spawn_worker_for_test(
@@ -462,7 +561,6 @@ pub(crate) fn spawn_pty_worker(
     });
 }
 
-#[cfg(unix)]
 pub(crate) fn js_run_async(
     _this: &JsValue,
     args: &[JsValue],
@@ -487,7 +585,6 @@ pub(crate) fn js_run_async(
     Ok(promise.into())
 }
 
-#[cfg(unix)]
 pub(crate) fn js_spawn(
     _this: &JsValue,
     args: &[JsValue],
@@ -517,7 +614,7 @@ pub(crate) fn js_spawn(
         }
     };
     let id = crate::state::next_term_id(crate::host::host_state(ctx));
-    with_terms(crate::host::host_state(ctx), |m| {
+    crate::state::with_terms(crate::host::host_state(ctx), |m| {
         m.insert(id, TermCallbacks { on_chunk, on_exit })
     });
     let (tx, rx) = std::sync::mpsc::channel();
@@ -532,53 +629,29 @@ pub(crate) fn js_spawn(
                 "helix.spawn: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）",
             ));
         }
-        let (master, slave) =
-            pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
-        // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
-        crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
-        spawn_pty_worker(
-            id,
-            crate::platform::Cmd::Shell(cmd),
-            term_tx,
-            rx,
-            master,
-            slave,
-        );
+        #[cfg(unix)]
+        {
+            let (master, slave) =
+                pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
+            // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
+            crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
+            spawn_pty_worker(
+                id,
+                crate::platform::Cmd::Shell(cmd.clone()),
+                term_tx,
+                rx,
+                master,
+                slave,
+            );
+        }
+        // 非 unix：上面的 `is_supported()` 已经返回过了，这里只是让 `cmd` 不被移动走
+        #[cfg(not(unix))]
+        let _ = cmd;
     } else {
         // `spawn` 目前只接字符串（与 pty 路径一起做 argv 才有意义，见 spec N3）
         spawn_worker(id, crate::platform::Cmd::Shell(cmd), false, term_tx, rx);
     }
     Ok(JsValue::from(id))
-}
-
-/// 非 unix：**流式**进程读取尚未实现。
-///
-/// 为什么不在这一层糊一个"能编译但跑不对"的实现：`spawn_worker` 的单线程读依赖
-/// `poll` + `O_NONBLOCK`（都是 POSIX）。Windows 的管道无法设为非阻塞 ⇒ 要改成
-/// "每条流一个阻塞读线程"，那是独立一项（线程模型换了，得单独验）。
-/// **同步的 `helix.run([...])` 已经跨平台**，不受此限。
-#[cfg(not(unix))]
-pub(crate) fn js_run_async(
-    _this: &JsValue,
-    _args: &[JsValue],
-    _context: &mut Context,
-) -> boa_engine::JsResult<JsValue> {
-    Err(crate::js_err(
-        "helix.run_async: 本平台尚未实现流式读取(poll/O_NONBLOCK)；同步场景请用 helix.run([...])",
-    ))
-}
-
-/// 非 unix：同 [`js_run_async`] —— `spawn` 的 pipe 与 pty 两条路径都依赖 POSIX
-/// （pipe 要 `poll`+`O_NONBLOCK`，pty 要 `openpt`/`ioctl`）。
-#[cfg(not(unix))]
-pub(crate) fn js_spawn(
-    _this: &JsValue,
-    _args: &[JsValue],
-    _ctx: &mut Context,
-) -> boa_engine::JsResult<JsValue> {
-    Err(crate::js_err(
-        "helix.spawn: 本平台尚未实现流式进程(poll/O_NONBLOCK + 伪终端)；同步场景请用 helix.run([...])",
-    ))
 }
 
 pub(crate) fn js_term_write(
