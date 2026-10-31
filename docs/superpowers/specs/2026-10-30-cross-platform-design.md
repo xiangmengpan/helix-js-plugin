@@ -544,3 +544,25 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 结论：这条保持 `#[ignore]`，理由**写在用例里**（两个症状 + 已定位的线索：插件模块级
 `capScopes` 缓存 + 该用例的初始状态）。它不妨碍 CI —— 门禁跑的是套件，而套件里它是 ignored。
 真要修，建议由 statusline/JS 宿主的负责人做，且先把 (1) 的挂点定位出来。
+
+### 附：`powerline_caps` 挂住的 gdb 结论（下次从这里接着查）
+
+用 `gdb` 断在挂住的那一刻（`timeout -s INT 70 gdb -batch -ex run -ex "thread apply all bt" --args <test-bin> --ignored --exact <test>`），结论**推翻了两个猜测**：
+
+- ❌ 不是死锁：tokio worker 全在 `epoll_wait`/`parking_lot` 里正常空闲；
+- ✅ **测试线程在跑 JS**：栈是
+  `emit_plugin_event_impl_ctx` → `helix_js::commands::emit_event_impl` → boa `__set__`/`create_data_property_with_slot`
+  ⇒ 卡在**某个事件处理器里**（不是在等锁、也不是等 IO）。
+
+顺着这个线索试过一个假设并**实测推翻**：以为是自己 set 出来的事件自激环
+（`capScope` 在渲染路径里调 `helix.set_theme` → 发 `theme-change` → 处理器清 `capScopes` → 下次渲染再 set），
+于是给 `capScope` 加了重入守卫（`capSetting` 期间不清缓存）——**仍然挂住** ⇒ 环在别处。
+（那次改动未验证，按规矩已 `git checkout` 还原，没有留在树里。）
+
+下一步建议（按代价从低到高）：
+1. 在插件的三个事件处理器（`buffer-open` / `theme-change` / 渲染函数）里加一次性计数器 + `helix.echo`，
+   看哪个被调了成千上万次（**让循环自己说出来**，别再猜）；
+2. 或者给 `pump` 加"最多 N 次 idle / 超时即 panic 并打印状态栏"的分阶段超时，让失败可见。
+
+⚠ 顺带一条**不是**这个 bug 的问题：该用例的断言取「第一个 `\u{e0b6}` 格子」，而状态栏现在有多个
+带端帽/图标的段 ⇒ 断言天生会飘。修 (1) 时顺手改成"所有端帽 fg 里包含该底色"。
