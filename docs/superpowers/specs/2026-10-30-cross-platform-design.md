@@ -715,3 +715,18 @@ cargo test  --target x86_64-pc-windows-gnu -p helix-js --lib     # 真跑 Window
 1. **带语法**重建（mingw 编 ~200 个 grammar，估计 10+ 分钟），拿到不含该噪声的数字；
 2. 把 4 条超时的用例单独跑，定位是"等 promise 永远不 resolve"还是死循环；
 3. 把 `#!/bin/sh` 类夹具改成平台中立（`cmd /C` 或直接造受管目录），这是最大的一类。
+
+### 尝试去掉集成测试里的 tree-sitter 噪声：**失败**，但把失败点钉住了
+
+想给 Windows 也编一份 grammar（这样上面的 83 条失败里 tree-sitter 那类就不再是噪声）。做了两步：
+
+1. 发现 `helix-loader` 里 `DYLIB_EXTENSION` 是 `cfg!` 在**编译 helix-loader 时**定的（=宿主），
+   而 build script 本身是宿主进程 ⇒ 交叉编译时它按 `.so` 判"已存在"，于是 **301 个 grammar 全跳过**
+   （实测：18s 空跑、0 个 .dll）。加了个 `dylib_extension_for(target)`（按 target 推断扩展名）。
+2. 强制重跑 build script 后：**301/301 全部失败** —— `Failed to execute C/C++ compiler`
+   （`helix-loader/src/grammar.rs` 的 grammar 编译链路没把 `CC_x86_64_pc_windows_gnu` 传下去，
+   或走的不是 cc-rs 的探测路径）。
+
+⇒ 补丁**已还原**（未验证的代码不留）。这条继续往下挖需要单独一轮：
+先看 `build_grammar` 里编译器是怎么起的，再把 target 的 CC/AR 与 `-fPIC`/`--target` 旗标补齐。
+在此之前，Windows 集成测试的数字必须**带着这个噪声读**（0 语法 ⇒ tree-sitter 用例必红）。
