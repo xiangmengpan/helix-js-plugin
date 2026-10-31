@@ -434,20 +434,19 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
 /// `statusline.cap.normal` 抹掉 ⇒ 切回 normal 时端帽掉色（默认样式）。改成合并语义后应共存。
 ///
 /// 断言看的是**渲染出来的格子颜色**（不是内部表）：端帽字符 `` 的 fg 必须等于该模式的底色。
-// ⚠ 两个**互相独立**的问题,都还没修:
+// 现状(2026-10-31):**单跑已通过(4.2s)**,但套件里仍失败 ⇒ 还剩一个**跨用例**问题。
 //
-// ① 套件里跑:端帽 fg 是 `Rgb(40,23,51)`(= 默认主题 `ui.statusline.normal` 的 bg),
-//    不是测试设的 `Rgb(0,0,255)`。原因已定位到线索:statusline 插件把
-//    `statusline.cap.<mode>` 的**颜色**缓存进了模块级 `capScopes`(只缓存 scope 名,颜色由
-//    首次渲染时的 `helix.get_style` 决定) ⇒ 同一进程里先跑过 statusline 的用例(默认主题)
-//    之后,本用例只改 `ui.statusline.normal`、不改 `statusline.cap.normal` ⇒ 端帽沿用旧色。
-//    修法要选一条:插件侧不缓存颜色 / 用例侧显式设 `statusline.cap.normal` / 核心在
-//    `set_theme` 后清插件缓存。这是**产品语义选择**,不擅自定。
-// ② 单独跑会**挂住**(实测 20 分钟不返回)⇒ 另有测试隔离问题(`:plugin-load` 在本用例的
-//    初始状态下卡在某个等待点),需单独定位。
+// 修好的那半(插件的,已落地):`capScope()` 在**渲染路径**里调 `helix.set_theme`,而 set_theme 会发
+// `theme-change`、那个处理器又清 `capScopes`(换主题后派生 scope 失效)⇒ 自激环,单跑会一直转
+// (gdb:测试线程卡在 `emit_event_impl` 的 JS 里)。事件是**异步**投递的,所以"set_theme 前后置
+// 标志位"无效;插件已改为**与主题里的实际值比较**(见 `plugins/statusline/plugin.js`)。
 //
-// 保留测试(不删):它钉的行为(多模式 cap 共存)仍然有效,只是现在跑不动。
-#[ignore = "两个独立问题:①套件里 cap 颜色被 capScopes 缓存串味 ②单独跑会挂住;见上方注释"]
+// 仍未修的那半(核心/测试隔离):套件里跑时,本用例 setup.js 的 `helix.set_theme` **没有生效**
+// ⇒ `bgOf("ui.statusline.normal")` 拿到默认主题的底色 ⇒ 端帽要么沿用默认色(修前 `Rgb(40,23,51)`)、
+// 要么干脆没有 scope(修后 `None`)。怀疑点:`plugin_reload*` 那族用例会 `helix_js::reset_theme()`
+// (卸载插件时清插件主题覆盖),而 JS 侧状态在进程内是共享的 ⇒ 需要用例级隔离或把 reset 收窄。
+// 这条属 statusline/JS 宿主范围,先用 `#[ignore]` 挡住,别让它污染门禁。
+#[ignore = "套件里 setup.js 的 set_theme 不生效(跨用例主题状态);单跑已通过 —— 见上方注释"]
 #[tokio::test(flavor = "multi_thread")]
 async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
     use helix_term::ui::statusline::RenderContext;

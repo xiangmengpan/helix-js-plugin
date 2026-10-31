@@ -219,6 +219,16 @@ const SEGMENTS = {
 // 拿不到颜色(主题没给 bg / 无 theme 源)就**退化为无帽**,不报错。
 const capScopes = {}; // mode -> scope 名 | null(本主题下没有可用的派生 scope)
 
+/// 当前主题里某 scope 的 **fg**（拿不到 → null）。与 `bgOf` 同款容错。
+function styleFgOf(scope) {
+  try {
+    const st = helix.get_style(scope);
+    return st && typeof st === "object" && st.fg ? st.fg : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function bgOf(scope) {
   try {
     const st = helix.get_style(scope);
@@ -232,14 +242,26 @@ function capScope(mode) {
   if (Object.prototype.hasOwnProperty.call(capScopes, mode)) return capScopes[mode];
   let scope = null;
   const fg = bgOf("ui.statusline." + mode);
+  const bg = bgOf("ui.statusline");
   if (fg) {
     const name = "statusline.cap." + mode;
-    try {
-      helix.set_theme({ [name]: { fg: fg, bg: bgOf("ui.statusline") } });
-      scope = name;
-    } catch (e) {
-      scope = null;
+    // **与"当前主题里的实际值"比较**，而不是记插件侧的标志位：
+    //   · `set_theme` 会发 `theme-change`，那个处理器清 `capScopes`（换主题后派生 scope 失效），
+    //     而本函数处在**渲染路径**上 ⇒ 若每次都 set_theme 就是自激环：
+    //       渲染 → set_theme → theme-change → 清缓存 → 下次渲染再 set_theme → …
+    //     （实测：单跑 `plugin_statusline::powerline_caps_coexist_across_modes` 会一直转，
+    //      gdb 显示测试线程卡在 `emit_event_impl` 的 JS 里；停用 theme-change 处理器即 4.6s 通过。）
+    //   · 事件是**异步**投递的 ⇒ "set_theme 前后置标志位"那种守卫无效（回调时标志早已复位）；
+    //   · 插件的模块级变量会跨用例存活，而**主题实例是每个 app 各一份** ⇒ 记"我注册过"
+    //     会在新 app 上误跳（表现为端帽没有 scope、沿用默认色）。所以只信主题里的实际值。
+    if (styleFgOf(name) !== fg) {
+      try {
+        helix.set_theme({ [name]: { fg: fg, bg: bg } });
+      } catch (e) {
+        // 退化为无帽（不报错）：主题/引擎不支持时状态栏照常渲染
+      }
     }
+    if (styleFgOf(name) === fg) scope = name;
   }
   capScopes[mode] = scope;
   return scope;

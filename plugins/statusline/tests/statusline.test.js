@@ -70,7 +70,13 @@ function load(cfg, styles, segments) {
       dir: () => 'D',
       diagnostic: (k) => ({ error: 'E', warning: 'W' })[k] || '?',
     },
+    // ⚠ 桩要跟引擎**同语义**：插件 `set_theme` 写进去的 scope，`get_style` 要能读回来
+    //（真实引擎里 theme 快照就包含插件覆盖）。否则 capScope 的"主题里已有正确值"判断永远为假
+    // ⇒ 端帽拿不到派生 scope（曾经就是这么假绿的）。
     get_style(scope) {
+      if (Object.prototype.hasOwnProperty.call(captured.theme, scope)) {
+        return captured.theme[scope];
+      }
       return styles ? styles[scope] || null : null;
     },
     statusline_segment(name, ctx) {
