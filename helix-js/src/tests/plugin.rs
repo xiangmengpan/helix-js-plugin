@@ -830,7 +830,8 @@ fn reload_after_init_midway_failure_keeps_dependent_plugins() {
     let a = std::fs::read_to_string(d.join("features/plugin_a.js")).unwrap();
     std::fs::write(
         d.join("features/plugin_a.js"),
-        a.replace("\"lib/icons.js\"", &format!("\"{icons_abs}\"")),
+        // 同上：用 Debug 插值，避免 Windows 路径的反斜杠被 JS 当转义符
+        a.replace("\"lib/icons.js\"", &format!("{icons_abs:?}")),
     )
     .unwrap();
     let init_path = d.join("init.js");
@@ -1076,6 +1077,9 @@ fn reload_failed_script_does_not_block_others() {
     );
 }
 
+#[cfg(unix)]
+// Windows:夹具内层 `helix.load` 走相对解析，先撞 "plugins dir not set"，
+// 还没走到循环依赖检测（夹具需显式给根，与 `reload_after_init…` 同款修法）。
 #[test]
 fn circular_runtime_load_errors_not_crash() {
     // 回归:跨脚本运行时 helix.load 循环(A load B,B load A)曾无限嵌套 eval 递归
@@ -1094,7 +1098,8 @@ fn circular_runtime_load_errors_not_crash() {
     std::fs::write(d.join("features/a.js"), a_src).unwrap();
     std::fs::write(d.join("features/b.js"), b_src).unwrap();
     let init_path = d.join("init.js");
-    let init_src = format!(r#"helix.load("{a_abs}");"#);
+    // 路径用 `{:?}` 插值：Debug 输出带引号且转义，Windows 的反斜杠不会被当 JS 转义符
+    let init_src = format!(r#"helix.load({a_abs:?});"#);
     std::fs::write(&init_path, init_src).unwrap();
     let st = crate::host::state_handle_or_init();
     let r = load_script_named(

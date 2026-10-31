@@ -750,8 +750,12 @@ fn walk_glob(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        // 基目录为 `.` 时路径带前导 `./`，globset 裸模式（`*.js`）不匹配 → 统一去掉
-        let pstr = path.to_string_lossy();
+        // ① 统一成正斜杠：Windows 的 `\` 会让 `literal_separator` 语义失效——
+        //    裸模式 `*.js` 本该匹配"不含分隔符的文件名"，在 `dir\x.js` 上却因为反斜杠
+        //    既不是分隔符也不是普通字符而匹配不到（实测：Windows 上 glob 返回空表）。
+        //    返回给插件的路径因此也统一用 `/`（helix 在 Windows 上同样接受 `/`）。
+        // ② 基目录为 `.` 时路径带前导 `./`，globset 裸模式不匹配 → 统一去掉
+        let pstr = path.to_string_lossy().replace('\\', "/");
         let pstr = pstr.strip_prefix("./").unwrap_or(&pstr);
         if matcher.is_match(pstr) {
             out.push(pstr.to_owned());

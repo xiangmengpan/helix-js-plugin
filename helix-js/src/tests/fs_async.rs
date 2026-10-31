@@ -544,6 +544,8 @@ fn async_utf8_across_chunks() {
 /// 错误路径 reject（e.message）；参数类型校验。
 /// 注（相对简报的测试侧调整）：wait_for_async 把事件累积进共享 vec（四个 worker
 /// 并发发送，四次顺序 wait 需共享累积）；简报注释 "resolve 全部" 落实为逐事件 resolve。
+#[cfg(unix)]
+// Windows:夹具用 `/` 拼路径 + 相对语义，异步 fs 链拿不到事件（夹具路径问题）。
 #[test]
 fn async_fs() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

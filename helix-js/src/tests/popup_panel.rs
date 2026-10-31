@@ -1382,8 +1382,13 @@ fn decorations_queue_and_take() {
     crate::host::with_state_or_init(|st| run_command(st, "dec1", &ctx)).unwrap();
     let reqs = take_decorations();
     assert_eq!(reqs.len(), 3);
-    // 路径已 canonicalize(相对→绝对:用绝对路径输入,断言原样)
-    assert_eq!(reqs[0].doc.as_deref(), Some("/tmp/a.rs"));
+    // 路径已 canonicalize(相对→绝对)。**不断言整条路径**：Windows 上 `/tmp/a.rs` 会解析成
+    // 盘符路径（本机 WSL 环境下是 `\\wsl.localhost\...`）⇒ 断言文件名部分才平台中立。
+    assert!(
+        reqs[0].doc.as_deref().is_some_and(|p| p.ends_with("a.rs")),
+        "decorations 应带 canonicalize 后的 doc 路径, got {:?}",
+        reqs[0].doc
+    );
     match &reqs[0].kind {
         crate::types::DecorationKind::VirtualText {
             row,
