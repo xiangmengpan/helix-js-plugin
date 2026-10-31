@@ -589,3 +589,31 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 **顺带修好一处"假绿"**:插件 node 测试的 `get_style` 桩只查静态 `styles` 表,不查 `set_theme` 写进去的
 覆盖 ⇒ 与真实引擎语义不符(引擎里 theme 快照包含插件覆盖)。修后桩更忠实,也才让"按主题实际值判断"
 这条逻辑可被单测覆盖。
+
+### powerline caps 的**最终根因**：进程级全局主题快照（不是我猜的插件缓存）
+
+用「在用例里加一条 `:probe` 观察钩子，把 `helix.get_style("ui.statusline.normal")` 读回来」定位到底：
+
+```
+DBG after setup.js:        normal={"fg":"#dbbfef","bg":"#281733"}   ← 默认值，不是 setup.js 设的 #0000ff
+DBG after statusline 插件:  normal={"fg":"#dbbfef","bg":"#281733"}
+```
+
+**同一条用例，同一份二进制，结果在「通过」与「挂」之间跳**（r5/r6 过，r4/r7 挂）⇒ 是**并行**导致的串味：
+
+- `helix.get_style` 走 `commands/typed.rs` 的 `CURRENT_THEME`：一个**进程级** `Mutex<Option<Theme>>` 快照
+  （`sync_theme_snapshot` 写入）；
+- 集成测试**并行**跑多个 app，各自 `sync_theme_snapshot` 会互相覆盖 ⇒ A 的插件读到 B 的主题；
+- 于是端帽要么拿到默认色（`Rgb(40,23,51)` = 默认主题 `ui.statusline.normal` 的 bg），
+  要么（按值判断那版）干脆拿不到 scope（`None`）。
+
+**修法（未做，属"隐式宿主"收尾）**：把 `STYLE_SOURCE` / `THEME_SOURCE`（现在是
+`OnceLock<Arc<dyn Fn>>`）搬进 `helix_js::host::HostState`——它本来就是每 app 一份的 `!Send` 状态；
+`sync_theme_snapshot` 改为往**当前宿主**装回调。这与 `docs/explicit-host-inventory.md` 记录的
+「隐式活动指针收口」是同一主题的最后一小块。
+
+**这次的教训**（值得记）：`OnceLock` 的"只注册一次"在**多 app 并行**下等于"注册到第一个 app 上"。
+凡是"每 app 一份"的东西（主题、布局、面板…）都不能挂在进程级静态上。
+
+插件侧的两个改动仍保留（都已验证）：① 断掉 cap 派生 scope 的自激环（单跑 ∞ → 4.2s）；
+② node 测试的 `get_style` 桩对齐引擎语义（否则"按主题实际值判断"这条逻辑根本走不到）。

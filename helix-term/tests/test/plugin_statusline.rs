@@ -434,19 +434,22 @@ async fn plugin_statusline_parts_have_per_part_style() -> anyhow::Result<()> {
 /// `statusline.cap.normal` 抹掉 ⇒ 切回 normal 时端帽掉色（默认样式）。改成合并语义后应共存。
 ///
 /// 断言看的是**渲染出来的格子颜色**（不是内部表）：端帽字符 `` 的 fg 必须等于该模式的底色。
-// 现状(2026-10-31):**单跑已通过(4.2s)**,但套件里仍失败 ⇒ 还剩一个**跨用例**问题。
+// 根因已定位到**核心的进程级全局**，不在插件也不在测试：
 //
-// 修好的那半(插件的,已落地):`capScope()` 在**渲染路径**里调 `helix.set_theme`,而 set_theme 会发
-// `theme-change`、那个处理器又清 `capScopes`(换主题后派生 scope 失效)⇒ 自激环,单跑会一直转
-// (gdb:测试线程卡在 `emit_event_impl` 的 JS 里)。事件是**异步**投递的,所以"set_theme 前后置
-// 标志位"无效;插件已改为**与主题里的实际值比较**(见 `plugins/statusline/plugin.js`)。
+// 插件的 `capScope()` 用 `helix.get_style()` 拿模式底色。而 `get_style` 走的是
+// `commands/typed.rs` 的 `CURRENT_THEME` —— 一个**进程级** `Mutex<Option<Theme>>` 快照
+// （`sync_theme_snapshot` 写入），不是每个 app 各一份。集成测试是**并行**跑多个 app 的，
+// 于是:A 用例的 app 同步快照 → B 用例的 app 再同步 → A 的 `get_style` 读到的就是 B 的主题。
+// 实证:同一份二进制、同一组用例，加了/不加一次 `:probe` 泵，结果会在「通过」与
+// 「端帽 fg = 默认色 / 干脆没有 scope」之间跳（实测 r5/r6 过、r4/r7 挂）。
 //
-// 仍未修的那半(核心/测试隔离):套件里跑时,本用例 setup.js 的 `helix.set_theme` **没有生效**
-// ⇒ `bgOf("ui.statusline.normal")` 拿到默认主题的底色 ⇒ 端帽要么沿用默认色(修前 `Rgb(40,23,51)`)、
-// 要么干脆没有 scope(修后 `None`)。怀疑点:`plugin_reload*` 那族用例会 `helix_js::reset_theme()`
-// (卸载插件时清插件主题覆盖),而 JS 侧状态在进程内是共享的 ⇒ 需要用例级隔离或把 reset 收窄。
-// 这条属 statusline/JS 宿主范围,先用 `#[ignore]` 挡住,别让它污染门禁。
-#[ignore = "套件里 setup.js 的 set_theme 不生效(跨用例主题状态);单跑已通过 —— 见上方注释"]
+// 正确的修法（属"隐式宿主"收尾，见 docs/explicit-host-inventory.md 的同一主题）：
+// 把 `STYLE_SOURCE` / `THEME_SOURCE`（现在是 `OnceLock<Arc<dyn Fn>>`）从全局搬进
+// `helix_js::host::HostState`（每 app 一份，已是 `!Send` 的 per-app 状态），
+// `sync_theme_snapshot` 改为往**当前宿主**装回调。改完这条用例应当稳定通过。
+//
+// 在那之前用 `#[ignore]` 挡住门禁（它在单跑时是**通过**的，4.2s）。
+#[ignore = "根因:CURRENT_THEME 是进程级全局,并行测试下 get_style 会读到别的 app 的主题;修法见上方注释"]
 #[tokio::test(flavor = "multi_thread")]
 async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
     use helix_term::ui::statusline::RenderContext;
