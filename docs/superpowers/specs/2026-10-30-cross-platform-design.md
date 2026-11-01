@@ -903,8 +903,27 @@ Unix 侧 `close()` 是空操作，**Linux 行为零变化**（253 单测 / 428 �
 - 按 MS 示例逐行写的 **C 程序同样如此**（`/tmp/cpty/probe.c` 复刻：`CreatePseudoConsole` → 属性表 → `CreateProcessW`），
   换 `cmd.exe` / `whoami.exe`、显式 `cwd=C:\Windows`、`bInheritHandles=TRUE`、`PSEUDOCONSOLE_INHERIT_CURSOR` 全部复现。
 
-⇒ 结论：**WSL2 interop 下 ConPTY 不可用**。这也说明上一轮那句"Windows 运行期验证真的做成了"只覆盖
-**管道式**进程（`run_async`/`spawn`），**不能**外推到 ConPTY。
+⇒ 第一版结论写的是"WSL2 interop 下不可用"，**那条是错的，已被证伪**（见下）。
+
+#### 更正：与本实现无关，也**与 interop 无关** —— 是这台机器的 ConPTY 不行
+
+第一版结论把锅算在 WSL2 interop 头上，随后两条实验把它推翻了：
+
+1. **绕开 interop**：把同一个探针打包成计划任务（`schtasks /create … /tr probe.exe /run`）跑，
+   进程树是 `taskeng → svchost`，WSL 已经不在这条链上 —— 结果**一模一样**
+   （`CreatePseudoConsole hr=0`、`CreateProcessW` 成功、`total=0 exit=0xc0000142`）。
+2. **换一个成熟实现**：[`portable-pty` 0.9](https://crates.io/crates/portable-pty)（wezterm 同源，
+   生产级 ConPTY 客户端）写成同一个用例：Windows 上 **零输出 + 子进程永不退出**；
+   **同一份代码在 Linux 上跑通**（`OUT="portable-pty-hello\r\n" EXIT=Some(0)`）
+   ⇒ 探针本身没问题，是 Windows 这边的 ConPTY 起不来。
+
+所以现在一共有**三个独立实现**在这台 Windows 上失败：本实现、MS 示例式 C 程序、`portable-pty`。
+症状有两种（`0xC0000142` 立即死、或干脆不退出且零输出），但都指向同一件事：
+`conhost.exe --headless` 这条链路在本机不工作。常见的现实原因：默认终端被改成了别的东西、
+conhost 被 shell 美化工具（StartAllBack / Windhawk 之类）替换过、或系统镜像本身被精简。
+
+**这一条对"要不要打开开关"没有影响，但对"责任归属"很重要**：代码不需要改，需要的是另一台
+干净的 Windows。
 
 #### 因此 `is_supported()` 在 Windows 上仍然是 false
 

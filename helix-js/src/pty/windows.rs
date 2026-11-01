@@ -489,14 +489,17 @@ mod tests {
     /// 「发现子进程退了 → `PtyMaster::close()` → 读端 EOF → `wait()`」，worker 照此执行；
     /// 这里把同一套顺序手写一遍，把这个假定钉死在测试里。
     ///
-    /// **为什么 `#[ignore]`**：本仓的 Windows 验证跑在 WSL2 的 interop 里，而 ConPTY 在那里
-    /// 起不来 —— 子进程一律以 `0xC0000142`（`STATUS_DLL_INIT_FAILED`）退出、pty 里零字节。
-    /// 这不是本实现的锅：**按 MS 示例逐行写的 C 程序同样如此**（`CreatePseudoConsole` 成功、
-    /// conhost 也起来了、`ResizePseudoConsole` 也成功，就是子进程初始化失败）。换 cmd.exe /
-    /// whoami.exe、显式 cwd、`bInheritHandles=TRUE`、`PSEUDOCONSOLE_INHERIT_CURSOR` 全部复现。
-    /// 所以在 **Windows 实机**上跑：
+    /// **为什么 `#[ignore]`**：本机的 ConPTY 起不来，而且**不是本实现的锅** —— 三个独立实现
+    /// 在这里都是同一个结果（本实现 / 按 MS 示例逐行写的 C 程序 / `portable-pty` 0.9）：
+    /// 子进程要么 `0xC0000142`（`STATUS_DLL_INIT_FAILED`）立刻死，要么根本不退出，pty 里零字节。
+    ///
+    /// 已经排除掉的因素：`CreatePseudoConsole` 与 `ResizePseudoConsole` 都成功（HPCON 是活的、
+    /// conhost 进程数确实 +1）；换 cmd.exe / whoami.exe、显式 `cwd=C:\Windows`、
+    /// `bInheritHandles=TRUE`、`PSEUDOCONSOLE_INHERIT_CURSOR` 全部复现；**把探针打包成计划任务
+    /// 绕开 WSL interop 后也复现**；同一份 `portable-pty` 探针在 Linux 上跑通。
+    /// ⇒ 是这台机器的 conhost/ConPTY 链路不行，换一台干净的 Windows 再跑：
     ///   cargo test -p helix-js --lib pty::windows -- --ignored --nocapture
-    #[ignore = "ConPTY 在 WSL2 interop 下不可用（子进程 0xC0000142，MS 示例 C 程序同样复现）⇒ 需 Windows 实机"]
+    #[ignore = "本机 ConPTY 不可用（三个独立实现全部失败，含 portable-pty；绕开 WSL interop 也复现）⇒ 需另一台 Windows"]
     #[test]
     fn conpty_echo_roundtrip() {
         use std::sync::{Arc, Mutex};
