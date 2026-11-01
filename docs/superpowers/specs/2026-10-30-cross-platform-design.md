@@ -753,3 +753,25 @@ cargo test  --target x86_64-pc-windows-gnu -p helix-js --lib     # 真跑 Window
   `cmd /C` 下语义不同 —— 已写明"流式验证由 `argv_run_async` 覆盖"。
 - 顺带发现并记录：Windows 上 `cmd /C` 在 **UNC 工作目录**（WSL 里跑 Windows 二进制时 cwd 是
   `\\wsl.localhost\…`）会先打一段"不支持 UNC 路径"的提示 ⇒ 断言改成"包含关键内容"而不是整串相等。
+
+### ConPTY 的第一步（pty 抽象）**试了一次，回退了** —— 记下为什么
+
+想法：把 `spawn_pty_worker` 泛化成接 `Box<dyn PtyMaster>` + `ChildStdio`，让 ConPTY 落地时
+"只加一个文件"。抽象本身写完了、两平台都能编译（`cargo check --target windows` 干净），
+但**跑测试时 Linux 的 pty 挂了**：
+
+```
+term_pty::pty_spawn  → timed out waiting for term event, 已收到 1 条:["Chunk(id=1, 8 bytes)"]
+term_pty::pty_resize → 同上
+```
+
+也就是说：接上 trait 之后子进程拿到的不是"真 tty"（`tty` 命令输出 8 字节就不再产出、等不到 Exit）。
+根因没定位（怀疑点：`slave` 的三份 dup 与 `Stdio::from` 的时序，或 `reader()` 用 `dup` 与
+原来 `File::try_clone` 的差异）。
+
+**已 `git checkout` 回退**，Linux 侧 253 测试恢复全绿。
+
+为什么回退而不是继续修：这次重构**只为 ConPTY 铺路、对今天的行为零收益**，
+而它把一条已经在工作的路径（Linux pty）改坏了 —— 收益与风险的比值不成立。
+下次做 ConPTY 时**先**把 pty 抽象写对（对着 `pty_spawn`/`pty_resize` 这两条测试做），
+再做 Windows 实现；两步都验证过再合并，别把"抽象"和"新平台"混在一次改动里。
