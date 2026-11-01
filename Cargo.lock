@@ -2159,6 +2159,7 @@ dependencies = [
  "tempfile",
  "unicode-segmentation",
  "unicode-width 0.1.12",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
