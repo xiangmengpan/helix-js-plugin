@@ -4,7 +4,28 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use super::{PtyChildStdio, PtyMaster, PtyResize, TermSize};
+use super::{PtyChild, PtyChildStdio, PtyMaster, PtyResize, TermSize};
+
+/// `std::process::Child` 的 pty 适配：把「杀整组 / 等退出码」翻译成 trait 方法。
+pub(crate) struct UnixChild(pub(crate) std::process::Child);
+
+impl PtyChild for UnixChild {
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    fn kill_tree(&mut self) {
+        // 杀整个进程组（-pgid）：sh 未 exec 时孙进程（如 cat）也一并杀，
+        // 否则孤儿进程持住 slave fd → master 读永不 EIO → worker 挂死
+        unsafe {
+            libc::kill(-(self.0.id() as libc::pid_t), libc::SIGKILL);
+        }
+    }
+
+    fn wait(&mut self) -> Option<i32> {
+        self.0.wait().ok().and_then(|status| status.code())
+    }
+}
 
 /// master fd 包装：Drop 时 close（worker 线程持有时保证 fd 生命周期）
 pub(crate) struct Master(RawFd);

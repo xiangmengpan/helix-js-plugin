@@ -86,6 +86,27 @@ impl PtyChildStdio {
     }
 }
 
+/// 子进程句柄 —— worker 只通过这 4 个动作使用子进程。
+///
+/// ## 为什么需要这层 trait
+///
+/// Unix 侧是 `std::process::Child`，但 **ConPTY 必须自己调 `CreateProcessW`**
+/// （`std::process::Command` 带不上 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`），
+/// 拿到的是 `PROCESS_INFORMATION` 里的 `HANDLE`，**根本不是** `std::process::Child`。
+/// worker 的其余部分（读线程 / 主循环 / Exit 事件）因此只依赖下面这几个动作。
+pub(crate) trait PtyChild: Send {
+    /// 进程 id（Unix 用作 pgid 去杀整组；Windows 是任务管理器里的那个 id）。
+    fn id(&self) -> u32;
+    /// 杀**整棵进程树**。
+    ///
+    /// Unix：`kill(-pgid, SIGKILL)` —— sh 未 exec 时孙进程（如 `cat`）也一并杀，
+    /// 否则孤儿进程持住 slave fd → master 读永不 EIO → worker 挂死。
+    /// Windows：Job Object 整棵树终止（`TerminateProcess` 只杀一个进程）。
+    fn kill_tree(&mut self);
+    /// 等退出码（读端 EOF 之后调用，不会挂很久）；拿不到返回 `None`（worker 记 -1）。
+    fn wait(&mut self) -> Option<i32>;
+}
+
 /// 宿主端句柄：`spawn_pty_worker` 只通过它读写/改尺寸/设前台组，不碰平台类型。
 ///
 /// 这是 ConPTY 落地时的**唯一接缝**：新增一个 Windows 实现即可，worker 一行不用改。
@@ -122,6 +143,8 @@ pub(crate) fn open(size: TermSize) -> anyhow::Result<(Box<dyn PtyMaster>, PtyChi
 
 #[cfg(unix)]
 mod unix;
+#[cfg(unix)]
+pub(crate) use unix::UnixChild;
 
 #[cfg(not(unix))]
 mod windows;

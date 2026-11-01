@@ -432,7 +432,7 @@ pub(crate) fn spawn_worker_for_test(
 fn spawn_pty_child(
     cmd: &crate::platform::Cmd,
     stdio: pty::PtyChildStdio,
-) -> anyhow::Result<std::process::Child> {
+) -> anyhow::Result<Box<dyn pty::PtyChild>> {
     use std::os::unix::process::CommandExt;
     let (stdin, stdout, stderr) = stdio.into_stdio()?;
     let mut command = cmd.to_command()?;
@@ -460,7 +460,7 @@ fn spawn_pty_child(
             Ok(())
         });
     }
-    Ok(command.spawn()?)
+    Ok(Box::new(pty::UnixChild(command.spawn()?)))
 }
 
 /// 非 unix：ConPTY 未落地 ⇒ 明确报错。
@@ -472,7 +472,7 @@ fn spawn_pty_child(
 fn spawn_pty_child(
     _cmd: &crate::platform::Cmd,
     _stdio: pty::PtyChildStdio,
-) -> anyhow::Result<std::process::Child> {
+) -> anyhow::Result<Box<dyn pty::PtyChild>> {
     Err(anyhow::anyhow!(
         "pty: 本平台尚未实现（Windows 需要 ConPTY，Win10 1809+）"
     ))
@@ -510,7 +510,7 @@ pub(crate) fn spawn_pty_worker(
         let master_reader = match master.reader() {
             Ok(f) => f,
             Err(_) => {
-                let _ = child.kill();
+                child.kill_tree();
                 let _ = tx.send(TermEvent::Exit(id, 127, None));
                 return;
             }
@@ -539,14 +539,8 @@ pub(crate) fn spawn_pty_worker(
                         let _ = master.flush();
                     }
                     TermCtrl::Kill => {
-                        #[cfg(unix)]
-                        unsafe {
-                            // 杀整个进程组（-pgid）：sh 未 exec 时孙进程（如 cat）也一并杀，
-                            // 否则孤儿进程持住 slave fd → master 读永不 EIO → worker 挂死
-                            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-                        }
-                        #[cfg(not(unix))]
-                        let _ = child.kill();
+                        // 杀整棵进程树（Unix: kill(-pgid)；Windows: Job Object）
+                        child.kill_tree();
                     }
                 }
             }
@@ -555,7 +549,7 @@ pub(crate) fn spawn_pty_worker(
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let code = child.wait().unwrap_or(-1);
         let _ = tx.send(TermEvent::Exit(id, code, None));
         // master File drop → 关闭 fd（TERM_MASTERS 里的裸 fd 变陈旧，resize 报 EBADF，良性）
     });
