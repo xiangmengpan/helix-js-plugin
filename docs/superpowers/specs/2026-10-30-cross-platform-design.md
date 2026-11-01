@@ -1049,3 +1049,29 @@ set HELIX_RUNTIME=C:\Temp\helix-rt
 ⇒ 那张"82 failed"的表里，至少 25 条是**测试可移植性**问题，与 Windows 行为无关。
 剩下的才是真问题，已确认仍存在的有：`filetree` 的 `H` 切换后 dotfile 不显示、`plugin_manager`
 2 条、`plugin_lsp_mock`、`plugin_cross_buffer`、`plugin_decorations`、`server_manager`（`#!/bin/sh` 夹具）。
+
+### `filetree` 那 5 条：插件本身是 **Unix 路径 + POSIX shell** 写的（真问题，需单独一轮）
+
+修完测试可移植性之后，`filetree` 的失败信息终于指向真东西了 —— 面板直接渲染出 `C:\` 的内容：
+
+```
+│ /  F                          │
+│  $Recycle.Bin                 │
+│  Windows                      │
+```
+
+三个根因，都在 `plugins/filetree/plugin.js`：
+
+1. **路径切分**：`root_path.split("/")`、`file_path.split("/").slice(0,-1).join("/")`、`root + "/"`
+   —— Windows 路径是 `C:\Users\...\readme.md`，切完只有一个元素 ⇒ 面板标题退化成 `/`，
+   `reveal` 的 `file_path.startsWith(prefix)` 永远不成立 ⇒ 根不会被重设。
+2. **建文件/建目录走 POSIX shell**：`run_fs("touch " + …)` / `run_fs("mkdir -p " + …)`
+   ⇒ 在 Windows 上就是 `cmd /C mkdir -p x`，必然失败（`filetree_new_file_prompt` 的
+   `note.txt 已创建` 那条）。
+3. 缺一个路径工具：`helix-js` 目前**没有** `helix.path.*`（join/dirname/basename/sep），
+   也**没有** `helix.fs.mkdir/write`，插件只能自己拼字符串 + 拼 shell 命令。
+
+⇒ 这不是"改两行"的事，得先决定 API 形状（加 `helix.path.*`？还是把路径处理下沉到 Rust 侧
+暴露 `helix.fs.mkdir/touch`？），再改插件。**下一轮的第一件事**。
+其余仍需分类的：`plugin_lsp_mock`(10)、`plugin_cross_buffer`(6)、`plugin_decorations`(5)、
+`server_manager`(5，`#!/bin/sh` 夹具)、`plugin_manager`(2)、`plugin_draw`(1)、`plugin_entry`(1)。
