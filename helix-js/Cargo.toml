@@ -18,5 +18,18 @@ unicode-segmentation = { workspace = true }
 # 进程内模糊匹配(与核心 picker 同一套;helix.fuzzy.filter)
 nucleo = { workspace = true }
 
+# ConPTY（Windows 伪终端）要的 win32 绑定。**只**在 windows 目标上编译，
+# 因此 Linux/macOS 的依赖树不受影响。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true

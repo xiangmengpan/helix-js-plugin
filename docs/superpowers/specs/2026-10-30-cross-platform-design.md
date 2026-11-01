@@ -875,3 +875,42 @@ Linux 全量测试验证；再往下就是 ConPTY 本身，而它需要上面那
 
 验证：Linux `helix-js` 253 / 集成 **428 passed** / `fmt` + `clippy`（两平台含 `--features integration`）全干净；
 Windows `clippy --all-targets -D warnings` 干净、单测 233 passed。
+
+### ConPTY：实现写完，**但在本机无法验证**（证据在下面）
+
+`pty/windows.rs` 现在是真实现（不再是"只报错"）：
+
+| 环节 | 做法 |
+|---|---|
+| 建会话 | `CreatePipe` ×2（不可继承）+ `CreatePseudoConsole(COORD{cols,rows}, …)`，随后**立刻**关掉交给 ConPTY 的两端 |
+| 宿主端 | `PtyMaster`：写 input 管道 = 喂输入；`reader()` 复制 output 管道句柄给读线程 |
+| 改尺寸 | `ResizePseudoConsole`（`PtyResize` 的实现换成 `HPCON`） |
+| 起子进程 | `CreateProcessW` + `STARTUPINFOEXW` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`，**没有** stdio 重定向；命令行按 CRT 引用规则手拼，环境块按名排序 |
+| 杀进程树 | Job Object（`KILL_ON_JOB_CLOSE` + 先 `CREATE_SUSPENDED` 关联再 `ResumeThread`，避免抢跑生孙进程） |
+| 关闭 | `ClosePseudoConsole`（幂等，管道先放） |
+
+顺带补上一条**行为级**发现（不是清理细节）：**conhost 不会随客户端进程退出而关闭输出管道**。
+首版就在这里红：`cmd /C echo` 退完后 20s 仍无 EOF ⇒ 读线程永远阻塞在 `ReadFile`，worker 挂死。
+所以协议改成了「worker 主循环轮询 `PtyChild::exited()` → `PtyMaster::close()` → 读端 EOF → `wait()`」。
+Unix 侧 `close()` 是空操作，**Linux 行为零变化**（253 单测 / 428 集成照旧全绿）。
+
+#### 但它在本仓的验证环境里跑不起来，而且**不是本实现的锅**
+
+`pty::windows::conpty_echo_roundtrip` 标了 `#[ignore]`，理由不是"懒得写"，是**实证**：
+
+- `CreatePseudoConsole` 成功（`ResizePseudoConsole` 也成功 ⇒ HPCON 是活的，conhost 进程数 9→10 确实起来了）；
+- 子进程一律以 **`0xC0000142`（`STATUS_DLL_INIT_FAILED`）** 退出，pty 里**零字节**；
+- 按 MS 示例逐行写的 **C 程序同样如此**（`/tmp/cpty/probe.c` 复刻：`CreatePseudoConsole` → 属性表 → `CreateProcessW`），
+  换 `cmd.exe` / `whoami.exe`、显式 `cwd=C:\Windows`、`bInheritHandles=TRUE`、`PSEUDOCONSOLE_INHERIT_CURSOR` 全部复现。
+
+⇒ 结论：**WSL2 interop 下 ConPTY 不可用**。这也说明上一轮那句"Windows 运行期验证真的做成了"只覆盖
+**管道式**进程（`run_async`/`spawn`），**不能**外推到 ConPTY。
+
+#### 因此 `is_supported()` 在 Windows 上仍然是 false
+
+没在实机验过的能力不报 true（本仓的规矩：宁可明确报错，也不给"开了就空、还杀不掉"的面板）。
+代码已经全部就位，实机验证通过后把 `pty/mod.rs` 那一行改成 `cfg!(any(unix, windows))` 即可，**其余一行不用动**：
+
+```
+cargo test -p helix-js --lib pty::windows -- --ignored --nocapture
+```

@@ -31,33 +31,38 @@ pub(crate) trait PtyResize: Send + Sync {
 /// 本构建是否支持 pty。
 ///
 /// 调用方用它给出**人话错误**（而不是让用户看到"unknown id"这种内部术语，也不是假装可用）。
+///
+/// Windows 侧的 ConPTY 实现已经写完了（见 [`windows::open`] / [`windows::spawn_child`]），
+/// 但**还没在 Windows 实机验过** —— 本仓的 Windows 验证跑在 WSL2 interop 里，ConPTY 在那里
+/// 起不来（子进程一律 `0xC0000142`，MS 示例 C 程序同样复现）。按本仓的规矩：
+/// **没验过的能力不报 true**（宁可给明确错误，也不给一个开了就空、还杀不掉的面板）。
+/// 在实机上跑通 `pty::windows::conpty_echo_roundtrip` 后，把下面这行改成 `cfg!(any(unix, windows))`
+/// 即可打开，其余代码一行不用动。
 pub(crate) fn is_supported() -> bool {
     cfg!(unix)
 }
 
-/// 子进程侧 stdio 的来源：Unix 拿 slave `File`，ConPTY 拿两条管道。
+/// 子进程侧接 pty 所需的东西：Unix 拿 slave `File`，Windows 拿 ConPTY 会话句柄。
 ///
-/// ⚠ **转换必须发生在 worker 线程里**（`into_stdio()` 被 `spawn_pty_worker` 调用，而不是在
+/// ⚠ Unix 的**转换必须发生在 worker 线程里**（`into_stdio()` 被 `spawn_pty_worker` 调用，而不是在
 /// `open()` 里）。上一版把三份 dup 提前到 caller 就导致 Linux 的 pty 拿不到真 tty
 /// （`pty_spawn`/`pty_resize` 挂）—— 这个时机是**行为的一部分**，不是实现细节。
+///
+/// Windows 侧**根本没有**这一步：ConPTY 不走 stdio 重定向，子进程是靠属性表接上会话的。
 pub(crate) enum PtyChildStdio {
     /// Unix：pty 的 slave 端（三份 dup 由 `into_stdio` 在 worker 里做）
     #[cfg(unix)]
     Slave(std::fs::File),
-    /// Windows：ConPTY 的两条管道（子进程端）—— 已经是 `Stdio`，无需 dup。
-    /// 目前还没有构造点（ConPTY 未落地）⇒ 允许未使用，免得 Windows 门禁因 warning 变红。
+    /// Windows：ConPTY 会话句柄（`spawn_child` 拿它填 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`）
     #[cfg(windows)]
-    #[allow(dead_code)]
-    Pipes {
-        stdin: std::process::Stdio,
-        stdout: std::process::Stdio,
-        stderr: std::process::Stdio,
-    },
+    ConPty(windows::ConPty),
 }
 
 impl PtyChildStdio {
-    /// 在 **worker 线程**里转成子进程的三份 stdio。
-    #[cfg_attr(not(unix), allow(dead_code))] // 非 unix 侧暂无构造点（ConPTY 未落地）
+    /// 在 **worker 线程**里把 slave 转成子进程的三份 stdio。
+    ///
+    /// 仅 Unix：ConPTY 不用 stdio 重定向。
+    #[cfg(unix)]
     pub(crate) fn into_stdio(
         self,
     ) -> anyhow::Result<(
@@ -66,7 +71,6 @@ impl PtyChildStdio {
         std::process::Stdio,
     )> {
         match self {
-            #[cfg(unix)]
             PtyChildStdio::Slave(slave) => {
                 let stdin = slave.try_clone()?;
                 let stdout = slave.try_clone()?;
@@ -76,12 +80,6 @@ impl PtyChildStdio {
                     std::process::Stdio::from(slave),
                 ))
             }
-            #[cfg(windows)]
-            PtyChildStdio::Pipes {
-                stdin,
-                stdout,
-                stderr,
-            } => Ok((stdin, stdout, stderr)),
         }
     }
 }
@@ -103,7 +101,14 @@ pub(crate) trait PtyChild: Send {
     /// 否则孤儿进程持住 slave fd → master 读永不 EIO → worker 挂死。
     /// Windows：Job Object 整棵树终止（`TerminateProcess` 只杀一个进程）。
     fn kill_tree(&mut self);
+    /// 不阻塞地问一句：进程退了吗？
+    ///
+    /// **为什么 worker 必须轮询这个**：ConPTY 下 conhost 不会随客户端退出而关闭输出管道
+    /// （实测：`cmd /C echo` 退完后 20s 依然无 EOF）⇒ 必须由 worker 发现“子进程没了”并
+    /// 主动 [`PtyMaster::close`]，读端才会 EOF。Unix 侧它是无害的（并顺手把退出码缓存下来）。
+    fn exited(&mut self) -> bool;
     /// 等退出码（读端 EOF 之后调用，不会挂很久）；拿不到返回 `None`（worker 记 -1）。
+    /// 若 [`Self::exited`] 已把它收割掉，这里返回缓存值。
     fn wait(&mut self) -> Option<i32>;
 }
 
@@ -121,11 +126,19 @@ pub(crate) trait PtyMaster: Send + 'static {
     /// 把子进程设为该 pty 的**前台进程组**（交互 shell 的 job control 需要）；
     /// Windows 无此概念 ⇒ 空实现。
     fn set_foreground(&self, child_pid: u32);
+    /// 子进程已退出 ⇒ 主动收尾，让读端能 EOF。
+    ///
+    /// - **Windows（ConPTY）**：`ClosePseudoConsole` 才会让 conhost 退出、输出管道关闭。
+    ///   不调它，读线程就永远阻塞在 `ReadFile` 上（实测过，不是理论）。
+    /// - **Unix**：空操作 —— slave 全关后 master 自然 EIO，提前关反而会让读端的 dup 读不到尾巴。
+    ///
+    /// 幂等：重复调用安全。
+    fn close(&mut self);
 }
 
-/// 打开一对 pty：宿主端句柄 + **子进程侧 stdio 的来源**。
+/// 打开一对 pty：宿主端句柄 + **子进程侧接 pty 所需的东西**。
 ///
-/// ⚠ 刻意**不**在这里把 slave 拆成三份 `Stdio`：上一版那样做之后 Linux 的 pty 用例
+/// ⚠ Unix 上刻意**不**在这里把 slave 拆成三份 `Stdio`：上一版那样做之后 Linux 的 pty 用例
 /// （`pty_spawn`/`pty_resize`）拿不到真 tty（`tty` 输出 8 字节后不再产出、等不到 Exit）。
 /// 拆分的时机/位置显然有影响，所以这一步只换"宿主端句柄"这一个变量，slave 仍原样交给 worker。
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -136,8 +149,7 @@ pub(crate) fn open(size: TermSize) -> anyhow::Result<(Box<dyn PtyMaster>, PtyChi
     }
     #[cfg(not(unix))]
     {
-        let _ = size;
-        Err(windows::not_supported())
+        windows::open(size)
     }
 }
 
@@ -148,8 +160,5 @@ pub(crate) use unix::UnixChild;
 
 #[cfg(not(unix))]
 mod windows;
-// 非 unix 侧暂**没有**调用点（`is_supported()` 会先拦下来，见 popup.rs 的错误分支）；
-// 这里保留再导出，是为了 ConPTY 落地时调用点不必改，只改 windows.rs。
 #[cfg(not(unix))]
-#[allow(unused_imports)]
-pub(crate) use windows::open_pty;
+pub(crate) use windows::spawn_child as spawn_windows_child;

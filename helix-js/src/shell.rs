@@ -460,22 +460,17 @@ fn spawn_pty_child(
             Ok(())
         });
     }
-    Ok(Box::new(pty::UnixChild(command.spawn()?)))
+    Ok(Box::new(pty::UnixChild::new(command.spawn()?)))
 }
 
-/// 非 unix：ConPTY 未落地 ⇒ 明确报错。
-///
-/// 保留同一个签名（而不是整段 cfg 掉 worker）是为了：worker 的其余部分（读线程 / 主循环 /
-/// Kill / wait）在 Windows 上也一直被编译着，将来只换这一个函数的实现就够。
+/// 非 unix：**ConPTY**。与 Unix 的区别是没有 stdio 重定向 ——
+/// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 直接把会话交给子进程（见 `pty/windows.rs`）。
 #[cfg(not(unix))]
-#[allow(dead_code)] // 保留签名：worker 的其余部分在 Windows 上也一直编着（ConPTY 落地时只换实现）
 fn spawn_pty_child(
-    _cmd: &crate::platform::Cmd,
-    _stdio: pty::PtyChildStdio,
+    cmd: &crate::platform::Cmd,
+    stdio: pty::PtyChildStdio,
 ) -> anyhow::Result<Box<dyn pty::PtyChild>> {
-    Err(anyhow::anyhow!(
-        "pty: 本平台尚未实现（Windows 需要 ConPTY，Win10 1809+）"
-    ))
+    pty::spawn_windows_child(cmd, stdio)
 }
 
 /// PTY worker：子进程接 pty 的 stdio，父线程读 master 发 Chunk（流式），
@@ -546,6 +541,13 @@ pub(crate) fn spawn_pty_worker(
             }
             if done_rx.try_recv().is_ok() {
                 break;
+            }
+            // 子进程退了就主动收尾。**这条不是清理细节，是 ConPTY 的行为要求**：
+            // conhost 不会因为客户端进程退出而关闭输出管道（实测：`cmd /C echo` 退完
+            // 20s 仍无 EOF）⇒ 不 `close()` 的话读线程永远阻塞在 `ReadFile`，worker 挂死。
+            // Unix 侧 `close()` 是空操作，所以这行不改变 Linux 行为。
+            if child.exited() {
+                master.close();
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -623,24 +625,18 @@ pub(crate) fn js_spawn(
                 "helix.spawn: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）",
             ));
         }
-        #[cfg(unix)]
-        {
-            let (master, slave) = pty::open(pty::TermSize { rows: 24, cols: 80 })
-                .map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
-            // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
-            crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
-            spawn_pty_worker(
-                id,
-                crate::platform::Cmd::Shell(cmd.clone()),
-                term_tx,
-                rx,
-                master,
-                slave,
-            );
-        }
-        // 非 unix：上面的 `is_supported()` 已经返回过了，这里只是让 `cmd` 不被移动走
-        #[cfg(not(unix))]
-        let _ = cmd;
+        let (master, slave) = pty::open(pty::TermSize { rows: 24, cols: 80 })
+            .map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
+        // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
+        crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
+        spawn_pty_worker(
+            id,
+            crate::platform::Cmd::Shell(cmd),
+            term_tx,
+            rx,
+            master,
+            slave,
+        );
     } else {
         // `spawn` 目前只接字符串（与 pty 路径一起做 argv 才有意义，见 spec N3）
         spawn_worker(id, crate::platform::Cmd::Shell(cmd), false, term_tx, rx);

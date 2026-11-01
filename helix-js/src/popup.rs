@@ -3,18 +3,14 @@ use anyhow::{anyhow, Result};
 use boa_engine::object::builtins::{JsArray, JsFunction};
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
-#[cfg(unix)]
 use boa_engine::Source;
 use boa_engine::{Context, JsString, JsValue};
 
 use crate::pty;
-#[cfg(unix)]
 use crate::shell::spawn_pty_worker;
 
-use crate::state::{with_popups, with_statusline_hook, UI_REQUESTS};
-// 仅 open_terminal 的 pty 路径(cfg(unix) 块)里用到 ⇒ 非 unix 下不导入,免得 unused 警告
-#[cfg(unix)]
 use crate::state::with_terms;
+use crate::state::{with_popups, with_statusline_hook, UI_REQUESTS};
 
 use crate::commands::doc_to_js;
 use crate::input::InputState;
@@ -499,9 +495,16 @@ pub(crate) fn js_open_terminal(
     let on_exit = opts.get(JsString::from("onExit"), ctx)?;
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 
-    #[cfg(unix)]
+    // 能力查询（而不是 `#[cfg]` 死分支）：Unix 是 POSIX pty，Windows 是 ConPTY。
+    // 真跑到别的平台上再报错，理由与替代方案一起给全。
+    if !pty::is_supported() {
+        let _ = (cmd, side, size, on_exit);
+        return Err(crate::js_err(
+            "open_terminal: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）；\
+             同步命令请用 helix.run([...])；详见 docs/api/process-fs.md",
+        ));
+    }
     {
-        // view_id 只在 unix 分支用 ⇒ 在这里分配(非 unix 直接报错,不必消耗 id)
         let view_id = crate::state::next_terminal_view_id(crate::host::host_state(ctx));
         // 桥接闭包经 eval 工厂构造（与 js_lazy 同款）：捕获 view_id，chunk → helix.term_feed
         let factory = ctx
@@ -558,18 +561,6 @@ pub(crate) fn js_open_terminal(
                 size,
             }));
         Ok(JsValue::from(view_id))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (cmd, side, size, on_exit);
-        // 不静默降级、也不假装可用：说清缺什么、有没有替代。
-        // 注意 `pty::is_supported()` 在这里必为 false（编译期 cfg）——写成断言是为了
-        // 将来 ConPTY 落地时，这里会立刻被编译器提醒“该改这段了”。
-        debug_assert!(!pty::is_supported());
-        Err(crate::js_err(
-            "open_terminal: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）；\
-             同步命令请用 helix.run([...])；详见 docs/api/process-fs.md",
-        ))
     }
 }
 

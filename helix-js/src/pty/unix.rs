@@ -7,23 +7,55 @@ use anyhow::{anyhow, Result};
 use super::{PtyChild, PtyChildStdio, PtyMaster, PtyResize, TermSize};
 
 /// `std::process::Child` 的 pty 适配：把「杀整组 / 等退出码」翻译成 trait 方法。
-pub(crate) struct UnixChild(pub(crate) std::process::Child);
+pub(crate) struct UnixChild {
+    child: std::process::Child,
+    /// `try_wait` 会**收割**子进程（之后再 `wait` 拿不到状态）⇒ 就地缓存。
+    status: Option<Option<i32>>,
+}
+
+impl UnixChild {
+    pub(crate) fn new(child: std::process::Child) -> Self {
+        Self {
+            child,
+            status: None,
+        }
+    }
+}
 
 impl PtyChild for UnixChild {
     fn id(&self) -> u32 {
-        self.0.id()
+        self.child.id()
     }
 
     fn kill_tree(&mut self) {
         // 杀整个进程组（-pgid）：sh 未 exec 时孙进程（如 cat）也一并杀，
         // 否则孤儿进程持住 slave fd → master 读永不 EIO → worker 挂死
         unsafe {
-            libc::kill(-(self.0.id() as libc::pid_t), libc::SIGKILL);
+            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+        }
+    }
+
+    fn exited(&mut self) -> bool {
+        if self.status.is_some() {
+            return true;
+        }
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                self.status = Some(status.code());
+                true
+            }
+            // 出错也当作“没退”：worker 靠 `Kill`/读端 EOF 收尾，不因一次探测失败就误判
+            Ok(None) | Err(_) => false,
         }
     }
 
     fn wait(&mut self) -> Option<i32> {
-        self.0.wait().ok().and_then(|status| status.code())
+        if let Some(code) = self.status {
+            return code;
+        }
+        let code = self.child.wait().ok().and_then(|status| status.code());
+        self.status = Some(code);
+        code
     }
 }
 
@@ -92,6 +124,11 @@ impl PtyMaster for Master {
         unsafe {
             libc::tcsetpgrp(self.0, child_pid as libc::pid_t);
         }
+    }
+
+    fn close(&mut self) {
+        // 空操作：Unix 下 slave 全关后 master 读自然 EIO。
+        // 提前关 master 反而会让读线程的 dup 读不到尾巴（见 `PtyMaster::close` 的说明）。
     }
 }
 
