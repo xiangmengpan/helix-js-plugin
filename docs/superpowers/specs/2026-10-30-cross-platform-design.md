@@ -976,3 +976,46 @@ Windows 集成测试：341 passed / 83 failed  →  352 passed / 74 failed
 | 换行符 | `window_split::vsplit_new_creates_scratch_leaf` | 期望 `"x\n"`，实到 `"x\r\n"` |
 
 这四类都不需要 ConPTY，是可以继续推进的（下一轮按这个顺序来）。
+
+### 方法论踩坑：**WSL interop 不把 Linux 环境变量传给 Windows 进程**
+
+这条把之前所有 Windows 集成测试的数字都打上了问号 —— 因为 `HELIX_RUNTIME` 从来没生效过。
+
+实测（win11 + Ubuntu-20.04）：
+
+```
+$ HELIX_RUNTIME='C:\Temp\helix-rt' cmd.exe /C "echo [%HELIX_RUNTIME%]"
+[%HELIX_RUNTIME%]                     ← 没传进去
+$ cmd.exe /C "set HELIX_RUNTIME=C:\Temp\helix-rt&& hx.exe --health"
+Runtime directories: …\helix\runtime;C:\Temp\helix-rt;…\debug\runtime   ← 这才生效
+```
+
+后果：Windows 上的 `runtime_dirs()` 只剩「config 目录」和「exe 旁边」两条，都指向不存在的路径
+⇒ 主题列表为 0、语法/查询加载不到。**之前的失败里有相当一部分是这个原因，不是代码 bug。**
+
+正确跑法（写进 `.bat`，用 `cmd /C` 启动）：
+
+```bat
+@echo off
+set HELIX_RUNTIME=C:\Temp\helix-rt
+\\wsl.localhost\Ubuntu-20.04\home\muyang\code\rs\helix\target\x86_64-pc-windows-gnu\integration\deps\integration-*.exe --test-threads=4
+```
+
+其中 `C:\Temp\helix-rt` 是从仓库 `runtime/` 复制出来的**原生 Windows 副本**（`themes/queries/plugins/tutor`
+\+ 301 个 `grammars/*.dll`，约 350MB；`grammars/sources` 不用带）。
+
+⚠ 注意：环境变量修正后**跑得更慢了**（>40 分钟，之前 ~19 分钟）——因为现在真的在加载运行时资源、
+真的在跑那些原本"秒挂"的用例。中途采样（未跑完）：343 ok / 82 failed，分布也变了：
+
+| 类 | 条数 | 说明 |
+|---|---|---|
+| `plugin_terminal_*` | 22 | 卡 ConPTY（需另一台 Windows） |
+| `plugin_lsp_mock` | 10 | 待查 |
+| `plugin_manager` | 8 | 待查（疑似要网络/资源目录） |
+| `plugin_cross_buffer` / `filetree` | 12 | 待查（疑似符号链接/路径） |
+| `server_manager` | 5 | `#!/bin/sh` 夹具 |
+| `commands::write` | 3 | 疑似 CRLF（见 `window_split` 的 `"x\r\n"` vs `"x\n"`） |
+| 其余 | ~22 | `plugin_decorations` / `draw` / `dapui` / `entry` 等 |
+
+⇒ 下一轮的正确顺序：**先用 .bat 跑完整一轮拿全量清单**，再按"是否依赖 sh 夹具 / 换行符 / pty"
+三类分组处理。pty 那类只能等另一台 Windows。
