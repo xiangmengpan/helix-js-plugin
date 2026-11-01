@@ -131,9 +131,11 @@ async fn vsplit_new_creates_scratch_leaf() -> anyhow::Result<()> {
     // scratch 叶活动,空文档可输入
     pump(&mut app, "ix<esc>").await?;
     let (_, doc) = current_ref!(app.editor);
+    // 行尾是 `LineEndingConfig::Native` ⇒ Windows 上是 CRLF（那是**设计**，不是 bug）
+    let nl = if cfg!(windows) { "\r\n" } else { "\n" };
     assert_eq!(
         doc.text().to_string(),
-        "x\n",
+        format!("x{nl}"),
         "scratch 叶输入(默认含尾换行): {:?}",
         doc.text().to_string()
     );

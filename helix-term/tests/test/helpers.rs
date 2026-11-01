@@ -248,6 +248,18 @@ pub fn test_config_with_lsp() -> Config {
     config
 }
 
+/// mock LSP 可执行文件路径。
+///
+/// `CARGO_BIN_EXE_mock_lsp` 是**编译期**的绝对路径（构建机文件系统）。交叉编译到 Windows 后
+/// 那条路径不存在 ⇒ 起 server 直接失败，而"等超时"的用例会一直等下去（实测：整轮套件挂住）。
+/// 所以优先读运行时 `HELIX_TEST_MOCK_LSP`（Windows 测试脚本用 `set` 提供）。
+pub fn mock_lsp_bin() -> String {
+    std::env::var("HELIX_TEST_MOCK_LSP")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mock_lsp").to_string())
+}
+
 /// mock LSP server loader：把 .mock 文件类型接到 mock_lsp 二进制（CARGO_BIN_EXE_mock_lsp），
 /// argv[1]=场景、argv[2..]=场景附加参数（如第二文件路径）。
 pub fn mock_lsp_loader(scenario: &str, extra_args: &[&str]) -> helix_core::syntax::Loader {
@@ -266,7 +278,7 @@ language-servers = ["mock-lsp"]
 command = "{bin}"
 args = {args}
 "#,
-        bin = env!("CARGO_BIN_EXE_mock_lsp"),
+        bin = mock_lsp_bin(),
         args = serde_json::to_string(&args).unwrap(),
     );
     test_syntax_loader(Some(toml))
@@ -291,7 +303,7 @@ args = ["code_actions_basic", "A"]
 command = "{bin}"
 args = ["code_actions_basic", "B"]
 "#,
-        bin = env!("CARGO_BIN_EXE_mock_lsp"),
+        bin = mock_lsp_bin(),
     );
     test_syntax_loader(Some(toml))
 }
@@ -317,7 +329,7 @@ command = "{bin}"
 args = {args}
 timeout = {timeout}
 "#,
-        bin = env!("CARGO_BIN_EXE_mock_lsp"),
+        bin = mock_lsp_bin(),
         args = serde_json::to_string(&args).unwrap(),
         timeout = timeout_secs,
     );
