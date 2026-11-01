@@ -775,3 +775,21 @@ term_pty::pty_resize → 同上
 而它把一条已经在工作的路径（Linux pty）改坏了 —— 收益与风险的比值不成立。
 下次做 ConPTY 时**先**把 pty 抽象写对（对着 `pty_spawn`/`pty_resize` 这两条测试做），
 再做 Windows 实现；两步都验证过再合并，别把"抽象"和"新平台"混在一次改动里。
+
+### Windows 集成测试：**挂住的那条已经被上一轮的流式实现治好**
+
+之前 900s 跑不完、`plugin_async::plugin_async_run` 卡住不退。重新编 Windows 集成目标后：
+
+| | 之前 | 现在 |
+|---|---|---|
+| `plugin_async::plugin_async_run` | **挂住**（>60s 无输出，被套件超时截断） | **5.7s 通过** |
+| `plugin_lsp_mock::plugin_lsp_mock_timeout_rejects` | 未跑完 | 单跑 **11s 通过**（本来就只是慢） |
+
+原因：那条用例等的是 `run_async` 的 `.then` 回包，而上一轮之前 Windows 的流式读根本没实现
+⇒ promise 永远不 resolve ⇒ 测试挂死。上一轮补上"每条流一个阻塞读线程"后它自然通了。
+
+顺带修了它的断言：Windows 上 `cmd /C` 在 **UNC 工作目录**（WSL 里跑 Windows 二进制时 cwd 是
+`\\wsl.localhost\…`）会先打一段"不支持 UNC 路径"的提示 ⇒ 改成断言首尾结构而不是整串相等。
+
+**套件仍然很慢**：900s 只跑到 381/426（`window_*` / `splits` / `server_manager` 都在后面没轮到），
+不是挂住。要在 CI 里跑需要更长 timeout 或按模块分片。
