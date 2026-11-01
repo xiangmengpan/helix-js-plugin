@@ -1619,9 +1619,7 @@ impl Editor {
     /// （进度收尾那条语义不变）。
     pub fn clear_status(&mut self) {
         const MIN_SHOW: std::time::Duration = std::time::Duration::from_secs(2);
-        let too_young = self
-            .status_set_at
-            .is_some_and(|t| t.elapsed() < MIN_SHOW);
+        let too_young = self.status_set_at.is_some_and(|t| t.elapsed() < MIN_SHOW);
         if too_young {
             return;
         }
