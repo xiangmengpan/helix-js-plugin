@@ -495,8 +495,7 @@ async fn which_key_plugin_zh_hints() -> anyhow::Result<()> {
 /// 直接断言"插件里不存在第二份表"才是这个不变量本身。
 #[test]
 fn which_key_has_no_hardcoded_pane_hints_table() {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/which-key/plugin.js");
+    let path = repo_plugin("which-key/plugin.js");
     // 刻意**不**静默跳过:这份文件在仓库里必然存在,读不到就是路径写错了 ——
     // 静默 return 会让测试空过(那正是这类"读文件"测试最常见的假绿)。
     let src =
@@ -518,7 +517,7 @@ fn which_key_has_no_hardcoded_pane_hints_table() {
 /// 少了它就是"看着一样、实则能毁掉运行时文件"的搬迁。
 #[tokio::test(flavor = "multi_thread")]
 async fn tutor_plugin_opens_unbound_doc() -> anyhow::Result<()> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = repo_root();
     let plugin = root.join("plugins/tutor/plugin.js");
     // 从**仓库**路径加载(不依赖用户镜像)→ 文件缺失应**明确失败**,而不是静默跳过
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
@@ -553,7 +552,7 @@ async fn tutor_plugin_opens_unbound_doc() -> anyhow::Result<()> {
 /// 预置两个文件 → 只删指定的那个 → 既证明 `sub` 到了 JS,也证明 `name` 路由正确。
 #[tokio::test(flavor = "multi_thread")]
 async fn layout_plugin_routes_args_and_persists() -> anyhow::Result<()> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = repo_root();
     let plugin = root.join("plugins/layout/plugin.js");
     // 从**仓库**路径加载(不依赖用户镜像)→ 缺失即明确失败,不静默跳过
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
@@ -596,7 +595,7 @@ async fn layout_plugin_routes_args_and_persists() -> anyhow::Result<()> {
 /// `loaded_scripts()` 里那次多余的 `crate::init()` 会在命令持锁期间重入引擎)。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_js_manager_list_and_status() -> anyhow::Result<()> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = repo_root();
     let plugin = root.join("plugins/plugin/plugin.js");
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
 
@@ -709,7 +708,7 @@ helix.register_command("lc-go", () => {{ helix.split("right", {{ terminal: {{ cm
 /// 渲染观感(居中/logo)无头夹具断言不了 ⇒ 靠真机目视 ✓
 #[tokio::test(flavor = "multi_thread")]
 async fn dashboard_popup_opens_and_closes() -> anyhow::Result<()> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = repo_root();
     let plugin = root.join("plugins/dashboard/plugin.js");
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
 
@@ -798,7 +797,7 @@ async fn picker_ui_opens() -> anyhow::Result<()> {
     std::fs::write(dir.path().join("b.txt"), "y\n")?;
     let _cwd = CwdScope::enter(dir.path()).await;
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = repo_root();
     let plugin = root.join("plugins/picker-ui/plugin.js");
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
 

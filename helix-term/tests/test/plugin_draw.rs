@@ -256,7 +256,7 @@ async fn picker_ui_draws_with_draw_api() -> anyhow::Result<()> {
     }
     let _cwd = CwdScope::enter(dir.path()).await;
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = repo_root();
     let plugin = root.join("plugins/picker-ui/plugin.js");
     assert!(plugin.is_file(), "仓库里应有 {}", plugin.display());
 

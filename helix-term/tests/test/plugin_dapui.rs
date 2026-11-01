@@ -6,7 +6,7 @@
 use super::*;
 
 fn dapui_plugin() -> String {
-    format!("{}/../plugins/dapui/plugin.js", env!("CARGO_MANIFEST_DIR"))
+    repo_plugin("dapui/plugin.js").display().to_string()
 }
 
 fn screen(app: &mut helix_term::application::Application) -> String {

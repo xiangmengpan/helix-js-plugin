@@ -491,14 +491,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
-    let plugin = format!(
-        "{}/plugins/arsenal/plugin.js",
-        std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap()
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or(".")
-    );
+    let plugin = repo_plugin("arsenal/plugin.js").display().to_string();
 
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     let popup_type = std::any::type_name::<helix_term::ui::Popup<helix_term::ui::PluginPopup>>();
@@ -667,14 +660,7 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
-    let plugin = format!(
-        "{}/plugins/arsenal/plugin.js",
-        std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap()
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or(".")
-    );
+    let plugin = repo_plugin("arsenal/plugin.js").display().to_string();
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
     pump(&mut app, ":arsenal<ret>").await?;
@@ -736,14 +722,7 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
 
-    let plugin = format!(
-        "{}/plugins/arsenal/plugin.js",
-        std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap()
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or(".")
-    );
+    let plugin = repo_plugin("arsenal/plugin.js").display().to_string();
 
     let mut app = AppBuilder::new().with_file(file, None).build()?;
     pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
@@ -809,12 +788,7 @@ async fn server_recipes_file_visible_in_editor() -> anyhow::Result<()> {
     // SM_* 是**进程级**变量:裸 set_var 既不恢复,又会把"指向已删 tempdir"的值
     // 残留给后续测试 ⇒ 一律走 guard(Drop 时恢复)✓
     let _env = sm_env(dir.path());
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let repo = manifest
-        .rsplit_once('/')
-        .map(|(dir, _)| dir)
-        .unwrap_or(&manifest)
-        .to_string();
+    let repo = repo_root().to_string_lossy().into_owned();
     let _rec = EnvGuard::new(
         "SM_SERVER_RECIPES",
         format!("{repo}/contrib/server-manager-recipes.toml"),

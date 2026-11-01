@@ -879,10 +879,7 @@ pub fn take_pending_launches() -> Vec<PendingLaunch> {
 
 /// 构建命令**首个可执行名**（`meson setup build && …` → `meson`）。
 fn build_tool(cmd: &str) -> String {
-    cmd.split_whitespace()
-        .next()
-        .unwrap_or(cmd)
-        .to_string()
+    cmd.split_whitespace().next().unwrap_or(cmd).to_string()
 }
 
 /// 起不来（spawn 失败）时的文案：模块缺失/权限这类要让用户知道**缺哪个程序**。

@@ -477,10 +477,7 @@ async fn powerline_caps_coexist_across_modes() -> anyhow::Result<()> {
         .with_config(config)
         .build()?;
     pump(&mut app, &format!(":plugin-load {}<ret>", setup.display())).await?;
-    let plugin = format!(
-        "{}/../plugins/statusline/plugin.js",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let plugin = repo_plugin("statusline/plugin.js").display().to_string();
     pump(&mut app, &format!(":plugin-load {plugin}<ret>")).await?;
 
     // 把状态栏渲染成一行格子，返回左端帽的 fg 颜色

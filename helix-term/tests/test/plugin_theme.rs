@@ -7,7 +7,6 @@
 
 use super::*;
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use helix_loader::workspace_trust::WorkspaceTrust;
@@ -81,7 +80,7 @@ async fn plugin_theme_set_and_reset_over_inheriting_theme() -> anyhow::Result<()
     let _guard = THEME_LOCK.lock().await;
     // ashokai_brahn 继承 ashokai：ui.popup/ui.background 只定义在父主题里。
     // 若基准用 load_raw（不解析 inherits）捕获，set/reset 都会丢父主题样式。
-    let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+    let runtime = repo_root().join("runtime");
     let expected = Loader::new(&[runtime]).load("ashokai_brahn")?;
     let expected_popup_fg = expected.get("ui.popup").fg;
     let expected_bg_bg = expected.get("ui.background").bg;

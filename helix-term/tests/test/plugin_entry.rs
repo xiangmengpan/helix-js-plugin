@@ -65,7 +65,7 @@ async fn plugin_entry_import_and_lazy() -> anyhow::Result<()> {
 /// 但模板漂移正是同类事故的一半,而且这一半是可以自动挡住的。
 #[test]
 fn plugins_init_template_loads_resolve() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins");
+    let dir = repo_plugins_dir();
     let src = std::fs::read_to_string(dir.join("init.js"))
         .unwrap_or_else(|e| panic!("读不到 {}: {e}", dir.join("init.js").display()));
     let mut checked = 0;

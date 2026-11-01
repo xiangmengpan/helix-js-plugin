@@ -71,7 +71,7 @@ helix.register_command("show-panel", () => { helix.open_panel({ side: "right", s
 // ── 计划任务 4：`:plugin reload` 从桩变成真接管 ──
 
 fn mgr_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js")
+    repo_plugin("plugin/plugin.js")
 }
 
 /// `:plugin reload` 真的重载：**改盘上的脚本**后 reload，新内容生效（v1 → v2）。

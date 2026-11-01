@@ -548,8 +548,26 @@ pub fn assert_status_not_error(editor: &Editor) {
 /// 2026-10-17 实测:删掉开发机上的镜像后,filetree / window_rail 等 5 条集成测试
 /// 直接红(`No such file or directory`)—— 说明它们从来没在干净环境里跑过。
 /// 集成测试要**自包含**:读仓库里的插件源码,别读开发机配置。
+/// 仓库根目录（读 `plugins/`、`runtime/` 这类**真实**文件用）。
+///
+/// ⚠ 编译期的 `CARGO_MANIFEST_DIR` 是**宿主**的绝对路径。交叉编译到 Windows 之后那个路径
+/// 根本不存在 ⇒ 所有"读仓库里的插件"的用例都会在 setup 阶段挂 `os error 3`（实测 30+ 条，
+/// 一度被误当成 Windows 侧的真 bug）。
+///
+/// 所以：优先读运行时环境变量 `HELIX_TEST_REPO`（Windows 上由测试脚本用 `set` 提供，
+/// 指向一个 Windows 看得见的仓库路径）；没设就回退到编译期路径 —— **Linux/原生构建行为完全不变**。
+pub fn repo_root() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("HELIX_TEST_REPO") {
+        let dir = std::path::PathBuf::from(dir);
+        if dir.is_dir() {
+            return dir;
+        }
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
 pub fn repo_plugins_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins")
+    repo_root().join("plugins")
 }
 
 /// 单个内置插件的路径,如 `repo_plugin("filetree/plugin.js")`。

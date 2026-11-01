@@ -137,8 +137,7 @@ async fn plugin_picker_builtin_plugin_buffers_source() -> anyhow::Result<()> {
         &helper,
         r#"helix.register_command("pick-buffers", () => helix.picker.run("buffers"));"#,
     )?;
-    let picker_js =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/examples/picker.js");
+    let picker_js = repo_plugin("examples/picker.js");
     let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,

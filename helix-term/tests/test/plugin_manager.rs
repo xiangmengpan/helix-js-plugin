@@ -21,7 +21,7 @@ async fn plugin_manager_list_status() -> anyhow::Result<()> {
 
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
-    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
+    let mgr = repo_plugin("plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
@@ -79,7 +79,7 @@ async fn plugin_list_and_status() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
-    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
+    let mgr = repo_plugin("plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
@@ -118,7 +118,7 @@ async fn plugin_install_invalid_arg_reports() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
-    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
+    let mgr = repo_plugin("plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
@@ -154,7 +154,7 @@ async fn plugin_pin_uninstalled_reports() -> anyhow::Result<()> {
     std::fs::write(&file, "hello\n")?;
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
-    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
+    let mgr = repo_plugin("plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
@@ -214,7 +214,7 @@ helix.plugin.remove("nope-js-api");"#,
     helix_js::set_plugin_roots_current(vec![proot.path().to_path_buf()]);
     // 迁移期间:`plugin-js`(JS 侧管理器)需**显式加载** —— 它用临时命令名,
     // 不遮挡 Rust 的 `:plugin`(后者仍在本文件的断言下应答)。
-    let mgr = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js");
+    let mgr = repo_plugin("plugin/plugin.js");
     test_key_sequences(
         &mut AppBuilder::new().with_file(file, None).build()?,
         vec![
@@ -241,7 +241,7 @@ helix.plugin.remove("nope-js-api");"#,
 
 /// 本机 loader 的 mgr 路径（三条用例共用）
 fn mgr_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin/plugin.js")
+    repo_plugin("plugin/plugin.js")
 }
 
 /// 自本机 `plugins/plugin/plugin.js` 载入管理器，并执行一条 `:plugin …`。

@@ -431,8 +431,13 @@ url = "file://{}"
             root.join("languages.toml").to_string_lossy().into_owned(),
         );
         // 用**仓库**那份配方文件(不带用户的 ~/.config 覆盖),保证验的是要提交的内容
-        let recipes =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../contrib/server-manager-recipes.toml");
+        // 同 `tests/test/helpers.rs::repo_root`：编译期 CARGO_MANIFEST_DIR 是**宿主**路径，
+        // 交叉编译到 Windows 后不存在 ⇒ 优先用 HELIX_TEST_REPO。
+        let repo_root = std::env::var_os("HELIX_TEST_REPO")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".."));
+        let recipes = repo_root.join("contrib/server-manager-recipes.toml");
         let _rec = EnvGuard::new("SM_SERVER_RECIPES", recipes.to_string_lossy().into_owned());
 
         apply_server_config(None).expect("读配方");
