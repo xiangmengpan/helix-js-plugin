@@ -22,8 +22,13 @@ use anyhow::{anyhow, Result};
 
 /// 本平台还开不了 pty。
 pub(crate) fn open_pty() -> Result<()> {
-    Err(anyhow!(
+    Err(not_supported())
+}
+
+/// 统一的"还没实现"错误（`pty::open` 共用同一句话）。
+pub(crate) fn not_supported() -> anyhow::Error {
+    anyhow!(
         "pty: 本平台尚未实现（Windows 需要 ConPTY，Win10 1809+）；\
          同步命令请用 helix.run([...])"
-    ))
+    )
 }

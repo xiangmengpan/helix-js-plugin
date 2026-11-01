@@ -35,10 +35,42 @@ pub(crate) fn is_supported() -> bool {
     cfg!(unix)
 }
 
+/// 宿主端句柄：`spawn_pty_worker` 只通过它读写/改尺寸/设前台组，不碰平台类型。
+///
+/// 这是 ConPTY 落地时的**唯一接缝**：新增一个 Windows 实现即可，worker 一行不用改。
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) trait PtyMaster: Send + 'static {
+    /// 读端独占一份（Unix 是 dup 出的第二个 File）。
+    fn reader(&self) -> anyhow::Result<Box<dyn std::io::Read + Send>>;
+    fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()>;
+    fn flush(&mut self) -> anyhow::Result<()>;
+    /// 注册进 `TERM_MASTERS` 的 resize 句柄（`term_resize` 走它）。
+    fn resize_handle(&self) -> std::sync::Arc<dyn PtyResize>;
+    /// 把子进程设为该 pty 的**前台进程组**（交互 shell 的 job control 需要）；
+    /// Windows 无此概念 ⇒ 空实现。
+    fn set_foreground(&self, child_pid: u32);
+}
+
+/// 打开一对 pty：宿主端句柄 + **子进程侧的 slave `File`**。
+///
+/// ⚠ 刻意**不**在这里把 slave 拆成三份 `Stdio`：上一版那样做之后 Linux 的 pty 用例
+/// （`pty_spawn`/`pty_resize`）拿不到真 tty（`tty` 输出 8 字节后不再产出、等不到 Exit）。
+/// 拆分的时机/位置显然有影响，所以这一步只换"宿主端句柄"这一个变量，slave 仍原样交给 worker。
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn open(size: TermSize) -> anyhow::Result<(Box<dyn PtyMaster>, std::fs::File)> {
+    #[cfg(unix)]
+    {
+        unix::open(size)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = size;
+        Err(windows::not_supported())
+    }
+}
+
 #[cfg(unix)]
 mod unix;
-#[cfg(unix)]
-pub(crate) use unix::{open_pty, Master};
 
 #[cfg(not(unix))]
 mod windows;

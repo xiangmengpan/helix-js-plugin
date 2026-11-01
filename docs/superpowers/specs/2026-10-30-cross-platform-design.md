@@ -793,3 +793,23 @@ term_pty::pty_resize → 同上
 
 **套件仍然很慢**：900s 只跑到 381/426（`window_*` / `splits` / `server_manager` 都在后面没轮到），
 不是挂住。要在 CI 里跑需要更长 timeout 或按模块分片。
+
+### pty 抽象 **第一步成功**：只换"宿主端句柄"，slave 原样不动
+
+上一轮把整块（宿主句柄 + slave 三份 Stdio）一次换掉，结果 Linux 的 pty 拿不到真 tty。
+这次改成**只换一个变量**：
+
+| 换 | 不换 |
+|---|---|
+| `spawn_pty_worker(.., master: Box<dyn PtyMaster>, ..)`（原 `pty::Master`） | slave 仍是 `std::fs::File`，**仍在 worker 线程里** `try_clone` 三份 |
+| `master.reader()/write_all()/flush()/set_foreground()/resize_handle()` | 三份 `Stdio::from(...)` 的构造位置与时机 |
+| `pty::Master` 不再出现在 worker 签名与 `popup.rs`/`js_spawn` 里 | `popup.rs` / `js_spawn` 的调用结构 |
+
+**结果：Linux 全绿** —— `pty_spawn` / `pty_resize` / `pty_bash_interactive_no_error` 三条
+（上一版正是在这三条上挂的）以及 45 条 `plugin_terminal*` 集成用例全过。
+
+⇒ 结论：**trait 本身是安全的**；上一轮的破坏来自把 slave 的三份 dup **提前到 caller**。
+ConPTY 落地时的 seam 因此收敛成两个点：
+1. 给 `PtyMaster` 加一个 Windows 实现（`HPCON` + 两条管道 + `ResizePseudoConsole`）；
+2. 让"子进程侧 stdio"也能来自管道 —— 但要**保持构造时机在 worker 里**
+   （不能像上一轮那样在 `open()` 里提前拆）。

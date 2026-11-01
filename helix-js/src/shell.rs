@@ -435,13 +435,12 @@ pub(crate) fn spawn_pty_worker(
     cmd: crate::platform::Cmd,
     tx: WakeSender<TermEvent>,
     ctrl_rx: std::sync::mpsc::Receiver<TermCtrl>,
-    master: pty::Master,
+    master: Box<dyn pty::PtyMaster>,
     slave: std::fs::File,
 ) {
     std::thread::spawn(move || {
-        use std::io::Write;
         use std::process::Stdio;
-        let mut master = master.into_file();
+        let mut master = master;
         // 子进程 stdin/stdout/stderr 都是 slave（dup 三份，spawn 后父侧副本关闭）
         let stdin_slave = match slave.try_clone() {
             Ok(f) => f,
@@ -498,16 +497,10 @@ pub(crate) fn spawn_pty_worker(
                 }
             }
         };
-        // 子进程进程组设为 pty 前台组（交互 bash 的 job control 正常；tcsetpgrp 失败静默）
-        #[cfg(unix)]
-        unsafe {
-            libc::tcsetpgrp(
-                std::os::unix::io::AsRawFd::as_raw_fd(&master),
-                child.id() as libc::pid_t,
-            );
-        }
-        // master 读端单独 dup（读写两端并发：写线程主循环 + 读线程）
-        let master_reader = match master.try_clone() {
+        // 子进程设为 pty 前台进程组（交互 bash 的 job control；Windows 是空实现）
+        master.set_foreground(child.id());
+        // master 读端单独一份（读写两端并发：写线程主循环 + 读线程）
+        let master_reader = match master.reader() {
             Ok(f) => f,
             Err(_) => {
                 let _ = child.kill();
@@ -631,8 +624,8 @@ pub(crate) fn js_spawn(
         }
         #[cfg(unix)]
         {
-            let (master, slave) =
-                pty::open_pty().map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
+            let (master, slave) = pty::open(pty::TermSize { rows: 24, cols: 80 })
+                .map_err(|e| crate::js_err(format!("helix.spawn: pty: {e}")))?;
             // 先注册 resize 句柄再起 worker：spawn 返回后 JS 立即可 term_resize
             crate::state::with_term_masters(|m| m.insert(id, master.resize_handle()));
             spawn_pty_worker(

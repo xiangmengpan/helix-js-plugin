@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use super::{PtyResize, TermSize};
+use super::{PtyMaster, PtyResize, TermSize};
 
 /// master fd 包装：Drop 时 close（worker 线程持有时保证 fd 生命周期）
 pub(crate) struct Master(RawFd);
@@ -12,13 +12,6 @@ pub(crate) struct Master(RawFd);
 impl Master {
     pub(crate) fn fd(&self) -> RawFd {
         self.0
-    }
-
-    /// 把裸 fd 交给 File，不再 Drop close（防双关）
-    pub(crate) fn into_file(self) -> File {
-        let fd = self.0;
-        std::mem::forget(self);
-        unsafe { File::from_raw_fd(fd) }
     }
 
     /// 注册进 `TERM_MASTERS` 的 resize 句柄。
@@ -39,6 +32,55 @@ impl PtyResize for UnixResize {
     fn resize(&self, size: TermSize) -> Result<()> {
         set_winsize(self.fd, size.rows, size.cols)
     }
+}
+
+impl PtyMaster for Master {
+    fn reader(&self) -> Result<Box<dyn std::io::Read + Send>> {
+        // 用 `File::try_clone`（而不是裸 `dup`）：它带 CLOEXEC，语义与改动前一致
+        let file = unsafe {
+            let fd = libc::fcntl(self.0, libc::F_DUPFD_CLOEXEC, 0);
+            if fd < 0 {
+                return Err(anyhow!("dup(master): {}", std::io::Error::last_os_error()));
+            }
+            File::from_raw_fd(fd)
+        };
+        Ok(Box::new(file))
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<()> {
+        use std::io::Write;
+        // ManuallyDrop：fd 的所有权仍归 `Master`（Drop 时统一 close）
+        let mut file = std::mem::ManuallyDrop::new(unsafe { File::from_raw_fd(self.0) });
+        file.write_all(buf)?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        use std::io::Write;
+        let mut file = std::mem::ManuallyDrop::new(unsafe { File::from_raw_fd(self.0) });
+        file.flush()?;
+        Ok(())
+    }
+
+    fn resize_handle(&self) -> Arc<dyn PtyResize> {
+        Master::resize_handle(self)
+    }
+
+    fn set_foreground(&self, child_pid: u32) {
+        // 子进程进程组设为 pty 前台组（交互 bash 的 job control 正常；失败静默）
+        unsafe {
+            libc::tcsetpgrp(self.0, child_pid as libc::pid_t);
+        }
+    }
+}
+
+/// 平台入口：`size` 若不是缺省 24×80 就按它设一次 winsize
+pub(crate) fn open(size: TermSize) -> Result<(Box<dyn PtyMaster>, File)> {
+    let (master, slave) = open_pty()?;
+    if size != (TermSize { rows: 24, cols: 80 }) {
+        set_winsize(master.fd(), size.rows, size.cols)?;
+    }
+    Ok((Box::new(master), slave))
 }
 
 impl Drop for Master {

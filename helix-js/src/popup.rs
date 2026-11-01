@@ -534,8 +534,8 @@ pub(crate) fn js_open_terminal(
         crate::state::with_term_workers(|m| m.insert(pty_id, tx));
         let term_tx =
             crate::state::with_term_events(|t| t.clone().expect("TERM_EVENTS initialized"));
-        let (master, slave) =
-            pty::open_pty().map_err(|e| crate::js_err(format!("open_terminal: pty: {e}")))?;
+        let (master, slave) = pty::open(pty::TermSize { rows: 24, cols: 80 })
+            .map_err(|e| crate::js_err(format!("open_terminal: pty: {e}")))?;
         crate::state::with_term_masters(|m| m.insert(pty_id, master.resize_handle()));
         spawn_pty_worker(
             pty_id,
