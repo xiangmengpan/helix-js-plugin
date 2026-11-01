@@ -42,7 +42,9 @@ async fn setup() -> anyhow::Result<(tempfile::TempDir, Application)> {
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_reveal_expand_open() -> anyhow::Result<()> {
     let (dir, mut app) = setup().await?;
-    let main_js = dir.path().join("src/main.js");
+    // 用 join 逐段拼，别写死 `"src/main.js"`：那在 Windows 上得到 `src/main.js`，
+    // 而 helix 侧给回的是 `src\\main.js` ⇒ 断言只会因为分隔符而红（实测踩过）
+    let main_js = dir.path().join("src").join("main.js");
     let readme = dir.path().join("readme.md");
 
     // 当前文件在树 root（cwd=helix-term）外 → reveal 应重设 root 到 readme 所在目录

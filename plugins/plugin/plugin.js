@@ -82,11 +82,13 @@ function readManifest() {
 function copyTree(dir, stem, rel, files) {
   for (const e of helix.read_dir(dir)) {
     const name = e.name;
+    // `rel`/`files` 是**插件目录内的相对键**（manifest 里统一用 `/`，跨平台一致）；
+    // 但真正的文件系统路径必须走 `helix.path_join` —— Windows 的分隔符是 `\`。
     const r = rel ? rel + "/" + name : name;
     if (e.is_dir) {
-      copyTree(dir + "/" + name, stem, r, files);
+      copyTree(helix.path_join(dir, name), stem, r, files);
     } else {
-      helix.write_plugin_file(stem + "/" + r, helix.read_file(dir + "/" + name));
+      helix.write_plugin_file(stem + "/" + r, helix.read_file(helix.path_join(dir, name)));
       files.push(stem + "/" + r);
     }
   }
@@ -191,8 +193,9 @@ function runOp(sub, arg) {
           break;
         }
         // git 源:名字取 URL 末段(去掉 .git),clone 到 <plugins>/<name>
-        const base = arg.replace(/\/+$/, "").split("/").pop().replace(/\.git$/, "");
-        const dest = mp + "/" + base;
+        // 末段用 path_name：`arg.split("/").pop()` 在 Windows 上切不开 `C:\a\b`
+        const base = (helix.path_name(arg) || arg).replace(/\.git$/, "");
+        const dest = helix.path_join(mp, base);
         try {
           // argv 形态：不经 shell ⇒ 路径里有空格/引号/`%` 都不用转义，Windows 同样成立
           helix.run(["git", "clone", "--depth", "1", arg, dest]);
@@ -203,7 +206,7 @@ function runOp(sub, arg) {
         m[base] = { source: arg, kind: "git", installed_at: now, pinned: false, files: [base] };
       } else {
         // 本地路径:文件 → <name>/plugin.js;目录 → 递归复制其内容
-        const base = arg.replace(/\/+$/, "").split("/").pop();
+        const base = helix.path_name(arg) || arg;
         const stem = base.replace(/\.[^.]+$/, "");
         let entries;
         try {
@@ -288,7 +291,7 @@ function runOp(sub, arg) {
           helix.echo(noProcessMsg("update"));
           break;
         }
-        const dir = mp + "/" + t;
+        const dir = helix.path_join(mp, t);
         try {
           // `&&` 串联换成两条 argv：不经 shell，失败语义仍由各自 throw 表达
           helix.run(["git", "-C", dir, "fetch", "--quiet"]);

@@ -1,5 +1,11 @@
 use super::*;
 
+/// 把路径塞进 **JS 源码**时用：Windows 的 `\` 在 JS 字符串里是转义符
+/// （`C:\Users\...` 会被 JS 解释成 `C:Users...`）⇒ 一律换成 `/`，Windows 的路径 API 也认。
+fn js_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// 统一入口：init.js 里 helix.load 导入 + helix.lazy 懒加载。
 /// js_load 相对名解析用 PLUGINS_DIR（Application::new 设的是真实 config plugins 目录，
 /// 集成测试无法改目录）→ init.js 内容用绝对路径写 mod.js/heavy.js（js_load 支持绝对路径）。
@@ -23,8 +29,8 @@ async fn plugin_entry_import_and_lazy() -> anyhow::Result<()> {
         &init,
         format!(
             r#"helix.load("{}"); helix.lazy("{}", "heavy-cmd");"#,
-            mod_path.display(),
-            heavy_path.display()
+            js_path(&mod_path),
+            js_path(&heavy_path)
         ),
     )?;
 
