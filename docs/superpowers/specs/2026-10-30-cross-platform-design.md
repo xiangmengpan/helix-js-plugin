@@ -1123,3 +1123,55 @@ set HELIX_RUNTIME=C:\Temp\helix-rt
 | `plugin_decorations` | 5 | 待查 |
 | `server_manager` | 4 | `#!/bin/sh` 夹具 |
 | 其余 | ~5 | `plugin_panel` / `plugin_fsasync` / `plugin_docchange` / `plugin_components` 各 1 |
+
+### ⚠ 方法论陷阱：**`\\wsl.localhost` 上的 .exe 会被缓存**，同一份二进制能跑出两个结果
+
+这轮最坑的一条，直接导致"修了还是红"的假象：
+
+```
+\\wsl.localhost\...\integration-*.exe   → 跑的还是**旧代码**（9p 缓存）
+C:\Temp\it.exe（同一份 copy 过去）      → 新代码，立刻绿
+```
+
+证据：源码改动 + 重新构建（`--no-run` 打印了新的 Executable、exe mtime 也更新了、`strings` 里
+还能 grep 到新加的文案），可**从 UNC 跑仍然打印旧断言**；`cp` 到 `C:\Temp` 再跑，同一条用例通过。
+
+⇒ **Windows 侧验证一律从原生路径跑**：把 exe、mock_lsp、`runtime/`、`plugins/` 复制到
+`C:\Temp\...`，环境变量指向 C 盘。这套已在 spec 里写成固定流程：
+
+```bat
+set HELIX_RUNTIME=C:\Temp\helix-repo\runtime
+set HELIX_TEST_REPO=C:\Temp\helix-repo
+set HELIX_TEST_MOCK_LSP=C:\Temp\mock_lsp.exe
+C:\Temp\it.exe --test-threads=4
+```
+
+### 还有一类：**Windows 路径塞进另一种语言的字符串**
+
+`\` 在 TOML / JS 字符串里都是转义符：
+
+| 场景 | 症状 |
+|---|---|
+| `command = "C:\Temp\mock_lsp.exe"`（TOML） | `missing escaped value, expected b/e/f/n/r/...` ⇒ server 起不来 |
+| `helix.load("C:\Users\...\mod.js")`（JS 源码） | `\U`/`\T` 被吃掉 ⇒ 路径不存在，命令没注册 |
+
+统一改法：塞之前把 `\` 换 `/`（Windows 的路径 API 与 CreateProcess 都认），
+测试侧 `js_path()` / `mock_lsp_bin()` 就是这么做的。
+
+### 数字（原生路径跑，修完上面几条之后）
+
+| 组 | 结果 |
+|---|---|
+| `window_split` / `filetree` / `plugin_manager` / `plugin_draw` / `plugin_entry` / `plugin_theme` / `plugin_statusline` / `plugin_picker` / `plugin_reload` / `plugin_dapui` / `commands::write` | **全绿** |
+| `plugin_lsp_mock` | 11/13（余下 2 条是**编辑应用**：`workspace/applyEdit` 没落到文件，疑 URI） |
+| `plugin_panel` | 11/12 |
+| `plugin_docchange` / `plugin_components` | 各 5/6、4/5 |
+| `plugin_cross_buffer` | 2/8 |
+| `plugin_decorations` | 1/6 |
+| `server_manager` | 4/8（`#!/bin/sh` 夹具） |
+| `plugin_terminal_*` | 全红（ConPTY，需另一台 Windows） |
+
+最后两条新发现的**真 bug**（下一轮）：
+1. `helix-vcs/src/git.rs:32` 的 `debug_assert!(file.is_absolute())` 在 Windows 上会炸 ——
+   传进来的路径是**驱动器相对**（`\Temp\x`），Windows 上不算 absolute；
+2. `plugin_fsasync::plugin_fsasync_read` 在 `plugin_fsasync.rs:38` `unwrap()` 了 None。
