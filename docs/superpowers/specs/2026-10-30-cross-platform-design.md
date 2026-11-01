@@ -1160,6 +1160,28 @@ C:\Temp\it.exe --test-threads=4
 
 ### 数字（原生路径跑，修完上面几条之后）
 
+**Windows 全量集成：388 passed / 38 failed / 0 ignored，12 分钟跑完，没有一条挂住。**
+
+| 时间线 | 结果 |
+|---|---|
+| 本轮开始前（语法噪声 + 无 HELIX_RUNTIME + UNC） | 341 passed / 83 failed / 4 超时 |
+| 修完 `repo_root`/符号链接/语法之后（UNC） | 378 / 47 / 1 挂住 |
+| **原生路径 + 本轮全部修复** | **388 / 38 / 0，且不再挂住** |
+
+38 条的分布：
+
+```
+12 plugin_terminal_modes    ← ConPTY（需另一台 Windows）
+ 6 plugin_cross_buffer
+ 5 plugin_terminal_hooks    ← ConPTY
+ 5 plugin_decorations
+ 4 server_manager           ← #!/bin/sh 夹具
+ 2 plugin_lsp_mock          ← workspace/applyEdit 没落盘
+ 1 plugin_panel / plugin_fsasync / plugin_docchange / plugin_components
+```
+
+### 各组的细化数字
+
 | 组 | 结果 |
 |---|---|
 | `window_split` / `filetree` / `plugin_manager` / `plugin_draw` / `plugin_entry` / `plugin_theme` / `plugin_statusline` / `plugin_picker` / `plugin_reload` / `plugin_dapui` / `commands::write` | **全绿** |
