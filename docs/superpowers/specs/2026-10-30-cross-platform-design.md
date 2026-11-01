@@ -1019,3 +1019,33 @@ set HELIX_RUNTIME=C:\Temp\helix-rt
 
 ⇒ 下一轮的正确顺序：**先用 .bat 跑完整一轮拿全量清单**，再按"是否依赖 sh 夹具 / 换行符 / pty"
 三类分组处理。pty 那类只能等另一台 Windows。
+
+### 又一类"假失败"：测试用编译期 `CARGO_MANIFEST_DIR` 定位仓库文件
+
+`env!("CARGO_MANIFEST_DIR")` 写进二进制的是**宿主**绝对路径；交叉编译到 Windows 后那条路径不存在
+⇒ 12 个测试文件里"读仓库 `plugins/`、`runtime/`"的用例全部在 setup 阶段 `os error 3`。
+`server_manager` 那几处更隐蔽：它是 `std::env::var("CARGO_MANIFEST_DIR")`（运行时，压根没有这个变量）
+\+ `rsplit_once('/')`（Unix 专属分隔符），Windows 上直接 `NotPresent` panic。
+
+修法：`helpers::repo_root()` —— 优先 `HELIX_TEST_REPO`（由 Windows 测试脚本 `set`），否则回退编译期路径。
+**Linux/原生构建行为零变化**（那个分支走的还是原路径）。
+
+另一条：`commands/write.rs` 的三条符号链接用例在 Windows 上 `os error 1314`
+（`SeCreateSymbolicLinkPrivilege`，非管理员/非开发者模式默认没有）⇒ 改成"建不出来就跳过并打印原因"。
+
+#### 效果（Windows 二进制实跑，两个环境变量都由 .bat 提供）
+
+| 用例组 | 修前 | 修后 |
+|---|---|---|
+| `plugin_theme` | 0/2 | **2/2** |
+| `commands::write` | 3 failed | **35/35** |
+| `plugin_statusline` | failed | **8/8** |
+| `plugin_picker` / `plugin_reload` / `plugin_dapui` | failed | **8/8、6/6、2/2** |
+| `plugin_manager` | 8 failed | **6/8** |
+| `plugin_draw` | 2 failed | **6/7** |
+| `plugin_entry` | 2 failed | **3/4** |
+| `filetree` | 6 failed | 1/6 |
+
+⇒ 那张"82 failed"的表里，至少 25 条是**测试可移植性**问题，与 Windows 行为无关。
+剩下的才是真问题，已确认仍存在的有：`filetree` 的 `H` 切换后 dotfile 不显示、`plugin_manager`
+2 条、`plugin_lsp_mock`、`plugin_cross_buffer`、`plugin_decorations`、`server_manager`（`#!/bin/sh` 夹具）。
