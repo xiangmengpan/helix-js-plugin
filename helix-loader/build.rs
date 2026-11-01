@@ -35,6 +35,15 @@ fn main() {
         "cargo:rustc-env=BUILD_TARGET={}",
         std::env::var("TARGET").unwrap()
     );
+    // **跑编译器的那台机器**（build script 永远跑在宿主上）。
+    //
+    // 必须单独给一个：`TARGET` 在交叉编译时是**目标**，把它当 `cc::Build::host()` 会让
+    // cc-rs 以为“宿主就是 Windows” ⇒ 不再去找 `x86_64-w64-mingw32-g++`，而是直接用本机的
+    // `c++`（实测症状：301 个语法全部 `Failed to execute C/C++ compiler`）。
+    println!(
+        "cargo:rustc-env=HOST_TARGET={}",
+        std::env::var("HOST").unwrap()
+    );
 
     println!("cargo:rustc-env=VERSION_AND_GIT_HASH={}", version);
 

@@ -25,6 +25,33 @@ const DYLIB_EXTENSION: &str = "dll";
 #[cfg(target_arch = "wasm32")]
 const DYLIB_EXTENSION: &str = "wasm";
 
+/// **编译产物**的动态库扩展名——按 `target` 推断，而不是按 `cfg!`。
+///
+/// 为什么不能直接用上面的常量：`build_grammar` 跑在 **build script** 里，而 build script
+/// **永远按宿主编译**。交叉编译（`--target x86_64-pc-windows-gnu`）时 `cfg!(windows)` 是 false，
+/// 于是 Windows 的语法产物会被命名成 `.so`：
+///
+/// - `needs_recompile` 按 `.so` 比对 → 宿主已经编过的那个 `.so` 被当成本目标的产物
+///   ⇒ **301 个语法全部被跳过**，一个 `.dll` 也不产出；
+/// - 即使强行重建，文件名也不对，运行期按 `.dll` 找还是找不到。
+///
+/// 运行期的加载路径（[`get_language`] 里那个）**仍然用宿主常量**——那里的 target 就是宿主，
+/// 两者不矛盾。
+fn dylib_extension_for(target: Option<&str>) -> &'static str {
+    let Some(target) = target else {
+        return DYLIB_EXTENSION; // None = 就是宿主
+    };
+    if target.contains("windows") {
+        "dll"
+    } else if target.contains("darwin") || target.contains("apple") {
+        "dylib"
+    } else if target.contains("wasm") {
+        "wasm"
+    } else {
+        "so"
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Configuration {
     #[serde(rename = "use-grammars")]
@@ -63,6 +90,10 @@ pub enum GrammarSource {
 }
 
 const BUILD_TARGET: &str = env!("BUILD_TARGET");
+/// 运行编译器的那台机器（build script 永远跑在宿主上）。
+///
+/// 与 [`BUILD_TARGET`] 的差别只在**交叉编译**时暴露：那里是目标，这里是宿主。
+const HOST_TARGET: &str = env!("HOST_TARGET");
 const REMOTE_NAME: &str = "origin";
 
 #[cfg(target_arch = "wasm32")]
@@ -174,7 +205,9 @@ pub fn fetch_grammars(strict: bool) -> Result<()> {
     if !errors.is_empty() {
         let len = errors.len();
         for (i, (grammar, error)) in errors.into_iter().enumerate() {
-            println!("Failure {}/{len}: {grammar} {error}", i + 1);
+            // `{:#}`：anyhow 的 cause 链。只打 `{error}` 会丢掉真正的 io 错误，
+            // 只剩一句 "Failed to execute C/C++ compiler"（交叉编译排查时吃过这个亏）。
+            println!("Failure {}/{len}: {grammar} {error:#}", i + 1);
         }
         if strict {
             bail!("{len} grammars failed to fetch");
@@ -231,7 +264,8 @@ pub fn build_grammars(target: Option<String>, strict: bool) -> Result<()> {
     if !errors.is_empty() {
         let len = errors.len();
         for (i, (grammar_id, error)) in errors.into_iter().enumerate() {
-            println!("Failure {}/{len}: {grammar_id} {error}", i + 1);
+            // `{:#}`：带 cause 链（同上，否则看不出是哪个编译器/什么 errno）
+            println!("Failure {}/{len}: {grammar_id} {error:#}", i + 1);
         }
         if strict {
             bail!("{len} grammars failed to build");
@@ -499,6 +533,25 @@ enum BuildStatus {
     Built,
 }
 
+/// 目标是不是「ELF 链接器 + 该加 RELRO」的那类（unix 但非 macOS/illumos）。
+///
+/// ⚠ **同样不能写 `cfg!`**：这段代码跑在 build script 里（永远按宿主编译），交叉编译到
+/// Windows 时 `cfg!(unix)` 依然为真 ⇒ `-Wl,-z,relro,-z,now` 被喂给 mingw 的 ld，直接
+/// `unrecognized option '-z'`（实测：301 个语法全挂在这一行）。与 [`dylib_extension_for`]
+/// 是同一类坑 —— 判据必须是 `target` 参数，而不是编译这个 build script 时用的 cfg。
+fn wants_relro(target: Option<&str>) -> bool {
+    let Some(target) = target else {
+        return cfg!(all(
+            unix,
+            not(any(target_os = "macos", target_os = "illumos"))
+        ));
+    };
+    !target.contains("windows")
+        && !target.contains("darwin")
+        && !target.contains("apple")
+        && !target.contains("wasm")
+}
+
 fn build_grammar(grammar: GrammarConfiguration, target: Option<&str>) -> Result<BuildStatus> {
     let grammar_dir = if let GrammarSource::Local { path } = &grammar.source {
         PathBuf::from(&path)
@@ -561,7 +614,8 @@ fn build_tree_sitter_library(
         .expect("No runtime directories provided") // guaranteed by post-condition
         .join("grammars");
     let mut library_path = parser_lib_path.join(&grammar.grammar_id);
-    library_path.set_extension(DYLIB_EXTENSION);
+    // 按 **目标** 推扩展名（见 `dylib_extension_for` 的说明），不能用宿主常量
+    library_path.set_extension(dylib_extension_for(target));
 
     // if we are running inside a buildscript emit cargo metadata
     // to detect if we are running from a buildscript check some env variables
@@ -587,7 +641,7 @@ fn build_tree_sitter_library(
         .cpp(true)
         .opt_level(3)
         .cargo_metadata(false)
-        .host(BUILD_TARGET)
+        .host(HOST_TARGET)
         .target(target.unwrap_or(BUILD_TARGET));
     let compiler = config.get_compiler();
     let mut command = Command::new(compiler.path());
@@ -699,10 +753,7 @@ fn build_tree_sitter_library(
             }
         }
         command.arg("-xc").arg("-std=c11").arg(parser_path);
-        if cfg!(all(
-            unix,
-            not(any(target_os = "macos", target_os = "illumos"))
-        )) {
+        if wants_relro(target) {
             command.arg("-Wl,-z,relro,-z,now");
         }
     }

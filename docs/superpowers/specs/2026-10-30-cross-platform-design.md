@@ -933,3 +933,46 @@ conhost 被 shell 美化工具（StartAllBack / Windhawk 之类）替换过、�
 ```
 cargo test -p helix-js --lib pty::windows -- --ignored --nocapture
 ```
+
+### Windows 语法（tree-sitter）**终于编出来了**：301/301 个 `.dll`
+
+之前 Windows 集成测试的数字必须"带着噪声读"（0 语法 ⇒ 所有 tree-sitter 用例必红）。这一轮把它
+彻底解决了 —— 而且是**三个同源的 bug**，根因一模一样：
+
+> **build script 永远按宿主编译，`cfg!(...)` 判的是宿主，不是目标。**
+
+三处都栽在这个坑里：
+
+| 位置 | 症状 | 修法 |
+|---|---|---|
+| `DYLIB_EXTENSION` 常量 | 交叉编译时产物被命名成 `.so` ⇒ `needs_recompile` 拿宿主的 `.so` 一比就判"已存在"，**301 个全跳过、0 个 `.dll`** | 新增 `dylib_extension_for(target)`，按 `target` 推扩展名 |
+| `cc::Build::host(BUILD_TARGET)` | `BUILD_TARGET` 在 build script 里是**目标** ⇒ cc-rs 以为"宿主就是 Windows"，不再找 `x86_64-w64-mingw32-g++`，直接用本机 `c++` ⇒ 301 个 `Failed to execute C/C++ compiler` | 新增 `HOST_TARGET`（`cargo:rustc-env` 取自 build script 的 `HOST`），`host()` 用它 |
+| `-Wl,-z,relro,-z,now` | 加固参数按 `cfg!(unix)` 加，交叉编译时仍然加 ⇒ mingw 的 ld `unrecognized option '-z'` ⇒ 301 个 `Parser compilation failed` | 新增 `wants_relro(target)` |
+
+外加一处**诊断改进**：失败信息从 `{}` 改成 `{:#}`（anyhow 的 cause 链）。原来只打
+`Failed to execute C/C++ compiler`，真正的 `No such file or directory (os error 2)` 被吞掉——
+这三个 bug 里有两个是靠它才定位的。
+
+#### 顺带解决了工具链缺口（免 root）
+
+宿主的 mingw 只有 C 编译器，`x86_64-w64-mingw32-g++` 是个**断链**（指向不存在的 `-posix` 变体），
+而语法编译走 `cpp(true)`。做法：从 Ubuntu 源取 `g++/gcc-mingw-w64-x86-64-posix` 的 `.deb`，
+`dpkg -x` 解到已有的 `~/.local/mingw`（**不需要 root**、不动系统目录）。
+
+#### 结果
+
+```
+301/301 grammars → runtime/grammars/*.dll
+Windows 集成测试：341 passed / 83 failed  →  352 passed / 74 failed
+```
+
+剩下的 74 条**不再是语法噪声**，实测样本分四类（都已是真 bug，不再是构建配置产物）：
+
+| 类 | 样本 | 症状 |
+|---|---|---|
+| pty / 终端面板 | `plugin_terminal_modes::*`（`终端应就位`） | 卡在 ConPTY（见上一节，需另一台 Windows） |
+| `#!/bin/sh` 夹具 + chmod | `server_manager::*`（`NotPresent`） | 夹具本身跑不起来 |
+| 运行期资源路径 | `plugin_theme::*`（`theme_info 应含非空主题列表: info=default|0`） | 主题目录没找到 ⇒ 只剩 default |
+| 换行符 | `window_split::vsplit_new_creates_scratch_leaf` | 期望 `"x\n"`，实到 `"x\r\n"` |
+
+这四类都不需要 ConPTY，是可以继续推进的（下一轮按这个顺序来）。
