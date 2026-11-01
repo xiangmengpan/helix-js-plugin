@@ -136,7 +136,8 @@ async fn vsplit_new_creates_scratch_leaf() -> anyhow::Result<()> {
     assert_eq!(
         doc.text().to_string(),
         format!("x{nl}"),
-        "scratch 叶输入(默认含尾换行): {:?}",
+        "scratch 叶输入(默认含尾换行, cfg_windows={}): {:?}",
+        cfg!(windows),
         doc.text().to_string()
     );
     assert!(doc.path().is_none(), "scratch 无路径");

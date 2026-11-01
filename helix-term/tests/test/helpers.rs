@@ -254,10 +254,14 @@ pub fn test_config_with_lsp() -> Config {
 /// 那条路径不存在 ⇒ 起 server 直接失败，而"等超时"的用例会一直等下去（实测：整轮套件挂住）。
 /// 所以优先读运行时 `HELIX_TEST_MOCK_LSP`（Windows 测试脚本用 `set` 提供）。
 pub fn mock_lsp_bin() -> String {
-    std::env::var("HELIX_TEST_MOCK_LSP")
+    let path = std::env::var("HELIX_TEST_MOCK_LSP")
         .ok()
         .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mock_lsp").to_string())
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mock_lsp").to_string());
+    // 这个值要塞进 **TOML 字符串**（`command = "{bin}"`）：`\` 在 TOML 里是转义符，
+    // `C:\Temp\mock_lsp.exe` 会直接解析失败（`missing escaped value`）。
+    // 换成 `/` —— Windows 的 CreateProcess 同样认。
+    path.replace('\\', "/")
 }
 
 /// mock LSP server loader：把 .mock 文件类型接到 mock_lsp 二进制（CARGO_BIN_EXE_mock_lsp），
