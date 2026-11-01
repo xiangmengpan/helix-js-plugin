@@ -879,6 +879,25 @@ interface Helix {
   stat_async(path: string): Promise<Stat>;
   glob_async(pattern: string): Promise<string[]>;
   read_tree(path: string, opts?: { depth?: number }): Promise<DirEntry[]>; // 递归+排序
+  /**
+   * 递归建目录（等价 `mkdir -p`；已存在不算错）。失败 reject `Error`。
+   *
+   * 为什么要有它：建目录此前只能起 shell（`mkdir -p` 是 **POSIX** 写法，Windows 上没有）——
+   * 碰文件系统的动作应当由核心给，与 `write_file_async` 同级。
+   */
+  mkdir_async(path: string): Promise<void>;
+
+  // ── 路径工具 ──
+  /*
+   * 插件**不要**自己拼路径：`dir + "/" + name` 在 Windows 上得到 `C:\a/b`，
+   * `split("/")` 这种路径数学更是直接错（`C:\Users\x` 在 Windows 上只有一个分量）。
+   */
+  /** 用**平台分隔符**拼接。语义同 `PathBuf::push`：后一段是绝对路径时**替换**前一段 */
+  path_join(...parts: string[]): string;
+  /** 上一级目录；到根返回 `null` */
+  path_parent(path: string): string | null;
+  /** 最后一段（带扩展名）；`/`、`C:\` 这类根返回 `null` */
+  path_name(path: string): string | null;
 
   // ── 弹窗 / 组件 / 面板 ──
   open_popup(opts: PopupOptions): number; // 返回 id;重复打开替换前一个

@@ -906,6 +906,37 @@ pub(crate) fn js_write_file_async(
     Ok(promise.into())
 }
 
+/// `helix.mkdir_async(path)` —— 递归建目录（等价 `mkdir -p`，已存在不算错）。
+///
+/// 为什么要有它：插件建目录此前只能起 shell（`mkdir -p` / `mkdir`）—— 那是**只有 Unix 成立**
+/// 的写法，Windows 上没有 `mkdir -p`。碰文件系统的动作应当由核心给（与 `write_file_async` 同级）。
+pub(crate) fn js_mkdir_async(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    // C-2 检查点:建目录同属 `fs_write`
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err("helix.mkdir_async: path must be a string"))?;
+    let (promise, resolving) = JsPromise::new_pending(context);
+    let id = crate::state::next_async_id();
+    // 注册期绑定属主:.then/.catch 的续体在 resolve 时恢复这个属主
+    crate::permissions::bind_callback(crate::permissions::CbKey::async_promise(id));
+    with_async_promises(crate::host::host_state(context), |m| {
+        m.insert(id, resolving);
+    });
+    spawn_async_op(
+        id,
+        move || std::fs::create_dir_all(&path).map_err(|e| format!("mkdir_async('{path}'): {e}")),
+        // 复用 FsWrite 事件：载荷同为 `Result<(), String>`
+        AsyncEvent::FsWrite,
+    );
+    Ok(promise.into())
+}
+
 pub(crate) fn js_stat_async(
     _this: &JsValue,
     args: &[JsValue],

@@ -273,6 +273,62 @@ pub(crate) fn js_home_dir(
     })
 }
 
+/// `helix.path_join(a, b, …)` —— 用**平台分隔符**拼接路径。
+///
+/// 为什么要有它：插件里 `dir + "/" + name` 在 Windows 上得到 `C:\a/b`，而 `split("/")` 这类
+/// **路径数学**在 Windows 上更是直接错（`C:\Users\x` 只有一个分量）。路径的事交给平台。
+/// 语义同 `PathBuf::push`：后一段是绝对路径时**替换**前一段（不是拼接）。
+pub(crate) fn js_path_join(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let mut out = std::path::PathBuf::new();
+    for (i, arg) in args.iter().enumerate() {
+        let part: String = arg.try_js_into(context).map_err(|_| {
+            crate::js_err(format!("helix.path_join: 第 {} 个参数必须是字符串", i + 1))
+        })?;
+        out.push(part);
+    }
+    Ok(JsValue::from(JsString::from(
+        out.to_string_lossy().into_owned(),
+    )))
+}
+
+/// `helix.path_parent(p)` —— 上一级目录；到根就返回 `null`（不编一个 `.` 出来）。
+pub(crate) fn js_path_parent(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err("helix.path_parent: path must be a string"))?;
+    Ok(match std::path::Path::new(&path).parent() {
+        Some(parent) => JsValue::from(JsString::from(parent.to_string_lossy().into_owned())),
+        None => JsValue::null(),
+    })
+}
+
+/// `helix.path_name(p)` —— 最后一段（带扩展名）；`/`、`C:\` 这类根返回 `null`。
+pub(crate) fn js_path_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let path: String = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(context)
+        .map_err(|_| crate::js_err("helix.path_name: path must be a string"))?;
+    Ok(match std::path::Path::new(&path).file_name() {
+        Some(name) => JsValue::from(JsString::from(name.to_string_lossy().into_owned())),
+        None => JsValue::null(),
+    })
+}
+
 pub(crate) fn js_plugins_dir(
     _this: &JsValue,
     _args: &[JsValue],

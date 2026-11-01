@@ -84,7 +84,8 @@
 
 ### 进程执行与异步文件系统
 
-`helix.run(cmd)`(同步,**阻塞**)、`helix.run_async(cmd)`(Promise)、`helix.spawn({cmd, pty?, onChunk, onExit})`(流式);`helix.read_dir`(同步)、`read_file_async/write_file_async/stat_async/glob_async/read_tree`(异步 Promise)。
+`helix.run(cmd)`(同步,**阻塞**)、`helix.run_async(cmd)`(Promise)、`helix.spawn({cmd, pty?, onChunk, onExit})`(流式);`helix.read_dir`(同步)、`read_file_async/write_file_async/mkdir_async/stat_async/glob_async/read_tree`(异步 Promise);
+路径数学用 `helix.path_join/path_parent/path_name`(**别自己拼 `/`**:Windows 上是 `\`)
 
 - 优点:异步不阻塞;read_tree 递归+排序+depth;glob `**` 跨目录。
 - 局限:run 阻塞;spawn 无超时;read_dir 同步不递归;read_tree 一次性返回。
@@ -361,6 +362,10 @@ helix.write_file_async(path, content)           // Promise
 helix.stat_async(path)                          // Promise → {is_dir, size, mtime}
 helix.glob_async(pattern)                       // Promise → paths[]
 helix.read_tree(path, { depth? })               // Promise → [{name, is_dir, path}](递归)
+helix.mkdir_async(path)                         // Promise(递归建目录,等价 `mkdir -p`;已存在不算错)
+helix.path_join(a, b, …)                        // **平台分隔符**拼接(插件不要自己拼 `/`)
+helix.path_parent(path)                         // 上一级;到根 → null
+helix.path_name(path)                           // 最后一段(带扩展名);根 → null
 helix.dap.*（调试，见下「DAP」段）
 helix.set_statusline(fn, opts?)                 // fn(ctx) -> string | StatuslinePart[] | null
                                                // opts = { replace?: true, zones?: [左,中,右] }

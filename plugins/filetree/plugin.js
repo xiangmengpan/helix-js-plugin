@@ -1,11 +1,15 @@
 // filetree.js — 类 lazyvim/neo-tree 的侧边文件树面板
 // 依赖清单：icons（共享图标表，helix.load 自动先加载）
 // 图标已收进核心，不再需要 deps；列目录 ⇒ fs_read，文件操作走 shell(`run_async`) ⇒ process。
+// **路径数学一律走 `helix.path_*`**：Windows 的分隔符是 `\`、`C:\Users\x` 没有 `/` 可切，
+// 自己拼 `/` 与 `split("/")` 会让 basename 变成整条路径、reveal 永远不成立（实测过）。
 // 根目录用 `helix.cwd()`（现取；旧写法 `helix.run("pwd")` 只能取一次且会陈旧）
 helix.plugin("filetree", {
   deps: [],
   schema_version: 1,
-  permissions: { process: true, fs_read: true },
+  // fs_write：建文件/建目录走核心的 write_file / mkdir_async（比走 shell 更窄、更跨平台）；
+  // process 仍要：重命名/删除需要平台 shell（mv/rm vs move/del/rmdir）
+  permissions: { process: true, fs_read: true, fs_write: true },
 });
 
 // 插件配置(方案 C):config.toml [plugins.filetree]
@@ -49,7 +53,7 @@ function visible_rows(node, show_hidden, depth, out, seen) {
 // 从根构建一个目录节点（root 本身不渲染，children 即其内容）
 function make_tree(root_path, entries) {
   return {
-    name: root_path.split("/").filter(Boolean).pop() || root_path,
+    name: helix.path_name(root_path) || root_path,
     path: root_path,
     is_dir: true,
     expanded: true,
@@ -66,9 +70,11 @@ function make_tree(root_path, entries) {
 // file_path 相对 root 的路径组件链（"a/b/c" → ["a","b","c"]）；不在 root 下返回 null
 function rel_parts(root, file_path) {
   if (file_path === root) return [];
-  const prefix = root.endsWith("/") ? root : root + "/";
+  // 前缀也走 join：Windows 上直接 `root + "/"` 拼出来的前缀永远比真实路径多一个 `/`
+  const prefix = helix.path_join(root, "");
   if (!file_path.startsWith(prefix)) return null;
-  return file_path.slice(prefix.length).split("/").filter(Boolean);
+  // 相对部分按**平台分隔符**切（`\` 或 `/`）
+  return file_path.slice(prefix.length).split(/[\\/]/).filter(Boolean);
 }
 
 // 沿链查找节点（每个中间段必须是目录；找不到返回 null）
@@ -108,8 +114,16 @@ function collect_expanded(node, out) {
 }
 
 // shell 单引号转义
+// 平台识别：核心给的 join 用的是**本平台**分隔符，据此判 Windows（比猜 USERPROFILE 可靠）
+const IS_WINDOWS = helix.path_join("a", "b").includes("\\");
+
+// shell 引号：POSIX 单引号 vs cmd 双引号（cmd 不认单引号，这是"换个平台就炸"的典型）
 function shq(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+  s = String(s);
+  if (IS_WINDOWS) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 // ============================ 状态 ============================
@@ -138,9 +152,9 @@ function read_dir_sync(dir) {
   }
 }
 
+// 路径数学一律走核心：Windows 上 `\` 是分隔符、`C:\Users\x` 没有 `/` 可切
 function basename(p) {
-  const parts = p.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || p;
+  return helix.path_name(p) || p;
 }
 
 // 目录节点的子节点（懒加载 + 缓存）
@@ -282,13 +296,12 @@ function reload_tree() {
 function reveal(file_path) {
   if (!file_path) return;
   if (S.root === null) {
-    set_root(file_path.split("/").slice(0, -1).join("/") || "/");
+    set_root(helix.path_parent(file_path) || S.root);
     return;
   }
   const parts = rel_parts(S.root, file_path);
   if (parts === null) {
-    const dir = file_path.split("/").slice(0, -1).join("/") || "/";
-    set_root(dir);
+    set_root(helix.path_parent(file_path) || file_path);
   }
   const chain = rel_parts(S.root, file_path);
   if (chain === null) return;
@@ -498,12 +511,26 @@ async function run_fs(cmd, ok_msg) {
   }
 }
 
+// 建文件/建目录**不走 shell**：`touch` / `mkdir -p` 是 POSIX 写法，Windows 上没有。
+// 核心已有 `write_file`（同步，父目录按需创建）与 `mkdir_async`（递归）—— 用它们。
 function new_file() {
   const dir = context_dir();
   prompt("新建文件（" + dir + "）", "", (name) => {
     const n = name.trim();
     if (!n) return;
-    run_fs("touch " + shq(dir + "/" + n), "已创建 " + n);
+    const path = helix.path_join(dir, n);
+    try {
+      // 已存在就不覆盖（`touch` 的语义；`write_file` 会截断，必须先挡一下）
+      if (helix.read_dir(dir).some((e) => e.name === n)) {
+        helix.echo(path + " 已存在");
+        return;
+      }
+      helix.write_file(path, "");
+      helix.echo("已创建 " + n);
+      reload_tree();
+    } catch (err) {
+      helix.echo("filetree: " + err.message);
+    }
   });
 }
 
@@ -512,7 +539,13 @@ function new_dir() {
   prompt("新建目录（" + dir + "）", "", (name) => {
     const n = name.trim();
     if (!n) return;
-    run_fs("mkdir -p " + shq(dir + "/" + n), "已创建目录 " + n);
+    helix.mkdir_async(helix.path_join(dir, n)).then(
+      () => {
+        helix.echo("已创建目录 " + n);
+        reload_tree();
+      },
+      (err) => helix.echo("filetree: " + err.message),
+    );
   });
 }
 
@@ -522,16 +555,27 @@ function rename() {
   prompt("重命名 " + hit.node.name, hit.node.name, (name) => {
     const n = name.trim();
     if (!n || n === hit.node.name) return;
-    run_fs("mv " + shq(hit.node.path) + " " + shq(hit.node.path.replace(/[^/]*$/, "") + n), "已重命名");
+    const dst = helix.path_join(helix.path_parent(hit.node.path), n);
+    if (IS_WINDOWS) {
+      run_fs("move " + shq(hit.node.path) + " " + shq(dst), "已重命名");
+    } else {
+      run_fs("mv " + shq(hit.node.path) + " " + shq(dst), "已重命名");
+    }
   });
 }
 
 function remove() {
   const hit = node_at(S.cursor);
   if (!hit) return;
-  const cmd = hit.node.is_dir ? "rm -rf" : "rm -f";
+  let cmd;
+  if (IS_WINDOWS) {
+    cmd = hit.node.is_dir ? "rmdir /s /q " : "del /f /q ";
+  } else {
+    cmd = (hit.node.is_dir ? "rm -rf " : "rm -f ") + shq(hit.node.path);
+  }
+  const full = IS_WINDOWS ? cmd + shq(hit.node.path) : cmd;
   confirm("删除 " + (hit.node.is_dir ? "目录 " : "文件 ") + hit.node.path + " ?", () => {
-    run_fs(cmd + " " + shq(hit.node.path), "已删除 " + hit.node.name);
+    run_fs(full, "已删除 " + hit.node.name);
   });
 }
 

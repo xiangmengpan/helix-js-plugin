@@ -92,7 +92,20 @@ helix.write_file_async(path, content)             // Promise → undefined
 helix.stat_async(path)                            // Promise → {is_dir, size, mtime}(mtime 为 Unix 秒)
 helix.glob_async(pattern)                         // Promise → paths[](* / ** / ?,相对 CWD;** 跨目录)
 helix.read_tree(path, { depth? })                 // Promise → [{name, is_dir, path}](递归;目录先行同级按名排序;depth 限深度,默认全递归)
+helix.mkdir_async(path)                           // Promise → undefined(递归建目录;已存在不算错)
 ```
+
+### 路径工具（跨平台插件必须用）
+
+```js
+helix.path_join("C:\\a", "b", "c.txt")   // 用**平台分隔符**拼;C:\\a\\b\\c.txt
+helix.path_parent(path)                // 上一级;到根 → null
+helix.path_name(path)                  // 最后一段(带扩展名);根 → null
+```
+
+**别自己拼路径**：`dir + "/" + name` 在 Windows 上得到 `C:\\a/b`，而 `p.split("/")` 这种"路径数学"
+在 Windows 上直接错 —— `C:\\Users\\x` 只有一个分量，于是 `basename` 变成整条路径、`reveal` 的
+`startsWith` 永远不成立（`plugins/filetree` 栽的就是这个坑）。
 
 ```js
 helix.read_dir("/tmp").forEach(e => {
