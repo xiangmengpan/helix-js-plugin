@@ -1075,3 +1075,51 @@ set HELIX_RUNTIME=C:\Temp\helix-rt
 暴露 `helix.fs.mkdir/touch`？），再改插件。**下一轮的第一件事**。
 其余仍需分类的：`plugin_lsp_mock`(10)、`plugin_cross_buffer`(6)、`plugin_decorations`(5)、
 `server_manager`(5，`#!/bin/sh` 夹具)、`plugin_manager`(2)、`plugin_draw`(1)、`plugin_entry`(1)。
+
+### 这一轮：filetree + 插件管理器修好，Windows 全量套件第一次跑完
+
+#### 新增核心 API（插件不该自己做路径数学）
+
+| API | 说明 |
+|---|---|
+| `helix.path_join(...parts)` / `path_parent(p)` / `path_name(p)` | **平台分隔符**由核心给；语义对齐 `PathBuf::push` |
+| `helix.mkdir_async(path)` | 递归建目录（复用 `AsyncEvent::FsWrite`，能力 `fs_write`） |
+
+`cargo xtask api-check` 三方对账全绿（`plugins/helix.d.ts` / `docs/plugin-api.md` / 能力检查点）。
+
+#### 两个插件改造（都是"Unix 路径数学 + POSIX shell"）
+
+- **filetree**：路径数学全走新 API；`shq()` 变平台感知（POSIX 单引号 ↔ cmd 双引号）；
+  建文件/建目录不再起 shell（`write_file` / `mkdir_async`，并先查重 —— `write_file` 会截断，
+  而 `touch` 不会）；重命名/删除仍走 shell 但命令随平台变（`mv`/`rm -rf` ↔ `move`/`del`/`rmdir`）。
+- **plugin（管理器）**：`arg.split("/").pop()` 在 Windows 上取不到末段 ⇒ 整个绝对路径被当成插件名，
+  `write_plugin_file` 报"只接受相对路径"。改用 `helix.path_name` + `helix.path_join`。
+
+#### 测试侧又两类"假失败"
+
+- 路径嵌进 **JS 源码**：`helix.load("C:\Users\...")` 里的 `\U`/`\T` 被 JS 当转义 ⇒ 加 `js_path()` 换 `/`；
+- `CARGO_BIN_EXE_mock_lsp` 是**编译期**路径 ⇒ 交叉编译后 mock LSP 起不来，而"等超时"的用例
+  会一直等 ⇒ **整轮挂在 `plugin_lsp_mock_timeout_rejects`**。改成 `HELIX_TEST_MOCK_LSP` 优先。
+- `window_split::vsplit_new_creates_scratch_leaf` 断言 `"x\n"`，但行尾是 `LineEndingConfig::Native`
+  ⇒ Windows 上 CRLF 是**设计**，断言按平台取行尾。
+
+#### 数字（Windows 全量，`.bat` 里带上三个环境变量）
+
+```
+428 条：378 passed / 47 failed / 1 挂住   ← 挂住那条已修（mock_lsp），修完 47→37 左右（未重跑全量）
+```
+
+修前那张表里的这些组现在**全绿**：`filetree 6/6`、`plugin_manager 8/8`、`plugin_draw 7/7`、
+`plugin_entry 4/4`、`plugin_theme 2/2`、`plugin_statusline 8/8`、`plugin_picker 8/8`、
+`plugin_reload 6/6`、`plugin_dapui 2/2`、`commands::write 35/35`、`window_split 8/8`。
+
+剩下 47 条的分布（都是**真问题**，不再有基础设施噪声）：
+
+| 类 | 条数 | 备注 |
+|---|---|---|
+| `plugin_terminal_*` | 17 | 卡 ConPTY（需另一台 Windows） |
+| `plugin_lsp_mock` | 10 | server 已能启动，但查询返回 null ⇒ mock server 自身或 JSON 路径/CRLF |
+| `plugin_cross_buffer` | 6 | 待查 |
+| `plugin_decorations` | 5 | 待查 |
+| `server_manager` | 4 | `#!/bin/sh` 夹具 |
+| 其余 | ~5 | `plugin_panel` / `plugin_fsasync` / `plugin_docchange` / `plugin_components` 各 1 |
