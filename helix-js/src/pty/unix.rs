@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use super::{PtyMaster, PtyResize, TermSize};
+use super::{PtyChildStdio, PtyMaster, PtyResize, TermSize};
 
 /// master fd 包装：Drop 时 close（worker 线程持有时保证 fd 生命周期）
 pub(crate) struct Master(RawFd);
@@ -75,12 +75,13 @@ impl PtyMaster for Master {
 }
 
 /// 平台入口：`size` 若不是缺省 24×80 就按它设一次 winsize
-pub(crate) fn open(size: TermSize) -> Result<(Box<dyn PtyMaster>, File)> {
+pub(crate) fn open(size: TermSize) -> Result<(Box<dyn PtyMaster>, PtyChildStdio)> {
     let (master, slave) = open_pty()?;
     if size != (TermSize { rows: 24, cols: 80 }) {
         set_winsize(master.fd(), size.rows, size.cols)?;
     }
-    Ok((Box::new(master), slave))
+    // slave 原样交出去：三份 dup 由 worker 线程里的 `PtyChildStdio::into_stdio()` 做
+    Ok((Box::new(master), PtyChildStdio::Slave(slave)))
 }
 
 impl Drop for Master {

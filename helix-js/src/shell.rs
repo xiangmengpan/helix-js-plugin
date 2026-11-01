@@ -436,22 +436,15 @@ pub(crate) fn spawn_pty_worker(
     tx: WakeSender<TermEvent>,
     ctrl_rx: std::sync::mpsc::Receiver<TermCtrl>,
     master: Box<dyn pty::PtyMaster>,
-    slave: std::fs::File,
+    slave: pty::PtyChildStdio,
 ) {
     std::thread::spawn(move || {
-        use std::process::Stdio;
         let mut master = master;
-        // 子进程 stdin/stdout/stderr 都是 slave（dup 三份，spawn 后父侧副本关闭）
-        let stdin_slave = match slave.try_clone() {
-            Ok(f) => f,
-            Err(_) => {
-                let _ = tx.send(TermEvent::Exit(id, 127, None));
-                return;
-            }
-        };
-        let stdout_slave = match slave.try_clone() {
-            Ok(f) => f,
-            Err(_) => {
+        // 子进程的三份 stdio：**在这里**（worker 线程）把 slave 拆开 —— 时机与旧实现一致
+        let (stdin_slave, stdout_slave, slave) = match slave.into_stdio() {
+            Ok(v) => v,
+            Err(e) => {
+                crate::state::js_dbg(format_args!("pty stdio FAILED id={id}: {e}"));
                 let _ = tx.send(TermEvent::Exit(id, 127, None));
                 return;
             }
@@ -467,9 +460,9 @@ pub(crate) fn spawn_pty_worker(
             };
             command
                 .env("TERM", "xterm-256color")
-                .stdin(Stdio::from(stdin_slave))
-                .stdout(Stdio::from(stdout_slave))
-                .stderr(Stdio::from(slave));
+                .stdin(stdin_slave)
+                .stdout(stdout_slave)
+                .stderr(slave);
             // setsid（新会话，子进程为会话头+组长）+ slave 设为控制终端：交互 bash 的
             // job control 需要，否则报 "cannot set terminal process group: Inappropriate ioctl for device"。
             // 不能用 process_group(0)——它先让子进程成组长，setsid 会 EPERM 失败。

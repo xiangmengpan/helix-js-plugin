@@ -813,3 +813,28 @@ ConPTY 落地时的 seam 因此收敛成两个点：
 1. 给 `PtyMaster` 加一个 Windows 实现（`HPCON` + 两条管道 + `ResizePseudoConsole`）；
 2. 让"子进程侧 stdio"也能来自管道 —— 但要**保持构造时机在 worker 里**
    （不能像上一轮那样在 `open()` 里提前拆）。
+
+### pty 抽象 **第二步**：子进程侧 stdio 也抽象了（时机仍留在 worker）
+
+新增 `pty::PtyChildStdio`（Unix = slave `File`；Windows = 两条管道的 `Stdio`），
+`open()` 返回 `(Box<dyn PtyMaster>, PtyChildStdio)`，worker 里调 `into_stdio()`。
+
+关键约束（上一轮踩过）：**`into_stdio()` 必须在 worker 线程里调**，不能在 `open()` 里提前拆
+—— 提前拆会让 Linux 的 pty 拿不到真 tty。这条写进了类型的文档注释，防止以后被"优化"掉。
+
+验证：Linux `helix-js` 253 passed（含 3 条 pty 行为用例）、`plugin_terminal*` 45 passed、
+Windows `clippy --all-targets -D warnings` 干净。
+
+### ConPTY 还缺什么（调研结论，避免下次白跑）
+
+**阻塞点：`std::process::Command` 带不了 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`。**
+ConPTY 要求子进程用 `STARTUPINFOEX` + 一个属性表来挂上 `HPCON`，而 std 没有暴露属性表 API
+（`creation_flags(EXTENDED_STARTUPINFO_PRESENT)` 也只是个标志位）。⇒ 必须用
+`CreateProcessW` 自己起进程。
+
+所以要再抽一层：`PtyMaster::spawn(&Cmd) -> Box<dyn PtyChild>`，其中
+`trait PtyChild { fn id(&self) -> u32; fn wait(&mut self) -> i32; fn kill(&mut self); }`。
+- Unix 实现：内部仍走 `std::process::Command`（行为零变化）；
+- Windows 实现：`CreateProcessW` + 属性表 + `HPCON`，`kill` 用 `TerminateProcess`（进程树要 Job Object）。
+
+这一步做完，ConPTY 才只是"填一个文件"；在此之前不该动 Windows 的 pty 路径。

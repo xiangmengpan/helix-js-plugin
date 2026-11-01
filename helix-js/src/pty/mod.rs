@@ -35,6 +35,57 @@ pub(crate) fn is_supported() -> bool {
     cfg!(unix)
 }
 
+/// 子进程侧 stdio 的来源：Unix 拿 slave `File`，ConPTY 拿两条管道。
+///
+/// ⚠ **转换必须发生在 worker 线程里**（`into_stdio()` 被 `spawn_pty_worker` 调用，而不是在
+/// `open()` 里）。上一版把三份 dup 提前到 caller 就导致 Linux 的 pty 拿不到真 tty
+/// （`pty_spawn`/`pty_resize` 挂）—— 这个时机是**行为的一部分**，不是实现细节。
+pub(crate) enum PtyChildStdio {
+    /// Unix：pty 的 slave 端（三份 dup 由 `into_stdio` 在 worker 里做）
+    #[cfg(unix)]
+    Slave(std::fs::File),
+    /// Windows：ConPTY 的两条管道（子进程端）—— 已经是 `Stdio`，无需 dup。
+    /// 目前还没有构造点（ConPTY 未落地）⇒ 允许未使用，免得 Windows 门禁因 warning 变红。
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    Pipes {
+        stdin: std::process::Stdio,
+        stdout: std::process::Stdio,
+        stderr: std::process::Stdio,
+    },
+}
+
+impl PtyChildStdio {
+    /// 在 **worker 线程**里转成子进程的三份 stdio。
+    #[cfg_attr(not(unix), allow(dead_code))] // 非 unix 侧暂无构造点（ConPTY 未落地）
+    pub(crate) fn into_stdio(
+        self,
+    ) -> anyhow::Result<(
+        std::process::Stdio,
+        std::process::Stdio,
+        std::process::Stdio,
+    )> {
+        match self {
+            #[cfg(unix)]
+            PtyChildStdio::Slave(slave) => {
+                let stdin = slave.try_clone()?;
+                let stdout = slave.try_clone()?;
+                Ok((
+                    std::process::Stdio::from(stdin),
+                    std::process::Stdio::from(stdout),
+                    std::process::Stdio::from(slave),
+                ))
+            }
+            #[cfg(windows)]
+            PtyChildStdio::Pipes {
+                stdin,
+                stdout,
+                stderr,
+            } => Ok((stdin, stdout, stderr)),
+        }
+    }
+}
+
 /// 宿主端句柄：`spawn_pty_worker` 只通过它读写/改尺寸/设前台组，不碰平台类型。
 ///
 /// 这是 ConPTY 落地时的**唯一接缝**：新增一个 Windows 实现即可，worker 一行不用改。
@@ -51,13 +102,13 @@ pub(crate) trait PtyMaster: Send + 'static {
     fn set_foreground(&self, child_pid: u32);
 }
 
-/// 打开一对 pty：宿主端句柄 + **子进程侧的 slave `File`**。
+/// 打开一对 pty：宿主端句柄 + **子进程侧 stdio 的来源**。
 ///
 /// ⚠ 刻意**不**在这里把 slave 拆成三份 `Stdio`：上一版那样做之后 Linux 的 pty 用例
 /// （`pty_spawn`/`pty_resize`）拿不到真 tty（`tty` 输出 8 字节后不再产出、等不到 Exit）。
 /// 拆分的时机/位置显然有影响，所以这一步只换"宿主端句柄"这一个变量，slave 仍原样交给 worker。
 #[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) fn open(size: TermSize) -> anyhow::Result<(Box<dyn PtyMaster>, std::fs::File)> {
+pub(crate) fn open(size: TermSize) -> anyhow::Result<(Box<dyn PtyMaster>, PtyChildStdio)> {
     #[cfg(unix)]
     {
         unix::open(size)
