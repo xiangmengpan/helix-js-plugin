@@ -855,3 +855,23 @@ ConPTY 要求子进程用 `STARTUPINFOEX` + 一个属性表来挂上 `HPCON`，�
 
 —— 到这里，这条线上**能安全推进的部分已经推完**：两个 seam（宿主句柄、子进程 stdio）都落地并被
 Linux 全量测试验证；再往下就是 ConPTY 本身，而它需要上面那种"先拆小函数"的前置工作。
+
+### ConPTY 第 1 步（**这次做成了**）：`spawn_pty_child` 独立出来
+
+`spawn_pty_worker` 里那段「起子进程 + `setsid`/`TIOCSCTTY` + stdio 拆分」现在是一个独立函数：
+
+```rust
+#[cfg(unix)]      fn spawn_pty_child(&Cmd, PtyChildStdio) -> Result<std::process::Child>
+#[cfg(not(unix))] fn spawn_pty_child(..) -> Err("pty: 本平台尚未实现（Windows 需要 ConPTY…）")
+```
+
+- Unix 实现内部仍是 `std::process::Command` + `pre_exec`（行为零变化）；
+- 非 unix 保留**同一签名**只返回明确错误 —— 这样 worker 的其余部分（读线程 / 主循环 /
+  `Kill` / `wait`）在 Windows 上也一直编着，ConPTY 落地时**只换这一个函数**。
+- `into_stdio()` 的调用位置仍在 worker 线程里（注释与注释里的原因都保留了）。
+
+**这次没有再用脚本化整块替换**（前两次回退都是栽在那上面），改成用精确锚点的编辑一步步来，
+编译错误当场就收敛了。
+
+验证：Linux `helix-js` 253 / 集成 **428 passed** / `fmt` + `clippy`（两平台含 `--features integration`）全干净；
+Windows `clippy --all-targets -D warnings` 干净、单测 233 passed。

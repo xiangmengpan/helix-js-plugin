@@ -420,16 +420,70 @@ pub(crate) fn spawn_worker_for_test(
     );
 }
 
-/// PTY worker：子进程 stdin/stdout/stderr 接 slave；父线程读 master 发 Chunk（流式），
-/// TermCtrl::Write 写 master 当 stdin，Kill 杀子进程。单读线程（pty 无 stderr 区分）。
-/// worker 持 master File（Drop 关闭）；slave 经 Stdio::from 交给子进程，spawn 后父侧关闭。
+/// 起子进程并接到 pty 上（Unix：`setsid` + `TIOCSCTTY` 绑控制终端）。
+///
+/// **为什么单独一个函数**：ConPTY 那边必须自己调 `CreateProcessW` + 属性表
+/// （`std::process::Command` 带不了 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`），
+/// 届时只需换掉这一个函数的实现，worker 的其余部分（读线程 / 主循环 / Kill / wait）一行不动。
+///
+/// 注意 `stdio.into_stdio()` **必须在这里调**（worker 线程内）：上一版把它提前到 `open()`，
+/// Linux 的 pty 就拿不到真 tty（`pty_spawn`/`pty_resize` 挂）—— 这个时机是行为的一部分。
 #[cfg(unix)]
-use std::os::unix::process::CommandExt;
+fn spawn_pty_child(
+    cmd: &crate::platform::Cmd,
+    stdio: pty::PtyChildStdio,
+) -> anyhow::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let (stdin, stdout, stderr) = stdio.into_stdio()?;
+    let mut command = cmd.to_command()?;
+    command
+        .env("TERM", "xterm-256color")
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(stderr);
+    // setsid（新会话，子进程为会话头+组长）+ slave 设为控制终端：交互 bash 的
+    // job control 需要，否则报 "cannot set terminal process group: Inappropriate ioctl for device"。
+    // 不能用 process_group(0)——它先让子进程成组长，setsid 会 EPERM 失败。
+    // setsid 后 PGID==PID，worker 里 kill(-pgid) 杀整组语义不变。
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // request 要显式转一次:**macOS/BSD 的 TIOCSCTTY 是 c_uint(u32),而 ioctl 的
+            // request 形参是 c_ulong(u64)** ⇒ 编译器直接 E0308(只在 macOS runner 上暴露;
+            // Linux 上两者同为 c_ulong,不转也能过 —— 这正是 CI 只红 macOS 的原因)。
+            #[allow(clippy::unnecessary_cast)] // Linux 上该转换是恒等转换,但 macOS 必须
+            if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(command.spawn()?)
+}
 
-/// worker 持 master File（Drop 关闭）；slave 经 Stdio::from 交给子进程，spawn 后父侧关闭。
-/// 仅 unix:整条路径都是 POSIX(setsid / TIOCSCTTY / AsRawFd / pre_exec);
-/// 非 unix 由调用点的 cfg(not(unix)) 分支报 "pty requires a unix platform"。
-#[cfg(unix)]
+/// 非 unix：ConPTY 未落地 ⇒ 明确报错。
+///
+/// 保留同一个签名（而不是整段 cfg 掉 worker）是为了：worker 的其余部分（读线程 / 主循环 /
+/// Kill / wait）在 Windows 上也一直被编译着，将来只换这一个函数的实现就够。
+#[cfg(not(unix))]
+#[allow(dead_code)] // 保留签名：worker 的其余部分在 Windows 上也一直编着（ConPTY 落地时只换实现）
+fn spawn_pty_child(
+    _cmd: &crate::platform::Cmd,
+    _stdio: pty::PtyChildStdio,
+) -> anyhow::Result<std::process::Child> {
+    Err(anyhow::anyhow!(
+        "pty: 本平台尚未实现（Windows 需要 ConPTY，Win10 1809+）"
+    ))
+}
+
+/// PTY worker：子进程接 pty 的 stdio，父线程读 master 发 Chunk（流式），
+/// `TermCtrl::Write` 写 master 当 stdin，`TermCtrl::Kill` 杀子进程。单读线程（pty 无 stderr 区分）。
+///
+/// 宿主端由 `Box<dyn PtyMaster>` 持有（Drop 时关闭）；子进程侧 stdio 由
+/// `PtyChildStdio::into_stdio()` **在 worker 线程里**拆出来 —— 这个时机是行为的一部分。
+#[cfg_attr(not(unix), allow(dead_code))] // 非 unix 暂无调用点（ConPTY 未落地），但保持编译
 pub(crate) fn spawn_pty_worker(
     id: u64,
     cmd: crate::platform::Cmd,
@@ -440,54 +494,14 @@ pub(crate) fn spawn_pty_worker(
 ) {
     std::thread::spawn(move || {
         let mut master = master;
-        // 子进程的三份 stdio：**在这里**（worker 线程）把 slave 拆开 —— 时机与旧实现一致
-        let (stdin_slave, stdout_slave, slave) = match slave.into_stdio() {
-            Ok(v) => v,
+        // 起子进程 + 接到本 pty 上（`setsid`/`TIOCSCTTY`/stdio 拆分都在 `spawn_pty_child`；
+        // ConPTY 落地时只换那个函数的实现）
+        let mut child = match spawn_pty_child(&cmd, slave) {
+            Ok(c) => c,
             Err(e) => {
-                crate::state::js_dbg(format_args!("pty stdio FAILED id={id}: {e}"));
+                crate::state::js_dbg(format_args!("pty spawn FAILED id={id}: {e}"));
                 let _ = tx.send(TermEvent::Exit(id, 127, None));
                 return;
-            }
-        };
-        let mut child = {
-            let mut command = match cmd.to_command() {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = tx.send(TermEvent::Exit(id, 127, None));
-                    crate::state::js_dbg(format_args!("pty command FAILED id={id}: {e}"));
-                    return;
-                }
-            };
-            command
-                .env("TERM", "xterm-256color")
-                .stdin(stdin_slave)
-                .stdout(stdout_slave)
-                .stderr(slave);
-            // setsid（新会话，子进程为会话头+组长）+ slave 设为控制终端：交互 bash 的
-            // job control 需要，否则报 "cannot set terminal process group: Inappropriate ioctl for device"。
-            // 不能用 process_group(0)——它先让子进程成组长，setsid 会 EPERM 失败。
-            // setsid 后 PGID==PID，下方 kill(-pgid) 杀整组语义不变。
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    // request 要显式转一次:**macOS/BSD 的 TIOCSCTTY 是 c_uint(u32),而 ioctl 的
-                    // request 形参是 c_ulong(u64)** ⇒ 编译器直接 E0308(只在 macOS runner 上暴露;
-                    // Linux 上两者同为 c_ulong,不转也能过 —— 这正是 CI 只红 macOS 的原因)。
-                    #[allow(clippy::unnecessary_cast)] // Linux 上该转换是恒等转换,但 macOS 必须
-                    if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-            match command.spawn() {
-                Ok(c) => c,
-                Err(_) => {
-                    let _ = tx.send(TermEvent::Exit(id, 127, None));
-                    return;
-                }
             }
         };
         // 子进程设为 pty 前台进程组（交互 bash 的 job control；Windows 是空实现）
