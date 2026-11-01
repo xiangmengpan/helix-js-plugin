@@ -838,3 +838,20 @@ ConPTY 要求子进程用 `STARTUPINFOEX` + 一个属性表来挂上 `HPCON`，�
 - Windows 实现：`CreateProcessW` + 属性表 + `HPCON`，`kill` 用 `TerminateProcess`（进程树要 Job Object）。
 
 这一步做完，ConPTY 才只是"填一个文件"；在此之前不该动 Windows 的 pty 路径。
+
+### ConPTY 第 1 步（`PtyChild` + `PtyMaster::spawn`）**尝试后回退**
+
+设计是对的（`std::process::Command` 带不了 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` ⇒ 必须自起进程，
+所以要 `trait PtyChild { id/wait/kill }` + `PtyMaster::spawn(&Cmd, PtyChildStdio)`），
+`pty/mod.rs` 与 `pty/unix.rs` 一侧也写通了。
+
+但**改 worker 那一段（把命令构造 / `pre_exec` / `spawn` 一起搬进 trait）时，脚本化替换把大括号弄乱**
+（`mismatched closing delimiter`）⇒ 已 `git checkout` 回退，工作区回到 `040c78ca2`（第二个 seam 那版）。
+
+**教训（又一次是同一个）**：`spawn_pty_worker` 现在有 ~120 行、里面还嵌着 `unsafe`/`pre_exec`/循环，
+**不该用脚本化的整块替换去改它**（上次回退也是栽在这类大块替换上）。下次做这一步时：
+先把 worker 拆成"起进程 / 读线程 / 主循环"三个小函数（纯搬家，单独验证），再换实现。
+这样每次改动的面都小到能看住。
+
+—— 到这里，这条线上**能安全推进的部分已经推完**：两个 seam（宿主句柄、子进程 stdio）都落地并被
+Linux 全量测试验证；再往下就是 ConPTY 本身，而它需要上面那种"先拆小函数"的前置工作。
