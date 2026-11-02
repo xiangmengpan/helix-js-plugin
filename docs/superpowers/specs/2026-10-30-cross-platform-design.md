@@ -1175,10 +1175,17 @@ C:\Temp\it.exe --test-threads=4
 12 plugin_terminal_modes  ┐
  5 plugin_terminal_hooks  ┘ ConPTY（需另一台 Windows）
  3 server_manager          ← 该组代码注释里本就标着「已暴露但未修」的 arsenal 断言
- 2 plugin_lsp_mock         ← workspace/applyEdit 没落到文件（疑 file URI）
 ```
 
-⇒ **除 ConPTY 那 17 条外，Windows 只剩 5 条**，且都不是基础设施问题了。
+`plugin_lsp_mock` 的 2 条已修：`mock_lsp` 的 `file://` URI 是**字符串拼接**出来的，
+Windows 上拼成 `file://C:\...` —— 非法 URI ⇒ workspace edit 落到新建的文档上，
+症状是"跨文件 rename 第二个文件永远改不动"（Linux 恰好合法，所以从没暴露）。
+改用 `Url::from_file_path`；测试插件里的 `"file://" + ctx.doc.path` 同样处理。
+
+⇒ **除 ConPTY 那 17 条外，Windows 只剩 3 条**（且是 arsenal 自身的遗留断言）。
+
+⚠ 又一个"跑的是旧二进制"的实例：改完 `mock_lsp` 后忘了重编 + 重 copy `C:\Temp\mock_lsp.exe`，
+一度以为"修了没用"。**改 mock_lsp 必须重编并重新 copy**。
 
 38 条的分布：
 
