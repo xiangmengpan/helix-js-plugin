@@ -1197,3 +1197,41 @@ C:\Temp\it.exe --test-threads=4
 1. `helix-vcs/src/git.rs:32` 的 `debug_assert!(file.is_absolute())` 在 Windows 上会炸 ——
    传进来的路径是**驱动器相对**（`\Temp\x`），Windows 上不算 absolute；
 2. `plugin_fsasync::plugin_fsasync_read` 在 `plugin_fsasync.rs:38` `unwrap()` 了 None。
+
+### macOS 摸底：**只有类型检查，没有运行期**（本机跑不了 macOS）
+
+用「假 cc」把 Apple 专属旗标（`-arch` / `-mmacosx-version-min` / `-isysroot` / `-gfull`）过滤掉，
+让 `ring`、`tree-house-bindings` 这些 C 依赖也能编过去 —— **只做类型检查，不产出可链接产物**：
+
+```
+cargo check  --workspace --all-targets --features integration --target x86_64-apple-darwin   → 0 error
+cargo clippy --workspace --all-targets --features integration --target x86_64-apple-darwin -D warnings → 干净
+```
+
+抓到并修掉一个**只在 macOS 上红**的缺陷：
+
+| 位置 | 症状 |
+|---|---|
+| `helix-js/src/shell.rs` `spawn_worker_for_test` | 门控是 `cfg(all(test, unix))`，但唯一使用者那条用例是 `target_os = "linux"`（读 `/proc/self/status`）⇒ macOS 上它是 dead_code，`clippy -D warnings` 直接红。判据改成同一个 |
+
+另外做了一次静态审计：`cfg(unix)` 块里出现的 Linux 专属调用只有 `TIOCSCTTY` 一处，
+而它已经带着 macOS 的 `c_uint` 转换 + `#[allow(clippy::unnecessary_cast)]`，没问题。
+
+⚠ 明确一下边界：**这证明的是"Rust 类型/cfg 层面在 macOS 成立"**，不证明运行期行为。
+真正的 macOS 验证仍然只能靠 CI（`macos-latest`）或一台 Mac。
+
+### server-manager 在 Windows 上能装了（两个产品侧 bug）
+
+1. **符号链接要特权**：`managed/bin/<name>` 用 `symlink_file`，Windows 普通用户
+   `os error 1314` ⇒ 一个 server 都装不了。改成「符号链接失败 → **硬链接** → 复制」：
+   这层要的只是"一个能启动同一份二进制的入口"，同卷硬链接不需要任何特权。
+2. **入口名跟 server 名走**：`managed_bin(name)` 用的是 server 名，而实际链接用的是配方里的
+   `bin` —— 两者经常不同；且 Windows 上必须带扩展名（实测：无扩展名的 PE 直接 `cmd` 返回 9009，
+   `CreateProcess` 会去找 `<name>.exe`）。改成按配方的 `bin_name` 解析。
+
+测试夹具相应平台中立化：Windows 上写 `.cmd`（`#!/bin/sh` 脚本在那边跑不起来），
+配方 `bin` 用同一个名字。
+
+结果：Windows 上 **安装真的跑通了**（`installed 'demo-bin' 1.0.0`、`batch done 2/2`、市场行显示 ✓）。
+余下 3 条属于该组**代码注释里本就标注「已暴露但未修」**的断言（版本列 `✓ 1.0.0`、
+languages.toml 里受管路径的字面形状、UI 冒烟），与跨平台无关，另开一轮。
