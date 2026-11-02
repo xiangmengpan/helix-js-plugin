@@ -21,7 +21,8 @@ async fn plugin_fsasync_read() -> anyhow::Result<()> {
             });
         });
         "#
-        .replace("PLACEHOLDER_FILE", &format!("{}", file.display())),
+        // `js_path`：`\` 在 JS 字符串里是转义符（Windows 上路径会被吃掉）
+        .replace("PLACEHOLDER_FILE", &js_path(&file)),
     )?;
 
     test_key_sequences(

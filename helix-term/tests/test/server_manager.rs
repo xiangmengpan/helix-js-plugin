@@ -318,7 +318,7 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
         &cfg,
         format!(
             "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\n",
-            dir.path().display()
+            js_path(dir.path())
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
@@ -486,7 +486,7 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
         &cfg,
         format!(
             "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\ndescription = \"Fake demo tool\"\nhomepage = \"https://example.invalid/demo\"\n",
-            dir.path().display()
+            js_path(dir.path())
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
@@ -655,7 +655,7 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
         &cfg,
         format!(
             "[server-manager]\n\n[server-manager.registry.wide-desc-tool]\nurl = \"file://{}/rel/{{version}}/wide.tar.gz\"\nversion = \"9.9\"\nstrip = 1\nbin = \"wide-tool\"\nlanguages = [\"cjk\"]\ndescription = \"{desc}\"\n",
-            dir.path().display()
+            js_path(dir.path())
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
@@ -716,8 +716,8 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
         &cfg,
         format!(
             "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\n\n[server-manager.registry.demob]\nurl = \"file://{}/rel/{{version}}/demob.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demob\"\nlanguages = [\"demo\"]\n",
-            dir.path().display(),
-            dir.path().display()
+            js_path(dir.path()),
+            js_path(dir.path())
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
