@@ -3,6 +3,7 @@ use super::*;
 use std::time::Duration;
 
 use helix_term::application::Application;
+use helix_term::ui::{js_picker::PickerRow, overlay::Overlay, picker::Picker};
 use helix_view::current_ref;
 
 // Windows 上这些用例的 `Event`/`KeyEvent` 用法已随 pty/流式路径 gate 掉 ⇒
@@ -16,6 +17,16 @@ fn panel_text(app: &mut Application) -> String {
     render_rows(app, helix_view::graphics::Rect::new(0, 0, 120, 30))
         .iter()
         .map(|r| r.chars().take(32).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 面板**正文**（只留带边框的行）。负向断言（"某文件被滤掉了"）务必用它：
+/// `panel_text` 会把底部状态栏一起拼进来，而状态栏里有当前文件路径 ⇒ 一律误伤。
+fn panel_body(app: &mut Application) -> String {
+    panel_text(app)
+        .lines()
+        .filter(|l| l.starts_with('│') || l.starts_with('┌') || l.starts_with('└'))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -222,6 +233,137 @@ async fn filetree_config_show_hidden_applies() -> anyhow::Result<()> {
     assert!(
         panel_text(&mut app).contains(".secret.txt"),
         "show_hidden=true ⇒ 面板开局就显示 dotfile（无需按 H）"
+    );
+    Ok(())
+}
+
+/// 搜索（P0）：`/` 进过滤 → 逐字增量过滤 → Enter 直接打开首个命中 → Esc 退出恢复完整树。
+///
+/// 钉三件事：① 过滤真的裁掉了不命中的行（不是只改标题）；② 光标停在**首个真命中**而不是
+/// 被保留的祖先行（否则 Enter 会变成"钻进 src/"，用户还得再按一次）；③ Esc 之后回到完整树。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_search_filter_open_and_escape() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let main_js = dir.path().join("src").join("main.js");
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    assert!(
+        panel_text(&mut app).contains("readme.md"),
+        "前置：完整树里应该有 readme.md"
+    );
+
+    // `/` 进搜索，输入 main：只剩 src（祖先行）+ src/main.js
+    pump(&mut app, "/").await?;
+    pump(&mut app, "main").await?;
+    let text = panel_body(&mut app);
+    assert!(text.contains("main.js"), "过滤后应剩 src/main.js: {text:?}");
+    assert!(
+        !text.contains("readme.md"),
+        "不命中的 readme.md 应被滤掉（过滤没生效?）: {text:?}"
+    );
+    assert!(text.contains('⌕'), "find 模式应有查询行: {text:?}");
+
+    // Esc → 回到 tree 模式，完整树回来（readme.md 重新可见）
+    pump(&mut app, "<esc>").await?;
+    let text = panel_body(&mut app);
+    assert!(text.contains("readme.md"), "Esc 后应恢复完整树: {text:?}");
+    assert!(!text.contains('⌕'), "退出后查询行应消失: {text:?}");
+
+    // 再搜一次，Enter 直接打开首个真命中（main.js），不是钻目录
+    pump(&mut app, "/").await?;
+    pump(&mut app, "main").await?;
+    pump(&mut app, "<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .as_deref(),
+        main_js.to_str(),
+        "Enter 应打开搜索命中的 src/main.js"
+    );
+    Ok(())
+}
+
+/// 搜索（P1）：`/` 之后 `Tab` 切「全库」——`rg --files` 的列表 + nucleo 打分，
+/// 行是**扁平相对路径**（不是树）。异步列表到达后光标落在首个命中，Enter 直接打开。
+///
+/// 钉的是 P1 的接线：`run_async(["rg",…])` → `flat_items` → `helix.fuzzy` → 合成节点。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_search_all_scope_uses_rg_files() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let main_js = dir.path().join("src").join("main.js");
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    pump(&mut app, "/").await?;
+    pump(&mut app, "main").await?;
+    pump(&mut app, "<tab>").await?; // 切全库（异步列表）
+
+    // rg 是异步的：等列表到达（查询行的计数从"载入中"变成"全库 · N 项"）
+    let mut text = String::new();
+    for _ in 0..60 {
+        text = panel_body(&mut app);
+        if text.contains("全库 ·") && !text.contains("载入中") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // 注意：CJK 在渲染行里占两列（"全 库"，字符后跟一个填充空格）⇒ 断言前先压掉空白
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("全库"), "查询行应标出全库范围: {text:?}");
+    assert!(
+        text.contains("src/main.js"),
+        "全库行应显示**相对路径**（同名文件靠路径区分）: {text:?}"
+    );
+
+    pump(&mut app, "<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .as_deref(),
+        main_js.to_str(),
+        "全库视图下 Enter 应打开命中的 src/main.js"
+    );
+    Ok(())
+}
+
+/// `:filetree-find`：原生 picker 的数据源（`rg --files`）能选中并打开文件。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_find_command_opens_from_picker() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let main_js = dir.path().join("src").join("main.js");
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    let picker_type = std::any::type_name::<Overlay<Picker<PickerRow, ()>>>();
+    // items 是 async（rg 在 worker 线程跑）⇒ 层要等结果回来才推上来 ⇒ 轮询等它出现
+    pump_until(
+        &mut app,
+        ":filetree-find<ret>",
+        Duration::from_secs(10),
+        "picker 打开",
+        |app| app.compositor.has_component(picker_type),
+    )
+    .await?;
+
+    // 候选是一次性拉取的异步列表：再让事件泵跑几轮，确保行已填充
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    pump(&mut app, "").await?;
+    pump(&mut app, "main<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .as_deref(),
+        main_js.to_str(),
+        "picker 里 Enter 应打开选中的 src/main.js"
     );
     Ok(())
 }

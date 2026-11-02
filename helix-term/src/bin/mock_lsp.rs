@@ -163,9 +163,15 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
-/// file:// URI：Unix 语义直接拼接（本仓测试环境为 Unix）；Windows 需按 lsp::Url::from_file_path 语义。
+/// 路径 → `file://` URI。
+///
+/// **必须走 URL 语义**（`Url::from_file_path`），不能 `format!("file://{}", path)`：
+/// Windows 路径是 `C:\a\b`，拼出来是 `file://C:\a\b` —— 不是合法 URI，客户端会解析成
+/// 相对路径，于是 workspace edit 落到了**另一份文档**上（实测：rename 跨文件的第二个文件永远改不动）。
 fn file_uri(path: &str) -> String {
-    format!("file://{}", path)
+    helix_lsp::Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| format!("file://{path}"))
 }
 
 fn capabilities(scenario: &str) -> serde_json::Value {

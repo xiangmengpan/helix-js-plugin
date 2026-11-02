@@ -534,7 +534,9 @@ async fn plugin_lsp_mock_execute_manual_action_falls_back_first_server() -> anyh
         &plugin_path,
         r#"
         helix.register_command("mock-ca-manual", async (ctx) => {
-            const uri = "file://" + ctx.doc.path;
+            // 别写 "file://" + path：Windows 的 `C:\a\b` 会拼出 `file://C:\a\b`（非法 URI，
+            // 客户端解析成相对路径）。统一成 `file:///` + 正斜杠分量，两个平台都对。
+            const uri = "file:///" + ctx.doc.path.split(/[\\/]/).filter(Boolean).join("/");
             // 手动构造 action(无 _serverId):带 edit.changes(含 uri)但无 command——
             // 触发 resolve(回退第一个 server),resolve 覆写 edit 为 ONE-A(而非自带的 IGNORED,证明走 resolve)
             const r = await helix.lsp.execute_code_action({
