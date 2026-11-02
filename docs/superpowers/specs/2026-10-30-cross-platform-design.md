@@ -1164,9 +1164,21 @@ C:\Temp\it.exe --test-threads=4
 
 | 时间线 | 结果 |
 |---|---|
-| 本轮开始前（语法噪声 + 无 HELIX_RUNTIME + UNC） | 341 passed / 83 failed / 4 超时 |
+| 最开始（语法噪声 + 无 HELIX_RUNTIME + UNC） | 341 passed / 83 failed / 4 超时 |
 | 修完 `repo_root`/符号链接/语法之后（UNC） | 378 / 47 / 1 挂住 |
-| **原生路径 + 本轮全部修复** | **388 / 38 / 0，且不再挂住** |
+| 原生路径 + 第一轮修复 | 388 / 38 / 0 |
+| **原生路径 + 本轮（macOS 摸底同期修的 16 条 + server-manager 移植）** | **404 / 22 / 0** |
+
+剩下的 22 条：
+
+```
+12 plugin_terminal_modes  ┐
+ 5 plugin_terminal_hooks  ┘ ConPTY（需另一台 Windows）
+ 3 server_manager          ← 该组代码注释里本就标着「已暴露但未修」的 arsenal 断言
+ 2 plugin_lsp_mock         ← workspace/applyEdit 没落到文件（疑 file URI）
+```
+
+⇒ **除 ConPTY 那 17 条外，Windows 只剩 5 条**，且都不是基础设施问题了。
 
 38 条的分布：
 
