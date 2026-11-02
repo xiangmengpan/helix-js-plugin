@@ -9,8 +9,12 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context as _, Result};
 
-/// 建软链:`std::os::unix::fs::symlink` 在非 unix 不存在 ⇒ 各平台走各自的门面。
-/// Windows 建链需开发者模式/管理员权限,失败照常冒泡成错误(不静默)。
+/// 建「managed/bin 里的入口」:`std::os::unix::fs::symlink` 在非 unix 不存在 ⇒ 各平台走各自的门面。
+///
+/// Windows 的坑:建符号链接要 `SeCreateSymbolicLinkPrivilege`(开发者模式或管理员),
+/// 普通用户直接 `os error 1314`。而这一层要的其实只是「一个能启动同一份二进制的入口」——
+/// 同卷的**硬链接**完全够用且不需要任何特权 ⇒ 失败就退到硬链接,再不行才复制。
+/// 复制是最后手段:之后升级版本时旧副本不会跟着变(调用方每次装完都会重建入口)。
 pub(crate) fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -18,7 +22,11 @@ pub(crate) fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     #[cfg(not(unix))]
     {
-        std::os::windows::fs::symlink_file(src, dst)
+        match std::os::windows::fs::symlink_file(src, dst) {
+            Ok(()) => Ok(()),
+            // 无符号链接特权(1314)/ 需要开发者模式 ⇒ 退硬链接(同卷、无特权、可执行)
+            Err(_) => std::fs::hard_link(src, dst).or_else(|_| std::fs::copy(src, dst).map(|_| ())),
+        }
     }
 }
 

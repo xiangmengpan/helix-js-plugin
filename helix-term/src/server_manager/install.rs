@@ -35,7 +35,13 @@ pub fn managed_dir(name: &str) -> PathBuf {
 }
 
 pub fn managed_bin(name: &str) -> PathBuf {
-    managed_root().join("bin").join(name)
+    // 入口的**文件名**取配方里的 `bin`，不是 server 名：两者在真实配方里经常不同，
+    // 且 Windows 上必须带上 `.cmd`/`.exe` 才有可执行语义（无扩展名的 PE 启动不了）。
+    // 取不到配方（未加载/未知名字）时退回 server 名 —— 与旧行为一致。
+    let file = registry::get(name)
+        .map(|spec| spec.bin_name.clone())
+        .unwrap_or_else(|| name.to_string());
+    managed_root().join("bin").join(file)
 }
 
 /// 工具是否已安装(受管目录存在且含配方 bin)

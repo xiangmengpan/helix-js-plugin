@@ -191,7 +191,7 @@ async fn layout_change_args_shape_end_to_end() -> anyhow::Result<()> {
             helix.open_panel({{ side: "right", size: 20, render: () => ["== panel =="] }});
         }});
         "#,
-            marker.display()
+            js_path(&marker)
         ),
     )?;
 

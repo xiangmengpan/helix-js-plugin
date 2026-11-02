@@ -253,6 +253,16 @@ async fn server_local_short_circuit_and_unmanage() -> anyhow::Result<()> {
 }
 
 /// 写 file:// 假 release:tar.gz(顶层 demo-bin-1.0.0/ + 可执行 bin demo-bin)到 path
+/// 夹具二进制的真实文件名：Windows 上用 `.cmd`（`#!/bin/sh` 脚本在那边跑不起来，
+/// 而无扩展名的 PE 也启动不了），Unix 上保持无扩展名。
+fn fixture_bin(bin_name: &str) -> String {
+    if cfg!(windows) {
+        format!("{bin_name}.cmd")
+    } else {
+        bin_name.to_string()
+    }
+}
+
 fn write_fake_tar_gz(path: &std::path::Path, bin_name: &str, version: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(path.parent().unwrap())?;
     let file = std::fs::File::create(path)?;
@@ -269,12 +279,17 @@ fn write_fake_tar_gz(path: &std::path::Path, bin_name: &str, version: &str) -> a
         format!("{top}/"),
         std::io::Cursor::new(Vec::<u8>::new()),
     )?;
-    // bin 脚本(0755)
-    let script = format!("#!/bin/sh\necho '{bin_name} {version}'\n");
+    // bin 脚本(0755)；Windows 上换成 .cmd（cmd 不认 `#!/bin/sh`，也认不出无扩展名的 PE）
+    let file_name = fixture_bin(bin_name);
+    let script = if cfg!(windows) {
+        format!("@echo off\r\necho {bin_name} {version}\r\n")
+    } else {
+        format!("#!/bin/sh\necho '{bin_name} {version}'\n")
+    };
     let mut hb = tar::Header::new_gnu();
     hb.set_size(script.len() as u64);
     hb.set_mode(0o755);
-    ar.append_data(&mut hb, format!("{top}/{bin_name}"), script.as_bytes())?;
+    ar.append_data(&mut hb, format!("{top}/{file_name}"), script.as_bytes())?;
     let enc = ar.into_inner()?;
     let f = enc.finish()?;
     f.sync_all()?;
@@ -317,8 +332,9 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
     std::fs::write(
         &cfg,
         format!(
-            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\n",
-            js_path(dir.path())
+            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"{}\"\nlanguages = [\"demo\"]\n",
+            js_path(dir.path()),
+            fixture_bin("demo-bin")
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
@@ -388,7 +404,7 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
     );
 
     // 状态收敛:受管 bin 落盘(软链)→ 目标存在;languages.toml 出现受管 [language-server.demo-bin]
-    let bin = managed.join("bin").join("demo-bin");
+    let bin = managed.join("bin").join(fixture_bin("demo-bin"));
     assert!(
         bin.exists(),
         "managed/bin/demo-bin 应已安装: {}",
@@ -401,7 +417,13 @@ async fn server_arsenal_task_install_background_file_source() -> anyhow::Result<
         "languages.toml 应有受管 language-server 段, got: {langs_text}"
     );
     assert!(
-        langs_text.contains(&managed.join("bin").join("demo-bin").display().to_string()),
+        langs_text.contains(
+            &managed
+                .join("bin")
+                .join(fixture_bin("demo-bin"))
+                .display()
+                .to_string()
+        ),
         "command 应指向受管绝对路径, got: {langs_text}"
     );
     Ok(())
@@ -485,8 +507,9 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     std::fs::write(
         &cfg,
         format!(
-            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\ndescription = \"Fake demo tool\"\nhomepage = \"https://example.invalid/demo\"\n",
-            js_path(dir.path())
+            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"{}\"\nlanguages = [\"demo\"]\ndescription = \"Fake demo tool\"\nhomepage = \"https://example.invalid/demo\"\n",
+            js_path(dir.path()),
+            fixture_bin("demo-bin")
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
@@ -574,7 +597,11 @@ async fn server_arsenal_ui_smoke() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let bin = dir.path().join("managed").join("bin").join("demo-bin");
+        let bin = dir
+            .path()
+            .join("managed")
+            .join("bin")
+            .join(fixture_bin("demo-bin"));
         std::fs::write(&bin, "#!/bin/sh\necho 'demo-bin 9.9'\n")?;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
     }
@@ -654,8 +681,9 @@ async fn server_arsenal_wide_desc_truncated_inside_frame() -> anyhow::Result<()>
     std::fs::write(
         &cfg,
         format!(
-            "[server-manager]\n\n[server-manager.registry.wide-desc-tool]\nurl = \"file://{}/rel/{{version}}/wide.tar.gz\"\nversion = \"9.9\"\nstrip = 1\nbin = \"wide-tool\"\nlanguages = [\"cjk\"]\ndescription = \"{desc}\"\n",
-            js_path(dir.path())
+            "[server-manager]\n\n[server-manager.registry.wide-desc-tool]\nurl = \"file://{}/rel/{{version}}/wide.tar.gz\"\nversion = \"9.9\"\nstrip = 1\nbin = \"{}\"\nlanguages = [\"cjk\"]\ndescription = \"{desc}\"\n",
+            js_path(dir.path()),
+            fixture_bin("wide-tool")
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
@@ -715,9 +743,11 @@ async fn server_arsenal_batch_two_installs() -> anyhow::Result<()> {
     std::fs::write(
         &cfg,
         format!(
-            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demo-bin\"\nlanguages = [\"demo\"]\n\n[server-manager.registry.demob]\nurl = \"file://{}/rel/{{version}}/demob.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"demob\"\nlanguages = [\"demo\"]\n",
+            "[server-manager]\n\n[server-manager.registry.demo-bin]\nurl = \"file://{}/rel/{{version}}/demo.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"{}\"\nlanguages = [\"demo\"]\n\n[server-manager.registry.demob]\nurl = \"file://{}/rel/{{version}}/demob.tar.gz\"\nversion = \"1.0.0\"\nstrip = 1\nbin = \"{}\"\nlanguages = [\"demo\"]\n",
             js_path(dir.path()),
-            js_path(dir.path())
+            fixture_bin("demo-bin"),
+            js_path(dir.path()),
+            fixture_bin("demob")
         ),
     )?;
     let _sm_cfg = EnvGuard::new("SM_SERVER_CONFIG", cfg.to_string_lossy().into_owned());
