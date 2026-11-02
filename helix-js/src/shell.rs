@@ -403,7 +403,10 @@ fn spawn_worker(
 }
 
 /// 仅供线程数探针使用（单线程化前后对比）：转调私有 [`spawn_worker`]。
-#[cfg(all(test, unix))]
+///
+/// 判据必须与**用它的那条用例**一致（`target_os = "linux"`，它读 `/proc/self/status`）：
+/// 写成 `cfg(unix)` 的话，macOS 上这个函数没人用 ⇒ `clippy -D warnings`（dead_code）直接红。
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn spawn_worker_for_test(
     id: u64,
     cmd: &str,

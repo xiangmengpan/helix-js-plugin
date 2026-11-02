@@ -251,7 +251,7 @@ async fn plugin_open_file_from_panel_key() -> anyhow::Result<()> {
     )?;
     // 注入 TARGET 绝对路径
     let plugin_src = std::fs::read_to_string(&plugin_path)?;
-    let plugin_src = plugin_src.replace("TARGET", &target.display().to_string());
+    let plugin_src = plugin_src.replace("TARGET", &js_path(&target));
     std::fs::write(&plugin_path, plugin_src)?;
 
     test_key_sequences(

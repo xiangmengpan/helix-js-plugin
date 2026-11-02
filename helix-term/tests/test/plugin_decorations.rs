@@ -24,7 +24,7 @@ async fn plugin_decorations_applied_and_replaced() -> anyhow::Result<()> {
                 helix.set_virtual_text("{f}");
             }});
             "#,
-            f = file.display()
+            f = js_path(&file)
         ),
     )?;
 
@@ -140,7 +140,7 @@ async fn plugin_decorations_repush_on_doc_change() -> anyhow::Result<()> {
                 helix.set_virtual_text("{f}", 0, 0, "Z");
             }});
             "#,
-            f = file.display()
+            f = js_path(&file)
         ),
     )?;
 
@@ -202,7 +202,7 @@ async fn plugin_decorations_async_begin_edit() -> anyhow::Result<()> {
                 }});
             }});
             "#,
-            f = file.display()
+            f = js_path(&file)
         ),
     )?;
 
@@ -248,7 +248,7 @@ async fn plugin_decorations_unsorted_virtual_text_renders() -> anyhow::Result<()
                 helix.set_virtual_text("{f}", 1, 1, "B", "ui.help");  // char_idx 5
                 helix.set_virtual_text("{f}", 0, 0, "A", "ui.help");  // char_idx 0(乱序)
             }});"#,
-            f = file.display()
+            f = js_path(&file)
         ),
     )?;
 
@@ -290,7 +290,7 @@ async fn plugin_decorations_reversed_highlight_normalized() -> anyhow::Result<()
             r#"helix.register_command("dec-rev", () => {{
                 helix.set_highlight("{f}", 1, 0, 0, 0, "ui.selection");  // 反向
             }});"#,
-            f = file.display()
+            f = js_path(&file)
         ),
     )?;
 

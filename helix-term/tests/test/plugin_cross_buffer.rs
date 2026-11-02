@@ -19,7 +19,7 @@ async fn plugin_by_path_reads_other_buffer() -> anyhow::Result<()> {
                 const d = helix.by_path("{}");
                 helix.echo(d === null ? "null" : d.text.trim());
             }});"#,
-            file2.display()
+            js_path(&file2)
         ),
     )?;
 
@@ -97,7 +97,7 @@ async fn plugin_edit_other_buffer_undo_per_doc() -> anyhow::Result<()> {
                 const d = helix.by_path("{}");
                 if (d !== null) d.insert(0, 0, "X");
             }});"#,
-            file2.display()
+            js_path(&file2)
         ),
     )?;
 
@@ -163,7 +163,7 @@ async fn plugin_mixed_edits_undo_independent() -> anyhow::Result<()> {
                 const d = helix.by_path("{}");
                 if (d !== null) d.insert(0, 0, "B");
             }});"#,
-            file2.display()
+            js_path(&file2)
         ),
     )?;
 
@@ -231,7 +231,7 @@ async fn plugin_edit_same_doc_two_routes_one_undo() -> anyhow::Result<()> {
                 const d = helix.by_path("{}");
                 if (d !== null) d.insert(0, 0, "B");
             }});"#,
-            file.display()
+            js_path(&file)
         ),
     )?;
 
@@ -320,8 +320,8 @@ async fn plugin_async_begin_edit_cross_buffer() -> anyhow::Result<()> {
                 }});
             }});
             "#,
-            file2.display(),
-            file2.display()
+            js_path(&file2),
+            js_path(&file2)
         ),
     )?;
 
@@ -380,7 +380,7 @@ async fn plugin_edit_other_buffer_vsplit_no_panic() -> anyhow::Result<()> {
                 const d = helix.by_path("{}");
                 if (d !== null) d.insert(0, 0, "X");
             }});"#,
-            file2.display()
+            js_path(&file2)
         ),
     )?;
 

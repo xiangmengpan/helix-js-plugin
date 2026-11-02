@@ -206,7 +206,7 @@ helix.register_command("touch-bg", () => {{
     d.insert(0, 0, "X");
 }});
 "#,
-            b.display()
+            js_path(&b)
         ),
     )?;
 

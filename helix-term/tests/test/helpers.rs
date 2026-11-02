@@ -582,6 +582,17 @@ pub fn repo_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// 把路径塞进 **JS 源码**时用：Windows 的 `\` 在 JS 字符串里是转义符
+/// （`C:\Users\...` 会被 JS 解释成 `C:Users...`），TOML 里同理 ⇒ 一律换成 `/`
+/// （Windows 的路径 API / CreateProcess 也认 `/`）。
+///
+/// 踩过的坑：`plugin_entry` 的 `helix.load("C:\...")`、`plugin_cross_buffer` 的
+/// `helix.by_path("C:\...")`、`plugin_decorations` 的 `set_virtual_text("C:\...")` 全部因此失效，
+/// 症状是"插件拿到 null / 什么都没画"，很难看出是转义问题。
+pub fn js_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 pub fn repo_plugins_dir() -> std::path::PathBuf {
     repo_root().join("plugins")
 }
