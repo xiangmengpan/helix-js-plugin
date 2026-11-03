@@ -706,3 +706,61 @@ async fn pane_mode_cap_t_without_plugin_says_where_to_get_it() -> anyhow::Result
     );
     Ok(())
 }
+
+/// 堆叠的成员可以是**组**：`0 | (1/2)` 里把 0 与"那一排"叠成一个 tab，
+/// `p` 轮转到组时组内两窗铺满同一块区域（零映射），焦点落在组内真叶子。
+#[tokio::test(flavor = "multi_thread")]
+async fn stack_a_leaf_with_a_group_and_rotate() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hi\n")?;
+    let mut app = AppBuilder::new().with_file(&file, None).build()?;
+    // 0 | (b / c)：`r` = 右分（左右），`d` = 下分（上下）⇒ 0 的兄弟是一个组
+    pump(&mut app, "<C-p>r").await?;
+    pump(&mut app, "d").await?;
+    pump(&mut app, "h").await?; // 焦点回 0
+    assert_eq!(app.compositor.layout_tree().active(), 0);
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+    let grp = app
+        .compositor
+        .layout_tree()
+        .sibling_of(0)
+        .expect("0 的兄弟是组");
+    assert_eq!(
+        app.compositor.layout_tree().node_kind(grp),
+        Some(helix_term::ui::layout::NodeKind::Group)
+    );
+
+    pump(&mut app, "s").await?; // 与组建堆叠
+    assert!(app.compositor.layout_tree().is_stacked(0));
+    assert_eq!(app.compositor.layout_tree().stack_members(0), vec![0, grp]);
+    render_rows(&mut app, area);
+    assert!(
+        app.compositor.layout_tree().leaf_rect(1).is_none(),
+        "非锚（整组）让位"
+    );
+
+    // 轮转到组：组内两窗回来占满同一块区域，焦点是组内真叶子
+    pump(&mut app, "p").await?;
+    render_rows(&mut app, area);
+    let active = app.compositor.layout_tree().active();
+    assert!(
+        app.compositor
+            .layout_tree()
+            .group_leaves(grp)
+            .contains(&active),
+        "焦点必须在组内真叶子上（实得 {active}）"
+    );
+    assert!(
+        app.compositor.layout_tree().leaf_rect(0).is_none(),
+        "原锚让位"
+    );
+    let b = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(1)
+        .expect("组内叶子有几何");
+    assert_eq!(b.x, 0, "组拿到同一块区域（零映射）");
+    Ok(())
+}

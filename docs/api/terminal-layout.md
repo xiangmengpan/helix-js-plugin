@@ -135,6 +135,11 @@ helix.pane.minimize(g.id, true); // 整组折成底部一条横条，兄弟占�
 - 面板也认 `at`：`helix.open_panel({ side:"bottom", rail:false, at:"root", render })`。
 - 组 resize：`helix.pane.resize(组 id, 0.3)` 只调**该组自己那条分界**（这一排占 30%），
   不动祖先；传叶子时仍是老行为（路径上所有祖先一起改）。
+- 搬**整组**：`helix.pane.move_into(组 id, { at:"root", dir:"bottom" })` —— 组内结构原样
+  保留，只换它占的区域。含 rail/dock 的组不许搬（贴边不变量）；搬移会让"兄弟"关系失效，
+  所以涉及被搬子树的堆叠组会被解散（不留悬空条目）。
+- 堆叠的成员可以是**组**：`0 | (b/c)` 里把 0 与"那一排"叠成一个 tab（Pane 模式 `s`，
+  `p`/`P` 轮转）；轮转后组占**同一块区域**（零映射不变），焦点落到组内第一个叶子。
 - `C-p T`：请 terminal 插件在整窗底边开终端（内部派发 `hterm-root`）。插件没加载时
   状态栏直接说去哪儿开，不会静默失败。
 - `get_layout()`/`layout.restore()` 的树节点带 `id`；老 dump 没有 `id` 时 restore 会重新分配，

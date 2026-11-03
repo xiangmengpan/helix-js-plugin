@@ -474,23 +474,20 @@ impl LayoutTree {
         self.stack_anchor_of(id).is_some()
     }
 
-    /// `id` 的最小父 Split 里的**叶子**兄弟。堆叠 v1 只支持兄弟合并(A.7)。
-    pub fn leaf_sibling_of(&self, id: u64) -> Option<u64> {
+    /// `id` 的最小父 Split 里的兄弟节点 id（叶子**或组**）。
+    ///
+    /// 堆叠要求成员是兄弟（A.7 的零映射前提）；成员可以是组，于是"这一排"和
+    /// "底部的终端"能叠成一个 tab。
+    pub fn sibling_of(&self, id: u64) -> Option<u64> {
         fn go(node: &LayoutNode, id: u64) -> Option<u64> {
             let LayoutNode::Split { first, second, .. } = node else {
                 return None;
             };
-            let first_is = matches!(&**first, LayoutNode::Leaf { id: x } if *x == id);
-            let second_is = matches!(&**second, LayoutNode::Leaf { id: x } if *x == id);
-            if first_is {
-                if let LayoutNode::Leaf { id: sib } = &**second {
-                    return Some(*sib);
-                }
+            if node_id(first) == id {
+                return Some(node_id(second));
             }
-            if second_is {
-                if let LayoutNode::Leaf { id: sib } = &**first {
-                    return Some(*sib);
-                }
+            if node_id(second) == id {
+                return Some(node_id(first));
             }
             go(first, id).or_else(|| go(second, id))
         }
@@ -500,10 +497,10 @@ impl LayoutTree {
     /// 建堆叠组:`id` 与其叶子兄弟组成 `[id, sibling]`(锚 = `id`)。
     /// 任一方已在组里 → 拒绝(避免把两个区域的成员塞进同一组,破坏不变量)。
     pub fn stack_new_with_sibling(&mut self, id: u64) -> Option<u64> {
-        if !self.components.contains_key(&id) || self.is_stacked(id) {
+        if self.node_kind(id).is_none() || self.is_stacked(id) {
             return None;
         }
-        let sib = self.leaf_sibling_of(id)?;
+        let sib = self.sibling_of(id)?;
         if self.is_stacked(sib) {
             return None;
         }
@@ -561,6 +558,37 @@ impl LayoutTree {
                 }
             }
             break;
+        }
+    }
+
+    /// 丢弃"成员已不在树上"的堆叠组（节点被搬走/摘掉后不留悬空条目）。
+    fn prune_dead_stacks(&mut self) {
+        let root = &self.root;
+        let bad: Vec<u64> = self
+            .stacks
+            .iter()
+            .filter(|(a, g)| {
+                find_node(root, **a).is_none()
+                    || g.members.iter().any(|m| find_node(root, *m).is_none())
+            })
+            .map(|(a, _)| *a)
+            .collect();
+        for a in bad {
+            self.stacks.remove(&a);
+        }
+    }
+
+    /// 把涉及 `ids` 的成员从堆叠组里摘掉（成员 <2 即解散）。
+    /// 搬移会改变"兄弟"关系 ⇒ 旧组必然失效，必须显式清。
+    fn drop_stacks_touching(&mut self, ids: &[u64]) {
+        let anchors: Vec<u64> = self.stacks.keys().copied().collect();
+        for a in anchors {
+            if let Some(g) = self.stacks.get_mut(&a) {
+                g.members.retain(|m| !ids.contains(m));
+                if g.members.len() < 2 {
+                    self.stacks.remove(&a);
+                }
+            }
         }
     }
 
@@ -751,9 +779,12 @@ impl LayoutTree {
         })
     }
 
+    /// 聚焦：叶子 → 它自己；**组** → 组内第一个叶子（组没有组件，不能当 active）。
     pub fn focus(&mut self, id: u64) {
         if self.components.contains_key(&id) {
             self.active = id;
+        } else if self.node_kind(id) == Some(NodeKind::Group) {
+            self.focus_inside(id);
         }
     }
 
@@ -806,7 +837,7 @@ impl LayoutTree {
             (id, new_id)
         };
         let gid = self.next_group_id();
-        replace_leaf(&mut self.root, id, &|_| {
+        replace_leaf(&mut self.root, id, &mut |_| {
             group(
                 gid,
                 dir,
@@ -845,7 +876,7 @@ impl LayoutTree {
             (id, new_id)
         };
         let gid = self.next_group_id();
-        replace_leaf(&mut self.root, id, &|_| {
+        replace_leaf(&mut self.root, id, &mut |_| {
             group(
                 gid,
                 dir,
@@ -1217,47 +1248,79 @@ impl LayoutTree {
             _ => {}
         }
         self.components.insert(new_id, component);
-        if self.wrap_leaf_at(target, new_id, dir, new_first, ratio) {
+        if self.wrap_node_at(
+            target,
+            LayoutNode::Leaf { id: new_id },
+            dir,
+            new_first,
+            ratio,
+        ) {
             Some(new_id)
         } else {
             None
         }
     }
 
-    /// 把**已有的**叶子搬到指定位置（事后修形）：`target = None` 贴整窗边缘 /
-    /// `Some(组)` 贴那个组的边缘 / `Some(叶子)` 与那个叶子并排。
+    /// 把**已有的节点**（叶子或**组**）搬到指定位置（事后修形）：`target = None` 贴整窗
+    /// 边缘 / `Some(组)` 贴那个组的边缘 / `Some(叶子)` 与那个叶子并排。
     ///
     /// 用它能救回"已经切错"的布局：`ed1 | (ed2/term)` 里那个半宽的 term，
-    /// `move_into(term, None, V, false)` 一次就变成横跨整宽的地板。
+    /// `move_into(term, None, V, false)` 一次就变成横跨整宽的地板；搬**组**则是
+    /// "整排窗口一起挪"（组内结构原样保留）。
     pub fn move_into(
         &mut self,
-        leaf: u64,
+        id: u64,
         target: Option<u64>,
         dir: SplitDir,
         new_first: bool,
         ratio: f32,
     ) -> bool {
-        if !self.components.contains_key(&leaf) {
+        let Some(kind) = self.node_kind(id) else {
+            return false;
+        };
+        // 根节点搬不动（它没有父分割可摘）
+        if node_id(&self.root) == id && kind == NodeKind::Group {
             return false;
         }
-        // rail/dock 必须是 root 的边缘叶（贴边全高/全宽），搬走会破不变量
-        if self.rail == Some(leaf) || self.dock == Some(leaf) {
-            return false;
-        }
-        // 不能搬进自己/自己的子树
-        if let Some(t) = target {
-            if t == leaf || self.node_contains(leaf, t) {
+        // rail/dock 必须是 root 的边缘叶（贴边全高/全宽）。搬它们本身、或者搬一个
+        // **包含它们的组**，都会让不变量失效。
+        for edge in [self.rail, self.dock].into_iter().flatten() {
+            if edge == id || self.node_contains(id, edge) {
                 return false;
             }
         }
-        // 整棵树只有它一个叶子 ⇒ 没地方可搬
-        if self.leaf_ids().len() < 2 {
+        // 不能搬进自己/自己的子树
+        if let Some(t) = target {
+            if t == id || self.node_contains(id, t) {
+                return false;
+            }
+        }
+        // 整棵树只有这一个叶子（或这个组就是全部）⇒ 没地方可搬
+        if self.leaf_ids().len() < 2 && kind == NodeKind::Leaf {
             return false;
         }
-        // 1) 从原位摘下（父节点收缩成兄弟）
-        prune(&mut self.root, leaf);
-        // 2) 挪到目标位置（与 split 同一个"包一层组"的动作，只是放的是已有叶子）
-        self.wrap_leaf_at(target, leaf, dir, new_first, ratio)
+        // 搬移会破坏"兄弟"关系 ⇒ 先把涉及被搬子树的堆叠条目清掉
+        let mut moving = self.group_leaves(id);
+        moving.push(id);
+        self.drop_stacks_touching(&moving);
+        // 1) 从原位摘下（父分割收缩成兄弟）
+        let node = if kind == NodeKind::Leaf {
+            // 叶子走 prune（它同时负责把 id 从 tree 里摘干净）+ 组件还留着
+            prune(&mut self.root, id);
+            LayoutNode::Leaf { id }
+        } else {
+            let Some(node) = take_node(&mut self.root, id) else {
+                return false;
+            };
+            // take_node 留了占位 → 用占位塌缩掉父分割
+            let _ = fill_placeholder(&mut self.root, LayoutNode::Leaf { id: u64::MAX });
+            detach_node(&mut self.root, u64::MAX);
+            node
+        };
+        // 2) 挪到目标位置（与 split 同一个"包一层组"的动作，只是放的是已有子树）
+        let ok = self.wrap_node_at(target, node, dir, new_first, ratio);
+        self.prune_dead_stacks();
+        ok
     }
 
     /// 把叶子 `leaf`（此刻**不在**树里，或已在树上但仅作为 target 的兄弟）包到
@@ -1265,31 +1328,32 @@ impl LayoutTree {
     ///
     /// 整窗这一档必须**剥掉边缘叶**（rail/dock）：它们的不变量是"恒为 root 的直接子叶"
     /// （`rail_edge`/`rail_ratio`/`is_dock` 都依赖它），跟着被包进去会让侧栏失去"贴边全高"。
-    fn wrap_leaf_at(
+    fn wrap_node_at(
         &mut self,
         target: Option<u64>,
-        leaf: u64,
+        node: LayoutNode,
         dir: SplitDir,
         new_first: bool,
         ratio: f32,
     ) -> bool {
+        let moved_id = node_id(&node);
+        let mut pending = Some(node);
         if let Some(t) = target {
             match self.node_kind(t) {
                 // 与某个叶子并排：在它原来的位置切一刀
                 Some(NodeKind::Leaf) => {
                     let gid = self.next_group_id();
-                    let (a, b) = if new_first { (leaf, t) } else { (t, leaf) };
-                    // 上面已确认 t 是叶子 ⇒ replace_leaf 必定命中
-                    replace_leaf(&mut self.root, t, &|_| {
-                        group(
-                            gid,
-                            dir,
-                            ratio,
-                            LayoutNode::Leaf { id: a },
-                            LayoutNode::Leaf { id: b },
-                        )
+                    // 上面已确认 t 是叶子 ⇒ replace_leaf 必定命中（只命中一次）
+                    replace_leaf(&mut self.root, t, &mut |_| {
+                        let inner = pending.take().expect("replace_leaf 只命中一次");
+                        let sibling = LayoutNode::Leaf { id: t };
+                        if new_first {
+                            group(gid, dir, ratio, inner, sibling)
+                        } else {
+                            group(gid, dir, ratio, sibling, inner)
+                        }
                     });
-                    self.active = leaf;
+                    self.focus_inside(moved_id);
                     return true;
                 }
                 None => return false,
@@ -1317,10 +1381,11 @@ impl LayoutTree {
             },
             None => std::mem::replace(&mut self.root, LayoutNode::Leaf { id: u64::MAX }),
         };
+        let moved = pending.take().expect("节点只搬一次");
         let node = if new_first {
-            group(gid, dir, ratio, LayoutNode::Leaf { id: leaf }, old)
+            group(gid, dir, ratio, moved, old)
         } else {
-            group(gid, dir, ratio, old, LayoutNode::Leaf { id: leaf })
+            group(gid, dir, ratio, old, moved)
         };
         let ok = match target {
             None => {
@@ -1336,9 +1401,22 @@ impl LayoutTree {
             self.reattach_edge(SplitDir::H, id, first, share);
         }
         if ok {
-            self.active = leaf;
+            self.focus_inside(moved_id);
         }
         ok
+    }
+
+    /// 把焦点放到 `id` 这个节点里（叶子 → 它自己；组 → 组内第一个叶子）
+    fn focus_inside(&mut self, id: u64) {
+        match find_node(&self.root, id) {
+            Some(LayoutNode::Leaf { .. }) => self.active = id,
+            Some(node) => {
+                if let Some(leaf) = first_leaf_of(node) {
+                    self.active = leaf;
+                }
+            }
+            None => {}
+        }
     }
 
     /// 若 root 恰好是"贴边叶 + 其余"的二分（`dir` 轴向、贴边叶是直接子叶），
@@ -1844,6 +1922,19 @@ impl LayoutTree {
         }
     }
 
+    /// 节点的人类可读名（堆叠 header / 最小化横条用）：叶子 → 组件类型末段；组 → `组N窗`。
+    fn node_label(&self, id: u64) -> String {
+        match find_node(&self.root, id) {
+            Some(LayoutNode::Leaf { .. }) => self
+                .components
+                .get(&id)
+                .map(|c| short_type_name(c.type_name()).to_string())
+                .unwrap_or_default(),
+            Some(node) => format!("组{}窗", count_leaves(node)),
+            None => String::new(),
+        }
+    }
+
     /// 把一批 (叶子, rect) 画出来：堆叠组顶部留 1 行 header；焦点叶子画边框（内容 inset 1）。
     fn draw_leaves(
         &mut self,
@@ -1863,11 +1954,7 @@ impl LayoutTree {
                         .iter()
                         .enumerate()
                         .map(|(i, m)| {
-                            let kind = self
-                                .components
-                                .get(m)
-                                .map(|c| short_type_name(c.type_name()).to_string())
-                                .unwrap_or_default();
+                            let kind = self.node_label(*m);
                             if i == 0 {
                                 format!("▶{kind}")
                             } else {
@@ -2028,15 +2115,10 @@ impl LayoutTree {
         // 最小化的节点：底部一条标题横条（多条从下往上叠；最上层）
         let bar_style = cx.editor.theme.get("ui.popup");
         for (i, mid) in self.minimized.iter().enumerate() {
-            let label = match find_node(&self.root, *mid) {
-                Some(LayoutNode::Leaf { .. }) => self
-                    .components
-                    .get(mid)
-                    .map(|c| short_type_name(c.type_name()).to_string())
-                    .unwrap_or_default(),
-                Some(node) => format!("组 {} 窗", count_leaves(node)),
-                None => continue, // 节点已不在树里（关掉了）
-            };
+            if find_node(&self.root, *mid).is_none() {
+                continue; // 节点已不在树里（关掉了）
+            }
+            let label = self.node_label(*mid);
             let y = area.y + area.height.saturating_sub(1 + i as u16);
             if y < area.y {
                 break;
@@ -2231,7 +2313,11 @@ impl LayoutTree {
 }
 
 /// 把目标叶子替换为新节点（split 用）
-fn replace_leaf(node: &mut LayoutNode, target: u64, f: &dyn Fn(&mut LayoutNode) -> LayoutNode) {
+fn replace_leaf(
+    node: &mut LayoutNode,
+    target: u64,
+    f: &mut dyn FnMut(&mut LayoutNode) -> LayoutNode,
+) {
     match node {
         LayoutNode::Leaf { id } => {
             if *id == target {
@@ -2439,6 +2525,35 @@ fn max_group_id(node: &LayoutNode) -> u64 {
         LayoutNode::Split {
             id, first, second, ..
         } => (*id).max(max_group_id(first)).max(max_group_id(second)),
+    }
+}
+
+/// 把一个**节点**（叶子或组）从树上摘下来：它的父分割收缩成兄弟子树。
+/// 与 `prune` 的区别：`prune` 只认叶子 id，这个认任意节点 id。返回是否摘下来了。
+fn detach_node(node: &mut LayoutNode, target: u64) -> bool {
+    let (is_first, is_second) = match &*node {
+        LayoutNode::Split { first, second, .. } => {
+            (node_id(first) == target, node_id(second) == target)
+        }
+        LayoutNode::Leaf { .. } => return false,
+    };
+    if is_first || is_second {
+        let LayoutNode::Split { first, second, .. } = node else {
+            unreachable!("上面刚匹配过 Split");
+        };
+        let sibling = if is_first {
+            std::mem::replace(&mut **second, LayoutNode::Leaf { id: u64::MAX })
+        } else {
+            std::mem::replace(&mut **first, LayoutNode::Leaf { id: u64::MAX })
+        };
+        *node = sibling;
+        return true;
+    }
+    match node {
+        LayoutNode::Leaf { .. } => false,
+        LayoutNode::Split { first, second, .. } => {
+            detach_node(first, target) || detach_node(second, target)
+        }
     }
 }
 
@@ -3152,6 +3267,138 @@ mod group_tests {
         assert_eq!(tree.zoomed(), None);
     }
 
+    /// 搬**整组**：组内结构原样保留，只换它所在的区域
+    #[test]
+    fn move_into_whole_group() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let top = tree
+            .group_ids()
+            .into_iter()
+            .find(|g| tree.group_leaves(*g) == vec![0, 1])
+            .expect("上排是组");
+        tree.split_at_group(None, SplitDir::V, false, 0.7, term(2))
+            .unwrap();
+        let area = Rect::new(0, 0, 100, 30);
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
+            v.into_iter()
+                .collect::<std::collections::HashMap<u64, Rect>>()
+        };
+        assert_eq!(rects(&tree)[&0].width, 50, "组内左右各半");
+
+        // 把整组搬到整窗右侧（整高、占 40%）
+        assert!(tree.move_into(top, None, SplitDir::H, false, 0.4));
+        let after = rects(&tree);
+        assert_eq!(after[&0].height, 30, "组内叶子拿到整高");
+        assert_eq!(after[&1].height, 30, "两个都在组里，一起变高");
+        assert_eq!(after[&0].width + after[&1].width, 60, "组总宽 60%");
+        assert_eq!(after[&2].width, 40, "底窗让出右边");
+        assert_eq!(tree.leaf_ids().len(), 3, "叶子没丢");
+        assert_eq!(tree.group_leaves(top).len(), 2, "组还在、成员没变");
+        assert!(
+            tree.group_leaves(top).contains(&tree.active()),
+            "搬完焦点落到组内叶子（{} 是节点 id）",
+            top
+        );
+        // 拒绝路径：搬根组、搬不含并列的、搬进自己
+        let root_group = tree.group_ids()[0];
+        assert!(
+            !tree.move_into(root_group, None, SplitDir::V, false, 0.5),
+            "根组搬不动"
+        );
+        assert!(
+            !tree.move_into(top, Some(top), SplitDir::V, false, 0.5),
+            "不能搬进自己"
+        );
+        assert!(
+            !tree.move_into(4242, None, SplitDir::V, false, 0.5),
+            "不存在的 id"
+        );
+    }
+
+    /// 含 rail 的组不能被搬（否则侧栏失去"贴边全高"）
+    #[test]
+    fn move_into_rejects_group_holding_rail() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        tree.register_rail(term(9), true, 0.2);
+        let root_group = tree.group_ids()[0];
+        assert!(
+            !tree.move_into(root_group, None, SplitDir::V, false, 0.5),
+            "含 rail 的组不许搬"
+        );
+        // 不含 rail 的那一半可以搬
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        assert!(
+            tree.move_into(b, None, SplitDir::V, false, 0.7),
+            "普通叶子照旧可搬"
+        );
+    }
+
+    /// 堆叠的成员可以是**组**：`0 | (1/2)` 里 0 与"那一排"叠成一个 tab，
+    /// 轮转后组占满同一块区域（零映射不变），焦点落到组内真叶子。
+    #[test]
+    fn stack_with_group_rotates_and_keeps_rect() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let c = tree.split_side(b, SplitDir::V, false, term(2)).unwrap();
+        let grp = tree.sibling_of(0).expect("0 的兄弟是那个组");
+        assert_eq!(tree.node_kind(grp), Some(NodeKind::Group));
+        assert_eq!(tree.stack_new_with_sibling(0), Some(0), "与组建堆叠");
+
+        let area = Rect::new(0, 0, 100, 30);
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
+            v.into_iter()
+                .collect::<std::collections::HashMap<u64, Rect>>()
+        };
+        let r = rects(&tree);
+        assert_eq!(r[&0].width, 100, "锚（叶子）占满");
+        assert!(!r.contains_key(&b) && !r.contains_key(&c), "组整棵让位");
+
+        // 轮转：锚变成组
+        let new_anchor = tree.stack_rotate(0, true).expect("轮转");
+        assert_eq!(new_anchor, grp, "新锚是组");
+        tree.focus(new_anchor); // 组 → 组内第一个叶子
+        assert!(
+            tree.group_leaves(grp).contains(&tree.active()),
+            "焦点必须落在组内真叶子（不能停在组 id 上）"
+        );
+        let r2 = rects(&tree);
+        assert!(!r2.contains_key(&0), "原锚让位");
+        assert_eq!(r2[&b].x, 0, "组拿到同一块区域（零映射）");
+        assert_eq!(r2[&b].height + r2[&c].height, 30, "组内上下铺满整高");
+    }
+
+    /// 搬走堆叠成员 ⇒ 那个组必然失效，必须显式解散（不留悬空条目）
+    #[test]
+    fn moving_a_stacked_node_drops_the_stack() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        tree.stack_new_with_sibling(0).unwrap();
+        assert!(tree.is_stacked(0) && tree.is_stacked(b));
+        assert!(tree.move_into(b, None, SplitDir::V, false, 0.7), "搬走 b");
+        assert!(!tree.is_stacked(0) && !tree.is_stacked(b), "组已解散");
+        assert!(tree.stacks.is_empty(), "不留悬空条目");
+        // 布局仍然正常：两个叶子都在
+        let area = Rect::new(0, 0, 100, 30);
+        let mut v = Vec::new();
+        layout_node(
+            &tree.root,
+            area,
+            &mut v,
+            &mut Vec::new(),
+            &tree.layout_skip_ids(),
+        );
+        assert_eq!(v.len(), 2);
+    }
+
     /// 组级 resize：只改它自己那条分界（"这一排占多少"），不动祖先
     #[test]
     fn resize_share_moves_only_the_group_boundary() {
@@ -3488,7 +3735,7 @@ mod rail_tests {
                 Box::new(PluginTerminal::new(1, 1, 80)),
             )
             .unwrap();
-        assert_eq!(tree.leaf_sibling_of(0), Some(b), "0 与 b 是叶子兄弟");
+        assert_eq!(tree.sibling_of(0), Some(b), "0 与 b 是兄弟");
 
         assert_eq!(tree.stack_new_with_sibling(0), Some(0), "建组,锚 = 0");
         assert_eq!(tree.stack_members(0), vec![0, b]);
@@ -3541,7 +3788,7 @@ mod rail_tests {
                 Box::new(PluginTerminal::new(1, 1, 80)),
             )
             .unwrap();
-        // 再把 b 劈开 → 0 的兄弟变成一个 Split,不再是叶子
+        // 再把 b 劈开 → 0 的兄弟变成一个**组**（现在允许：0 可以和"那一排"叠成一个 tab）
         let c = tree
             .split_side(
                 b,
@@ -3550,9 +3797,17 @@ mod rail_tests {
                 Box::new(PluginTerminal::new(2, 2, 80)),
             )
             .unwrap();
-        assert_eq!(tree.leaf_sibling_of(0), None, "非叶兄弟 → 不认");
-        assert_eq!(tree.stack_new_with_sibling(0), None, "非兄弟 → 拒绝建组");
-        assert!(!tree.is_stacked(0));
+        let b_group = tree.sibling_of(0).expect("兄弟是那个组");
+        assert_eq!(tree.node_kind(b_group), Some(NodeKind::Group));
+        assert_eq!(tree.sibling_of(0), Some(b_group), "兄弟可以是组");
+        assert_eq!(
+            tree.stack_new_with_sibling(0),
+            Some(0),
+            "与组也能建堆叠（这一排 vs 底窗）"
+        );
+        assert_eq!(tree.stack_members(0), vec![0, b_group]);
+        // 撤掉这个组，回到纯叶子的场景看老断言
+        tree.stacks.clear();
 
         // b 与 c 是叶子兄弟 → 可以建组
         assert_eq!(tree.stack_new_with_sibling(b), Some(b));

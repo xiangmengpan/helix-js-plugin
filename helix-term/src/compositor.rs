@@ -1664,7 +1664,7 @@ impl Compositor {
                         cx.editor.set_status("已在堆叠组里(p / P / Tab 切换)");
                     } else {
                         cx.editor
-                            .set_status("堆叠需要两个相邻的叶子窗(兄弟):当前无法堆叠");
+                            .set_status("堆叠需要两个相邻的窗口(兄弟,可以是一整组):当前无法堆叠");
                     }
                 }
                 // zellij 的切换焦点:p 下一个、P 上一个、Tab 下一个
