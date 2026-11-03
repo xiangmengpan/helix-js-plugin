@@ -41,6 +41,8 @@ pub(crate) enum UiOp {
         size: u16,
         focusable: bool,
         rail: bool,
+        /// 切分目标（`rail:true` 时不生效）
+        at: SplitAt,
     },
     ClosePanel {
         id: u64,
@@ -164,6 +166,7 @@ impl UiOp {
                 size,
                 focusable,
                 rail,
+                at,
             } => {
                 let panel = ui::PluginPanel::new(id, side, focusable);
                 // rail:true + left/right → 注册 rail(贴边全高)
@@ -179,13 +182,33 @@ impl UiOp {
                         ui::PanelSide::Left => (SplitDir::H, true),
                         ui::PanelSide::Bottom => (SplitDir::V, false),
                     };
-                    let _ = compositor.split_leaf_with_ratio(
-                        dir,
-                        first,
-                        size,
-                        Box::new(panel),
-                        js.as_deref_mut(),
-                    );
+                    match at {
+                        // 缺省：在当前活动叶上分裂（旧行为）
+                        SplitAt::Active => {
+                            let _ = compositor.split_leaf_with_ratio(
+                                dir,
+                                first,
+                                size,
+                                Box::new(panel),
+                                js.as_deref_mut(),
+                            );
+                        }
+                        // `at`：整窗 / 指定组 ⇒ 面板跨满那个区域的宽或高
+                        SplitAt::Root | SplitAt::Node(_) => {
+                            let target = match at {
+                                SplitAt::Node(g) => Some(g),
+                                _ => None,
+                            };
+                            let _ = compositor.split_at_group(
+                                target,
+                                dir,
+                                first,
+                                size,
+                                Box::new(panel),
+                                js.as_deref_mut(),
+                            );
+                        }
+                    }
                 }
             }
             UiOp::ClosePanel { id } => {
@@ -462,6 +485,7 @@ mod tests {
             size: 20,
             focusable: true,
             rail,
+            at: None,
         };
         assert_eq!(
             handle_open_panel(mk("left", true)).unwrap(),
@@ -470,7 +494,8 @@ mod tests {
                 side: ui::PanelSide::Left,
                 size: 20,
                 focusable: true,
-                rail: true
+                rail: true,
+                at: SplitAt::Active
             })
         );
         let err = handle_open_panel(mk("center", false))

@@ -7,6 +7,8 @@
 
 use super::*;
 
+use ui_op::SplitAt;
+
 pub(crate) fn handle_open_panel(
     OpenPanelReq {
         id,
@@ -14,6 +16,7 @@ pub(crate) fn handle_open_panel(
         size,
         focusable,
         rail,
+        at,
     }: OpenPanelReq,
 ) -> anyhow::Result<Option<UiOp>> {
     // side 已在 JS 侧白名单校验，此处仅防御性映射
@@ -23,12 +26,22 @@ pub(crate) fn handle_open_panel(
         "bottom" => ui::PanelSide::Bottom,
         other => bail!("open_panel: unknown side '{other}'"),
     };
+    // 切分目标（与 split 同语义；rail:true 时忽略）
+    let at = match at.as_deref() {
+        None | Some("") | Some("active") => SplitAt::Active,
+        Some("root") => SplitAt::Root,
+        Some(other) => match other.parse::<u64>() {
+            Ok(g) => SplitAt::Node(g),
+            Err(_) => bail!("open_panel: at must be 'root' or a numeric group id, got '{other}'"),
+        },
+    };
     Ok(Some(UiOp::OpenPanel {
         id,
         side,
         size,
         focusable,
         rail,
+        at,
     }))
 }
 

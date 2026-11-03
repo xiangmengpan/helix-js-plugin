@@ -595,3 +595,55 @@ async fn groups_are_listed_and_can_be_minimized() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// 组 zoom（`pane.zoom(组 id)` 或 Pane 模式 `f`）：组内按原分割铺满整个区域，
+/// 组外叶子让位；再按 `f` 取消。
+#[tokio::test(flavor = "multi_thread")]
+async fn zoom_a_group_fills_the_area() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let mut app = AppBuilder::new().with_file(&file, None).build()?;
+    pump(&mut app, "<C-p>r").await?; // ed1 | ed2
+    pump(&mut app, "D").await?; // 底部整宽新窗口
+    let bottom = app.compositor.layout_tree().active();
+    pump(&mut app, "<esc>").await?;
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+
+    let top = app
+        .compositor
+        .layout_tree()
+        .group_ids()
+        .into_iter()
+        .find(|g| {
+            let leaves = app.compositor.layout_tree().group_leaves(*g);
+            leaves.len() == 2 && !leaves.contains(&bottom)
+        })
+        .expect("上面那排是一个组");
+
+    // 组 zoom
+    app.compositor.zoom_leaf(top, None);
+    render_rows(&mut app, area);
+    let r0 = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(0)
+        .expect("组内叶子有几何");
+    assert_eq!(r0.height, area.height - 1, "组内叶子铺满整高（除状态栏行）");
+    assert!(
+        app.compositor.layout_tree().leaf_rect(bottom).is_none(),
+        "组外叶子在 zoom 期间不占布局"
+    );
+    assert_eq!(app.compositor.layout_tree().zoomed(), Some(top));
+
+    // 取消
+    app.compositor.unzoom(None);
+    render_rows(&mut app, area);
+    assert_eq!(app.compositor.layout_tree().zoomed(), None);
+    assert!(
+        app.compositor.layout_tree().leaf_rect(bottom).is_some(),
+        "取消后组外叶子回来"
+    );
+    Ok(())
+}

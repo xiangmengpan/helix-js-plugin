@@ -1871,13 +1871,15 @@ impl Compositor {
         }
     }
 
-    /// 窗口模式:最大化/还原(f)
+    /// 窗口模式:最大化/还原(f)。叶子与**组**都能 zoom；已在 zoom 且焦点在缩放区内
+    /// ⇒ 再按一次取消。
     fn window_mode_zoom(&mut self, mut js: Option<&mut helix_js::host::JsHost>) {
         let a = self.main_tree.active();
-        if self.main_tree.zoomed() == Some(a) {
-            self.unzoom(js.as_deref_mut());
-        } else {
-            self.zoom_leaf(a, js);
+        match self.main_tree.zoomed() {
+            Some(z) if z == a || self.main_tree.node_contains(z, a) => {
+                self.unzoom(js.as_deref_mut())
+            }
+            _ => self.zoom_leaf(a, js),
         }
     }
 
@@ -2010,6 +2012,7 @@ impl Compositor {
             Some(host) => {
                 if let Err(e) = host.emit_layout_change(kind) {
                     // 让失败可见(只 log 会静默)
+                    helix_js::log::error("event:layout-change", format!("发送失败: {e}"));
                     helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
                 }
             }
@@ -2057,6 +2060,7 @@ impl Compositor {
                 }
             };
             if let Err(e) = emitted {
+                helix_js::log::error("event:layout-change", format!("发送失败: {e}"));
                 helix_js::host::push_message(format!("layout-change 事件发送失败: {e}"));
             }
         }

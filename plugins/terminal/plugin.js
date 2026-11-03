@@ -82,6 +82,26 @@ helix.register_command("hterm", () => {
   });
 }, '下侧横分屏开终端');
 
+// 整宽/整高的分屏终端：在**整个区域**上切一刀（不是切当前窗口）。
+// `ed1|ed2` 之上再按 `:hterm-root` ⇒ 终端横跨整宽贴在底边（zellij/tmux 里要 split -f）。
+// 想一键化就在 plugins/init.js 里绑：helix.map("normal", "space-t", "hterm-root")
+helix.register_command("hterm-root", () => {
+  lastId = helix.open_terminal({
+    cmd: shell(),
+    side: "bottom",
+    size: size_of((helix.get_config("terminal") || {}).hterm_size, 15),
+    at: "root",
+  });
+}, '底部整宽开终端(跨整个区域)');
+helix.register_command("vterm-root", () => {
+  lastId = helix.open_terminal({
+    cmd: shell(),
+    side: "right",
+    size: size_of((helix.get_config("terminal") || {}).vterm_size, 40),
+    at: "root",
+  });
+}, '右侧整高开终端(跨整个区域)');
+
 // 列出所有终端（view_id + cmd）
 helix.register_command("term-list", () => {
   const terms = helix.term_list();

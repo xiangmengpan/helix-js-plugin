@@ -255,3 +255,44 @@ fn parse_pair(s: &str) -> (u16, u16) {
     assert_eq!(nums.len(), 2, "诊断输出格式不对: {s:?}");
     (nums[0], nums[1])
 }
+
+/// `helix.open_panel({side:"bottom", rail:false, at:"root"})`：面板也认 `at`，
+/// 跨满整宽（而不是在焦点那个窗口里再裂一刀）。
+#[tokio::test(flavor = "multi_thread")]
+async fn js_open_panel_at_root_spans_full_width() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plugin = dir.path().join("panel_root.js");
+    std::fs::write(
+        &plugin,
+        r#"
+helix.register_command("p-root", () => {
+    helix.split("right", { panel: { render: () => ["ed2"], size: 40 } });
+    helix.open_panel({ side: "bottom", size: 6, at: "root", render: () => ["bottom-panel"] });
+});
+helix.register_command("p-diag", () => {
+    const panes = helix.pane.list().filter((p) => p.kind !== "group");
+    const panel = panes.find((p) => p.kind === "PluginPanel");
+    const widest = panes.reduce((m, p) => Math.max(m, p.area.w), 0);
+    helix.echo("panel:" + (panel ? panel.area.w : -1) + "," + widest);
+});
+"#,
+    )?;
+    let mut app = AppBuilder::new().build()?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>:p-root<ret>", plugin.display()),
+    )
+    .await?;
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+    pump(&mut app, ":p-diag<ret>").await?;
+    let s = status_text(&app);
+    let nums: Vec<u16> = s
+        .trim_start_matches("panel:")
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+    assert_eq!(nums.len(), 2, "诊断输出格式不对: {s:?}");
+    assert_eq!(nums[0], nums[1], "at:\"root\" 的面板必须横跨整宽: {s:?}");
+    Ok(())
+}

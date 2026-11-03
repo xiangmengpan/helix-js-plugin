@@ -38,6 +38,8 @@ safe_load("filetree");
 
 // 可选键位绑定（默认不绑，避免与既有键位冲突）
 // helix.map("normal", "C-e", "filetree");
+// helix.map("normal", "space-t", "hterm-root");  // 底部整宽终端（跨整个区域）
+// helix.map("normal", "space-T", "vterm-root");  // 右侧整高终端
 
 // 可选：picker.js 内置选择器源（files/grep/buffers/symbols）——默认不加载，需要时取消注释：
 // helix.load("examples/picker.js");   // 模板,非功能插件

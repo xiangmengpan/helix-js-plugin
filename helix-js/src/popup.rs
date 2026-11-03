@@ -385,6 +385,9 @@ pub(crate) fn js_open_panel(
             .map_err(|_| crate::js_err("open_panel: 'rail' must be a boolean"))?,
     };
 
+    // `at`：切分目标（与 open_terminal 同语义；`rail:true` 时以 rail 为准）
+    let at = parse_at(&opts, ctx, "open_panel")?;
+
     let id = crate::state::next_popup_id(crate::host::host_state(ctx));
     crate::state::set_last_panel_id(crate::host::host_state(ctx), Some(id));
     crate::state::with_open_panels_current(|p| p.push(id));
@@ -414,6 +417,7 @@ pub(crate) fn js_open_panel(
             size,
             focusable,
             rail,
+            at,
         }));
     Ok(JsValue::from(id))
 }
@@ -450,6 +454,24 @@ pub(crate) fn js_close_panel(
 /// onChunk 是 eval 工厂构造的桥接闭包 → helix.term_feed(view_id, chunk)（经 UiRequest 路由）；
 /// onExit 透传用户回调。入队 OpenTerminal 后返回 view_id（= 面板 id，可 move_panel/term_feed）。
 /// pty spawn 仅 Unix（与 js_spawn 的 pty 路径同约束）。
+/// 解析 `at`（切分目标）：undefined/null → None；数字 → 十进制串；字符串原样。
+fn parse_at(
+    opts: &boa_engine::object::JsObject,
+    ctx: &mut Context,
+    who: &str,
+) -> boa_engine::JsResult<Option<String>> {
+    let v = opts.get(JsString::from("at"), ctx)?;
+    if v.is_undefined() || v.is_null() {
+        Ok(None)
+    } else if v.is_number() {
+        Ok(Some(v.to_string(ctx)?.to_std_string_escaped()))
+    } else {
+        v.try_js_into::<String>(ctx)
+            .map(Some)
+            .map_err(|_| crate::js_err(format!("{who}: 'at' must be \"root\" or a group id")))
+    }
+}
+
 pub(crate) fn js_open_terminal(
     _this: &JsValue,
     args: &[JsValue],
@@ -494,19 +516,7 @@ pub(crate) fn js_open_terminal(
     };
     // `at`：切分目标。缺省 = 在**当前窗口**上切（旧行为）；"root" = 整窗切一刀
     // （新终端跨满整宽/整高）；数字 = 在那个组（容器节点）的区域上切。
-    let at =
-        {
-            let v = opts.get(JsString::from("at"), ctx)?;
-            if v.is_undefined() || v.is_null() {
-                None
-            } else if v.is_number() {
-                Some(v.to_string(ctx)?.to_std_string_escaped())
-            } else {
-                Some(v.try_js_into::<String>(ctx).map_err(|_| {
-                    crate::js_err("open_terminal: 'at' must be \"root\" or a group id")
-                })?)
-            }
-        };
+    let at = parse_at(&opts, ctx, "open_terminal")?;
     let on_exit = opts.get(JsString::from("onExit"), ctx)?;
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 

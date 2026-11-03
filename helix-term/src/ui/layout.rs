@@ -714,9 +714,27 @@ impl LayoutTree {
         self.components.insert(0, component);
     }
 
-    /// 活动叶子 id
+    /// 活动叶子 id。
+    ///
+    /// zoom 时返回**真正能收事件的那个叶子**：叶子 zoom → 它本身；组 zoom → 组内
+    /// 当前聚焦的那个（不在组里就取组内第一个叶子）。
     pub fn active(&self) -> u64 {
-        self.zoomed.unwrap_or(self.active)
+        match self.zoomed {
+            None => self.active,
+            Some(z) => match self.node_kind(z) {
+                Some(NodeKind::Leaf) => z,
+                Some(NodeKind::Group) => {
+                    if self.active != z && node_contains(&self.root, z, self.active) {
+                        self.active
+                    } else {
+                        find_node(&self.root, z)
+                            .and_then(first_leaf_of)
+                            .unwrap_or(self.active)
+                    }
+                }
+                None => self.active,
+            },
+        }
     }
 
     /// 全部叶子 id(树中序:左/上优先)。用于「切到下一个窗口」(Pane 模式 p/Tab)。
@@ -870,11 +888,13 @@ impl LayoutTree {
     }
 
     /// 缩放：叶子占满全区（其他叶子隐藏）；再次调用取消
+    /// 缩放：叶子占满全区；**组**占满全区（组内各叶子按原分割铺开）。
+    /// rail 不参与（它恒为贴边列）。
     pub fn zoom(&mut self, id: u64) {
         if self.rail == Some(id) {
-            return; // rail 不参与 zoom
+            return;
         }
-        if self.components.contains_key(&id) {
+        if self.node_kind(id).is_some() {
             self.zoomed = Some(id);
         }
     }
@@ -1497,8 +1517,13 @@ impl LayoutTree {
     /// - **zoom 期间**:`leaf_rects` 还是上一帧(未 zoom)的几何,拿它换焦点会把用户
     ///   甩到一个此刻根本看不见的叶子上。
     pub fn focus_target_at(&self, area: Rect, x: u16, y: u16) -> Option<u64> {
-        if self.zoomed.is_some() {
-            return None;
+        if let Some(z) = self.zoomed {
+            // 叶子 zoom：屏幕上只有它，点了也不该换焦点（几何是另一套）
+            // 组 zoom：屏幕上就是这棵子树，`leaf_rects` 已经是 zoom 后的几何 ⇒ 可以点
+            return match self.node_kind(z) {
+                Some(NodeKind::Group) => self.leaf_id_at(x, y),
+                _ => None,
+            };
         }
         let in_float = self.floats().iter().any(|f| {
             let r = f.rect_of(area);
@@ -1786,80 +1811,14 @@ impl LayoutTree {
         }
     }
 
-    pub fn render(&mut self, area: Rect, surface: &mut tui::buffer::Buffer, cx: &mut Context) {
-        if let Some(zoomed) = self.zoomed {
-            // zoom 期间整棵树不在布局里 ⇒ 组几何作废（`group_rect` 查不到比查到假的好）
-            self.group_rects.clear();
-            // zoom 保留 rail:rail 占边缘窄条,zoomed 占其余 main 区
-            if let Some((rid, left)) = self.rail_edge() {
-                let share = self.rail_share().clamp(0.05, 0.9);
-                let rail_w = ((area.width as f32) * share) as u16;
-                let rail_w = rail_w.clamp(1, area.width.saturating_sub(1).max(1));
-                let (rail_rect, zoom_area) = if left {
-                    (
-                        Rect::new(area.x, area.y, rail_w, area.height),
-                        Rect::new(area.x + rail_w, area.y, area.width - rail_w, area.height),
-                    )
-                } else {
-                    (
-                        Rect::new(area.x + area.width - rail_w, area.y, rail_w, area.height),
-                        Rect::new(area.x, area.y, area.width - rail_w, area.height),
-                    )
-                };
-                let mut comps = std::mem::take(&mut self.components);
-                if let Some(rc) = comps.get_mut(&rid) {
-                    rc.render(rail_rect, surface, cx);
-                }
-                if let Some(zc) = comps.get_mut(&zoomed) {
-                    zc.render(zoom_area, surface, cx);
-                }
-                self.components = comps;
-                return;
-            }
-            if let Some(comp) = self.components.get_mut(&zoomed) {
-                comp.render(area, surface, cx);
-            }
-            return;
-        }
-        // 叶=窗口:leaf0(EditorView)渲染前告知被 BufferLeaf 认领的 view(渲染整树时排除,防双画)
-        {
-            let claimed = self.claimed_view_ids();
-            if !claimed.is_empty() {
-                if let Some(ev) = self.components.get_mut(&0).and_then(|c| {
-                    c.as_any_mut()
-                        .downcast_mut::<crate::ui::editor::EditorView>()
-                }) {
-                    ev.set_claimed_views(claimed);
-                }
-            }
-        }
-        let mut rects = Vec::new();
-        let mut groups = Vec::new();
-        // 浮动/最小化节点不占布局空间（其余叶子占满，无 dock 位置留白）
-        let skip = self.layout_skip_ids();
-        layout_node(&self.root, area, &mut rects, &mut groups, &skip);
-        self.group_rects.clear();
-        for (id, r) in &groups {
-            self.group_rects.insert(*id, *r);
-        }
-        // 活动叶子（事件路由目标）：画高亮边框（内容 inset 1 格；浮窗已有自身边框不重复）
-        let focus = if !self.floats.is_empty() || self.zoomed.is_some() {
-            None
-        } else {
-            Some(self.active)
-        };
-        // 几何变化 → 置脏（`pane.list()` 快照由此刷新一次，不靠每帧同步）
-        let changed = rects.len() != self.leaf_rects.len()
-            || rects
-                .iter()
-                .any(|(id, r)| self.leaf_rects.get(id) != Some(r));
-        self.leaf_rects.clear();
-        for (id, rect) in &rects {
-            self.leaf_rects.insert(*id, *rect);
-        }
-        if changed {
-            self.rects_dirty = true;
-        }
+    /// 把一批 (叶子, rect) 画出来：堆叠组顶部留 1 行 header；焦点叶子画边框（内容 inset 1）。
+    fn draw_leaves(
+        &mut self,
+        rects: Vec<LeafRect>,
+        focus: Option<u64>,
+        surface: &mut tui::buffer::Buffer,
+        cx: &mut Context,
+    ) {
         for (id, rect) in rects {
             // 堆叠:占顶部 1 行作 header(成员列表,▶ 标记当前显示的那个),
             // 内容画在剩下的区域。锚 = members[0] = 当前显示的那个(A.6 不变量)。
@@ -1907,6 +1866,132 @@ impl LayoutTree {
                 }
             }
         }
+    }
+
+    pub fn render(&mut self, area: Rect, surface: &mut tui::buffer::Buffer, cx: &mut Context) {
+        if let Some(zoomed) = self.zoomed {
+            // zoom 保留 rail:rail 占边缘窄条,zoomed 占其余 main 区
+            let (rail_rect, zoom_area) = match self.rail_edge() {
+                Some((rid, left)) => {
+                    let share = self.rail_share().clamp(0.05, 0.9);
+                    let rail_w = ((area.width as f32) * share) as u16;
+                    let rail_w = rail_w.clamp(1, area.width.saturating_sub(1).max(1));
+                    let (rr, za) = if left {
+                        (
+                            Some(Rect::new(area.x, area.y, rail_w, area.height)),
+                            Rect::new(area.x + rail_w, area.y, area.width - rail_w, area.height),
+                        )
+                    } else {
+                        (
+                            Some(Rect::new(
+                                area.x + area.width - rail_w,
+                                area.y,
+                                rail_w,
+                                area.height,
+                            )),
+                            Rect::new(area.x, area.y, area.width - rail_w, area.height),
+                        )
+                    };
+                    let _ = rid;
+                    (rr, za)
+                }
+                None => (None, area),
+            };
+            if let Some(rr) = rail_rect {
+                if let Some((rid, _)) = self.rail_edge() {
+                    if let Some(comp) = self.components.get_mut(&rid) {
+                        comp.render(rr, surface, cx);
+                    }
+                }
+            }
+            match self.node_kind(zoomed) {
+                // 叶子 zoom：整块区域给它
+                Some(NodeKind::Leaf) => {
+                    self.group_rects.clear();
+                    self.leaf_rects.clear();
+                    self.leaf_rects.insert(zoomed, zoom_area);
+                    let focus = if self.floats.is_empty() {
+                        Some(zoomed)
+                    } else {
+                        None
+                    };
+                    self.draw_leaves(vec![(zoomed, zoom_area)], focus, surface, cx);
+                }
+                // 组 zoom：组内各叶子按原分割铺开占满 zoom 区（其它叶子不出现）
+                Some(NodeKind::Group) => {
+                    let skip = self.layout_skip_ids();
+                    let mut rects = Vec::new();
+                    let mut groups = Vec::new();
+                    if let Some(node) = find_node(&self.root, zoomed) {
+                        layout_node(node, zoom_area, &mut rects, &mut groups, &skip);
+                    }
+                    self.group_rects.clear();
+                    for (id, r) in &groups {
+                        self.group_rects.insert(*id, *r);
+                    }
+                    let changed = rects.len() != self.leaf_rects.len()
+                        || rects
+                            .iter()
+                            .any(|(id, r)| self.leaf_rects.get(id) != Some(r));
+                    self.leaf_rects.clear();
+                    for (id, r) in &rects {
+                        self.leaf_rects.insert(*id, *r);
+                    }
+                    if changed {
+                        self.rects_dirty = true;
+                    }
+                    let focus = if self.floats.is_empty() {
+                        let a = self.active;
+                        rects.iter().any(|(id, _)| *id == a).then_some(a)
+                    } else {
+                        None
+                    };
+                    self.draw_leaves(rects, focus, surface, cx);
+                }
+                None => {}
+            }
+            return;
+        }
+        // 叶=窗口:leaf0(EditorView)渲染前告知被 BufferLeaf 认领的 view(渲染整树时排除,防双画)
+        {
+            let claimed = self.claimed_view_ids();
+            if !claimed.is_empty() {
+                if let Some(ev) = self.components.get_mut(&0).and_then(|c| {
+                    c.as_any_mut()
+                        .downcast_mut::<crate::ui::editor::EditorView>()
+                }) {
+                    ev.set_claimed_views(claimed);
+                }
+            }
+        }
+        let mut rects = Vec::new();
+        let mut groups = Vec::new();
+        // 浮动/最小化节点不占布局空间（其余叶子占满，无 dock 位置留白）
+        let skip = self.layout_skip_ids();
+        layout_node(&self.root, area, &mut rects, &mut groups, &skip);
+        self.group_rects.clear();
+        for (id, r) in &groups {
+            self.group_rects.insert(*id, *r);
+        }
+        // 活动叶子（事件路由目标）：画高亮边框（内容 inset 1 格；浮窗已有自身边框不重复）
+        let focus = if !self.floats.is_empty() || self.zoomed.is_some() {
+            None
+        } else {
+            Some(self.active)
+        };
+        // 几何变化 → 置脏（`pane.list()` 快照由此刷新一次，不靠每帧同步）
+        let changed = rects.len() != self.leaf_rects.len()
+            || rects
+                .iter()
+                .any(|(id, r)| self.leaf_rects.get(id) != Some(r));
+        self.leaf_rects.clear();
+        for (id, rect) in &rects {
+            self.leaf_rects.insert(*id, *rect);
+        }
+        if changed {
+            self.rects_dirty = true;
+        }
+        self.draw_leaves(rects, focus, surface, cx);
         // 最小化的节点：底部一条标题横条（多条从下往上叠；最上层）
         let bar_style = cx.editor.theme.get("ui.popup");
         for (i, mid) in self.minimized.iter().enumerate() {
@@ -2240,6 +2325,16 @@ fn first_leaf_skipping(node: &LayoutNode, skip: Option<u64>) -> Option<u64> {
         }
         LayoutNode::Split { first, second, .. } => {
             first_leaf_skipping(first, skip).or_else(|| first_leaf_skipping(second, skip))
+        }
+    }
+}
+
+/// 子树里最靠前的叶子 id（组 → 第一个叶子；叶子 → 它自己）
+fn first_leaf_of(node: &LayoutNode) -> Option<u64> {
+    match node {
+        LayoutNode::Leaf { id } => Some(*id),
+        LayoutNode::Split { first, second, .. } => {
+            first_leaf_of(first).or_else(|| first_leaf_of(second))
         }
     }
 }
@@ -2974,6 +3069,54 @@ mod group_tests {
             tree.rail_edge().is_some(),
             "rail 仍在 root 边缘（rail_edge 可用）"
         );
+    }
+
+    /// 组 zoom：组内各叶子按原分割铺开占满全区，组外叶子不占布局，事件仍落在真叶子上
+    #[test]
+    fn zoom_group_lays_out_subtree_full_area() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let top = tree
+            .group_ids()
+            .into_iter()
+            .find(|g| tree.group_leaves(*g) == vec![0, b])
+            .expect("两个编辑器组成一个组");
+        let bottom = tree
+            .split_at_group(None, SplitDir::V, false, 0.7, term(2))
+            .unwrap();
+        // 缩小一下组（模拟 ratio 不等）
+        tree.resize_leaf_dir(0, SplitDir::H, 0.3);
+        assert_ne!(tree.active(), 0, "活动叶是刚切出来的");
+
+        tree.zoom(top);
+        assert_eq!(tree.zoomed(), Some(top), "组可以 zoom");
+        // 组 zoom 时 active() 必须是组内的真叶子（事件路由要它）
+        let a = tree.active();
+        assert!(
+            tree.group_leaves(top).contains(&a),
+            "active()={a} 必须落在组内（否则事件路由会指向组）"
+        );
+        let area = Rect::new(0, 0, 100, 30);
+        let mut v = Vec::new();
+        let mut g = Vec::new();
+        layout_node(
+            find_node(&tree.root, top).unwrap(),
+            area,
+            &mut v,
+            &mut g,
+            &tree.layout_skip_ids(),
+        );
+        let r: std::collections::HashMap<u64, Rect> = v.into_iter().collect();
+        assert_eq!(r.len(), 2, "只有组内两个叶子");
+        assert!(!r.contains_key(&bottom), "组外叶子不出现在 zoom 里");
+        assert_eq!(r[&0].height, 30, "组内叶子铺满整高");
+        // 上面 resize 过 → 组内是 80/20，zoom 不改变组内分界
+        assert_eq!(r[&0].width, 80, "组内分界保持（缩放不改比例）");
+        assert_eq!(r[&b].width, 20);
+        // 取消 zoom 后回到原状
+        tree.unzoom();
+        assert_eq!(tree.zoomed(), None);
     }
 
     /// 节点查询：kind / children / contains，以及"组 id 不与叶子 id 撞"

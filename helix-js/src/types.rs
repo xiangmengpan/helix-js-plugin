@@ -42,6 +42,9 @@ pub struct OpenPanelReq {
     pub focusable: bool,
     /// 注册为侧栏 rail(贴边全高,不参与 window mode 分裂;默认 false=普通叶)
     pub rail: bool,
+    /// 切分目标：`None` = 当前窗口（旧行为）；`Some("root")` = 整窗切一刀；
+    /// `Some("<组 id>")` = 在那个组的区域上切（`rail:true` 时以 rail 为准，忽略此项）
+    pub at: Option<String>,
 }
 
 /// `helix.plugin.unload(name)` —— 卸载单个插件。**入队**(命令边界执行):回收前要跑插件的
