@@ -745,6 +745,20 @@ impl Application {
                 host.cache_diagnostics(&diags_json);
             }
         }
+        // `lsp-diagnostics` 事件：诊断变更在 helix-view 侧排队（那里拿不到 JS 宿主），
+        // 这里排空成 JS 事件。位置选在 render —— 与 cursor 事件同一类边界
+        // （确定不在 JS 调用树内，`with_engine` 才不会撞重入 panic）。
+        let pending_diags = helix_js::diagnostics::take_pending_diagnostics();
+        if !pending_diags.is_empty() && helix_js::diagnostics::has_diagnostics_listener() {
+            for doc_id in pending_diags {
+                let Some(id) = crate::handlers::diagnostics::doc_id_by_u64(&self.editor, doc_id)
+                else {
+                    continue; // 文档已关闭
+                };
+                let json = crate::handlers::diagnostics::doc_diagnostics_json(&self.editor, id);
+                helix_js::diagnostics::emit_lsp_diagnostics(doc_id, &json);
+            }
+        }
         // 光标/选区变化检测(帧级节流:变化才 emit)
         if let Some((row, col)) =
             crate::plugins_cursor::cursor_change(&self.editor, &mut self.last_cursor)

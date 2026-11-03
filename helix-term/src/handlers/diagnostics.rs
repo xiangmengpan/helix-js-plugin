@@ -23,6 +23,14 @@ use crate::events::OnModeSwitch;
 use crate::job;
 
 pub(super) fn register_hooks(handlers: &Handlers) {
+    // 诊断变更 → 排队等 `application.render` 发成 JS 的 `lsp-diagnostics` 事件。
+    // 这里**不能**直接发：本模块拿不到 JS 宿主，而 `with_engine` 在 JS 调用树内会 panic。
+    // 覆盖两条 LSP 路径（push 的 publishDiagnostics 与 pull 的报告）—— 它们都收敛到
+    // `Editor::handle_lsp_diagnostics` 里的 `DiagnosticsDidChange`。
+    register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
+        helix_js::diagnostics::queue_diagnostics(event.doc.as_u64());
+        Ok(())
+    });
     register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
         if event.editor.mode != Mode::Insert {
             for (view, _) in event.editor.tree.views_mut() {
@@ -331,4 +339,38 @@ fn handle_pull_diagnostics_response(
         }
         lsp::DocumentDiagnosticReportResult::Partial(_) => {}
     };
+}
+
+/// 某个文档诊断的序列化（形状与 `commands::typed::serialize_diagnostics` 完全一致）：
+/// `[{line, message, severity, code, source}]`，`severity` 是**字符串**
+/// （"error"/"warning"/"info"/"hint"；无显式 severity 按 warning）。
+///
+/// 为什么单独要一份"按 doc_id"的：原来那份只序列化**聚焦文档**，
+/// 而 `lsp-diagnostics` 事件是逐文档的（后台文件的诊断也要推）。
+pub fn doc_diagnostics_json(editor: &Editor, doc_id: DocumentId) -> String {
+    let Some(doc) = editor.documents.get(&doc_id) else {
+        return "[]".to_string();
+    };
+    let diags: Vec<_> = doc
+        .diagnostics()
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "line": d.line,
+                "message": d.message,
+                "severity": serde_json::to_value(d.severity()).unwrap_or(serde_json::Value::Null),
+                "code": serde_json::to_value(&d.code).unwrap_or(serde_json::Value::Null),
+                "source": d.source,
+            })
+        })
+        .collect();
+    serde_json::to_string(&diags).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// JS 侧给的文档 id（u64）→ `DocumentId`（会话内有效；文档关掉了就是 None）
+pub fn doc_id_by_u64(editor: &Editor, id: u64) -> Option<DocumentId> {
+    editor
+        .documents()
+        .map(|doc| doc.id())
+        .find(|d| d.as_u64() == id)
 }

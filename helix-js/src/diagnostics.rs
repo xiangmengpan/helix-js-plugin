@@ -2,10 +2,43 @@
 //! `helix.diagnostics()` 读 helix-term 每帧写入的 DIAGNOSTICS 缓存（JSON 数组）；
 //! `emit_lsp_diagnostics` 在诊断更新时触发 "lsp-diagnostics" 事件（docId, diags）。
 
+use std::cell::RefCell;
+
 use boa_engine::object::builtins::JsFunction;
 use boa_engine::{Context, JsValue};
 
 use crate::state::{diagnostics_json, with_engine};
+
+thread_local! {
+    /// 诊断变了的文档排队等发（`DiagnosticsDidChange` 在 `helix-view` 侧拿不到 JS 宿主）。
+    ///
+    /// 为什么排队而不是当场发：`with_engine` 在"已在 JS 调用树内"时会 **panic**
+    /// （见 host.rs 里那条断言）⇒ 只允许在确定的边界（`application.render`）里发。
+    static PENDING: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 记一个"该文档诊断变了"（去重；由 helix-term 的诊断 hook 调用）。无宿主时也只是排队。
+pub fn queue_diagnostics(doc_id: u64) {
+    PENDING.with(|q| {
+        let mut q = q.borrow_mut();
+        if !q.contains(&doc_id) {
+            q.push(doc_id);
+        }
+    });
+}
+
+/// 取走排队的文档（render 每帧调用一次；没人排队时是 O(1)）。
+pub fn take_pending_diagnostics() -> Vec<u64> {
+    PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+/// 有插件在听 `lsp-diagnostics` 吗？（没有就不必序列化诊断 —— 那份 JSON 是贵的）
+pub fn has_diagnostics_listener() -> bool {
+    crate::state::with_event_handlers_current(|h| {
+        h.get("lsp-diagnostics")
+            .is_some_and(|handlers| !handlers.is_empty())
+    })
+}
 
 /// 当前文档诊断:helix.diagnostics() → [{line, message, severity, code, source}]
 /// （只读快照；helix-term 只在**有人读**时写入（兴趣标记）；无缓存 → null）

@@ -6089,23 +6089,8 @@ pub fn serialize_diagnostics(editor: &helix_view::Editor) -> String {
     let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) else {
         return "[]".to_string();
     };
-    let Some(doc) = editor.documents.get(&doc_id) else {
-        return "[]".to_string();
-    };
-    let diags: Vec<_> = doc
-        .diagnostics()
-        .iter()
-        .map(|d| {
-            serde_json::json!({
-                "line": d.line,
-                "message": d.message,
-                "severity": serde_json::to_value(d.severity()).unwrap_or(serde_json::Value::Null),
-                "code": serde_json::to_value(&d.code).unwrap_or(serde_json::Value::Null),
-                "source": d.source,
-            })
-        })
-        .collect();
-    serde_json::to_string(&diags).unwrap_or_else(|_| "[]".to_string())
+    // 单一来源：逐文档版本在 handlers/diagnostics.rs —— `lsp-diagnostics` 事件用同一份形状
+    crate::handlers::diagnostics::doc_diagnostics_json(editor, doc_id)
 }
 
 /// :term-native 打开原生终端面板（PoC 演示命令）：注册两个隐藏命令——
