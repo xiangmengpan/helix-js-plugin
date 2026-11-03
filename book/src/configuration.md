@@ -17,6 +17,10 @@ line-number = "relative"
 mouse = false
 # `layout-change` 事件的投递方式:false(默认,逐点发)/ true(同窗口合并成一条)
 js-layout-change-batch = false
+# 焦点移动的作用域（Pane 模式 h/j/k/l 与 helix.pane.focus_dir）
+#   geometry(默认) = 纯几何：按屏幕位置找最近的方向邻居，可以跨组
+#   group          = 组是导航的最小单位：只在最近的组内部移动，到组边界就停住
+focus-scope = "geometry"
 
 [editor.cursor-shape]
 insert = "bar"

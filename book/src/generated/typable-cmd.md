@@ -97,6 +97,8 @@
 | `:config-open` | Open the user config.toml file. |
 | `:config-open-workspace` | Open the workspace config.toml file. |
 | `:log-open` | Open the helix log file. |
+| `:js-log` | Open the plugin log in a scratch buffer. Optional level (error|warn|info|debug) = at least that severe. |
+| `:js-log-clear` | Clear the plugin log buffer. |
 | `:insert-output` | Run shell command, inserting output before each selection. |
 | `:append-output` | Run shell command, appending output after each selection. |
 | `:pipe`, `:\|` | Pipe each selection to the shell command. |

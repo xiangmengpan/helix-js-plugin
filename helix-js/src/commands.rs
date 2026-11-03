@@ -2948,7 +2948,7 @@ fn run_unload_hook(st: &HostState, name: &str) {
         });
         if let Err(e) = res {
             let text = format!("{name}: onUnload failed: {e}");
-            crate::log::error(&name, &text);
+            crate::log::error(name, &text);
             crate::host::push_message(text);
         }
     }
