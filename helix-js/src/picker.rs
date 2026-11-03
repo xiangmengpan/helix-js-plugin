@@ -176,7 +176,9 @@ pub(crate) fn js_picker_run(
 }
 
 /// 把一条消息推入**当前宿主**的消息队列（term 侧 drain 后 set_status）——异步错误反馈通道（任务 2 审查 I1）
+/// picker 侧的失败上报：状态栏**同时**进插件日志（picker 失败以前只闪一下就没了）
 fn push_message(msg: String) {
+    crate::log::error("picker", &msg);
     crate::host::with_messages(|v| v.push(msg));
 }
 

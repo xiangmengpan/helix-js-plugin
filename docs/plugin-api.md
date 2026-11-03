@@ -57,12 +57,26 @@
 
 ### 加载 / 命令 / 消息 / 键位
 
-`helix.load(name)`(缓存加载)、`helix.export(obj)`(导出)、`helix.lazy(name, ...commands)`(懒加载桩)、`helix.run_command(name, ctx?)`、`helix.register_command(name, fn, doc?)`(一个命令 = 一次撤销)、`helix.echo(text)`、`helix.map(mode, key, command|fn)`。
+`helix.load(name)`(缓存加载)、`helix.export(obj)`(导出)、`helix.lazy(name, ...commands)`(懒加载桩)、`helix.run_command(name, ctx?)`、`helix.register_command(name, fn, doc?)`(一个命令 = 一次撤销)、`helix.echo(text)`、`helix.log([level,] msg)`(插件日志,见下)、`helix.map(mode, key, command|fn)`。
 
 - 优点:init.js 单一入口;懒加载减启动开销;命令原子应用;键位支持多键序列/回调。
 - 局限:跨插件状态只能走 `helix.*` API;boa 嵌套 eval 污染(依赖必须用 `helix.plugin` deps);键位重启失效。
 
 → 详细见 [`api/loading-commands.md`](api/loading-commands.md)
+
+### 插件日志（`helix.log` + `:js-log`）
+
+`helix.log(msg)` / `helix.log(level, msg)`，`level` ∈ `error|warn|info|debug`（认不出按 `info`，**不静默丢**）。
+条目自动带插件名，进**内存环缓冲（最近 500 条）**并转发到 `log` crate（即 `~/.cache/helix/helix.log`）。
+
+| 查看 | `:js-log`（核心命令：**不依赖任何插件** —— 插件坏了才最需要看日志）· `:js-log-clear` 清空 · `:log-open` 看完整 helix.log |
+| 自动收录 | 插件命令抛异常、`helix.on(...)` 处理器失败、picker 行宽/reject、`onUnload` 失败、cursor/edit/decoration 应用失败、layout-change 派发失败 —— 这些**同时**仍会进状态栏 |
+
+- 为什么要有它：状态栏是**单槽**（`editor.status_msg = Some(..)`，下一条消息直接盖掉）⇒ 插件错误
+  事后无从查起；而 `helix-js` 刻意不依赖 `log` crate，所以插件错误以前**从不落盘**。
+- 局限：缓冲只写不读（没有「读日志」的 JS API）；时间戳是 UTC（不引时区依赖）。
+
+→ 详细见 [`api/plugin.md`](api/plugin.md)
 
 ### 插件配置
 
@@ -275,6 +289,7 @@ helix.register_command("filetree", () => {
 
 ```
 helix.echo(text)
+helix.log([level,] msg)                         // 插件日志 → :js-log / helix.log
 helix.register_command(name, fn, doc?)
 helix.run_command(name, ctx?)
 helix.run(cmd)                                  // 同步,抛错,64KB 截断

@@ -14,6 +14,18 @@ fn setup_logging(verbosity: u64) -> Result<()> {
 
     helix_term::logging::init_file(level, &helix_loader::log_file())?;
 
+    // 插件的日志条目转发给 `log` ⇒ 落进 helix.log（`:log-open` 能看）。
+    // helix-js 不依赖 `log` crate（依赖方向不变），sink 由宿主在这里装一次。
+    helix_js::log::install_sink(|level, target, msg| {
+        let tag = format!("js/{target}");
+        match level {
+            helix_js::log::Level::Error => log::error!(target: "helix_js", "[{tag}] {msg}"),
+            helix_js::log::Level::Warn => log::warn!(target: "helix_js", "[{tag}] {msg}"),
+            helix_js::log::Level::Info => log::info!(target: "helix_js", "[{tag}] {msg}"),
+            helix_js::log::Level::Debug => log::debug!(target: "helix_js", "[{tag}] {msg}"),
+        }
+    });
+
     Ok(())
 }
 

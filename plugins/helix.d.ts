@@ -761,7 +761,21 @@ interface Helix {
    */
   permissions(): { process: boolean; fs_read: boolean; fs_write: boolean };
   // ── 命令 / 消息 / 键位 / 加载 ──
+  /** 状态栏一行（**单槽**：下一条消息会把它盖掉 ⇒ 想事后能查就用 `log()`）。 */
   echo(text: string): void;
+  /**
+   * 插件日志（`~/.cache/helix/helix.log` + 内存环缓冲，`:js-log` 查看最近 500 条）。
+   *
+   * - `log(msg)` —— 级别默认 `info`
+   * - `log(level, msg)` —— `level`: `"error" | "warn" | "info" | "debug"`（认不出按 `info`，
+   *   **不静默丢**）
+   * - 条目自动带上当前插件名（`[filetree] …`），无需自己拼前缀
+   *
+   * 为什么需要它：插件失败只走状态栏（单槽、下一条就盖），事后无从查起；这里写盘 + 环形缓冲。
+   * 注意：运行期日志只写不读（没有 `read` 面），查看用 `:js-log`。
+   */
+  log(level: "error" | "warn" | "info" | "debug", msg: string): void;
+  log(msg: string): void;
   register_command(name: string, fn: (ctx: CommandContext) => void, doc?: string): void;
   run_command(name: string, ctx?: CommandContext): boolean;
   map(mode: Mode, key: string, commandOrFn: string | (() => void)): void;

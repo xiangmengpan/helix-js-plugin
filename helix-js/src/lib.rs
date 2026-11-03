@@ -30,6 +30,7 @@ pub mod cursor;
 pub mod dap;
 pub mod diagnostics;
 pub mod draw;
+pub mod log;
 pub mod server_rows;
 pub mod server_tasks;
 pub mod watch;

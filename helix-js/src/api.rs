@@ -872,6 +872,8 @@ pub static API: &[Entry] = &[
         "js_echo",
         &[],
     ),
+    // helix.log([level,] msg)：级别省略时按 Info。target 取当前属主（插件名）。
+    e(Target::Root, "log", 1, crate::log::js_log, "js_log", &[]),
     e(
         Target::Root,
         "register_command",

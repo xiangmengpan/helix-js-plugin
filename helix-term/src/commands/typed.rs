@@ -19,11 +19,10 @@ use helix_js::{
     FocusLeafDirReq, FocusLeafReq, FocusPanelReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq,
     MovePanelReq, OpenBufferLeafReq, OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq,
     OpenScratchFileReq, OpenTerminalReq, PaneEmbedReq, PaneFloatReq, PaneMoveIntoReq, PanePinReq,
-    PaneRaiseReq,
-    ResizeLeafDirReq, ResizeLeafReq, ServerListRowsReq, ServerOpReq, ServerTaskReq, SetReadonlyReq,
-    SetRegisterReq, SetThemeReq, SplitLeafReq, StackActivateReq, StackCreateReq, StackRemoveReq,
-    SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq, TermFeedReq, TermModeReq,
-    TermResizeReq, TermSaveReq, ZoomLeafReq,
+    PaneRaiseReq, ResizeLeafDirReq, ResizeLeafReq, ServerListRowsReq, ServerOpReq, ServerTaskReq,
+    SetReadonlyReq, SetRegisterReq, SetThemeReq, SplitLeafReq, StackActivateReq, StackCreateReq,
+    StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq, TermFeedReq,
+    TermModeReq, TermResizeReq, TermSaveReq, ZoomLeafReq,
 };
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
@@ -3104,6 +3103,43 @@ fn open_workspace_config(
     Ok(())
 }
 
+/// 把一段文本放进新的无名 buffer（scratch）。与 `:read` 同一套事务写法 ——
+/// 不走临时文件，`:js-log` 看完直接丢弃即可。
+fn show_scratch(cx: &mut compositor::Context, text: &str) -> anyhow::Result<()> {
+    cx.editor.new_file(Action::Replace);
+    let (view, doc) = current!(cx.editor);
+    let text = Tendril::from(text);
+    let transaction = Transaction::insert(doc.text(), doc.selection(view.id), text);
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    Ok(())
+}
+
+/// `:js-log` —— 插件日志（最近 500 条：插件自己 `helix.log()` 的 + 所有插件失败）。
+///
+/// 为什么是**核心命令**而不是插件：插件坏了才最需要看日志。用无依赖的 scratch buffer，
+/// 内容是纯文本（`:w` 即可落盘）。
+fn js_log(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let text = helix_js::log::format_all();
+    show_scratch(cx, &text)
+}
+
+fn js_log_clear(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let n = helix_js::log::clear();
+    cx.editor.set_status(format!("插件日志已清空（{n} 条）"));
+    Ok(())
+}
+
 fn open_log(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4611,6 +4647,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "js-log",
+        aliases: &[],
+        doc: "Open the plugin log (helix.log() entries + plugin failures) in a scratch buffer.",
+        fun: js_log,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "js-log-clear",
+        aliases: &[],
+        doc: "Clear the plugin log buffer.",
+        fun: js_log_clear,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "insert-output",
         aliases: &[],
         doc: "Run shell command, inserting output before each selection.",
@@ -4976,6 +5034,7 @@ pub(crate) fn run_plugin_command(
             let cursor_reqs = helix_js::take_cursor_requests();
             if !cursor_reqs.is_empty() {
                 if let Err(err) = apply_cursor_requests(cx.editor, &cursor_reqs) {
+                    helix_js::log::error("cursor", format!("plugin cursor failed: {err}"));
                     cx.editor.set_error(format!("plugin cursor failed: {err}"));
                 }
             }
@@ -4983,6 +5042,7 @@ pub(crate) fn run_plugin_command(
             let edits = helix_js::take_edits();
             if !edits.is_empty() {
                 if let Err(err) = apply_plugin_edits(cx.editor, &edits) {
+                    helix_js::log::error("edit", format!("plugin edit failed: {err}"));
                     cx.editor.set_error(format!("plugin edit failed: {err}"));
                 }
             }
@@ -4992,6 +5052,10 @@ pub(crate) fn run_plugin_command(
             let decorations = helix_js::take_decorations();
             if !decorations.is_empty() {
                 if let Err(err) = apply_plugin_decorations(cx.editor, &decorations) {
+                    helix_js::log::error(
+                        "decorations",
+                        format!("plugin decorations failed: {err}"),
+                    );
                     cx.editor
                         .set_error(format!("plugin decorations failed: {err}"));
                 }
@@ -5191,6 +5255,7 @@ fn emit_plugin_event_impl_ctx(
         }
     };
     if let Err(err) = emitted {
+        helix_js::log::error(&format!("event:{name}"), format!("handler failed: {err}"));
         editor.set_error(format!("plugin event '{name}' failed: {err}"));
         return;
     }

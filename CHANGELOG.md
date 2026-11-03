@@ -45,8 +45,17 @@ Features:
   `helix-view`'s `DiagnosticsDidChange` hook and drained in `Application::render`, which
   covers both push (`publishDiagnostics`) and pull diagnostics.
 
+* Plugins can log: `helix.log(msg)` / `helix.log(level, msg)` writes to an in-memory ring
+  buffer (last 500 entries, `:js-log`) **and** forwards to the app log (`:log-open`), tagged
+  with the plugin name. Plugin failures (a command throwing, an event handler failing, picker
+  row-width/rejection errors, `onUnload` failures, layout-change dispatch failures) are
+  captured automatically — previously they only reached the status bar, which is a single
+  slot that the next message overwrites.
+
 Commands:
 
+* `:js-log` / `:js-log-clear` — the plugin log in a scratch buffer (core command, so it still
+  works when plugins are broken).
 * `:filetree-search <query>` — content search from the command line.
 * `:filetree-find` — whole-repo file picker rooted at the panel.
 * `:filetree-open [dir]` — open another filetree panel (root defaults to the current file's

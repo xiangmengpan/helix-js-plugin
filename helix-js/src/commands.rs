@@ -587,7 +587,9 @@ pub(crate) fn js_plugin(
             if let Some(actual) = crate::host::editor_version() {
                 if let Err(msg) = crate::permissions::min_editor_ok(&v, &actual) {
                     // 让失败可见:状态栏(与能力询问同一队列;helix-js 不依赖 `log`)
-                    crate::host::push_message(format!("helix.plugin('{name}'): {msg}(已继续加载)"));
+                    let text = format!("helix.plugin('{name}'): {msg}(已继续加载)");
+                    crate::log::record(crate::log::Level::Warn, &name, &text);
+                    crate::host::push_message(text);
                 }
             }
             manifest.min_editor = Some(v);
@@ -1198,7 +1200,12 @@ pub fn run_command(st: &HostState, name: &str, ctx: &CommandContext) -> Result<b
         let undefined = JsValue::undefined();
         func.call(&undefined, &[arg], engine)
             .map(|_| true)
-            .map_err(|e| anyhow!("plugin command '{name}' failed: {e}"))
+            .map_err(|e| {
+                let msg = format!("plugin command '{name}' failed: {e}");
+                // 状态栏是单槽、下一条就盖掉 ⇒ 失败**必须**同时落进插件日志（:js-log 可查）
+                crate::log::error(name, &msg);
+                anyhow!(msg)
+            })
     });
     crate::permissions::restore_owner(prev_owner);
     res
@@ -1294,6 +1301,7 @@ pub fn emit_startup(ctx: &CommandContext, open_paths: usize) -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) => {
             // 与 layout-change 同款：让失败**可见**（静默的 log::warn 曾让我误判多轮 ✗）
+            crate::log::error("event:startup", format!("emit failed: {e}"));
             crate::host::with_messages(|v| v.push(format!("startup emit failed: {e}")));
             Err(e)
         }
@@ -1321,6 +1329,7 @@ pub fn emit_layout_change_kind(kind: Option<&'static str>) -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) => {
             // **让失败可见**：只 log::warn 会静默（我曾因此误判多轮 ✗）
+            crate::log::error("event:layout-change", format!("emit failed: {e}"));
             crate::host::with_messages(|v| v.push(format!("layout-change emit failed: {e}")));
             Err(e)
         }
@@ -2620,6 +2629,7 @@ pub(crate) fn refresh_configs_after_load() {
     let (json, errors) = crate::config::rebuild_configs(&st);
     crate::state::cache_configs(&st, &json);
     for e in errors {
+        crate::log::error("config", format!("plugin config: {e}"));
         crate::host::push_message(format!("plugin config: {e}"));
     }
 }
@@ -2937,7 +2947,9 @@ fn run_unload_hook(st: &HostState, name: &str) {
             func.call(&JsValue::undefined(), &[], engine).map(|_| ())
         });
         if let Err(e) = res {
-            crate::host::push_message(format!("{name}: onUnload failed: {e}"));
+            let text = format!("{name}: onUnload failed: {e}");
+            crate::log::error(&name, &text);
+            crate::host::push_message(text);
         }
     }
 }

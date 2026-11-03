@@ -573,3 +573,77 @@ async fn plugin_keymap() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// 插件日志（`:js-log`）：`helix.log()` 记的条目 + 插件**抛异常**都必须留下来。
+///
+/// 回归点：插件失败以前只走状态栏，而状态栏是**单槽**（`editor.status_msg = Some(..)`，
+/// 下一条消息直接盖掉）⇒ 事后完全查不到。现在进环形缓冲（最近 500 条）并可写盘（helix.log）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_log_visible_via_js_log_command() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let path = dir.path().join("logger.js");
+    std::fs::write(
+        &path,
+        r#"
+        helix.register_command("log-both", () => {
+            helix.log("error", "boom from plugin");
+            throw new Error("kaboom");
+        });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", path.display())).await?;
+    // 命令自己记一条，然后抛异常（异常那条由核心记）
+    pump(&mut app, ":log-both<ret>").await?;
+    // 失败信息的常规出口仍是状态栏（不回归）
+    assert!(
+        status_text(&app).contains("kaboom"),
+        "状态栏仍应有失败信息: {:?}",
+        status_text(&app)
+    );
+
+    pump(&mut app, ":js-log<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    let text = doc.text().to_string();
+    assert!(
+        text.contains("boom from plugin"),
+        "helix.log() 的条目应在 :js-log 里: {text}"
+    );
+    assert!(
+        text.contains("kaboom"),
+        "命令抛的异常应在 :js-log 里: {text}"
+    );
+    assert!(text.contains("ERROR"), "级别要看得出是 error: {text}");
+    Ok(())
+}
+
+/// `:js-log-clear` 清空缓冲；空缓冲要有明确说明（"什么都没有"和"功能坏了"要能区分）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_log_clear_and_empty_notice() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let path = dir.path().join("logger2.js");
+    std::fs::write(
+        &path,
+        r#"helix.register_command("log-one", () => helix.log("only one"));"#,
+    )?;
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", path.display())).await?;
+    pump(&mut app, ":log-one<ret>").await?;
+    pump(&mut app, ":js-log-clear<ret>").await?;
+    assert!(
+        status_text(&app).contains("已清空"),
+        "清空要有反馈: {:?}",
+        status_text(&app)
+    );
+    pump(&mut app, ":js-log<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    let text = doc.text().to_string();
+    assert!(text.contains("日志为空"), "空缓冲要给明确说明: {text}");
+    assert!(!text.contains("only one"), "清空后不该还有旧条目: {text}");
+    Ok(())
+}

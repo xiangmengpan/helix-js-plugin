@@ -691,22 +691,46 @@ async fn filetree_two_panels_side_by_side() -> anyhow::Result<()> {
     // 第二个 root：另一个临时目录（带一个只在它里面出现的文件名）
     let dir_b = tempfile::tempdir()?;
     std::fs::write(dir_b.path().join("beta.md"), "b\n")?;
-    let name_a = dir_a.path().file_name().unwrap().to_string_lossy().into_owned();
-    let name_b = dir_b.path().file_name().unwrap().to_string_lossy().into_owned();
+    let name_a = dir_a
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let name_b = dir_b
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     let readme = dir_a.path().join("readme.md");
     pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
     pump(&mut app, ":filetree<ret>").await?;
     pump(&mut app, ":filetree-reveal<ret>").await?;
-    pump(&mut app, &format!(":filetree-open {}<ret>", dir_b.path().display())).await?;
+    pump(
+        &mut app,
+        &format!(":filetree-open {}<ret>", dir_b.path().display()),
+    )
+    .await?;
 
     let frame = frame_text(&mut app);
-    assert!(frame.contains(&name_a), "面板 A 的 root 名应在帧里: {frame}");
-    assert!(frame.contains(&name_b), "面板 B 的 root 名应在帧里: {frame}");
+    assert!(
+        frame.contains(&name_a),
+        "面板 A 的 root 名应在帧里: {frame}"
+    );
+    assert!(
+        frame.contains(&name_b),
+        "面板 B 的 root 名应在帧里: {frame}"
+    );
     assert!(frame.contains("beta.md"), "面板 B 应显示自己的树: {frame}");
 
     // 第三个：被上限拒绝（状态栏有说明，且帧里没多出第三个面板）
-    pump(&mut app, &format!(":filetree-open {}<ret>", dir_a.path().display())).await?;
+    pump(
+        &mut app,
+        &format!(":filetree-open {}<ret>", dir_a.path().display()),
+    )
+    .await?;
     let st = status_text(&app);
     assert!(st.contains("最多 2 个面板"), "超上限应明确说明: {st:?}");
     Ok(())
@@ -719,13 +743,22 @@ async fn filetree_reveal_prefers_owning_panel() -> anyhow::Result<()> {
     let (dir_a, mut app) = setup().await?;
     let dir_b = tempfile::tempdir()?;
     std::fs::write(dir_b.path().join("beta.md"), "b\n")?;
-    let name_b = dir_b.path().file_name().unwrap().to_string_lossy().into_owned();
+    let name_b = dir_b
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     let readme = dir_a.path().join("readme.md");
     pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
     pump(&mut app, ":filetree<ret>").await?;
     pump(&mut app, ":filetree-reveal<ret>").await?;
-    pump(&mut app, &format!(":filetree-open {}<ret>", dir_b.path().display())).await?;
+    pump(
+        &mut app,
+        &format!(":filetree-open {}<ret>", dir_b.path().display()),
+    )
+    .await?;
     // 此时 active 是 B；打开 A 里的另一个文件 ⇒ 跟随/定位应落在 A（B 的 root 不能被拽走）
     let other = dir_a.path().join("src").join("main.js");
     pump(&mut app, &format!(":open {}<ret>", other.display())).await?;
@@ -734,7 +767,10 @@ async fn filetree_reveal_prefers_owning_panel() -> anyhow::Result<()> {
         frame.contains(&name_b),
         "B 的 root 不该被 reveal 拽走: {frame}"
     );
-    assert!(frame.contains("main.js"), "A 应该显示被 reveal 的文件: {frame}");
+    assert!(
+        frame.contains("main.js"),
+        "A 应该显示被 reveal 的文件: {frame}"
+    );
     Ok(())
 }
 
@@ -744,14 +780,28 @@ async fn filetree_toggle_closes_active_panel() -> anyhow::Result<()> {
     let (dir_a, mut app) = setup().await?;
     let dir_b = tempfile::tempdir()?;
     std::fs::write(dir_b.path().join("beta.md"), "b\n")?;
-    let name_a = dir_a.path().file_name().unwrap().to_string_lossy().into_owned();
-    let name_b = dir_b.path().file_name().unwrap().to_string_lossy().into_owned();
+    let name_a = dir_a
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let name_b = dir_b
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     let readme = dir_a.path().join("readme.md");
     pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
     pump(&mut app, ":filetree<ret>").await?;
     pump(&mut app, ":filetree-reveal<ret>").await?;
-    pump(&mut app, &format!(":filetree-open {}<ret>", dir_b.path().display())).await?;
+    pump(
+        &mut app,
+        &format!(":filetree-open {}<ret>", dir_b.path().display()),
+    )
+    .await?;
     assert!(frame_text(&mut app).contains(&name_b), "前置：B 已开");
 
     pump(&mut app, ":filetree<ret>").await?; // 关 active（B）

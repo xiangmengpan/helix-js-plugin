@@ -104,6 +104,7 @@ helix.export({ helper: () => {} });                        // 可选:供别的�
 | 脚本 | 查什么 | 用法 |
 |---|---|---|
 | `check_api_surface.mjs` | **注册表 ↔ `helix.d.ts` 对账**(少写的 API / 不存在的名字 / 位置过时的旧名 / 由插件补的名字)+ `runtime/plugins` 与源**逐文件**一致 | **`cargo xtask api-check`**(门禁入口)/`node plugins/tools/check_api_surface.mjs` 等价 |
+| `:js-log` / `:js-log-clear` | **插件日志**（不是脚本，是核心命令）：最近 500 条 `helix.log()` 条目 + 所有插件失败（命令抛异常/事件处理器失败/picker 报错…）。`helix.log` 同时写进 `helix.log` 文件（`:log-open`） |
 | `check_signatures.mjs` | 插件 JS 语法 + `icons` 6 个函数的参数名/函数体使用/导出一致性 | `node plugins/tools/check_signatures.mjs` |
 | `sync-runtime`（Rust）/ `sync_runtime.sh`（薄封装） | 把源的**已有副本**更新到最新:`.js` + `helix.d.ts` / `README.md` / `jsconfig.json`(**只更新,不新建**)| `cargo xtask sync-runtime` |
 
