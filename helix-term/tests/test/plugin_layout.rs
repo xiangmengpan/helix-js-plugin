@@ -102,7 +102,8 @@ async fn layout_change_batch_mode_sees_final_layout() -> anyhow::Result<()> {
 helix.on("layout-change", (kind) => {{
                  let prev = "";
                  try {{ prev = helix.read_file({log:?}); }} catch (e) {{ prev = ""; }}
-                 const panes = (helix.pane.list() || []).length;
+                 // pane.list() 自 v2 起也含组(容器)条目 ⇒ 只数真 pane
+                 const panes = (helix.pane.list() || []).filter((p) => p.kind !== "group").length;
                  helix.write_file({log:?}, prev + (kind || "none") + ":" + panes + "\n");
                }});
 helix.register_command("lc-batch2", () => {{
@@ -169,7 +170,8 @@ async fn layout_change_is_per_change_point() -> anyhow::Result<()> {
 helix.on("layout-change", (kind) => {{
                  let prev = "";
                  try {{ prev = helix.read_file({log:?}); }} catch (e) {{ prev = ""; }}
-                 const panes = (helix.pane.list() || []).length;
+                 // pane.list() 自 v2 起也含组(容器)条目 ⇒ 只数真 pane
+                 const panes = (helix.pane.list() || []).filter((p) => p.kind !== "group").length;
                  helix.write_file({log:?}, prev + (kind || "none") + ":" + panes + "\n");
                }});
 helix.register_command("lc-batch", () => {{

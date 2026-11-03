@@ -173,6 +173,9 @@ pub struct SplitLeafReq {
     pub kind: String, // "terminal" | "panel"
     pub cmd: Option<String>,
     pub size: u16,
+    /// 切分目标：`None` = 当前窗口（叶子）；`Some("root")` = 整窗切一刀；
+    /// `Some("<组 id>")` = 在那个组（容器节点）的整块区域上切。
+    pub at: Option<String>,
 }
 
 #[derive(Debug)]

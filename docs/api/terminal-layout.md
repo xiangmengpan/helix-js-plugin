@@ -101,6 +101,29 @@ Scroll 模式滚的是**活动叶子的视口**：终端叶子 → 回看缓冲�
 `f/l`/`b/h`/`PgUp`/`PgDn` 整页）。`s`（滚动搜索）还没接，只给提示。
 旧的全局 `C-w` 单模式**已删除**。`layout_fix(id, true)` 固定叶子(免疫交换/关闭/最小化)。
 
+### 组（容器节点）：整宽/整高切分与组级操作
+
+布局树的 `Split` 节点带 **id**（与叶子共用一张查找表，但号段从 `1<<40` 起，绝不与叶子撞），
+于是"组"可以当**切分/操作目标**用：
+
+```js
+// ed1|ed2 之上再开一个整宽的 term（zellij/ tmux 里要 split -f 才有这个形状）
+helix.split("bottom", { terminal: { cmd: "htop", size: 8 }, at: "root" });
+
+// 在某个组上切：区域 = 那个组的包围盒
+const g = helix.pane.list().find((p) => p.kind === "group");
+helix.split("right", { panel: { render, size: 30 }, at: g.id });
+
+helix.pane.equalize(g.id);      // 组内**所有**分界等分（传叶子则仍是"最内层那一层"）
+helix.pane.minimize(g.id, true); // 整组折成底部一条横条，兄弟占满；false 展开
+```
+
+- `pane.list()` 里组条目的 `kind` 是 `"group"`、`place` 是 `"group"`，带 `children`（直接子节点）
+  与 `leaves`（组内全部叶子）以及 `area`（包围盒，与鼠标坐标同一坐标系）。
+- 键盘：Pane 模式里 `d`/`r` 切**当前窗口**，`D`/`R` 在**整个区域**上切（新窗贴底边/右边）。
+- `get_layout()`/`layout.restore()` 的树节点带 `id`；老 dump 没有 `id` 时 restore 会重新分配，
+  并把 `next_group` 抬到最大已用 id 之上（不会撞）。
+
 **鼠标点击 = 换布局焦点**(保持当前模式;`focused` 字段与聚焦边框都跟着走)。两个例外:
 点击落在浮窗上(归浮窗,z 序路由)与 zoom 期间(`leaf_rects` 还是 zoom 前的旧几何)
 一律不换焦点 —— 见 `LayoutTree::focus_target_at`。

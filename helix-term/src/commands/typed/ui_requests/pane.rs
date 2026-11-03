@@ -75,10 +75,12 @@ pub(crate) fn handle_split_leaf(
         dir,
         kind,
         size,
+        at,
         ..
     }: SplitLeafReq,
 ) -> anyhow::Result<Option<UiOp>> {
     use crate::ui::layout::SplitDir;
+    use ui_op::SplitAt;
     let (dir, first) = match dir.as_str() {
         "right" => (SplitDir::H, false),
         "left" => (SplitDir::H, true),
@@ -86,12 +88,22 @@ pub(crate) fn handle_split_leaf(
         "top" => (SplitDir::V, true),
         other => bail!("split: unknown dir '{other}'"),
     };
+    // 切分目标：`"root"` = 整窗切一刀，数字 = 组/叶子 id，缺省 = 当前窗口
+    let at = match at.as_deref() {
+        None | Some("") | Some("active") => SplitAt::Active,
+        Some("root") => SplitAt::Root,
+        Some(other) => match other.parse::<u64>() {
+            Ok(id) => SplitAt::Node(id),
+            Err(_) => bail!("split: at must be 'root' or a numeric pane/group id, got '{other}'"),
+        },
+    };
     Ok(Some(UiOp::SplitLeaf {
         id,
         dir,
         first,
         size,
         kind,
+        at,
     }))
 }
 

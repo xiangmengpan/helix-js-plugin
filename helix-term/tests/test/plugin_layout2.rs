@@ -129,3 +129,66 @@ async fn pane_area_shares_mouse_coordinate_space() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// JS 侧的组能力：`helix.split("bottom", {panel, at:"root"})` 出来的是**整宽**的窗口，
+/// 并且 `helix.pane.list()` 能看见组（`kind:"group"` + `children`/`leaves`/`area`）。
+const GROUP_SPLIT_JS: &str = r#"
+helix.register_command("g-split", () => {
+    // 先在**当前窗口**上切一刀（普通行为）
+    helix.split("right", { panel: { render: () => ["p1"], size: 30 } });
+    // 再在**整窗**上切一刀：新窗口横跨整宽，贴在底边
+    helix.split("bottom", { panel: { render: () => ["p2"], size: 8 }, at: "root" });
+});
+helix.register_command("g-diag", () => {
+    const panes = helix.pane.list();
+    const g = panes.filter((p) => p.kind === "group");
+    const bottom = panes.filter((p) => p.place === "tiled" && p.area.x === 0 && p.area.w > 0)
+        .sort((a, b) => b.area.y - a.area.y)[0];
+    const widest = panes.reduce((m, p) => Math.max(m, p.area.w), 0);
+    helix.echo(
+        "groups:" + g.length
+        + " children:" + (g.length ? g[g.length - 1].children.length : 0)
+        + " leaves:" + (g.length ? g[g.length - 1].leaves.length : 0)
+        + " bottom_w:" + (bottom ? bottom.area.w : -1)
+        + " widest:" + widest
+    );
+});
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn js_split_at_root_is_full_width_and_groups_are_listed() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plugin = dir.path().join("groups.js");
+    std::fs::write(&plugin, GROUP_SPLIT_JS)?;
+    let mut app = AppBuilder::new().build()?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>:g-split<ret>", plugin.display()),
+    )
+    .await?;
+    // 画一帧（几何靠渲染带出来），再取 set_status 里的诊断
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+    pump(&mut app, ":g-diag<ret>").await?;
+    let status = status_text(&app);
+    assert!(status.contains("groups:"), "诊断没跑起来: {status:?}");
+    assert!(!status.contains("groups:0"), "组没进 pane.list: {status:?}");
+    assert!(
+        status.contains("children:"),
+        "组条目缺 children: {status:?}"
+    );
+    // 底部那个窗口的宽度 == 最宽窗口的宽度（即整宽）
+    let field = |key: &str| -> i64 {
+        status
+            .split(' ')
+            .find_map(|kv| kv.strip_prefix(key))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(-1)
+    };
+    assert_eq!(
+        field("bottom_w:"),
+        field("widest:"),
+        "at:\"root\" 的窗口必须横跨整宽: {status:?}"
+    );
+    Ok(())
+}

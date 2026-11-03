@@ -18,6 +18,17 @@ use super::*;
 
 use crate::compositor::Compositor;
 use crate::ui::layout::SplitDir;
+
+/// `split` 的落点：切当前窗口 / 整窗 / 指定组（容器节点）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitAt {
+    /// 当前活动窗口（叶子）——旧行为
+    Active,
+    /// 整窗切一刀：新窗口跨满整个区域的宽/高（tmux 的 `split-window -f`）
+    Root,
+    /// 在指定组（容器节点）的整块区域上切
+    Node(u64),
+}
 use helix_view::Editor;
 
 /// 一次 UI 变更。所有载荷都是**数据**(组件在这里才构造),所以能 `derive(PartialEq)`、
@@ -55,6 +66,8 @@ pub(crate) enum UiOp {
         first: bool,
         size: u16,
         kind: String,
+        /// 切分目标（见 [`SplitAt`]）
+        at: SplitAt,
     },
     CloseLeaf {
         id: u64,
@@ -212,6 +225,7 @@ impl UiOp {
                 first,
                 size,
                 kind,
+                at,
             } => {
                 let component: Box<dyn Component> = match kind.as_str() {
                     "terminal" => Box::new(crate::ui::plugin_terminal::PluginTerminal::new(
@@ -220,7 +234,33 @@ impl UiOp {
                     _ => Box::new(ui::PluginPanel::new(id, ui::PanelSide::Right, false)),
                 };
                 // 用预分配 id 直接建叶子(split 的 id 由 JS 分配,回调已注册)
-                compositor.split_leaf_prealloc(id, dir, first, size, component, js.as_deref_mut());
+                match at {
+                    // 缺省 = 切当前窗口（旧行为，一字不改）
+                    SplitAt::Active => compositor.split_leaf_prealloc(
+                        id,
+                        dir,
+                        first,
+                        size,
+                        component,
+                        js.as_deref_mut(),
+                    ),
+                    // `at: "root"` / `at: <组 id>` = 在那个区域的整宽/整高上切
+                    SplitAt::Root | SplitAt::Node(_) => {
+                        let target = match at {
+                            SplitAt::Node(g) => Some(g),
+                            _ => None,
+                        };
+                        compositor.split_at_prealloc(
+                            id,
+                            target,
+                            dir,
+                            first,
+                            size,
+                            component,
+                            js.as_deref_mut(),
+                        )
+                    }
+                }
                 // 标注变更种类(紧随其后的 sync_layout_cache 会把它带进 layout-change 事件)
                 compositor.set_layout_change_kind("split");
                 compositor.sync_layout_cache(js.as_deref_mut());
@@ -312,7 +352,7 @@ impl UiOp {
                     editor.set_error("layout_swap_dir: 该方向无邻居");
                 }
             }
-            UiOp::Equalize { id } => compositor.equalize_leaf(id, js.as_deref_mut()),
+            UiOp::Equalize { id } => compositor.equalize_node(id, js.as_deref_mut()),
             UiOp::FocusLeaf { id } => compositor.focus_leaf(id, js),
             UiOp::RestoreLayout { json } => {
                 // 缓存与重建**同一处**写:有宿主就显式写缓存(无宿主 ⇒ 没有 JS 读者);
@@ -363,6 +403,7 @@ mod tests {
             kind: "panel".into(),
             cmd: None,
             size: 30,
+            at: None,
         };
         assert_eq!(
             handle_split_leaf(mk("right")).unwrap(),
@@ -371,7 +412,8 @@ mod tests {
                 dir: SplitDir::H,
                 first: false,
                 size: 30,
-                kind: "panel".into()
+                kind: "panel".into(),
+                at: SplitAt::Active
             })
         );
         assert_eq!(
@@ -381,7 +423,8 @@ mod tests {
                 dir: SplitDir::V,
                 first: true,
                 size: 30,
-                kind: "panel".into()
+                kind: "panel".into(),
+                at: SplitAt::Active
             })
         );
         let err = handle_split_leaf(mk("diagonal")).unwrap_err().to_string();

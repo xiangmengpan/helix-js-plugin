@@ -920,6 +920,103 @@ impl Compositor {
         self.sync_layout_cache(js);
     }
 
+    /// 在**组**（容器节点）上切一刀：新叶子跨满该组的整宽/整高。
+    ///
+    /// `target = None` ⇒ 整窗切（根），就是"term 横跨左右两个编辑区、占满底边"。
+    pub fn split_at_group(
+        &mut self,
+        target: Option<u64>,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        new_size: u16,
+        component: Box<dyn Component>,
+        js: Option<&mut helix_js::host::JsHost>,
+    ) -> Option<u64> {
+        let total = match target {
+            Some(g) => self
+                .main_tree
+                .group_rect(g)
+                .map(|r| {
+                    if dir == crate::ui::layout::SplitDir::H {
+                        r.width
+                    } else {
+                        r.height
+                    }
+                })
+                .unwrap_or(if dir == crate::ui::layout::SplitDir::H {
+                    self.area.width
+                } else {
+                    self.area.height
+                }),
+            None => {
+                if dir == crate::ui::layout::SplitDir::H {
+                    self.area.width
+                } else {
+                    self.area.height
+                }
+            }
+        };
+        let share = if new_first {
+            new_size as f32 / total.max(1) as f32
+        } else {
+            1.0 - new_size as f32 / total.max(1) as f32
+        };
+        let ratio = share.clamp(0.1, 0.9);
+        let ret = self
+            .main_tree
+            .split_at_group(target, dir, new_first, ratio, component);
+        self.sync_layout_cache(js);
+        ret
+    }
+
+    /// 用 JS 预分配 id 在**组/根**上切分（`helix.split(dir, {at})` 的落点）
+    #[allow(clippy::too_many_arguments)] // 布局原语天然多参（id/target/dir/首尾/size/组件/宿主）
+    pub fn split_at_prealloc(
+        &mut self,
+        id: u64,
+        target: Option<u64>,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        new_size: u16,
+        component: Box<dyn Component>,
+        js: Option<&mut helix_js::host::JsHost>,
+    ) {
+        let total = match target {
+            Some(g) => self
+                .main_tree
+                .group_rect(g)
+                .map(|r| {
+                    if dir == crate::ui::layout::SplitDir::H {
+                        r.width
+                    } else {
+                        r.height
+                    }
+                })
+                .unwrap_or(if dir == crate::ui::layout::SplitDir::H {
+                    self.area.width
+                } else {
+                    self.area.height
+                }),
+            None => {
+                if dir == crate::ui::layout::SplitDir::H {
+                    self.area.width
+                } else {
+                    self.area.height
+                }
+            }
+        };
+        let share = if new_first {
+            new_size as f32 / total.max(1) as f32
+        } else {
+            1.0 - new_size as f32 / total.max(1) as f32
+        };
+        let ratio = share.clamp(0.1, 0.9);
+        let _ = self
+            .main_tree
+            .split_at_group_prealloc(id, target, dir, new_first, ratio, component);
+        self.sync_layout_cache(js);
+    }
+
     pub fn area(&self) -> Rect {
         self.area
     }
@@ -1134,6 +1231,45 @@ impl Compositor {
         leaf
     }
 
+    /// 开一个 buffer 叶，**在指定的组/根上切**（而不是切当前窗口）。
+    ///
+    /// `target = None` ⇒ 整窗切一刀：`dir = V, new_first = false` 就是
+    /// "新窗口贴在底边、横跨整宽"（Pane 模式 `C-p D`）。
+    #[allow(clippy::too_many_arguments)] // 与 split_* 同一族原语
+    pub fn open_buffer_leaf_at(
+        &mut self,
+        editor: &mut Editor,
+        doc_id: helix_view::DocumentId,
+        target: Option<u64>,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        new_size: u16,
+        js: Option<&mut helix_js::host::JsHost>,
+    ) -> Option<u64> {
+        let gutters = editor.config().gutters.clone();
+        let cur = editor
+            .tree
+            .try_get(editor.tree.focus)
+            .filter(|v| v.doc == doc_id)
+            .cloned();
+        let view = cur.unwrap_or_else(|| helix_view::view::View::new(doc_id, gutters));
+        let vid = editor.tree.register_flat(view);
+        if let Some(doc) = editor.document_mut(doc_id) {
+            doc.ensure_view_init(vid);
+            doc.mark_as_focused();
+        }
+        let leaf = self.split_at_group(
+            target,
+            dir,
+            new_first,
+            new_size,
+            Box::new(crate::ui::BufferLeaf { view_id: vid }),
+            js,
+        );
+        self.sync_editor_focus(editor);
+        leaf
+    }
+
     pub fn zoom_leaf(&mut self, id: u64, js: Option<&mut helix_js::host::JsHost>) {
         self.main_tree.zoom(id);
         self.sync_layout_cache(js);
@@ -1211,9 +1347,9 @@ impl Compositor {
         ret
     }
 
-    /// 叶子所在 Split 恢复 50/50
-    pub fn equalize_leaf(&mut self, id: u64, js: Option<&mut helix_js::host::JsHost>) {
-        self.main_tree.equalize(id);
+    /// equalize：传叶子 → 它最内层那一层恢复 50/50；传**组** → 组内所有分界都等分。
+    pub fn equalize_node(&mut self, id: u64, js: Option<&mut helix_js::host::JsHost>) {
+        self.main_tree.equalize_node(id);
         self.sync_layout_cache(js);
     }
 
@@ -1431,6 +1567,10 @@ impl Compositor {
                 Some('n') => self.window_mode_split('n', cx),
                 Some('d') => self.window_mode_split('s', cx),
                 Some('r') => self.window_mode_split('v', cx),
+                // 大写：在**整个区域**上切一刀（不是切当前窗口）⇒
+                // `D` = 整宽的新窗贴在底边（term 横跨左右两个编辑区），`R` = 整高的贴右边。
+                Some('D') => self.window_mode_split('D', cx),
+                Some('R') => self.window_mode_split('R', cx),
                 Some('x') => self.window_mode_close(cx),
                 Some('f') => self.window_mode_zoom(cx.js.as_deref_mut()),
                 Some('z') => self.window_mode_minimize(cx.js.as_deref_mut()),
@@ -1596,9 +1736,30 @@ impl Compositor {
         crate::commands::scroll_view(cx.editor, view_id, n, direction);
     }
 
-    /// 窗口模式:创建新窗(v/s 同 doc 分屏,n 新空 buffer)。创建后保持模式可连续操作。
+    /// 窗口模式:创建新窗(v/s 同 doc 分屏,n 新空 buffer)。
+    /// `D`/`R` = 在**根**上切（新窗跨满整个区域的宽/高），不切当前窗口。
+    /// 创建后保持模式可连续操作。
     fn window_mode_split(&mut self, c: char, cx: &mut Context) {
         use crate::ui::layout::SplitDir;
+        if c == 'D' || c == 'R' {
+            let dir = if c == 'D' { SplitDir::V } else { SplitDir::H };
+            let size = if c == 'D' { 12 } else { 40 };
+            // 与 `d`/`r` 一致：同一份 doc 再开一个窗口（不是新空 buffer）
+            let doc_id = match cx.editor.tree.try_get(cx.editor.tree.focus).map(|v| v.doc) {
+                Some(d) => d,
+                None => return,
+            };
+            self.open_buffer_leaf_at(
+                cx.editor,
+                doc_id,
+                None,
+                dir,
+                false,
+                size,
+                cx.js.as_deref_mut(),
+            );
+            return;
+        }
         if c == 'n' {
             let dir = SplitDir::V;
             let doc_id = cx.editor.create_scratch_document();
@@ -1744,6 +1905,25 @@ impl Compositor {
                 "pinned": f.pinned,
                 "z": f.z,
                 "rect": { "x": f.x, "y": f.y, "w": f.w, "h": f.h },
+                "area": { "x": r.x, "y": r.y, "w": r.width, "h": r.height },
+            }));
+        }
+        // 组(容器节点)条目：`kind: "group"` + `children` + 包围盒。
+        // 叶子与组混在同一份清单里，插件才能"按组划分"（在组上切、整组 equalize/minimize）。
+        for gid in self.main_tree.group_ids() {
+            let r = self.main_tree.group_rect(gid).unwrap_or_default();
+            let children = self.main_tree.group_children(gid).unwrap_or_default();
+            let leaves = self.main_tree.group_leaves(gid);
+            panes.push(serde_json::json!({
+                "id": gid,
+                "kind": "group",
+                "place": "group",
+                "focused": false,
+                "fixed": false,
+                "pinned": false,
+                "stack": [],
+                "children": children,
+                "leaves": leaves,
                 "area": { "x": r.x, "y": r.y, "w": r.width, "h": r.height },
             }));
         }

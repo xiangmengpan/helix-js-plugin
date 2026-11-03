@@ -69,6 +69,15 @@ pub(crate) fn js_split(
                 "helix.split: opts must have 'terminal' or 'panel'",
             ));
         };
+    // `at`: "root" = 整窗切一刀（新 pane 跨满整宽/整高），或一个组 id 的十进制串
+    let at_js = opts.get(JsString::from("at"), ctx)?;
+    let at = if at_js.is_undefined() || at_js.is_null() {
+        None
+    } else if at_js.is_number() {
+        Some(at_js.to_string(ctx)?.to_std_string_escaped())
+    } else {
+        Some(at_js.try_js_into::<String>(ctx)?)
+    };
     UI_REQUESTS
         .get()
         .unwrap()
@@ -80,6 +89,7 @@ pub(crate) fn js_split(
             kind,
             cmd,
             size,
+            at,
         }));
     Ok(JsValue::from(id))
 }

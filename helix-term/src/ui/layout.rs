@@ -16,6 +16,10 @@ pub enum SplitDir {
 #[derive(Debug)]
 pub enum LayoutNode {
     Split {
+        /// 容器（组）id。与叶子共用同一个 id 空间 ⇒ 任何 u64 只可能是二者之一
+        /// （`LayoutTree::node_kind` 判）。有了它，组才能被当成**切分/操作目标**：
+        /// 在组上切一刀，新 pane 就跨满该组的整宽/整高（"地板的 term 横跨左右两个编辑区"）。
+        id: u64,
         dir: SplitDir,
         ratio: f32,
         first: Box<LayoutNode>,
@@ -26,12 +30,40 @@ pub enum LayoutNode {
     },
 }
 
+/// 组 id 的起点：叶子 id 由 `next_id` 从 1 递增分配，调用方还可能显式传 id
+/// （`split_side_ratio(..., new_id)`），所以组**必须**用一段叶子碰不到的号段，
+/// 否则"叶子 1 / 组 1"撞车会让 `find_node` 二义。1<<40 远在叶子增长之外，
+/// 同时仍能精确放进 JS 的 double（< 2^53）。
+pub const GROUP_ID_BASE: u64 = 1 << 40;
+
+/// 一个 id 在树里是什么（不存在的 id → None）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// 叶子：持有组件（编辑器/终端/面板）
+    Leaf,
+    /// 组（容器节点）：只占区域，不持有组件；可作为切分/equalize/minimize 的目标
+    Group,
+}
+
+/// 建一个组节点（省掉每处都写 Box::new）
+fn group(id: u64, dir: SplitDir, ratio: f32, first: LayoutNode, second: LayoutNode) -> LayoutNode {
+    LayoutNode::Split {
+        id,
+        dir,
+        ratio,
+        first: Box::new(first),
+        second: Box::new(second),
+    }
+}
+
 /// 布局树：二分树 + 叶子组件表 + 活动叶子 + 缩放状态。
 pub struct LayoutTree {
     root: LayoutNode,
     components: std::collections::HashMap<u64, Box<dyn Component>>,
     active: u64,
     next_id: u64,
+    /// 下一个组 id（从 [`GROUP_ID_BASE`] 起；与叶子 id 不共享号段）
+    next_group: u64,
     /// 缩放中的叶子 id（占满全区，其他叶子隐藏）
     zoomed: Option<u64>,
     /// 浮动叶子 id（终端 Floating 模式：不占 split 布局，渲染在视口中央浮窗，最上层）
@@ -42,10 +74,14 @@ pub struct LayoutTree {
     /// 不变量:锚持有槽位且**就是 shown**;循环 = 轮转 `members`;成员必须是**兄弟**
     /// (否则被排除的成员不会把空间让给锚,轮转会跳位置 —— 见规格 A.7)。
     stacks: std::collections::HashMap<u64, StackGroup>,
-    /// 最小化叶子 id（不占布局，渲染为底部一条标题横条；单例）
-    minimized: Option<u64>,
+    /// 最小化的**节点** id（叶子或组）：被最小化的子树不占布局，渲染为底部一条
+    /// 标题横条；可同时有多个（按提交顺序从下往上叠）。
+    minimized: Vec<u64>,
     /// 最近一次渲染的叶子区域（鼠标命中查询；每帧渲染更新）
     leaf_rects: std::collections::HashMap<u64, Rect>,
+    /// 最近一次渲染的**组**区域（容器节点的包围盒；`pane.list()` / JS 读）。
+    /// 组不占组件表，所以几何只能这样带出来。
+    group_rects: std::collections::HashMap<u64, Rect>,
     /// 同上，但只在几何**变化**时置位（Compositor 用它决定要不要刷新 `pane.list()` 快照）
     rects_dirty: bool,
     /// 固定叶子 id 集合（fixed：不被模式操作 swap/resize/close/minimize/equalize，可被焦点穿过）
@@ -130,13 +166,15 @@ impl FloatSlot {
 /// 其所在子树整体让位，其余叶子占满区域
 type LeafRect = (u64, Rect);
 
-/// 子树是否所有叶子都属于排除集合（float/minimized 让位判断）
-fn subtree_all_excluded(node: &LayoutNode, skip: &[u64], minimized: Option<u64>) -> bool {
+/// 节点是否整体让位（不占布局空间）：自身 id 在排除集合里，或子树里所有叶子都排除。
+fn node_excluded(node: &LayoutNode, excluded: &[u64]) -> bool {
     match node {
-        LayoutNode::Leaf { id } => skip.contains(id) || Some(*id) == minimized,
-        LayoutNode::Split { first, second, .. } => {
-            subtree_all_excluded(first, skip, minimized)
-                && subtree_all_excluded(second, skip, minimized)
+        LayoutNode::Leaf { id } => excluded.contains(id),
+        LayoutNode::Split {
+            id, first, second, ..
+        } => {
+            excluded.contains(id)
+                || (node_excluded(first, excluded) && node_excluded(second, excluded))
         }
     }
 }
@@ -145,33 +183,35 @@ fn layout_node(
     node: &LayoutNode,
     area: Rect,
     out: &mut Vec<LeafRect>,
-    skip: &[u64],
-    minimized: Option<u64>,
+    groups: &mut Vec<LeafRect>,
+    excluded: &[u64],
 ) {
+    if node_excluded(node, excluded) {
+        return; // 整棵子树让位（浮窗 / 堆叠非锚成员 / 被最小化的叶子或组）
+    }
     match node {
         LayoutNode::Leaf { id } => {
-            if !skip.contains(id) && Some(*id) != minimized {
-                out.push((*id, area));
-            }
+            out.push((*id, area));
         }
         LayoutNode::Split {
+            id,
             dir,
             ratio,
             first,
             second,
         } => {
-            // 排除叶子所在子树整体不占空间：另一侧占满本区域（浮动/最小化时
-            // 不留白——否则 dock 位置留白 → 其余叶子出现一块空白）
-            if !skip.is_empty() || minimized.is_some() {
-                let (first_gone, second_gone) = (
-                    subtree_all_excluded(first, skip, minimized),
-                    subtree_all_excluded(second, skip, minimized),
-                );
-                match (first_gone, second_gone) {
-                    (true, false) => return layout_node(second, area, out, skip, minimized),
-                    (false, true) => return layout_node(first, area, out, skip, minimized),
-                    _ => {}
-                }
+            // 组的矩形 = 它管的那块区域（切分之前），JS/`pane.list()` 读这个
+            groups.push((*id, area));
+            // 一侧整棵让位 → 另一侧占满本区域（否则会留一块空白）
+            let (first_gone, second_gone) = (
+                node_excluded(first, excluded),
+                node_excluded(second, excluded),
+            );
+            match (first_gone, second_gone) {
+                (true, true) => return,
+                (true, false) => return layout_node(second, area, out, groups, excluded),
+                (false, true) => return layout_node(first, area, out, groups, excluded),
+                _ => {}
             }
             let ratio = ratio.clamp(0.05, 0.95);
             match dir {
@@ -181,8 +221,8 @@ fn layout_node(
                         first,
                         Rect::new(area.x, area.y, w, area.height),
                         out,
-                        skip,
-                        minimized,
+                        groups,
+                        excluded,
                     );
                     layout_node(
                         second,
@@ -193,8 +233,8 @@ fn layout_node(
                             area.height,
                         ),
                         out,
-                        skip,
-                        minimized,
+                        groups,
+                        excluded,
                     );
                 }
                 SplitDir::V => {
@@ -203,8 +243,8 @@ fn layout_node(
                         first,
                         Rect::new(area.x, area.y, area.width, h),
                         out,
-                        skip,
-                        minimized,
+                        groups,
+                        excluded,
                     );
                     layout_node(
                         second,
@@ -215,8 +255,8 @@ fn layout_node(
                             area.height.saturating_sub(h),
                         ),
                         out,
-                        skip,
-                        minimized,
+                        groups,
+                        excluded,
                     );
                 }
             }
@@ -231,14 +271,16 @@ impl Default for LayoutTree {
             components: Default::default(),
             active: 0,
             next_id: 1,
+            next_group: GROUP_ID_BASE,
             zoomed: None,
             floats: Vec::new(),
             stacks: std::collections::HashMap::new(),
-            minimized: None,
+            minimized: Vec::new(),
             fixed: Default::default(),
             dock: None,
             rail: None,
             leaf_rects: Default::default(),
+            group_rects: Default::default(),
             rects_dirty: false,
         }
     }
@@ -276,15 +318,17 @@ impl LayoutTree {
     /// 底部只会裂在编辑器那一列里（半宽），视觉上很怪。
     pub fn register_dock_bottom(&mut self, component: Box<dyn Component>, share: f32) -> u64 {
         let did = self.next_id_for_split();
+        let gid = self.next_group_id();
         self.components.insert(did, component);
         let main_root = std::mem::replace(&mut self.root, LayoutNode::Leaf { id: did });
-        self.root = LayoutNode::Split {
-            dir: SplitDir::V,
+        self.root = group(
+            gid,
+            SplitDir::V,
             // ratio = **第一个子**（上面的 main）占的比例
-            ratio: (1.0 - share).clamp(0.1, 0.95),
-            first: Box::new(main_root),
-            second: Box::new(LayoutNode::Leaf { id: did }),
-        };
+            (1.0 - share).clamp(0.1, 0.95),
+            main_root,
+            LayoutNode::Leaf { id: did },
+        );
         self.dock = Some(did);
         self.active = did;
         did
@@ -305,22 +349,25 @@ impl LayoutTree {
     ) -> Option<u64> {
         let old = self.take_rail();
         let rid = self.next_id_for_split();
+        let gid = self.next_group_id();
         self.components.insert(rid, component);
         let main_root = std::mem::replace(&mut self.root, LayoutNode::Leaf { id: rid });
         self.root = if left {
-            LayoutNode::Split {
-                dir: SplitDir::H,
+            group(
+                gid,
+                SplitDir::H,
                 ratio,
-                first: Box::new(LayoutNode::Leaf { id: rid }),
-                second: Box::new(main_root),
-            }
+                LayoutNode::Leaf { id: rid },
+                main_root,
+            )
         } else {
-            LayoutNode::Split {
-                dir: SplitDir::H,
-                ratio: 1.0 - ratio,
-                first: Box::new(main_root),
-                second: Box::new(LayoutNode::Leaf { id: rid }),
-            }
+            group(
+                gid,
+                SplitDir::H,
+                1.0 - ratio,
+                main_root,
+                LayoutNode::Leaf { id: rid },
+            )
         };
         self.rail = Some(rid);
         // 注册即聚焦 rail(与普通面板打开后活动一致:按键直达浏览;Esc/l 或 C-\ 回 main)
@@ -517,13 +564,16 @@ impl LayoutTree {
         }
     }
 
-    /// 不参与布局空间的 id:浮窗 + 堆叠组里**非锚**的成员
-    /// (非锚成员的位置空间由锚吸收 —— 所以堆叠始终占满同一块区域)
+    /// 不参与布局空间的 id:浮窗 + 堆叠组里**非锚**的成员 + 被最小化的节点(叶子或组)。
+    ///
+    /// (非锚成员的位置空间由锚吸收 —— 所以堆叠始终占满同一块区域;
+    ///  最小化的**组**同理:它的整块区域由兄弟占满。)
     pub fn layout_skip_ids(&self) -> Vec<u64> {
         let mut v = self.float_ids();
         for g in self.stacks.values() {
             v.extend(g.members.iter().skip(1).copied());
         }
+        v.extend(self.minimized.iter().copied());
         v
     }
 
@@ -706,6 +756,13 @@ impl LayoutTree {
         id
     }
 
+    /// 分配一个**组**（容器节点）id（独立号段，绝不与叶子撞）
+    fn next_group_id(&mut self) -> u64 {
+        let id = self.next_group;
+        self.next_group = self.next_group.saturating_add(1);
+        id
+    }
+
     /// 带侧向与比例的切分
     pub fn split_side_ratio(
         &mut self,
@@ -730,11 +787,15 @@ impl LayoutTree {
         } else {
             (id, new_id)
         };
-        replace_leaf(&mut self.root, id, &|_| LayoutNode::Split {
-            dir,
-            ratio,
-            first: Box::new(LayoutNode::Leaf { id: first }),
-            second: Box::new(LayoutNode::Leaf { id: second }),
+        let gid = self.next_group_id();
+        replace_leaf(&mut self.root, id, &|_| {
+            group(
+                gid,
+                dir,
+                ratio,
+                LayoutNode::Leaf { id: first },
+                LayoutNode::Leaf { id: second },
+            )
         });
         self.components.insert(new_id, new_component);
         self.active = new_id;
@@ -765,11 +826,15 @@ impl LayoutTree {
         } else {
             (id, new_id)
         };
-        replace_leaf(&mut self.root, id, &|_| LayoutNode::Split {
-            dir,
-            ratio: 0.5,
-            first: Box::new(LayoutNode::Leaf { id: first }),
-            second: Box::new(LayoutNode::Leaf { id: second }),
+        let gid = self.next_group_id();
+        replace_leaf(&mut self.root, id, &|_| {
+            group(
+                gid,
+                dir,
+                0.5,
+                LayoutNode::Leaf { id: first },
+                LayoutNode::Leaf { id: second },
+            )
         });
         self.components.insert(new_id, new_component);
         self.active = new_id;
@@ -798,9 +863,9 @@ impl LayoutTree {
         self.floats.retain(|f| f.id != id);
         // 堆叠：摘掉成员；锚被摘则换 key，剩 1 个则解散（该成员恢复为普通 pane）
         self.stack_remove_member(id);
-        if self.minimized == Some(id) {
-            self.minimized = None;
-        }
+        // 最小化条目：被关掉的叶子、以及已经空了的组条目都清掉
+        self.minimized
+            .retain(|m| *m != id && find_node(&self.root, *m).is_some());
         true
     }
 
@@ -846,6 +911,7 @@ impl LayoutTree {
                     ratio,
                     first,
                     second,
+                    ..
                 } => {
                     let first_target =
                         matches!(&**first, LayoutNode::Leaf { id: lid } if *lid == id);
@@ -996,36 +1062,205 @@ impl LayoutTree {
         }
     }
 
-    /// 最小化叶子：不占布局空间，渲染为底部一条标题横条（单例：再调用切换到新叶子）。
-    /// minimized=false 恢复。最小化时若该叶子正被聚焦/缩放，焦点回编辑器。
+    /// 这个 id 在树里是什么（叶子 / 组 / 不存在）。
+    pub fn node_kind(&self, id: u64) -> Option<NodeKind> {
+        match find_node(&self.root, id)? {
+            LayoutNode::Leaf { .. } => Some(NodeKind::Leaf),
+            LayoutNode::Split { .. } => Some(NodeKind::Group),
+        }
+    }
+
+    /// 全部组 id（树序：先根后子）。JS `pane.list()` 的组条目由此而来。
+    pub fn group_ids(&self) -> Vec<u64> {
+        fn walk(node: &LayoutNode, out: &mut Vec<u64>) {
+            if let LayoutNode::Split {
+                id, first, second, ..
+            } = node
+            {
+                out.push(*id);
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut out);
+        out
+    }
+
+    /// 组的**绝对**屏幕矩形（最近一次渲染的包围盒；未渲染/zoom 中 → None）
+    pub fn group_rect(&self, id: u64) -> Option<Rect> {
+        self.group_rects.get(&id).copied()
+    }
+
+    /// 组的直接子节点 id（叶子或子组）
+    pub fn group_children(&self, id: u64) -> Option<Vec<u64>> {
+        match find_node(&self.root, id)? {
+            LayoutNode::Split { first, second, .. } => Some(vec![node_id(first), node_id(second)]),
+            LayoutNode::Leaf { .. } => None,
+        }
+    }
+
+    /// 节点是否包含另一个节点（含自身）
+    pub fn node_contains(&self, outer: u64, inner: u64) -> bool {
+        node_contains(&self.root, outer, inner)
+    }
+
+    /// 组内所有叶子 id（树序）
+    pub fn group_leaves(&self, id: u64) -> Vec<u64> {
+        let mut out = Vec::new();
+        if let Some(node) = find_node(&self.root, id) {
+            fn walk(node: &LayoutNode, out: &mut Vec<u64>) {
+                match node {
+                    LayoutNode::Leaf { id } => out.push(*id),
+                    LayoutNode::Split { first, second, .. } => {
+                        walk(first, out);
+                        walk(second, out);
+                    }
+                }
+            }
+            walk(node, &mut out);
+        }
+        out
+    }
+
+    /// 在**组**（容器节点）上切一刀：新叶子跨满该组的整宽/整高。
+    ///
+    /// `target = None` ⇒ 整窗切一刀（根），等价 tmux 的 `split-window -f` ——
+    /// 这就是"term 横跨左右两个编辑区、占满整个底边"那条需求的一条命令。
+    /// `target = Some(叶子)` ⇒ 退化成普通的叶子切分（区域就是那个叶子）。
+    /// `target = Some(组)` ⇒ 区域是整个组的包围盒。
+    pub fn split_at_group(
+        &mut self,
+        target: Option<u64>,
+        dir: SplitDir,
+        new_first: bool,
+        ratio: f32,
+        component: Box<dyn Component>,
+    ) -> Option<u64> {
+        let new_id = self.next_id_for_split();
+        self.split_at_group_prealloc(new_id, target, dir, new_first, ratio, component)
+    }
+
+    /// 同 [`Self::split_at_group`]，但叶子 id 由调用方预分配
+    /// （JS `helix.split` 已经按这个 id 注册了回调）。
+    pub fn split_at_group_prealloc(
+        &mut self,
+        new_id: u64,
+        target: Option<u64>,
+        dir: SplitDir,
+        new_first: bool,
+        ratio: f32,
+        component: Box<dyn Component>,
+    ) -> Option<u64> {
+        match target {
+            // 叶子目标 → 就是普通叶子切分（区域 = 那个叶子）
+            Some(t) if self.node_kind(t) == Some(NodeKind::Leaf) => {
+                if self.rail == Some(t) {
+                    return None; // rail 不参与分裂
+                }
+                return self.split_side_ratio(t, dir, new_first, ratio, component, new_id);
+            }
+            Some(t) if self.node_kind(t).is_none() => return None,
+            _ => {}
+        }
+        let gid = self.next_group_id();
+        self.components.insert(new_id, component);
+        let old = match target {
+            Some(t) => take_node(&mut self.root, t)?,
+            None => std::mem::replace(&mut self.root, LayoutNode::Leaf { id: u64::MAX }),
+        };
+        let leaf = LayoutNode::Leaf { id: new_id };
+        let node = if new_first {
+            group(gid, dir, ratio, leaf, old)
+        } else {
+            group(gid, dir, ratio, old, leaf)
+        };
+        if target.is_none() {
+            self.root = node;
+        } else if !fill_placeholder(&mut self.root, node) {
+            return None; // 理论上不会发生（take_node 一定留了占位）
+        }
+        self.active = new_id;
+        Some(new_id)
+    }
+
+    /// 组级 equalize：把组内**所有**分界恢复成等分（递归 0.5）。
+    /// 传叶子 id 时退化成旧行为（只均衡它最内层那个 Split）。返回是否动了。
+    pub fn equalize_node(&mut self, id: u64) -> bool {
+        if self.fixed.contains(&id) || self.rail == Some(id) {
+            return false; // fixed/rail 不参与等分
+        }
+        match self.node_kind(id) {
+            Some(NodeKind::Group) => {
+                let rail = self.rail;
+                if let Some(node) = find_node_mut(&mut self.root, id) {
+                    equalize_subtree(node, rail);
+                    return true;
+                }
+                false
+            }
+            Some(NodeKind::Leaf) => {
+                self.equalize(id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 最小化一个**节点**（叶子或组）：被最小化的子树不占布局空间，渲染为底部一条
+    /// 标题横条，其余叶子占满区域。可同时最小化多个（按提交顺序从下往上叠条）。
+    ///
+    /// 组级最小化是"整块折起来"：里面的所有 pane 都不占地方（它们仍在树里、
+    /// 组件还活着），展开时原样回来。
     pub fn set_minimized(&mut self, id: u64, minimized: bool) {
-        if !self.components.contains_key(&id) {
+        if self.node_kind(id).is_none() {
             return;
         }
         if minimized && (self.fixed.contains(&id) || self.rail == Some(id)) {
             return; // fixed/rail 不可被最小化
         }
+        let root = &self.root;
         if minimized {
-            self.minimized = Some(id);
-            if self.zoomed == Some(id) {
-                self.zoomed = None;
+            // 祖先已在最小化列表里 → 再最小化它内部没有意义（整棵子树早就让位了）
+            if self.minimized.iter().any(|m| node_contains(root, *m, id)) {
+                return;
             }
-            if self.active == id {
+            // 已经最小化了它内部的节点 → 换成更外层的这个（避免嵌套条目）
+            self.minimized
+                .retain(|m| *m == id || !node_contains(root, id, *m));
+            if !self.minimized.contains(&id) {
+                self.minimized.push(id);
+            }
+            // 焦点/缩放不能停在一个已经被折起来的节点上
+            if node_contains(root, id, self.active) {
                 self.active = 0;
             }
-        } else if self.minimized == Some(id) {
-            self.minimized = None;
+            if self.zoomed.is_some_and(|z| node_contains(root, id, z)) {
+                self.zoomed = None;
+            }
+        } else {
+            self.minimized.retain(|m| *m != id);
         }
     }
 
-    /// 最小化叶子 id
-    pub fn minimized_leaf(&self) -> Option<u64> {
-        self.minimized
+    /// 被最小化的节点 id（从下往上叠条的顺序）
+    pub fn minimized_ids(&self) -> &[u64] {
+        &self.minimized
     }
 
-    /// 最小化叶子 id(窗口模式/测试别名)
+    /// 最近一次被最小化的节点 id（窗口模式的还原目标）
+    pub fn minimized_last(&self) -> Option<u64> {
+        self.minimized.last().copied()
+    }
+
+    /// 最小化节点 id（`None` = 没有任何最小化）
+    pub fn minimized_leaf(&self) -> Option<u64> {
+        self.minimized_last()
+    }
+
+    /// 最小化节点 id(窗口模式/测试别名;多个时给最近那个)
     pub fn minimized(&self) -> Option<u64> {
-        self.minimized
+        self.minimized_last()
     }
 
     /// 缩放中的叶子 id(窗口模式/测试别名)
@@ -1179,12 +1414,13 @@ impl LayoutTree {
                     let first = parse(node.get("first")?, live);
                     let second = parse(node.get("second")?, live);
                     match (first, second) {
-                        (Some(f), Some(s)) => Some(LayoutNode::Split {
+                        (Some(f), Some(s)) => Some(group(
+                            node.get("id").and_then(|i| i.as_u64()).unwrap_or(u64::MAX),
                             dir,
-                            ratio: ratio.clamp(0.05, 0.95),
-                            first: Box::new(f),
-                            second: Box::new(s),
-                        }),
+                            ratio.clamp(0.05, 0.95),
+                            f,
+                            s,
+                        )),
                         (Some(f), None) => Some(f),
                         (None, Some(s)) => Some(s),
                         (None, None) => None,
@@ -1201,6 +1437,37 @@ impl LayoutTree {
             .ok_or_else(|| anyhow::anyhow!("restore_layout: dump 里没有任何仍存在的叶子"))?;
 
         self.root = root;
+
+        // 组 id 修整：老 dump 没有 `id`（占位 u64::MAX）或重复 → 重新分配；
+        // 顺带把 `next_id` 抬到最大已用 id 之上，否则新建的组/叶子会撞已有 id。
+        {
+            let mut used: std::collections::HashSet<u64> = live.clone();
+            let mut next = GROUP_ID_BASE
+                .max(max_group_id(&self.root).saturating_add(1))
+                .max(self.next_group);
+            fn fix(
+                node: &mut LayoutNode,
+                used: &mut std::collections::HashSet<u64>,
+                next: &mut u64,
+            ) {
+                match node {
+                    LayoutNode::Leaf { .. } => {}
+                    LayoutNode::Split {
+                        id, first, second, ..
+                    } => {
+                        if *id == u64::MAX || used.contains(id) {
+                            *id = *next;
+                            *next = next.saturating_add(1);
+                        }
+                        used.insert(*id);
+                        fix(first, used, next);
+                        fix(second, used, next);
+                    }
+                }
+            }
+            fix(&mut self.root, &mut used, &mut next);
+            self.next_group = next;
+        }
 
         // fixed / rail 按 dump 的 leafs 重建(只保留仍存在的 id)
         self.fixed.clear();
@@ -1256,7 +1523,16 @@ impl LayoutTree {
             .and_then(|v| live_of(Some(v)))
             .unwrap_or(first);
         self.zoomed = live_of(dump.get("zoomed").and_then(|v| v.as_u64()));
-        self.minimized = live_of(dump.get("minimized").and_then(|v| v.as_u64()));
+        // minimized 老 dump 是单个数字，新 dump 是数组 —— 两种都吃
+        let min_ids: Vec<u64> = match dump.get("minimized") {
+            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_u64()).collect(),
+            Some(v) => v.as_u64().into_iter().collect(),
+            None => Vec::new(),
+        };
+        self.minimized = min_ids
+            .into_iter()
+            .filter(|id| find_node(&self.root, *id).is_some())
+            .collect();
         Ok(())
     }
 
@@ -1276,12 +1552,14 @@ impl LayoutTree {
                     "rail": Some(*id) == rail,
                 }),
                 LayoutNode::Split {
+                    id,
                     dir,
                     ratio,
                     first,
                     second,
                 } => serde_json::json!({
                     "type": "split",
+                    "id": id,
                     "dir": match dir { SplitDir::H => "h", SplitDir::V => "v" },
                     "ratio": ratio,
                     "first": dump_node(first, fixed, rail),
@@ -1315,7 +1593,7 @@ impl LayoutTree {
             tree: dump_node(&self.root, fixed, rail),
             active: self.active,
             zoomed: self.zoomed,
-            minimized: self.minimized,
+            minimized: self.minimized.clone(),
             floats: self.floats.clone(),
             stacks: self.stacks.values().cloned().collect(),
             leafs,
@@ -1362,6 +1640,8 @@ impl LayoutTree {
 
     pub fn render(&mut self, area: Rect, surface: &mut tui::buffer::Buffer, cx: &mut Context) {
         if let Some(zoomed) = self.zoomed {
+            // zoom 期间整棵树不在布局里 ⇒ 组几何作废（`group_rect` 查不到比查到假的好）
+            self.group_rects.clear();
             // zoom 保留 rail:rail 占边缘窄条,zoomed 占其余 main 区
             if let Some((rid, left)) = self.rail_edge() {
                 let share = self.rail_share().clamp(0.05, 0.9);
@@ -1406,9 +1686,14 @@ impl LayoutTree {
             }
         }
         let mut rects = Vec::new();
-        // 浮动/最小化叶子不占布局空间（其余叶子占满，无 dock 位置留白）
+        let mut groups = Vec::new();
+        // 浮动/最小化节点不占布局空间（其余叶子占满，无 dock 位置留白）
         let skip = self.layout_skip_ids();
-        layout_node(&self.root, area, &mut rects, &skip, self.minimized);
+        layout_node(&self.root, area, &mut rects, &mut groups, &skip);
+        self.group_rects.clear();
+        for (id, r) in &groups {
+            self.group_rects.insert(*id, *r);
+        }
         // 活动叶子（事件路由目标）：画高亮边框（内容 inset 1 格；浮窗已有自身边框不重复）
         let focus = if !self.floats.is_empty() || self.zoomed.is_some() {
             None
@@ -1474,24 +1759,33 @@ impl LayoutTree {
                 }
             }
         }
-        // 最小化叶子：底部一条标题横条（最上层）
-        if let Some(mid) = self.minimized {
-            if let Some(comp) = self.components.get(&mid) {
-                let title = short_type_name(comp.type_name());
-                let style = cx.editor.theme.get("ui.popup");
-                let y = area.y + area.height.saturating_sub(1);
-                let text = format!("─ {title} ─");
-                let chars: Vec<char> = text.chars().collect();
-                for x in 0..area.width {
-                    let ch = if (x as usize) < chars.len() {
-                        chars[x as usize]
-                    } else {
-                        '─'
-                    };
-                    if let Some(cell) = surface.get_mut(area.x + x, y) {
-                        cell.set_symbol(&ch.to_string());
-                        cell.set_style(style);
-                    }
+        // 最小化的节点：底部一条标题横条（多条从下往上叠；最上层）
+        let bar_style = cx.editor.theme.get("ui.popup");
+        for (i, mid) in self.minimized.iter().enumerate() {
+            let label = match find_node(&self.root, *mid) {
+                Some(LayoutNode::Leaf { .. }) => self
+                    .components
+                    .get(mid)
+                    .map(|c| short_type_name(c.type_name()).to_string())
+                    .unwrap_or_default(),
+                Some(node) => format!("组 {} 窗", count_leaves(node)),
+                None => continue, // 节点已不在树里（关掉了）
+            };
+            let y = area.y + area.height.saturating_sub(1 + i as u16);
+            if y < area.y {
+                break;
+            }
+            let text = format!("─ {label} ─");
+            let chars: Vec<char> = text.chars().collect();
+            for x in 0..area.width {
+                let ch = if (x as usize) < chars.len() {
+                    chars[x as usize]
+                } else {
+                    '─'
+                };
+                if let Some(cell) = surface.get_mut(area.x + x, y) {
+                    cell.set_symbol(&ch.to_string());
+                    cell.set_style(bar_style);
                 }
             }
         }
@@ -1802,6 +2096,131 @@ fn first_leaf_skipping(node: &LayoutNode, skip: Option<u64>) -> Option<u64> {
     }
 }
 
+/// 任意节点的 id（叶子 → 叶子 id；组 → 组 id）
+fn node_id(node: &LayoutNode) -> u64 {
+    match node {
+        LayoutNode::Leaf { id } => *id,
+        LayoutNode::Split { id, .. } => *id,
+    }
+}
+
+/// 按 id 找节点（叶子或组）
+fn find_node(node: &LayoutNode, id: u64) -> Option<&LayoutNode> {
+    match node {
+        LayoutNode::Leaf { id: lid } if *lid == id => Some(node),
+        LayoutNode::Split {
+            id: gid,
+            first,
+            second,
+            ..
+        } => {
+            if *gid == id {
+                Some(node)
+            } else {
+                find_node(first, id).or_else(|| find_node(second, id))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn find_node_mut(node: &mut LayoutNode, id: u64) -> Option<&mut LayoutNode> {
+    let self_is_target = match &*node {
+        LayoutNode::Leaf { id: lid } => *lid == id,
+        LayoutNode::Split { id: gid, .. } => *gid == id,
+    };
+    if self_is_target {
+        return Some(node);
+    }
+    match node {
+        LayoutNode::Leaf { .. } => None,
+        LayoutNode::Split { first, second, .. } => {
+            find_node_mut(first, id).or_else(|| find_node_mut(second, id))
+        }
+    }
+}
+
+/// `outer` 这棵子树里是否有 `inner`（含 outer == inner）
+fn node_contains(node: &LayoutNode, outer: u64, inner: u64) -> bool {
+    if outer == inner {
+        return find_node(node, outer).is_some();
+    }
+    find_node(node, outer).is_some_and(|n| find_node(n, inner).is_some())
+}
+
+/// 子树里的叶子数（组折叠横条的标签用）
+fn count_leaves(node: &LayoutNode) -> usize {
+    match node {
+        LayoutNode::Leaf { .. } => 1,
+        LayoutNode::Split { first, second, .. } => count_leaves(first) + count_leaves(second),
+    }
+}
+
+/// 树里出现过的最大**组** id（restore 后抬 `next_group`，否则新组会撞已有 id）
+fn max_group_id(node: &LayoutNode) -> u64 {
+    match node {
+        LayoutNode::Leaf { .. } => 0,
+        LayoutNode::Split {
+            id, first, second, ..
+        } => (*id).max(max_group_id(first)).max(max_group_id(second)),
+    }
+}
+
+/// 把 id 匹配的节点整体取出（原位留一个 `u64::MAX` 占位叶子），配合 [`fill_placeholder`]。
+fn take_node(node: &mut LayoutNode, target: u64) -> Option<LayoutNode> {
+    match node {
+        LayoutNode::Leaf { id } if *id == target => {
+            Some(std::mem::replace(node, LayoutNode::Leaf { id: u64::MAX }))
+        }
+        LayoutNode::Split {
+            id, first, second, ..
+        } => {
+            if *id == target {
+                return Some(std::mem::replace(node, LayoutNode::Leaf { id: u64::MAX }));
+            }
+            take_node(first, target).or_else(|| take_node(second, target))
+        }
+        _ => None,
+    }
+}
+
+/// 把占位叶子（`u64::MAX`）换成 `new`。
+fn fill_placeholder(node: &mut LayoutNode, new: LayoutNode) -> bool {
+    fn walk(node: &mut LayoutNode, slot: &mut Option<LayoutNode>) -> bool {
+        match node {
+            LayoutNode::Leaf { id } if *id == u64::MAX => match slot.take() {
+                Some(n) => {
+                    *node = n;
+                    true
+                }
+                None => false,
+            },
+            LayoutNode::Split { first, second, .. } => walk(first, slot) || walk(second, slot),
+            _ => false,
+        }
+    }
+    walk(node, &mut Some(new))
+}
+
+/// 递归把所有分界设成等分（跳过直接挨着 rail 的那一层，否则侧栏宽度会被抹平）
+fn equalize_subtree(node: &mut LayoutNode, rail: Option<u64>) {
+    if let LayoutNode::Split {
+        ratio,
+        first,
+        second,
+        ..
+    } = node
+    {
+        let touches_rail = matches!(&**first, LayoutNode::Leaf { id } if Some(*id) == rail)
+            || matches!(&**second, LayoutNode::Leaf { id } if Some(*id) == rail);
+        if !touches_rail {
+            *ratio = 0.5;
+        }
+        equalize_subtree(first, rail);
+        equalize_subtree(second, rail);
+    }
+}
+
 fn contains_leaf(node: &LayoutNode, target: u64) -> bool {
     match node {
         LayoutNode::Leaf { id } => *id == target,
@@ -1817,7 +2236,8 @@ pub struct LayoutDump {
     pub tree: serde_json::Value,
     pub active: u64,
     pub zoomed: Option<u64>,
-    pub minimized: Option<u64>,
+    /// 最小化的节点 id（叶子或组；可多个）
+    pub minimized: Vec<u64>,
     /// 浮动 pane 槽位(阶段②;空 = 无浮窗)。只含几何/z/pin,组件由 id 复用。
     pub floats: Vec<FloatSlot>,
     /// 堆叠组(阶段②)。每组 `members[0]` 是锚(持有槽位、也是当前显示的)。
@@ -1933,7 +2353,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         // 未浮动：终端占底部，编辑器只剩上部
         let mut rects = Vec::new();
-        layout_node(&tree.root, area, &mut rects, &[], None);
+        layout_node(&tree.root, area, &mut rects, &mut Vec::new(), &[]);
         assert_eq!(rects.len(), 2);
         let editor_rect = rects.iter().find(|(id, _)| *id == 0).unwrap().1;
         assert!(editor_rect.height < area.height, "未浮动时编辑器被切分");
@@ -1944,8 +2364,8 @@ mod tests {
             &tree.root,
             area,
             &mut rects,
-            &tree.float_ids(),
-            tree.minimized,
+            &mut Vec::new(),
+            &tree.layout_skip_ids(),
         );
         assert_eq!(rects.len(), 1, "浮动叶子不产生布局 rect");
         assert_eq!(rects[0].0, 0);
@@ -2025,7 +2445,13 @@ mod tests {
         tree.resize_leaf_dir(a, SplitDir::V, 0.2);
         tree.equalize(a);
         let mut rects = Vec::new();
-        layout_node(&tree.root, Rect::new(0, 0, 100, 40), &mut rects, &[], None);
+        layout_node(
+            &tree.root,
+            Rect::new(0, 0, 100, 40),
+            &mut rects,
+            &mut Vec::new(),
+            &[],
+        );
         let rect_a = rects.iter().find(|(id, _)| *id == a).unwrap().1;
         let rect_b = rects.iter().find(|(id, _)| *id == b).unwrap().1;
         assert_eq!(rect_a.height, rect_b.height, "equalize 后上下等高");
@@ -2047,7 +2473,13 @@ mod tests {
         // term 增大 0.2：second 侧 → ratio 0.5-0.2=0.3
         assert!(tree.resize_leaf_dir(tid, SplitDir::H, 0.2));
         let mut rects = Vec::new();
-        layout_node(&tree.root, Rect::new(0, 0, 100, 10), &mut rects, &[], None);
+        layout_node(
+            &tree.root,
+            Rect::new(0, 0, 100, 10),
+            &mut rects,
+            &mut Vec::new(),
+            &[],
+        );
         let term_rect = rects.iter().find(|(id, _)| *id == tid).unwrap().1;
         assert_eq!(term_rect.x, 30, "term 占 30%");
         // editor 增大 0.1：first 侧 → ratio 0.3+0.1=0.4
@@ -2148,8 +2580,8 @@ mod tests {
             &tree.root,
             area,
             &mut rects,
-            &tree.float_ids(),
-            tree.minimized,
+            &mut Vec::new(),
+            &tree.layout_skip_ids(),
         );
         assert_eq!(rects.len(), 1, "minimized 叶子不产生布局 rect");
         assert_eq!(rects[0].1, area, "其余叶子占满整个区域");
@@ -2161,10 +2593,176 @@ mod tests {
             &tree.root,
             area,
             &mut rects,
-            &tree.float_ids(),
-            tree.minimized,
+            &mut Vec::new(),
+            &tree.layout_skip_ids(),
         );
         assert_eq!(rects.len(), 2, "恢复后回到原分割");
+    }
+}
+
+// ---- 组（容器节点）单元测试 ----
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use crate::ui::plugin_terminal::PluginTerminal;
+
+    fn term(n: u64) -> Box<dyn Component> {
+        Box::new(PluginTerminal::new(n, n, 80))
+    }
+
+    /// `ed1 | ed2`（左右分）→ 在**根**上切一刀（下方）⇒ term 跨满整宽。
+    /// 这就是"地板上的终端横跨左右两个编辑区"：切的不是叶子，是整棵树。
+    #[test]
+    fn split_at_root_spans_full_width() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        // ed1 | ed2
+        let ed2 = tree
+            .split_side(0, SplitDir::H, false, term(1))
+            .expect("分出 ed2");
+        let area = Rect::new(0, 0, 100, 30);
+        // 旧行为对照：在 ed2 上切，term 只有 ed2 那一列的宽度
+        let mut leafwise = LayoutTree::default();
+        leafwise.set_editor(term(0));
+        let ed2b = leafwise.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        leafwise
+            .split_side(ed2b, SplitDir::V, false, term(2))
+            .unwrap();
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
+            v
+        };
+        let cramped = rects(&leafwise)
+            .into_iter()
+            .find(|(id, _)| *id == 2)
+            .unwrap()
+            .1;
+        assert!(cramped.width < area.width, "叶子切分：term 只有半宽");
+
+        // 新行为：在根上切 → term 整宽
+        let tid = tree
+            .split_at_group(None, SplitDir::V, false, 0.7, term(2))
+            .expect("根上切一刀");
+        let root_rect = rects(&tree)
+            .into_iter()
+            .find(|(id, _)| *id == tid)
+            .unwrap()
+            .1;
+        assert_eq!(root_rect.width, area.width, "term 占满整宽");
+        assert_eq!(root_rect.height, 9, "按 ratio 拿到底部 30% 的高度");
+        // ed1/ed2 还在上面、宽度不变
+        let ed1 = rects(&tree).into_iter().find(|(id, _)| *id == 0).unwrap().1;
+        assert_eq!(ed1.width, 50, "ed1 宽度不变");
+        assert_eq!(ed1.height, 21);
+        assert_eq!(ed2, 1);
+    }
+
+    /// 在**组**上切：区域是该组的包围盒（比如"只把上面那一排"切开）
+    #[test]
+    fn split_at_group_uses_group_box() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        tree.split_at_group(None, SplitDir::V, false, 0.7, term(2))
+            .unwrap();
+        // 现在根 = (上面的组) / term2；找上面那个组
+        let top = tree
+            .group_ids()
+            .into_iter()
+            .find(|g| tree.group_leaves(*g) == vec![0, 1])
+            .expect("上面那排是一个组");
+        let nid = tree
+            .split_at_group(Some(top), SplitDir::V, false, 0.5, term(3))
+            .expect("在组上切");
+        let area = Rect::new(0, 0, 100, 30);
+        let mut v = Vec::new();
+        layout_node(&tree.root, area, &mut v, &mut Vec::new(), &[]);
+        let r = v.iter().find(|(id, _)| *id == nid).unwrap().1;
+        assert_eq!(r.width, 100, "新 pane 跨满那个组的整宽");
+        assert_eq!(v.len(), 4, "4 个叶子都在布局里");
+    }
+
+    /// 组级 equalize：组内所有分界回到等分（旧 `equalize` 只管最内层那一层）
+    #[test]
+    fn equalize_group_flattens_every_split_inside() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let a = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        tree.split_side(a, SplitDir::V, false, term(2)).unwrap();
+        // 根组 = 里面所有叶子的组
+        let root_group = tree.group_ids()[0];
+        let area = Rect::new(0, 0, 100, 40);
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &[]);
+            v.into_iter()
+                .collect::<std::collections::HashMap<u64, Rect>>()
+        };
+        tree.resize_leaf_dir(0, SplitDir::H, 0.3);
+        assert_eq!(rects(&tree)[&0].width, 80, "先被拉宽到 80%");
+        assert!(tree.equalize_node(root_group), "组级 equalize 生效");
+        let after = rects(&tree);
+        assert_eq!(after[&0].width, 50, "根分界回到 50/50");
+        assert_eq!(after[&1].height, after[&2].height, "右列上下也回到等分");
+        assert!(!tree.equalize_node(999), "不存在的 id → false");
+    }
+
+    /// 组级最小化：整组折成一条，兄弟占满；展开原样回来
+    #[test]
+    fn minimize_group_folds_whole_subtree() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let tid = tree
+            .split_at_group(None, SplitDir::V, false, 0.7, term(2))
+            .unwrap();
+        let top = tree
+            .group_ids()
+            .into_iter()
+            .find(|g| tree.group_leaves(*g) == vec![0, 1])
+            .expect("上面那排是一个组");
+        tree.set_minimized(top, true);
+        assert_eq!(tree.minimized_ids(), &[top]);
+        let area = Rect::new(0, 0, 100, 30);
+        let mut v = Vec::new();
+        layout_node(
+            &tree.root,
+            area,
+            &mut v,
+            &mut Vec::new(),
+            &tree.layout_skip_ids(),
+        );
+        assert_eq!(v.len(), 1, "整组不占布局");
+        assert_eq!(v[0].0, tid, "只剩底部的 term");
+        assert_eq!(v[0].1, area, "它占满整个区域");
+        // 展开
+        tree.set_minimized(top, false);
+        assert!(tree.minimized_ids().is_empty());
+        let mut v = Vec::new();
+        layout_node(&tree.root, area, &mut v, &mut Vec::new(), &[]);
+        assert_eq!(v.len(), 3, "三个叶子都回来了");
+    }
+
+    /// 节点查询：kind / children / contains，以及"组 id 不与叶子 id 撞"
+    #[test]
+    fn node_kind_and_children() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let groups = tree.group_ids();
+        assert_eq!(groups.len(), 1, "一次切分产生一个组");
+        let g = groups[0];
+        assert!(g >= GROUP_ID_BASE, "组 id 走独立号段");
+        assert_eq!(tree.node_kind(g), Some(NodeKind::Group));
+        assert_eq!(tree.node_kind(0), Some(NodeKind::Leaf));
+        assert_eq!(tree.node_kind(4242), None);
+        assert_eq!(tree.node_kind(b), Some(NodeKind::Leaf));
+        assert_eq!(tree.group_children(g), Some(vec![0, b]));
+        assert_eq!(tree.group_leaves(g), vec![0, b]);
+        assert!(tree.node_contains(g, b), "组包含它的叶子");
+        assert!(!tree.node_contains(b, g), "叶子不包含组");
     }
 }
 
@@ -2463,7 +3061,7 @@ mod rail_tests {
         let area = Rect::new(0, 0, 100, 30);
         let rects_of = |t: &LayoutTree| -> std::collections::HashMap<u64, Rect> {
             let mut v = Vec::new();
-            layout_node(&t.root, area, &mut v, &t.layout_skip_ids(), t.minimized);
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
             v.into_iter().collect()
         };
         let before = rects_of(&tree);
@@ -2556,8 +3154,8 @@ mod rail_tests {
             &tree.root,
             Rect::new(0, 0, 100, 30),
             &mut v,
+            &mut Vec::new(),
             &tree.layout_skip_ids(),
-            tree.minimized,
         );
         assert_eq!(v.len(), 2, "解散后两叶各占自己的位置");
     }

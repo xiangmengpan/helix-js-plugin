@@ -489,3 +489,109 @@ async fn insert_mode_exemption_with_ctrl_g_exception() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// Pane 模式的 `D`/`R`：**在整个区域上**切一刀（不是切当前窗口）⇒
+/// `ed1|ed2` 之上再开一个窗口时，它横跨整宽（zellij/tmux 里要 `split -f` 才有的形状）。
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_cap_d_splits_full_width() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let mut app = AppBuilder::new().with_file(&file, None).build()?;
+
+    // ed1 | ed2（两次叶子切分；`C-p` 是开关键，进模式后直接按后续键）
+    pump(&mut app, "<C-p>r").await?;
+    pump(&mut app, "h").await?; // 焦点回左叶
+    pump(&mut app, "r").await?; // 左叶再切一次 → 三个窗口
+    assert_eq!(app.compositor.layout_tree().leaf_ids().len(), 3);
+
+    // 现在在**根**上切一刀：新窗口贴在底边、横跨整宽
+    pump(&mut app, "D").await?;
+    let new_leaf = app.compositor.layout_tree().active();
+    pump(&mut app, "<esc>").await?; // 退出 Pane 模式（不影响布局）
+                                    // 渲染一帧才知道几何
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+
+    let rect = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(new_leaf)
+        .expect("新窗口有几何");
+    let mut union = helix_view::graphics::Rect::new(u16::MAX, u16::MAX, 0, 0);
+    for id in app.compositor.layout_tree().leaf_ids() {
+        let r = app.compositor.layout_tree().leaf_rect(id).unwrap();
+        union.x = union.x.min(r.x);
+        union.y = union.y.min(r.y);
+        union.width = union.width.max(r.x + r.width);
+        union.height = union.height.max(r.y + r.height);
+    }
+    assert_eq!(
+        rect.width, union.width,
+        "D 切出来的窗口必须横跨整个区域（宽 {} vs 总宽 {}）",
+        rect.width, union.width
+    );
+    assert_eq!(rect.y + rect.height, union.y + union.height, "它在底边");
+    // 上面那排三个窗口都还在
+    assert_eq!(app.compositor.layout_tree().leaf_ids().len(), 4);
+    Ok(())
+}
+
+/// 组级操作：`pane.list()` 里有组条目；整组最小化后兄弟占满整个区域。
+#[tokio::test(flavor = "multi_thread")]
+async fn groups_are_listed_and_can_be_minimized() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let mut app = AppBuilder::new().with_file(&file, None).build()?;
+
+    pump(&mut app, "<C-p>r").await?; // ed1 | ed2
+    pump(&mut app, "D").await?; // 下面整宽的新窗口
+    let bottom = app.compositor.layout_tree().active();
+    pump(&mut app, "<esc>").await?;
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+
+    // 上面那排是一个组
+    let groups = app.compositor.layout_tree().group_ids();
+    assert!(!groups.is_empty(), "切分产生了组");
+    let top = groups
+        .into_iter()
+        .find(|g| {
+            let leaves = app.compositor.layout_tree().group_leaves(*g);
+            leaves.len() == 2 && !leaves.contains(&bottom)
+        })
+        .expect("上面那排是一个组");
+    let top_rect = app
+        .compositor
+        .layout_tree()
+        .group_rect(top)
+        .expect("组有包围盒");
+    let bottom_rect = app.compositor.layout_tree().leaf_rect(bottom).unwrap();
+    assert_eq!(
+        top_rect.width, bottom_rect.width,
+        "组与底窗同宽（都是整宽）"
+    );
+
+    // 整组最小化 → 那个组不占布局，底部窗口吃满整个区域
+    app.compositor.minimize_leaf(top, true, None);
+    render_rows(&mut app, area);
+    let bottom_after = app.compositor.layout_tree().leaf_rect(bottom).unwrap();
+    assert_eq!(
+        (bottom_after.x, bottom_after.y, bottom_after.width),
+        (area.x, area.y, area.width),
+        "整组折成一条后，底部窗口占满整个区域"
+    );
+    assert_eq!(app.compositor.layout_tree().minimized_ids(), &[top]);
+
+    // 展开：上层回到原样
+    app.compositor.minimize_leaf(top, false, None);
+    render_rows(&mut app, area);
+    assert!(app.compositor.layout_tree().minimized_ids().is_empty());
+    let top_leaf = app.compositor.layout_tree().group_leaves(top)[0];
+    assert!(
+        app.compositor.layout_tree().leaf_rect(top_leaf).is_some(),
+        "展开后组里的叶子又有几何了"
+    );
+    Ok(())
+}
