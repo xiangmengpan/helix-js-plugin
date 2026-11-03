@@ -14,6 +14,84 @@ use helix_term::ui::PluginPanel;
 #[cfg(windows)]
 #[allow(unused_imports)]
 use crossterm::event::{Event, KeyEvent};
+#[cfg(not(windows))]
+use termina::event::Event;
+
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
+/// 发一次鼠标左键按下（点击）并跑一轮事件循环
+async fn pump_mouse_down(app: &mut Application, col: u16, row: u16) -> anyhow::Result<()> {
+    #[cfg(not(windows))]
+    let mouse = termina::event::MouseEvent {
+        kind: termina::event::MouseEventKind::Down(termina::event::MouseButton::Left),
+        column: col,
+        row,
+        modifiers: termina::event::Modifiers::NONE,
+    };
+    #[cfg(windows)]
+    let mouse = crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: col,
+        row,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(Ok(Event::Mouse(mouse)))?;
+    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx))
+        .await;
+    Ok(())
+}
+
+/// 鼠标点击换布局焦点（规格 §4.1：换焦点 + 保持当前模式）。
+/// 回归：此前 Down 事件只派发 JS 组件事件，布局焦点从不跟随 ⇒ 点击落在非活动叶子时
+/// 事件被编辑器叶子兜底消费：**光标跑到点击处、聚焦边框留在原叶子**。
+#[tokio::test(flavor = "multi_thread")]
+async fn mouse_click_moves_layout_focus() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app); // active = 1（右侧面板）
+    let area = app.compositor.area();
+    render_rows(&mut app, area); // leaf_rects 由渲染填：没画过就没几何
+    let left = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(0)
+        .expect("左叶有几何");
+    let right = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(1)
+        .expect("右叶有几何");
+    let (lx, ly) = (left.x + left.width / 2, left.y + left.height / 2);
+    let (rx, ry) = (right.x + right.width / 2, right.y + right.height / 2);
+
+    // 点编辑器区域 → 焦点回 0（此前会停在 1）
+    pump_mouse_down(&mut app, lx, ly).await?;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "点编辑器区域，焦点必须跟过来"
+    );
+
+    // 点面板区域 → 焦点到 1
+    pump_mouse_down(&mut app, rx, ry).await?;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        1,
+        "点面板区域，焦点必须跟过来"
+    );
+
+    // 模式保持不变（zellij 语义：换焦点不等于换模式）
+    pump(&mut app, "<C-p>").await?;
+    assert_eq!(app.compositor.pane_mode(), PaneMode::Pane, "已进 Pane 模式");
+    pump_mouse_down(&mut app, lx, ly).await?;
+    assert_eq!(app.compositor.layout_tree().active(), 0, "点击换焦点");
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Pane,
+        "鼠标点击不退出当前模式"
+    );
+    Ok(())
+}
 
 /// Pane 模式:`w`/`e` 切换浮动态(阶段② 接通),`i` 对浮窗 pin
 #[tokio::test(flavor = "multi_thread")]

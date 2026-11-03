@@ -96,6 +96,10 @@ const local = ev.y - p.area.y;   // 组件级鼠标坐标 → 面板内第几行
 `C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll。
 旧的全局 `C-w` 单模式**已删除**。`layout_fix(id, true)` 固定叶子(免疫交换/关闭/最小化)。
 
+**鼠标点击 = 换布局焦点**(保持当前模式;`focused` 字段与聚焦边框都跟着走)。两个例外:
+点击落在浮窗上(归浮窗,z 序路由)与 zoom 期间(`leaf_rects` 还是 zoom 前的旧几何)
+一律不换焦点 —— 见 `LayoutTree::focus_target_at`。
+
 ### 布局序列化
 
 ```js

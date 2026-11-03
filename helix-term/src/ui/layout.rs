@@ -1107,6 +1107,26 @@ impl LayoutTree {
             .map(|(id, _)| *id)
     }
 
+    /// 鼠标命中 → "这次点击该不该换焦点",是则给出目标叶子 id。
+    ///
+    /// 与 [`Self::leaf_id_at`] 的区别在于它排除两种情况:
+    /// - **浮窗盖住的地方**:点击归浮窗(事件按 z 路由),把焦点送给被盖住的平铺叶子是反直觉的;
+    /// - **zoom 期间**:`leaf_rects` 还是上一帧(未 zoom)的几何,拿它换焦点会把用户
+    ///   甩到一个此刻根本看不见的叶子上。
+    pub fn focus_target_at(&self, area: Rect, x: u16, y: u16) -> Option<u64> {
+        if self.zoomed.is_some() {
+            return None;
+        }
+        let in_float = self.floats().iter().any(|f| {
+            let r = f.rect_of(area);
+            x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+        });
+        if in_float {
+            return None;
+        }
+        self.leaf_id_at(x, y)
+    }
+
     /// 某叶子的**绝对**屏幕矩形(最近一次渲染的几何;未渲染过 → None)。
     /// 与 `leaf_id_at` 同一份数据 ⇒ 插件拿到的 `pane.list()[i].area` 与鼠标坐标同系。
     pub fn leaf_rect(&self, id: u64) -> Option<Rect> {
@@ -1832,6 +1852,48 @@ fn short_type_name(name: &str) -> &str {
 mod tests {
     use super::*;
     use crate::ui::plugin_terminal::PluginTerminal;
+
+    /// 鼠标点击换焦点的排除规则：浮窗盖住的点、zoom 期间一律不换（否则焦点被送到
+    /// 被盖住的叶子，或送进一个此刻根本看不见的叶子）。
+    #[test]
+    fn focus_target_at_skips_floats_and_zoom() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(Box::new(PluginTerminal::new(0, 0, 80)));
+        let tid = tree
+            .split_side(
+                0,
+                SplitDir::H,
+                false,
+                Box::new(PluginTerminal::new(1, 1, 80)),
+            )
+            .unwrap();
+        // 渲染过的几何（leaf_rects 平时由 render 填）
+        tree.leaf_rects.insert(0, Rect::new(0, 0, 40, 24));
+        tree.leaf_rects.insert(tid, Rect::new(40, 0, 40, 24));
+        let area = Rect::new(0, 0, 80, 24);
+
+        assert_eq!(tree.focus_target_at(area, 10, 5), Some(0), "落在左叶");
+        assert_eq!(tree.focus_target_at(area, 50, 5), Some(tid), "落在右叶");
+        assert_eq!(tree.focus_target_at(area, 200, 200), None, "落在树外");
+
+        // 浮窗盖住中心：“底下压着哪个叶子都不重要，焦点不该跟着点击跑”
+        tree.set_float(tid);
+        let fr = tree.floats()[0].rect_of(area);
+        assert_eq!(
+            tree.focus_target_at(area, fr.x + fr.width / 2, fr.y + fr.height / 2),
+            None,
+            "落在浮窗上不换平铺叶子的焦点"
+        );
+
+        // zoom 期间 leaf_rects 是上一帧（未 zoom）的几何：不能用它换焦点
+        tree.unfloat();
+        tree.zoom(0);
+        assert_eq!(
+            tree.focus_target_at(area, 50, 5),
+            None,
+            "zoom 时不拿旧几何换焦点"
+        );
+    }
 
     #[test]
     fn remove_clears_float() {

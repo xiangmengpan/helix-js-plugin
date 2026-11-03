@@ -536,11 +536,21 @@ impl Compositor {
             }
         }
 
-        // 鼠标点击命中 → JS 视图层 component-event（标签条/有视图回调的叶子）
+        // 鼠标点击命中 → 换布局焦点（规格 §4.1：换焦点、保持当前模式）+ JS 视图层 component-event
         if let Event::Mouse(mouse) = event {
             use helix_view::input::MouseEventKind;
             if let MouseEventKind::Down(_) = mouse.kind {
                 let (x, y) = (mouse.column, mouse.row);
+                // 点哪儿聚焦哪儿。此前这里只派发 JS 组件事件，布局焦点从不跟随 ⇒ 点击落在
+                // 非活动叶子时事件被编辑器叶子兜底消费：**光标跑到点击处、聚焦边框留在原叶子**。
+                // 浮窗/zoom 的排除规则在 `focus_target_at` 里。
+                if let Some(id) = self.main_tree.focus_target_at(self.area, x, y) {
+                    if self.main_tree.active() != id {
+                        self.main_tree.focus(id);
+                        self.sync_editor_focus(cx.editor);
+                        self.sync_layout_cache(cx.js.as_deref_mut());
+                    }
+                }
                 // 标签条：顶部 1 行（有视图回调时）
                 if helix_js::has_component_render(TABBAR_ID)
                     && y == self.area.y
