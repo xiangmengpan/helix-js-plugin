@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-0e93f4e8.js";
+            window.path_to_searchindex_js = "searchindex-9a8556d8.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -208,6 +208,7 @@
 <tr><td><code>:buffer-close-all!</code>, <code>:bca!</code>, <code>:bcloseall!</code></td><td>Force close all buffers ignoring unsaved changes without quitting.</td></tr>
 <tr><td><code>:buffer-next</code>, <code>:bn</code>, <code>:bnext</code></td><td>Goto next buffer.</td></tr>
 <tr><td><code>:buffer-previous</code>, <code>:bp</code>, <code>:bprev</code></td><td>Goto previous buffer.</td></tr>
+<tr><td><code>:read-only</code>, <code>:readonly</code></td><td>Toggle forced read-only (edits are blocked) for the current buffer, or <code>all</code> open buffers.</td></tr>
 <tr><td><code>:write</code>, <code>:w</code></td><td>Write changes to disk. Accepts an optional path (:write some/path.txt)</td></tr>
 <tr><td><code>:write!</code>, <code>:w!</code></td><td>Force write changes to disk creating necessary subdirectories. Accepts an optional path (:write! some/path.txt)</td></tr>
 <tr><td><code>:write-buffer-close</code>, <code>:wbc</code></td><td>Write changes to disk and closes the buffer. Accepts an optional path (:write-buffer-close some/path.txt)</td></tr>
@@ -257,6 +258,21 @@
 <tr><td><code>:tree-sitter-scopes</code></td><td>Display tree sitter scopes, primarily for theming and development.</td></tr>
 <tr><td><code>:tree-sitter-highlight-name</code></td><td>Display name of tree-sitter highlight scope under the cursor.</td></tr>
 <tr><td><code>:tree-sitter-layers</code></td><td>Display language names of tree-sitter injection layers under the cursor.</td></tr>
+<tr><td><code>:debug-toggle-breakpoint</code>, <code>:dbgb</code></td><td>Toggle a breakpoint on the current line.</td></tr>
+<tr><td><code>:debug-continue</code>, <code>:dbgc</code></td><td>Continue the debuggee (resume execution).</td></tr>
+<tr><td><code>:debug-next</code>, <code>:dbgn</code></td><td>Step over (next).</td></tr>
+<tr><td><code>:debug-step-in</code>, <code>:dbgi</code></td><td>Step in.</td></tr>
+<tr><td><code>:debug-step-out</code>, <code>:dbgo</code></td><td>Step out.</td></tr>
+<tr><td><code>:debug-terminate</code>, <code>:dbgq</code></td><td>Terminate the debug session.</td></tr>
+<tr><td><code>:debug-restart</code></td><td>Restart the debug session.</td></tr>
+<tr><td><code>:debug-variables</code>, <code>:dbgv</code></td><td>Show variables of the current stack frame.</td></tr>
+<tr><td><code>:debug-sessions</code></td><td>Switch the active debug session.</td></tr>
+<tr><td><code>:lint</code></td><td>Run installed linter recipes for the current file and show their diagnostics (<code>lint &lt;name&gt;</code> for one).</td></tr>
+<tr><td><code>:keys</code>, <code>:keymap</code></td><td>Open the full keymap of the current layer as a buffer (same source as which-key hints).</td></tr>
+<tr><td><code>:debug-log</code></td><td>Open the recent DAP protocol transcript in a scratch buffer (<code>debug-log 50</code>, <code>debug-log clear</code>).</td></tr>
+<tr><td><code>:debug-run-to-cursor</code></td><td>Continue until the line under the cursor (temporary breakpoint, auto-removed on hit).</td></tr>
+<tr><td><code>:debug-eval-under-cursor</code></td><td>Evaluate the identifier under the cursor and show the result in the status line.</td></tr>
+<tr><td><code>:debug-build</code>, <code>:dbgb</code></td><td>Build the debug target (auto-detected: cargo/cmake/make/cc/go); no session is started.</td></tr>
 <tr><td><code>:debug-start</code>, <code>:dbg</code></td><td>Start a debug session from a given template with given parameters.</td></tr>
 <tr><td><code>:debug-remote</code>, <code>:dbg-tcp</code></td><td>Connect to a debug adapter by TCP address and start a debugging session from a given template with given parameters.</td></tr>
 <tr><td><code>:debug-eval</code></td><td>Evaluate expression in current debug context.</td></tr>
@@ -276,6 +292,8 @@
 <tr><td><code>:config-open</code></td><td>Open the user config.toml file.</td></tr>
 <tr><td><code>:config-open-workspace</code></td><td>Open the workspace config.toml file.</td></tr>
 <tr><td><code>:log-open</code></td><td>Open the helix log file.</td></tr>
+<tr><td><code>:js-log</code></td><td>Open the plugin log in a scratch buffer. Optional level (error</td></tr>
+<tr><td><code>:js-log-clear</code></td><td>Clear the plugin log buffer.</td></tr>
 <tr><td><code>:insert-output</code></td><td>Run shell command, inserting output before each selection.</td></tr>
 <tr><td><code>:append-output</code></td><td>Run shell command, appending output after each selection.</td></tr>
 <tr><td><code>:pipe</code>, <code>:|</code></td><td>Pipe each selection to the shell command.</td></tr>
@@ -296,6 +314,7 @@
 <tr><td><code>:workspace-untrust</code></td><td>Revoke the current workspace’s trust grant or exclusion.</td></tr>
 <tr><td><code>:workspace-exclude</code></td><td>Mark the current workspace as never-prompt. Never prompts for trust again.</td></tr>
 <tr><td><code>:plugin-reload</code></td><td>Reload all loaded JavaScript plugins.</td></tr>
+<tr><td><code>:plugin-unload</code></td><td>Unload a single JavaScript plugin (its commands/keymaps/hooks/theme overrides go away).</td></tr>
 <tr><td><code>:plugin-load</code></td><td>Load a JavaScript plugin file.</td></tr>
 <tr><td><code>:server</code></td><td>Manage LSP/DAP/linter/formatter servers (list</td></tr>
 <tr><td><code>:js-permission</code></td><td>Plugin capabilities (C-2): list</td></tr>
@@ -312,6 +331,10 @@
 </thead>
 <tbody>
 <tr><td><code>no_op</code></td><td>Do nothing</td><td></td></tr>
+<tr><td><code>debug_help</code></td><td>Show debug-mode key hints</td><td>normal: <code>&lt;space&gt;G?</code>, select: <code>&lt;space&gt;G?</code></td></tr>
+<tr><td><code>keys_help</code></td><td>Show the full keymap of the current layer (:keys)</td><td>normal: <code>&lt;space&gt;K</code>, select: <code>&lt;space&gt;K</code></td></tr>
+<tr><td><code>dap_run_to_cursor_key</code></td><td>Continue until the line under the cursor</td><td>normal: <code>&lt;space&gt;GR</code>, select: <code>&lt;space&gt;GR</code></td></tr>
+<tr><td><code>dap_eval_under_cursor_key</code></td><td>Evaluate the identifier under the cursor</td><td>normal: <code>&lt;space&gt;GK</code>, select: <code>&lt;space&gt;GK</code></td></tr>
 <tr><td><code>move_char_left</code></td><td>Move left</td><td>normal: <code>h</code>, <code>&lt;left&gt;</code>, insert: <code>&lt;left&gt;</code></td></tr>
 <tr><td><code>move_char_right</code></td><td>Move right</td><td>normal: <code>l</code>, <code>&lt;right&gt;</code>, insert: <code>&lt;right&gt;</code></td></tr>
 <tr><td><code>move_line_up</code></td><td>Move up</td><td>normal: <code>gk</code></td></tr>
@@ -592,18 +615,19 @@
 <tr><td><code>goto_prev_paragraph</code></td><td>Goto previous paragraph</td><td>normal: <code>[p</code>, select: <code>[p</code></td></tr>
 <tr><td><code>dap_launch</code></td><td>Launch debug target</td><td>normal: <code>&lt;space&gt;Gl</code>, select: <code>&lt;space&gt;Gl</code></td></tr>
 <tr><td><code>dap_restart</code></td><td>Restart debugging session</td><td>normal: <code>&lt;space&gt;Gr</code>, select: <code>&lt;space&gt;Gr</code></td></tr>
-<tr><td><code>dap_toggle_breakpoint</code></td><td>Toggle breakpoint</td><td>normal: <code>&lt;space&gt;Gb</code>, select: <code>&lt;space&gt;Gb</code></td></tr>
+<tr><td><code>dap_toggle_breakpoint</code></td><td>Toggle breakpoint</td><td>normal: <code>&lt;F9&gt;</code>, <code>&lt;space&gt;Gb</code>, select: <code>&lt;F9&gt;</code>, <code>&lt;space&gt;Gb</code></td></tr>
 <tr><td><code>dap_continue</code></td><td>Continue program execution</td><td>normal: <code>&lt;space&gt;Gc</code>, select: <code>&lt;space&gt;Gc</code></td></tr>
-<tr><td><code>dap_pause</code></td><td>Pause program execution</td><td>normal: <code>&lt;space&gt;Gh</code>, select: <code>&lt;space&gt;Gh</code></td></tr>
-<tr><td><code>dap_step_in</code></td><td>Step in</td><td>normal: <code>&lt;space&gt;Gi</code>, select: <code>&lt;space&gt;Gi</code></td></tr>
+<tr><td><code>dap_pause</code></td><td>Pause program execution</td><td>normal: <code>&lt;space&gt;Gp</code>, select: <code>&lt;space&gt;Gp</code></td></tr>
+<tr><td><code>dap_step_in</code></td><td>Step in</td><td>normal: <code>&lt;space&gt;Gs</code>, select: <code>&lt;space&gt;Gs</code></td></tr>
 <tr><td><code>dap_step_out</code></td><td>Step out</td><td>normal: <code>&lt;space&gt;Go</code>, select: <code>&lt;space&gt;Go</code></td></tr>
 <tr><td><code>dap_next</code></td><td>Step to next</td><td>normal: <code>&lt;space&gt;Gn</code>, select: <code>&lt;space&gt;Gn</code></td></tr>
 <tr><td><code>dap_variables</code></td><td>List variables</td><td>normal: <code>&lt;space&gt;Gv</code>, select: <code>&lt;space&gt;Gv</code></td></tr>
-<tr><td><code>dap_terminate</code></td><td>End debug session</td><td>normal: <code>&lt;space&gt;Gt</code>, select: <code>&lt;space&gt;Gt</code></td></tr>
+<tr><td><code>dap_terminate</code></td><td>End debug session</td><td>normal: <code>&lt;space&gt;GT</code>, select: <code>&lt;space&gt;GT</code></td></tr>
 <tr><td><code>dap_edit_condition</code></td><td>Edit breakpoint condition on current line</td><td>normal: <code>&lt;space&gt;G&lt;C-c&gt;</code>, select: <code>&lt;space&gt;G&lt;C-c&gt;</code></td></tr>
 <tr><td><code>dap_edit_log</code></td><td>Edit breakpoint log message on current line</td><td>normal: <code>&lt;space&gt;G&lt;C-l&gt;</code>, select: <code>&lt;space&gt;G&lt;C-l&gt;</code></td></tr>
-<tr><td><code>dap_switch_thread</code></td><td>Switch current thread</td><td>normal: <code>&lt;space&gt;Gst</code>, select: <code>&lt;space&gt;Gst</code></td></tr>
-<tr><td><code>dap_switch_stack_frame</code></td><td>Switch stack frame</td><td>normal: <code>&lt;space&gt;Gsf</code>, select: <code>&lt;space&gt;Gsf</code></td></tr>
+<tr><td><code>dap_switch_thread</code></td><td>Switch current thread</td><td>normal: <code>&lt;space&gt;Gt</code>, select: <code>&lt;space&gt;Gt</code></td></tr>
+<tr><td><code>dap_switch_stack_frame</code></td><td>Switch stack frame</td><td>normal: <code>&lt;space&gt;Gf</code>, select: <code>&lt;space&gt;Gf</code></td></tr>
+<tr><td><code>dap_sessions</code></td><td>Switch debug session</td><td>normal: <code>&lt;space&gt;GS</code>, select: <code>&lt;space&gt;GS</code></td></tr>
 <tr><td><code>dap_enable_exceptions</code></td><td>Enable exception breakpoints</td><td>normal: <code>&lt;space&gt;Ge</code>, select: <code>&lt;space&gt;Ge</code></td></tr>
 <tr><td><code>dap_disable_exceptions</code></td><td>Disable exception breakpoints</td><td>normal: <code>&lt;space&gt;GE</code>, select: <code>&lt;space&gt;GE</code></td></tr>
 <tr><td><code>shell_pipe</code></td><td>Pipe selections through shell command</td><td>normal: <code>|</code>, select: <code>|</code></td></tr>
