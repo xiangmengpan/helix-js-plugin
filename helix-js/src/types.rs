@@ -129,6 +129,9 @@ pub struct OpenTerminalReq {
     pub cmd: String,
     pub side: String,
     pub size: u16,
+    /// 切分目标：`None` = 当前窗口（旧行为）；`Some("root")` = 整窗切一刀；
+    /// `Some("<组 id>")` = 在那个组的区域上切。
+    pub at: Option<String>,
 }
 
 /// 把 PTY 输出块喂给对应终端视图（按 view_id 找层，找不到丢弃）
@@ -264,6 +267,16 @@ pub struct SwapLeafDirReq {
 #[derive(Debug)]
 pub struct EqualizeLeafReq {
     pub id: u64,
+}
+
+/// 把**已有的** pane 搬到指定位置（事后修形；`at`/`dir` 语义与 split 一致）。
+#[derive(Debug)]
+pub struct PaneMoveIntoReq {
+    pub id: u64,
+    /// `"root"` / 组 id 的十进制串 / `None` = 整窗
+    pub at: Option<String>,
+    pub dir: String,
+    pub size: u16,
 }
 
 /// 交换两个叶子的内容（组件引用互换）
@@ -436,6 +449,8 @@ pub enum UiRequest {
     SwapLeafDir(SwapLeafDirReq),
     /// 叶子所在 Split 恢复 50/50
     EqualizeLeaf(EqualizeLeafReq),
+    /// 把已有 pane 搬到指定组/整窗的某一侧（`pane.move_into`）
+    PaneMoveInto(PaneMoveIntoReq),
     /// 交换两个叶子的内容（组件引用互换）
     SwapLeaves(SwapLeavesReq),
     /// 最小化/恢复叶子（渲染为底部标题横条，不占布局）

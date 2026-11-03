@@ -185,3 +185,62 @@ async fn mouse_drag_select_copies_terminal_text() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// `helix.open_terminal({cmd, side:"bottom", size, at:"root"})`：终端**横跨整宽**，
+/// 而不是在当前窗口里再切一刀（用户要的"地板上的 term"）。
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn open_terminal_at_root_spans_full_width() -> anyhow::Result<()> {
+    use helix_term::ui::PluginTerminal;
+    let dir = tempfile::tempdir()?;
+    let plugin = dir.path().join("term_root.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("term-root", { deps: [], permissions: { process: true } });
+        helix.register_command("t-root", () => {
+            // 先把编辑器切成左右两半（两个编辑窗口）
+            helix.split("right", { panel: { render: () => ["ed2"], size: 40 } });
+            // 再在整窗底边开终端
+            helix.open_terminal({ cmd: "cat", side: "bottom", size: 8, at: "root" });
+        });
+        "#,
+    )?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let mut app = AppBuilder::new().with_file(&file, None).build()?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>:t-root<ret>", plugin.display()),
+    )
+    .await?;
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+
+    let tid = app
+        .compositor
+        .layout_tree()
+        .find_leaf_id::<PluginTerminal>(|_| true)
+        .expect("终端叶子存在");
+    let trect = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(tid)
+        .expect("终端有几何");
+    // 所有叶子并集 = tree 区域
+    let mut min_x = u16::MAX;
+    let mut max_x = 0;
+    for id in app.compositor.layout_tree().leaf_ids() {
+        let r = app.compositor.layout_tree().leaf_rect(id).unwrap();
+        min_x = min_x.min(r.x);
+        max_x = max_x.max(r.x + r.width);
+    }
+    assert_eq!(
+        (trect.x, trect.width),
+        (min_x, max_x - min_x),
+        "at:\"root\" 的终端必须横跨整个区域（实得 {:?}）",
+        trect
+    );
+    let _ = app.close().await;
+    Ok(())
+}

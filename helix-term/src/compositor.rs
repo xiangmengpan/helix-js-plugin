@@ -1017,6 +1017,53 @@ impl Compositor {
         self.sync_layout_cache(js);
     }
 
+    /// 把**已有的**叶子搬到指定位置（事后修形）。`target = None` ⇒ 整窗边缘。
+    /// 返回是否搬了。
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_leaf_into(
+        &mut self,
+        id: u64,
+        target: Option<u64>,
+        dir: crate::ui::layout::SplitDir,
+        new_first: bool,
+        new_size: u16,
+        js: Option<&mut helix_js::host::JsHost>,
+    ) -> bool {
+        let total = match target {
+            Some(g) => self
+                .main_tree
+                .group_rect(g)
+                .map(|r| {
+                    if dir == crate::ui::layout::SplitDir::H {
+                        r.width
+                    } else {
+                        r.height
+                    }
+                })
+                .unwrap_or(if dir == crate::ui::layout::SplitDir::H {
+                    self.area.width
+                } else {
+                    self.area.height
+                }),
+            None => {
+                if dir == crate::ui::layout::SplitDir::H {
+                    self.area.width
+                } else {
+                    self.area.height
+                }
+            }
+        };
+        let share = if new_first {
+            new_size as f32 / total.max(1) as f32
+        } else {
+            1.0 - new_size as f32 / total.max(1) as f32
+        };
+        let ratio = share.clamp(0.1, 0.9);
+        let ok = self.main_tree.move_into(id, target, dir, new_first, ratio);
+        self.sync_layout_cache(js);
+        ok
+    }
+
     pub fn area(&self) -> Rect {
         self.area
     }

@@ -463,6 +463,56 @@ pub(crate) fn js_equalize_leaf(
     Ok(JsValue::undefined())
 }
 
+/// `helix.pane.move_into(id, {at, dir, size})`：把已有 pane 搬到指定位置。
+///
+/// `at` 同 `helix.split`：缺省/`"root"` = 整窗边缘，数字 = 组（容器节点）id。
+/// 用来"事后修形"：`ed1 | (ed2/term)` 里那个半宽 term → `move_into(term, {at:"root"})`
+/// 就变成横跨整宽的地板。
+pub(crate) fn js_pane_move_into(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)?;
+    let opts = args.get(1).unwrap_or(&JsValue::undefined()).as_object();
+    let dir = match &opts {
+        Some(o) => obj_opt_str(o, "dir", ctx, "helix.pane.move_into")?,
+        None => None,
+    };
+    let size = match &opts {
+        Some(o) => obj_opt_u16(o, "size", ctx, "helix.pane.move_into")?,
+        None => None,
+    };
+    let at = match &opts {
+        Some(o) => {
+            let v = o.get(JsString::from("at"), ctx)?;
+            if v.is_undefined() || v.is_null() {
+                None
+            } else if v.is_number() {
+                Some(v.to_string(ctx)?.to_std_string_escaped())
+            } else {
+                Some(v.try_js_into::<String>(ctx)?)
+            }
+        }
+        None => None,
+    };
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::PaneMoveInto(PaneMoveIntoReq {
+            id,
+            at,
+            dir: dir.unwrap_or_else(|| "bottom".to_string()),
+            size: size.unwrap_or(10),
+        }));
+    Ok(JsValue::undefined())
+}
+
 /// helix.pane.fix(id, fixed)：设置/取消叶子 fixed 标记
 /// （fixed 叶子不被 swap/resize/close/minimize/equalize，可被焦点穿过）
 pub(crate) fn js_layout_fix(

@@ -192,3 +192,66 @@ async fn js_split_at_root_is_full_width_and_groups_are_listed() -> anyhow::Resul
     );
     Ok(())
 }
+
+/// `helix.pane.move_into`：把已经切在半宽里的 pane 搬到整窗底边（事后修形）。
+const MOVE_INTO_JS: &str = r#"
+let narrow = 0;
+helix.register_command("m-setup", () => {
+    // ed1 | (ed2 / x)：x 只有右半宽的一半
+    helix.split("right", { panel: { render: () => ["p1"], size: 30 } });
+    narrow = helix.split("bottom", { panel: { render: () => ["p2"], size: 6 } });
+});
+helix.register_command("m-diag", () => {
+    const panes = helix.pane.list().filter((p) => p.kind !== "group");
+    const self = panes.find((p) => p.id === narrow);
+    const widest = panes.reduce((m, p) => Math.max(m, p.area.w), 0);
+    helix.echo("narrow:" + (self ? self.area.w : -1) + "," + widest);
+});
+helix.register_command("m-lift", () => {
+    helix.pane.move_into(narrow, { at: "root", dir: "bottom", size: 8 });
+});
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn js_pane_move_into_lifts_nested_pane_to_full_width() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plugin = dir.path().join("move_into.js");
+    std::fs::write(&plugin, MOVE_INTO_JS)?;
+    let mut app = AppBuilder::new().build()?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>:m-setup<ret>", plugin.display()),
+    )
+    .await?;
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+    pump(&mut app, ":m-diag<ret>").await?;
+    let before = status_text(&app);
+    let (narrow_before, widest) = parse_pair(&before);
+    assert!(
+        narrow_before < widest,
+        "前置：它本来是窄的（{narrow_before} < {widest}）: {before:?}"
+    );
+
+    pump(&mut app, ":m-lift<ret>").await?;
+    render_rows(&mut app, area);
+    pump(&mut app, ":m-diag<ret>").await?;
+    let after = status_text(&app);
+    let (narrow_after, widest_after) = parse_pair(&after);
+    assert_eq!(
+        narrow_after, widest_after,
+        "搬到整窗底边后必须横跨整宽: {after:?}"
+    );
+    Ok(())
+}
+
+/// 解析 "narrow:12,120" → (12, 120)
+fn parse_pair(s: &str) -> (u16, u16) {
+    let nums: Vec<u16> = s
+        .trim_start_matches("narrow:")
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+    assert_eq!(nums.len(), 2, "诊断输出格式不对: {s:?}");
+    (nums[0], nums[1])
+}

@@ -562,6 +562,14 @@ pub static API: &[Entry] = &[
     ),
     e(
         Target::Ns("pane"),
+        "move_into",
+        2,
+        crate::layout_api::js_pane_move_into,
+        "js_pane_move_into",
+        &[],
+    ),
+    e(
+        Target::Ns("pane"),
         "resize",
         2,
         crate::layout_api::js_resize_leaf,

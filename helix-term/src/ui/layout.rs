@@ -1163,25 +1163,173 @@ impl LayoutTree {
             Some(t) if self.node_kind(t).is_none() => return None,
             _ => {}
         }
-        let gid = self.next_group_id();
         self.components.insert(new_id, component);
+        if self.wrap_leaf_at(target, new_id, dir, new_first, ratio) {
+            Some(new_id)
+        } else {
+            None
+        }
+    }
+
+    /// 把**已有的**叶子搬到指定位置（事后修形）：`target = None` 贴整窗边缘 /
+    /// `Some(组)` 贴那个组的边缘 / `Some(叶子)` 与那个叶子并排。
+    ///
+    /// 用它能救回"已经切错"的布局：`ed1 | (ed2/term)` 里那个半宽的 term，
+    /// `move_into(term, None, V, false)` 一次就变成横跨整宽的地板。
+    pub fn move_into(
+        &mut self,
+        leaf: u64,
+        target: Option<u64>,
+        dir: SplitDir,
+        new_first: bool,
+        ratio: f32,
+    ) -> bool {
+        if !self.components.contains_key(&leaf) {
+            return false;
+        }
+        // rail/dock 必须是 root 的边缘叶（贴边全高/全宽），搬走会破不变量
+        if self.rail == Some(leaf) || self.dock == Some(leaf) {
+            return false;
+        }
+        // 不能搬进自己/自己的子树
+        if let Some(t) = target {
+            if t == leaf || self.node_contains(leaf, t) {
+                return false;
+            }
+        }
+        // 整棵树只有它一个叶子 ⇒ 没地方可搬
+        if self.leaf_ids().len() < 2 {
+            return false;
+        }
+        // 1) 从原位摘下（父节点收缩成兄弟）
+        prune(&mut self.root, leaf);
+        // 2) 挪到目标位置（与 split 同一个"包一层组"的动作，只是放的是已有叶子）
+        self.wrap_leaf_at(target, leaf, dir, new_first, ratio)
+    }
+
+    /// 把叶子 `leaf`（此刻**不在**树里，或已在树上但仅作为 target 的兄弟）包到
+    /// `target`（None = 整窗）的某一侧。返回是否成功。
+    ///
+    /// 整窗这一档必须**剥掉边缘叶**（rail/dock）：它们的不变量是"恒为 root 的直接子叶"
+    /// （`rail_edge`/`rail_ratio`/`is_dock` 都依赖它），跟着被包进去会让侧栏失去"贴边全高"。
+    fn wrap_leaf_at(
+        &mut self,
+        target: Option<u64>,
+        leaf: u64,
+        dir: SplitDir,
+        new_first: bool,
+        ratio: f32,
+    ) -> bool {
+        if let Some(t) = target {
+            match self.node_kind(t) {
+                // 与某个叶子并排：在它原来的位置切一刀
+                Some(NodeKind::Leaf) => {
+                    let gid = self.next_group_id();
+                    let (a, b) = if new_first { (leaf, t) } else { (t, leaf) };
+                    // 上面已确认 t 是叶子 ⇒ replace_leaf 必定命中
+                    replace_leaf(&mut self.root, t, &|_| {
+                        group(
+                            gid,
+                            dir,
+                            ratio,
+                            LayoutNode::Leaf { id: a },
+                            LayoutNode::Leaf { id: b },
+                        )
+                    });
+                    self.active = leaf;
+                    return true;
+                }
+                None => return false,
+                Some(NodeKind::Group) => {}
+            }
+        }
+
+        // 整窗 / 组：剥掉边缘叶 → 包住 main/组 → 原样挂回
+        let rail = self.rail.and_then(|rid| self.detach_edge(SplitDir::H, rid));
+        let dock = self.dock.and_then(|did| self.detach_edge(SplitDir::V, did));
+        let gid = self.next_group_id();
         let old = match target {
-            Some(t) => take_node(&mut self.root, t)?,
+            Some(t) => match take_node(&mut self.root, t) {
+                Some(n) => n,
+                None => {
+                    // 复原边缘叶，别留下半截状态
+                    if let Some((id, first, share)) = dock {
+                        self.reattach_edge(SplitDir::V, id, first, share);
+                    }
+                    if let Some((id, first, share)) = rail {
+                        self.reattach_edge(SplitDir::H, id, first, share);
+                    }
+                    return false;
+                }
+            },
             None => std::mem::replace(&mut self.root, LayoutNode::Leaf { id: u64::MAX }),
         };
-        let leaf = LayoutNode::Leaf { id: new_id };
         let node = if new_first {
-            group(gid, dir, ratio, leaf, old)
+            group(gid, dir, ratio, LayoutNode::Leaf { id: leaf }, old)
         } else {
-            group(gid, dir, ratio, old, leaf)
+            group(gid, dir, ratio, old, LayoutNode::Leaf { id: leaf })
         };
-        if target.is_none() {
-            self.root = node;
-        } else if !fill_placeholder(&mut self.root, node) {
-            return None; // 理论上不会发生（take_node 一定留了占位）
+        let ok = match target {
+            None => {
+                self.root = node;
+                true
+            }
+            Some(_) => fill_placeholder(&mut self.root, node),
+        };
+        if let Some((id, first, share)) = dock {
+            self.reattach_edge(SplitDir::V, id, first, share);
         }
-        self.active = new_id;
-        Some(new_id)
+        if let Some((id, first, share)) = rail {
+            self.reattach_edge(SplitDir::H, id, first, share);
+        }
+        if ok {
+            self.active = leaf;
+        }
+        ok
+    }
+
+    /// 若 root 恰好是"贴边叶 + 其余"的二分（`dir` 轴向、贴边叶是直接子叶），
+    /// 把 root 收缩为"其余"并返回 `(贴边叶 id, 是否 first 侧, 该侧份额)`。
+    fn detach_edge(&mut self, dir: SplitDir, id: u64) -> Option<(u64, bool, f32)> {
+        let LayoutNode::Split {
+            dir: sd,
+            ratio,
+            first,
+            second,
+            ..
+        } = &mut self.root
+        else {
+            return None;
+        };
+        if *sd != dir {
+            return None;
+        }
+        let is_first = matches!(&**first, LayoutNode::Leaf { id: f } if *f == id);
+        let is_second = matches!(&**second, LayoutNode::Leaf { id: s } if *s == id);
+        if !is_first && !is_second {
+            return None;
+        }
+        let share = if is_first { *ratio } else { 1.0 - *ratio };
+        let sibling = if is_first {
+            std::mem::replace(&mut **second, LayoutNode::Leaf { id: u64::MAX })
+        } else {
+            std::mem::replace(&mut **first, LayoutNode::Leaf { id: u64::MAX })
+        };
+        self.root = sibling;
+        Some((id, is_first, share))
+    }
+
+    /// 把贴边叶重新挂回 root 边缘（与 `register_rail`/`register_dock_bottom` 同形，
+    /// 但不改 `self.rail`/`self.dock`/`active`）。
+    fn reattach_edge(&mut self, dir: SplitDir, id: u64, is_first: bool, share: f32) {
+        let gid = self.next_group_id();
+        let main = std::mem::replace(&mut self.root, LayoutNode::Leaf { id: u64::MAX });
+        let leaf = LayoutNode::Leaf { id };
+        self.root = if is_first {
+            group(gid, dir, share, leaf, main)
+        } else {
+            group(gid, dir, 1.0 - share, main, leaf)
+        };
     }
 
     /// 组级 equalize：把组内**所有**分界恢复成等分（递归 0.5）。
@@ -2743,6 +2891,89 @@ mod group_tests {
         let mut v = Vec::new();
         layout_node(&tree.root, area, &mut v, &mut Vec::new(), &[]);
         assert_eq!(v.len(), 3, "三个叶子都回来了");
+    }
+
+    /// 事后修形：把已经嵌在半宽列里的窗口搬到整窗底边
+    #[test]
+    fn move_into_lifts_nested_pane_to_full_width() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        // ed1 | (ed2 / term)：term 只有右半宽
+        let ed2 = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let term_id = tree.split_side(ed2, SplitDir::V, false, term(2)).unwrap();
+        let area = Rect::new(0, 0, 100, 30);
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
+            v.into_iter()
+                .collect::<std::collections::HashMap<u64, Rect>>()
+        };
+        assert!(rects(&tree)[&term_id].width < area.width, "前提：半宽");
+
+        assert!(tree.move_into(term_id, None, SplitDir::V, false, 0.7));
+        let after = rects(&tree);
+        assert_eq!(after[&term_id].width, 100, "搬到整窗底边后横跨整宽");
+        assert_eq!(after[&term_id].y + after[&term_id].height, 30, "贴底");
+        assert_eq!(tree.active(), term_id, "搬完焦点跟着它");
+        assert_eq!(tree.leaf_ids().len(), 3, "没有叶子丢失");
+        // 原位收缩：ed2 现在独占上面那半边
+        assert_eq!(after[&ed2].height, 21);
+    }
+
+    /// 搬到某个**组**的边缘 / 与某个叶子并排
+    #[test]
+    fn move_into_group_and_sibling() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let c = tree.split_side(b, SplitDir::V, false, term(2)).unwrap();
+        let area = Rect::new(0, 0, 100, 30);
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
+            v.into_iter()
+                .collect::<std::collections::HashMap<u64, Rect>>()
+        };
+        // 把 c 搬到根（整窗）右侧 ⇒ 整高
+        assert!(tree.move_into(c, None, SplitDir::H, false, 0.3));
+        assert_eq!(rects(&tree)[&c].height, 30, "贴右边 ⇒ 整高");
+        // 把 c 再搬去和 0 并排（叶子目标）
+        assert!(tree.move_into(c, Some(0), SplitDir::V, false, 0.5));
+        let r = rects(&tree);
+        assert_eq!(r[&c].width, r[&0].width, "与 0 并排 ⇒ 同宽");
+        // 搬进自己的子树 / 搬 rail / 搬到不存在的目标 ⇒ false
+        assert!(!tree.move_into(c, Some(c), SplitDir::H, false, 0.5));
+        assert!(!tree.move_into(999, None, SplitDir::H, false, 0.5));
+    }
+
+    /// 整窗切分不能把 rail 卷进去：rail 必须仍是 root 的直接子叶（贴边全高）
+    #[test]
+    fn root_split_keeps_rail_as_direct_edge_child() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        tree.register_rail(term(9), true, 0.2);
+        let rid = tree.rail_leaf().expect("有 rail");
+        let area = Rect::new(0, 0, 100, 30);
+        // 整窗切一刀：新窗口横跨**main 区**整宽，rail 仍是整高的一列
+        let tid = tree
+            .split_at_group(None, SplitDir::V, false, 0.7, term(2))
+            .expect("根上切");
+        let mut v = Vec::new();
+        layout_node(
+            &tree.root,
+            area,
+            &mut v,
+            &mut Vec::new(),
+            &tree.layout_skip_ids(),
+        );
+        let r: std::collections::HashMap<u64, Rect> = v.into_iter().collect();
+        assert_eq!(r[&rid].height, 30, "rail 仍占满全高");
+        assert_eq!(r[&tid].x, r[&rid].width, "新窗口在 rail 右侧起");
+        assert_eq!(r[&tid].width, 100 - r[&rid].width, "横跨 main 区整宽");
+        assert!(
+            tree.rail_edge().is_some(),
+            "rail 仍在 root 边缘（rail_edge 可用）"
+        );
     }
 
     /// 节点查询：kind / children / contains，以及"组 id 不与叶子 id 撞"

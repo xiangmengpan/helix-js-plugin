@@ -69,6 +69,14 @@ pub(crate) enum UiOp {
         /// 切分目标（见 [`SplitAt`]）
         at: SplitAt,
     },
+    /// 把已有 pane 搬到指定组/整窗的某一侧（`pane.move_into`）
+    MoveInto {
+        id: u64,
+        at: SplitAt,
+        dir: SplitDir,
+        first: bool,
+        size: u16,
+    },
     CloseLeaf {
         id: u64,
     },
@@ -263,6 +271,21 @@ impl UiOp {
                 }
                 // 标注变更种类(紧随其后的 sync_layout_cache 会把它带进 layout-change 事件)
                 compositor.set_layout_change_kind("split");
+                compositor.sync_layout_cache(js.as_deref_mut());
+            }
+            UiOp::MoveInto {
+                id,
+                at,
+                dir,
+                first,
+                size,
+            } => {
+                let target = match at {
+                    SplitAt::Node(g) => Some(g),
+                    _ => None, // Active/Root 都当"整窗"——搬移的落点就是整窗边缘
+                };
+                compositor.move_leaf_into(id, target, dir, first, size, js.as_deref_mut());
+                compositor.set_layout_change_kind("move");
                 compositor.sync_layout_cache(js.as_deref_mut());
             }
             UiOp::CloseLeaf { id } => {

@@ -492,13 +492,28 @@ pub(crate) fn js_open_terminal(
         }
         n as u16
     };
+    // `at`：切分目标。缺省 = 在**当前窗口**上切（旧行为）；"root" = 整窗切一刀
+    // （新终端跨满整宽/整高）；数字 = 在那个组（容器节点）的区域上切。
+    let at =
+        {
+            let v = opts.get(JsString::from("at"), ctx)?;
+            if v.is_undefined() || v.is_null() {
+                None
+            } else if v.is_number() {
+                Some(v.to_string(ctx)?.to_std_string_escaped())
+            } else {
+                Some(v.try_js_into::<String>(ctx).map_err(|_| {
+                    crate::js_err("open_terminal: 'at' must be \"root\" or a group id")
+                })?)
+            }
+        };
     let on_exit = opts.get(JsString::from("onExit"), ctx)?;
     let on_exit = on_exit.as_callable().map(|_| on_exit);
 
     // 能力查询（而不是 `#[cfg]` 死分支）：Unix 是 POSIX pty，Windows 是 ConPTY。
     // 真跑到别的平台上再报错，理由与替代方案一起给全。
     if !pty::is_supported() {
-        let _ = (cmd, side, size, on_exit);
+        let _ = (cmd, side, size, at, on_exit);
         return Err(crate::js_err(
             "open_terminal: 本平台尚未实现伪终端（Windows 需要 ConPTY，Win10 1809+）；\
              同步命令请用 helix.run([...])；详见 docs/api/process-fs.md",
@@ -557,6 +572,7 @@ pub(crate) fn js_open_terminal(
                 view_id,
                 pty_id,
                 cmd,
+                at,
                 side,
                 size,
             }));

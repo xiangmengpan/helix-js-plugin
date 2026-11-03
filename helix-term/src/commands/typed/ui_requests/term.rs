@@ -13,6 +13,7 @@ pub(crate) fn handle_open_terminal(
         cmd,
         side,
         size,
+        at,
     }: OpenTerminalReq,
 ) -> anyhow::Result<()> {
     // side 已在 JS 侧白名单校验，此处仅防御性映射（与 OpenPanel 同款）；
@@ -29,6 +30,17 @@ pub(crate) fn handle_open_terminal(
         "left" => crate::ui::plugin_panel::PanelSide::Left,
         _ => crate::ui::plugin_panel::PanelSide::Bottom,
     };
+    // `at` 白名单：缺省/空 = 当前窗口；"root" = 整窗；数字 = 组（容器节点）id
+    let at_target: Option<Option<u64>> = match at.as_deref() {
+        None | Some("") | Some("active") => None,
+        Some("root") => Some(None),
+        Some(other) => match other.parse::<u64>() {
+            Ok(id) => Some(Some(id)),
+            Err(_) => {
+                bail!("open_terminal: at must be 'root' or a numeric group id, got '{other}'")
+            }
+        },
+    };
     let terminal = PluginTerminal::new(view_id, pty_id, size);
     // D-2:term-open 是唯一**从 UI 请求臂**发出的事件 ⇒ 有宿主时走泵入口
     match js.as_mut() {
@@ -43,7 +55,17 @@ pub(crate) fn handle_open_terminal(
             crate::ui::plugin_panel::PanelSide::Left => (SplitDir::H, true),
             crate::ui::plugin_panel::PanelSide::Bottom => (SplitDir::V, false),
         };
-        let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal), _js);
+        match at_target {
+            // 缺省：切当前窗口（旧行为）
+            None => {
+                let _ = compositor.split_leaf_with_ratio(dir, first, size, Box::new(terminal), _js);
+            }
+            // `at`：整窗 / 指定组 ⇒ 新终端跨满那个区域的宽或高
+            Some(target) => {
+                let _ =
+                    compositor.split_at_group(target, dir, first, size, Box::new(terminal), _js);
+            }
+        }
     });
     Ok(())
 }

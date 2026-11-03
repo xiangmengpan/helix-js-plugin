@@ -107,6 +107,36 @@ pub(crate) fn handle_split_leaf(
     }))
 }
 
+pub(crate) fn handle_pane_move_into(
+    PaneMoveIntoReq { id, at, dir, size }: PaneMoveIntoReq,
+) -> anyhow::Result<Option<UiOp>> {
+    use crate::ui::layout::SplitDir;
+    use ui_op::SplitAt;
+    let (dir, first) = match dir.as_str() {
+        "right" => (SplitDir::H, false),
+        "left" => (SplitDir::H, true),
+        "bottom" => (SplitDir::V, false),
+        "top" => (SplitDir::V, true),
+        other => bail!("pane.move_into: unknown dir '{other}'"),
+    };
+    let at = match at.as_deref() {
+        None | Some("") | Some("root") | Some("active") => SplitAt::Root,
+        Some(other) => match other.parse::<u64>() {
+            Ok(g) => SplitAt::Node(g),
+            Err(_) => {
+                bail!("pane.move_into: at must be 'root' or a numeric group id, got '{other}'")
+            }
+        },
+    };
+    Ok(Some(UiOp::MoveInto {
+        id,
+        at,
+        dir,
+        first,
+        size,
+    }))
+}
+
 pub(crate) fn handle_close_leaf(CloseLeafReq { id }: CloseLeafReq) -> anyhow::Result<Option<UiOp>> {
     Ok(Some(UiOp::CloseLeaf { id }))
 }

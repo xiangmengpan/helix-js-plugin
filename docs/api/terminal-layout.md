@@ -4,12 +4,17 @@
 
 ## 终端
 
-### `helix.open_terminal({ cmd, side, size, onExit? })`
+### `helix.open_terminal({ cmd, side, size, at?, onExit? })`
 
 原生 pty 终端面板(布局树叶子)。返回 view_id。
 
+`at` 决定切分目标：缺省 = 在**当前窗口**上切；`"root"` = 整窗切一刀（新终端跨满
+整个区域的宽/高，即"地板上的 term"）；数字 = 在那个组（容器节点）的区域上切。
+
 ```js
 const id = helix.open_terminal({ cmd: "bash", side: "right", size: 40 });
+// 横跨整宽的底部终端（上面 ed1|ed2 不受影响）
+const t = helix.open_terminal({ cmd: "htop", side: "bottom", size: 8, at: "root" });
 helix.term_write(id, "ls\n");        // 写入
 helix.term_kill(id);                 // 杀进程
 helix.term_resize(id, 30, 100);      // pty TIOCSWINSZ(Unix)
@@ -69,6 +74,7 @@ helix.pane.zoom(id);                    // 缩放指定叶子到全屏
 helix.pane.unzoom();                    // 恢复
 helix.pane.resize(id, 0.3);        // 调整分界比例(0~1)
 helix.pane.focus(id);                   // 聚焦叶子
+helix.pane.move_into(id, { at: "root", dir: "bottom", size: 8 }); // 搬到整窗底边（事后修形）
 ```
 
 ### `helix.pane.list()` 的几何字段
