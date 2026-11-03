@@ -133,6 +133,10 @@ helix.pane.minimize(g.id, true); // 整组折成底部一条横条，兄弟占�
 - 组 zoom：`helix.pane.zoom(组 id)` 把整组放大到全区（组内仍按原分割铺开），
   `pane.unzoom()` 还原；Pane 模式 `f` 在组 zoom 时同样是"再按一次取消"。
 - 面板也认 `at`：`helix.open_panel({ side:"bottom", rail:false, at:"root", render })`。
+- 组 resize：`helix.pane.resize(组 id, 0.3)` 只调**该组自己那条分界**（这一排占 30%），
+  不动祖先；传叶子时仍是老行为（路径上所有祖先一起改）。
+- `C-p T`：请 terminal 插件在整窗底边开终端（内部派发 `hterm-root`）。插件没加载时
+  状态栏直接说去哪儿开，不会静默失败。
 - `get_layout()`/`layout.restore()` 的树节点带 `id`；老 dump 没有 `id` 时 restore 会重新分配，
   并把 `next_group` 抬到最大已用 id 之上（不会撞）。
 

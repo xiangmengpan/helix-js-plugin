@@ -917,6 +917,39 @@ impl LayoutTree {
         adjust_ratio(&mut self.root, id, ratio);
     }
 
+    /// 让某个**节点**（组或叶子）在它的**直接父分割**里占 `share` 份额（0<share<1）。
+    ///
+    /// 与 [`Self::resize`] 的差别：后者会改路径上**所有**祖先的分界（老行为，留给叶子
+    /// 兼容）；这个只动紧挨着它的那条分界 —— "把这一排窗口调大/调小"的语义，
+    /// 也是组唯一讲得通的 resize（组没有"叶子比例"）。
+    pub fn resize_share(&mut self, id: u64, share: f32) -> bool {
+        fn set(node: &mut LayoutNode, id: u64, share: f32) -> bool {
+            let LayoutNode::Split {
+                ratio,
+                first,
+                second,
+                ..
+            } = node
+            else {
+                return false;
+            };
+            if node_id(first) == id {
+                *ratio = share.clamp(0.05, 0.95);
+                return true;
+            }
+            if node_id(second) == id {
+                *ratio = 1.0 - share.clamp(0.05, 0.95);
+                return true;
+            }
+            set(first, id, share) || set(second, id, share)
+        }
+        // rail/dock 不参与（贴边）
+        if self.rail == Some(id) || self.dock == Some(id) {
+            return false;
+        }
+        set(&mut self.root, id, share)
+    }
+
     /// 按方向调整叶子份额：dir 必须匹配其直接父 Split 的方向（H=左右 / V=上下）
     /// 才生效；delta>0 增大该叶子、<0 减小（clamp 到 [0.05, 0.95]）。返回是否调整。
     pub fn resize_leaf_dir(&mut self, id: u64, dir: SplitDir, delta: f32) -> bool {
@@ -3117,6 +3150,35 @@ mod group_tests {
         // 取消 zoom 后回到原状
         tree.unzoom();
         assert_eq!(tree.zoomed(), None);
+    }
+
+    /// 组级 resize：只改它自己那条分界（"这一排占多少"），不动祖先
+    #[test]
+    fn resize_share_moves_only_the_group_boundary() {
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let top = tree
+            .group_ids()
+            .into_iter()
+            .find(|g| tree.group_leaves(*g) == vec![0, 1])
+            .expect("上排是组");
+        tree.split_at_group(None, SplitDir::V, false, 0.5, term(2))
+            .unwrap();
+        let area = Rect::new(0, 0, 100, 40);
+        let rects = |t: &LayoutTree| {
+            let mut v = Vec::new();
+            layout_node(&t.root, area, &mut v, &mut Vec::new(), &t.layout_skip_ids());
+            v.into_iter()
+                .collect::<std::collections::HashMap<u64, Rect>>()
+        };
+        assert_eq!(rects(&tree)[&0].height, 20, "初始上下一半");
+        assert!(tree.resize_share(top, 0.75), "组级 resize 生效");
+        let after = rects(&tree);
+        assert_eq!(after[&0].height, 30, "这一排拿到 75% 的整高");
+        assert_eq!(after[&2].height, 10, "底部让出空间");
+        assert_eq!(after[&0].width, 50, "组内左右分割不受影响");
+        assert!(!tree.resize_share(999, 0.5), "不存在的 id → false");
     }
 
     /// 节点查询：kind / children / contains，以及"组 id 不与叶子 id 撞"

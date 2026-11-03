@@ -647,3 +647,62 @@ async fn zoom_a_group_fills_the_area() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// `C-p T`：核心不自己起 pty，而是请 terminal 插件的 `hterm-root` 在整窗底边开终端。
+/// 插件没装时不许静默失败 —— 状态栏要给出去哪儿开。
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_cap_t_opens_full_width_terminal_via_plugin() -> anyhow::Result<()> {
+    use helix_term::ui::PluginTerminal;
+    let dir = tempfile::tempdir()?;
+    // 桩插件：注册 hterm-root（声明 process 能力，fail-closed 之后必须声明）
+    let plugin = dir.path().join("term_stub.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("term-stub", { deps: [], permissions: { process: true } });
+        helix.register_command("hterm-root", () => {
+            helix.open_terminal({ cmd: "cat", side: "bottom", size: 8, at: "root" });
+        });
+        "#,
+    )?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hi\n")?;
+    let mut app = AppBuilder::new().with_file(&file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    // 先切左右两个编辑窗口，再 C-p T
+    pump(&mut app, "<C-p>r").await?;
+    pump(&mut app, "T").await?;
+    pump(&mut app, "<esc>").await?;
+    let area = app.compositor.area();
+    render_rows(&mut app, area);
+
+    let tid = app
+        .compositor
+        .layout_tree()
+        .find_leaf_id::<PluginTerminal>(|_| true)
+        .expect("终端叶子已打开");
+    let trect = app
+        .compositor
+        .layout_tree()
+        .leaf_rect(tid)
+        .expect("终端有几何");
+    assert_eq!(
+        trect.width, area.width,
+        "C-p T 开的终端必须横跨整宽（实得 {trect:?}）"
+    );
+    let _ = app.close().await;
+    Ok(())
+}
+
+/// 没装 terminal 插件时按 `C-p T`：不崩，状态栏说明去哪儿开。
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_mode_cap_t_without_plugin_says_where_to_get_it() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    pump(&mut app, "<C-p>T").await?;
+    let st = status_text(&app);
+    assert!(
+        st.contains("terminal") || st.contains("hterm-root"),
+        "应当提示插件/命令（实得 {st:?}）"
+    );
+    Ok(())
+}

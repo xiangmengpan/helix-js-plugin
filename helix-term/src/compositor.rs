@@ -1328,7 +1328,12 @@ impl Compositor {
     }
 
     pub fn resize_leaf(&mut self, id: u64, ratio: f32, js: Option<&mut helix_js::host::JsHost>) {
-        self.main_tree.resize(id, ratio);
+        // 组：只调它自己那条分界（"这排窗口占多少"）；叶子：老行为（路径上所有祖先）
+        if self.main_tree.node_kind(id) == Some(crate::ui::layout::NodeKind::Group) {
+            self.main_tree.resize_share(id, ratio);
+        } else {
+            self.main_tree.resize(id, ratio);
+        }
         self.sync_layout_cache(js);
     }
 
@@ -1618,6 +1623,9 @@ impl Compositor {
                 // `D` = 整宽的新窗贴在底边（term 横跨左右两个编辑区），`R` = 整高的贴右边。
                 Some('D') => self.window_mode_split('D', cx),
                 Some('R') => self.window_mode_split('R', cx),
+                // `T`：请终端插件在**整窗底边**开终端（核心不起 pty，见
+                // `open_full_width_terminal` 的注释）
+                Some('T') => self.open_full_width_terminal(cx),
                 Some('x') => self.window_mode_close(cx),
                 Some('f') => self.window_mode_zoom(cx.js.as_deref_mut()),
                 Some('z') => self.window_mode_minimize(cx.js.as_deref_mut()),
@@ -1781,6 +1789,43 @@ impl Compositor {
             (Direction::Backward, lines.unsigned_abs() as usize)
         };
         crate::commands::scroll_view(cx.editor, view_id, n, direction);
+    }
+
+    /// `C-p T`：在**整窗底边**开一个终端。
+    ///
+    /// 核心不起 pty（那是 JS 侧的活：`helix.open_terminal` 里 spawn worker），
+    /// 所以这里做一次**尽力而为**的命令派发：内置 terminal 插件注册的 `hterm-root`
+    /// 就是 `open_terminal({side:"bottom", at:"root"})`。没装插件/没注册该命令时
+    /// 不静默失败 —— 状态栏直接告诉用户装什么、或该按什么命令。
+    fn open_full_width_terminal(&mut self, cx: &mut Context) {
+        let ctx = helix_js::CommandContext {
+            docs: vec![],
+            path: None,
+            text: String::new(),
+            cursor: (0, 0),
+            selection: ((0, 0), (0, 0)),
+        };
+        let outcome = cx.with_js(|host| host.run_command("hterm-root", &ctx));
+        match outcome {
+            // `Ok(false)` = 没有这个命令（插件没加载）—— `run_command` 对未注册的名字
+            // 返回的是 Ok(false) 而不是 Err，不区分就会变成"按了没反应"。
+            Some(Ok(false)) => cx.editor.set_status(
+                "整宽终端需要内置 terminal 插件：:plugin-load terminal（之后 C-p T，或直接 :hterm-root）",
+            ),
+            Some(Ok(true)) => {
+                // 插件的命令把请求入队了 ⇒ 在**命令边界**统一应用（与 typed 命令同一条路）
+                let reqs = helix_js::take_ui_requests();
+                if let Err(e) = crate::commands::apply_ui_requests(cx.js.as_deref_mut(), reqs) {
+                    cx.editor.set_status(format!("打开终端失败: {e}"));
+                }
+            }
+            Some(Err(e)) => cx.editor.set_status(format!(
+                "整宽终端打不开：{e}（需要内置 terminal 插件：:plugin-load terminal，或直接 :hterm-root）"
+            )),
+            None => cx.editor.set_status(
+                "没有 JS 宿主：:plugin-load terminal 之后 C-p T 才有整宽终端（或 :hterm-root）",
+            ),
+        }
     }
 
     /// 窗口模式:创建新窗(v/s 同 doc 分屏,n 新空 buffer)。
@@ -1967,7 +2012,8 @@ impl Compositor {
                 "id": gid,
                 "kind": "group",
                 "place": "group",
-                "focused": false,
+                // 组里含当前聚焦叶子 ⇒ 这个组是"有焦点的那一组"
+                "focused": self.main_tree.node_contains(gid, active),
                 "fixed": false,
                 "pinned": false,
                 "stack": [],

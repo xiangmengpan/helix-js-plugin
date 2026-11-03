@@ -297,6 +297,7 @@ pub fn pane_hints(mode: PaneMode) -> (&'static str, Vec<(&'static str, &'static 
                 ("p / P / Tab", "切到下一个/上一个窗口", true),
                 ("n / d / r", "新分屏 / 下分 / 右分(切当前窗口)", true),
                 ("D / R", "整宽下分 / 整高右分(切整个区域)", true),
+                ("T", "整宽终端(跨整个区域,靠 terminal 插件)", true),
                 ("x", "关闭窗口", true),
                 ("f", "最大化/还原", true),
                 ("z", "最小化/还原", true),
