@@ -810,3 +810,68 @@ async fn filetree_toggle_closes_active_panel() -> anyhow::Result<()> {
     assert!(frame.contains(&name_a), "A 必须还在: {frame}");
     Ok(())
 }
+
+/// 回归：打开 → `Esc` 关闭 → **能再次打开**。
+///
+/// 曾经不行：`close_panel` 先把 `panel.id` 置空、再 `G.panels.delete(panel.id)` ⇒ 删的是
+/// `null` 键，注册表里留着一个死条目 ⇒ `toggle_panel()` 永远走"关"分支，而且**没有任何提示**
+/// （用户看到的就是"按 C-e 没反应"）。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_reopen_after_esc() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let readme = dir.path().join("readme.md");
+    let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+
+    pump(&mut app, ":filetree<ret>").await?;
+    assert!(app.compositor.has_component(panel_type), "第一次应打开");
+
+    pump(&mut app, "<esc>").await?;
+    assert!(!app.compositor.has_component(panel_type), "Esc 应关闭面板");
+
+    pump(&mut app, ":filetree<ret>").await?;
+    assert!(
+        app.compositor.has_component(panel_type),
+        "关闭后应能再次打开；状态栏: {:?}",
+        status_text(&app)
+    );
+    // 再关一次、再开一次（防"只能开两次"的计数器类 bug）
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    assert!(
+        app.compositor.has_component(panel_type),
+        "第二轮开/关后仍能打开"
+    );
+    Ok(())
+}
+
+/// filetree 占 **root**：编辑器先分屏后再开树，树仍应是**整列全高**（而不是只挂在半屏上）。
+///
+/// 布局目标（用户诉求）：
+/// ```text
+/// filetree | editor
+///          | term
+/// ```
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_takes_full_height_left_column() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    // 先让编辑器分屏（模拟"编辑器 + 终端"已经分过的现场）
+    pump(&mut app, ":vsplit<ret>").await?;
+    pump(&mut app, ":filetree<ret>").await?;
+
+    let rows = render_rows(&mut app, helix_view::graphics::Rect::new(0, 0, 120, 30));
+    let height = rows.len();
+    // 面板边框在最左列：全高时几乎每一行都以 │/┌/└ 开头
+    let left_border = rows
+        .iter()
+        .filter(|r| r.starts_with('│') || r.starts_with('┌') || r.starts_with('└'))
+        .count();
+    assert!(
+        left_border + 2 >= height,
+        "面板应占满整列高度（{left_border}/{height} 行有左边框）:\n{}",
+        rows.join("\n")
+    );
+    Ok(())
+}

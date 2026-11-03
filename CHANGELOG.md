@@ -80,6 +80,12 @@ Packaging:
   — a workspace `.helix/config.toml` cannot set it.
 
 Fixes:
+* `filetree`: the panel now splits at the **root** (`open_panel({at:"root"})`), so it takes the
+  full-height left column and later splits (`editor` / terminal) land to its right — the layout
+  is `filetree | editor / term` instead of the tree being cut in half by an existing split.
+* `filetree`: closing the panel with `Esc` left a stale entry in the panel registry, so the
+  panel could not be opened again (and no message was shown). The instance id was cleared
+  before being used as the registry key.
 
 * `filetree`: character keys are input in search mode again — `j`, `k` and `?` used to be
   swallowed by navigation, so files containing them could not be searched for.

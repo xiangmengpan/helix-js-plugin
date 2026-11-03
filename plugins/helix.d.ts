@@ -164,6 +164,14 @@ interface PanelOptions {
   onClose?: () => void;
   focusable?: boolean; // 面板内 button/input 的 Tab 焦点路由（与"拿到键盘焦点"无关）
   /**
+   * 切分目标（与 `open_terminal`/`split` 的 `at` 同语义）：
+   * - 省略 = 在**当前叶子**上切（编辑器已经分过屏时，面板只会占其中一片）；
+   * - `"root"`（或 `"active"`）= 在**根节点**上切一刀 ⇒ 面板拿整条边、**全高/全宽**，
+   *   之后的切分都发生在剩下的区域里。想做"侧栏整列"就用这个（`rail: true` 时以 rail 为准）。
+   * - 数字 = 在那个**组 id** 的区域上切。
+   */
+  at?: "root" | "active" | number;
+  /**
    * 侧栏轨道（rail）：贴 root 边缘、**固定全高**、不参与窗口分割；注册即聚焦。
    *
    * - **全局只能有一条 rail**：注册新的会把旧的取掉（两个侧栏插件都用 rail 会互相驱逐）；

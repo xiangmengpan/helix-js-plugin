@@ -47,7 +47,7 @@ const {
   literal_hits, grep_groups, grep_rows,
   compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter,
   opened_marker, worst_severity, diag_hit, diag_mark, new_panel, G,
-  target_panel, panel_for_path,
+  target_panel, panel_for_path, close_panel,
   state_encode, state_decode, save_state, load_state, state_for_root,
 } = require('../plugin.js');
 
@@ -688,5 +688,59 @@ test('load_state：没有文件（首次运行）⇒ 空表,不炸', () => {
     assert.deepEqual(load_state(), []);
   } finally {
     global.__state_file = savedFile;
+  }
+});
+
+// ============================ 关闭后的注册表（回归）============================
+//
+// 曾经的真 bug：`close_panel` 先把 `panel.id = null` 再 `G.panels.delete(panel.id)`
+// ⇒ 删的是 `null` 键，真条目留在注册表里 ⇒ `toggle_panel()` 永远走"关"分支，
+// 面板**再也打不开**，而且状态栏一句提示都没有。
+
+test('close_panel：注册表与 active 都清干净（先置空 id 会泄漏）', () => {
+  const a = new_panel('/a');
+  a.id = 11;
+  a.tree = fixture();
+  const saved = { panels: G.panels, active: G.active };
+  const savedClose = global.helix.close_panel;
+  const closed = [];
+  global.helix.close_panel = (id) => closed.push(id);
+  try {
+    G.panels = new Map([[11, a]]);
+    G.active = 11;
+    close_panel();
+    assert.deepEqual(closed, [11], '必须真的调 helix.close_panel(实例 id)');
+    assert.equal(G.panels.size, 0, '注册表要清空，否则 toggle 永远走"关"分支');
+    assert.equal(G.active, null, 'active 也要清（否则目标解析指向死面板）');
+    assert.equal(target_panel(), null, '关掉后不该再有目标实例');
+    assert.equal(a.id, null, '实例自己的 id 也要置空');
+  } finally {
+    G.panels = saved.panels;
+    G.active = saved.active;
+    global.helix.close_panel = savedClose;
+  }
+});
+
+test('close_panel：关掉两个中的一个，另一个仍可被解析', () => {
+  const a = new_panel('/a');
+  const b = new_panel('/b');
+  a.id = 21;
+  b.id = 22;
+  a.tree = fixture();
+  b.tree = fixture();
+  const saved = { panels: G.panels, active: G.active };
+  const savedClose = global.helix.close_panel;
+  global.helix.close_panel = () => {};
+  try {
+    G.panels = new Map([[21, a], [22, b]]);
+    G.active = 22;
+    close_panel(b);
+    assert.deepEqual([...G.panels.keys()], [21], '只该删掉 b');
+    assert.equal(G.active, null, 'b 是 active ⇒ active 清零');
+    assert.equal(target_panel(), a, '只剩 a ⇒ 目标解析落在 a');
+  } finally {
+    G.panels = saved.panels;
+    G.active = saved.active;
+    global.helix.close_panel = savedClose;
   }
 });

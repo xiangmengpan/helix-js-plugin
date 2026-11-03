@@ -54,6 +54,8 @@ const CFG = helix.get_config("filetree") || {};
 //       **`>` 过滤表达式**（glob / `#M`·`#?` 等 git 谓词 / 子串 / `!` 排除；空格分隔 = AND；
 //       Enter 应用、Esc 放弃、删空 = 清除）。
 // 行尾标记:● 当前文件 · · 已打开但非当前 · 诊断列（E/W/i/h）· git 列（M/A/D/R/?，`git_status` 开时）。
+// 布局：面板在**根节点**上切（`open_panel({at:"root"})`）⇒ 它拿左边缘的**整列全高**，
+//       之后的切分（编辑器 / 终端）都发生在右边 ⇒ `filetree | editor / term`。
 // 状态分层：`G` 是编辑器事实/全局偏好（含 `panels` 注册表 + `active`），每面板一份的视图状态
 // 在 `new_panel()` 的实例里；`:filetree-open` 开第二个（上限 `[plugins.filetree] max_panels`）。
 // 设计：docs/superpowers/specs/2026-11-03-filetree-multi-instance-design.md
@@ -1301,6 +1303,10 @@ function open_panel(root) {
   panel.id = helix.open_panel({
     side: "left",
     size: 32,
+    // 在**根节点**上切：filetree 拿左边缘的整列（全高），之后的切分（编辑器 / 终端）
+    // 都发生在右边的区域里 ⇒ 想看到的布局就是 `filetree | editor / term`。
+    // 不加这条时切的是"当前叶子"：编辑器已经分过屏，树只会挂在其中一半上。
+    at: "root",
     render: make_render(panel),
     onKey: make_key(panel),
     // 布局恢复 / `:plugin-reload` 关掉面板时也要摘注册表（以前没有 onClose ⇒ 状态留尸）
@@ -1333,10 +1339,12 @@ function close_panel(target) {
   const panel = target || target_panel() || first_panel();
   if (!panel) return;
   save_state(); // 必须在清状态之前：展开集合来自当前的树（此刻它还在注册表里）
-  if (panel.id !== null) {
-    helix.close_panel(panel.id);
-    panel.id = null;
-  }
+  // ⚠️ id 必须**先取下来**：下面会把 `panel.id` 置空，若之后再 `G.panels.delete(panel.id)`
+  // 删的是 `null` 键 ⇒ 真条目泄漏 ⇒ `toggle_panel` 永远走"关"分支，面板再也打不开
+  // （2026-11-03 实测：Esc 关闭后 `:filetree` 无效且状态栏无任何提示）。
+  const id = panel.id;
+  panel.id = null;
+  if (id !== null) helix.close_panel(id);
   // 关面板丢掉搜索态与全库索引：下次打开不应该还停在半截的过滤里，
   // 也不应该让一个 nucleo 会话（可能几万条）悬着
   panel.mode = "tree";
@@ -1345,8 +1353,10 @@ function close_panel(target) {
   panel.pre_query = null;
   panel.grep = null;
   drop_flat(panel);
-  G.panels.delete(panel.id);
-  if (G.active === panel.id) G.active = null;
+  if (id !== null) {
+    G.panels.delete(id);
+    if (G.active === id) G.active = null;
+  }
 }
 
 // `:filetree` 语义（§4.3）：无 → 开；有 → 关**目标**实例（active；只剩一个时就是它）
@@ -2027,7 +2037,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     sort_entries, visible_rows, make_tree, rel_parts, find_node, find_parent,
     collect_expanded, shq, G, new_panel, render_with, reveal, open_panel, window_rows, scroll_top,
-    target_panel, panel_for_path, first_panel,
+    target_panel, panel_for_path, first_panel, close_panel,
     state_encode, state_decode, save_state, load_state, state_for_root,
     // 搜索（纯逻辑；refresh_find/enter_find 依赖 helix 状态，不导出）
     match_name, filter_rows, highlight_segments, rows_for_view, flat_items, drop_flat,
