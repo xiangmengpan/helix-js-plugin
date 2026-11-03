@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-9a8556d8.js";
+            window.path_to_searchindex_js = "searchindex-8f749e1c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -2736,6 +2736,46 @@ You can reload the config file by issuing the <code>:config-reload</code> comman
 signal to the Helix process, such as by using the command <code>pkill -USR1 hx</code>.</p>
 <p>Finally, you can have a <code>config.toml</code> and a <code>languages.toml</code> local to a project by putting it under a <code>.helix</code> directory in your repository.
 Its settings will be merged with the configuration directory and the built-in configuration.</p>
+<h2 id="plugin-configuration"><a class="header" href="#plugin-configuration">Plugin configuration</a></h2>
+<p>Plugins declare their own keys (<code>helix.define_config</code>) and they live under
+<code>[plugins.&lt;plugin-name&gt;]</code>. Plugin keys keep the <strong>exact</strong> names the plugin declared (usually
+<code>snake_case</code> — unlike <code>[editor]</code>, which is <code>kebab-case</code>), and a misspelled key is reported
+(<code>filetree.show_hiden: not declared in define_config (ignored)</code>) instead of being silently
+dropped.</p>
+<p>Plugins that snapshot their config when they load only pick up new values after
+<code>:plugin-reload</code>; <code>:config-reload</code> alone re-validates and is enough for plugins that read on
+use. <code>filetree</code> is a snapshot-at-load plugin.</p>
+<h3 id="pluginsfiletree"><a class="header" href="#pluginsfiletree"><code>[plugins.filetree]</code></a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>show_hidden</code></td><td>boolean</td><td><code>false</code></td><td>Show dotfiles in the tree. Also toggled at runtime with <code>H</code>.</td></tr>
+<tr><td><code>filter</code></td><td>string</td><td><code>""</code></td><td>Filter expression applied when the panel opens (same syntax as the <code>&gt;</code> bar: globs, <code>#M</code>/<code>#?</code> git predicates, <code>#E</code>/<code>#W</code> diagnostics, <code>!</code> negation). Empty = no filter.</td></tr>
+<tr><td><code>git_status</code></td><td>boolean</td><td><code>false</code></td><td>Show the git status column (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>?</code>) and enable the <code>#</code> git predicates. Reads <code>git status</code> once when the panel opens and on <code>R</code>.</td></tr>
+<tr><td><code>max_panels</code></td><td>number</td><td><code>2</code></td><td>How many tree panels may be open at once (<code>:filetree-open</code> adds one; further attempts are refused with a message). <code>1</code> = single panel.</td></tr>
+<tr><td><code>close_on_esc</code></td><td>boolean</td><td><code>true</code></td><td><code>true</code>: <code>Esc</code> closes the panel. <code>false</code>: <code>Esc</code> only returns focus to the editor and keeps the panel — use <code>q</code> to close. Handy when the tree is a permanent left column.</td></tr>
+<tr><td><code>persist</code></td><td>boolean</td><td><code>false</code></td><td>Remember the filter expression and the expanded directories <strong>per root</strong> and restore them next time. Written to <code>filetree-state.json</code> next to the user plugin root (<code>&lt;config-dir&gt;/plugins/</code>); <code>false</code> = nothing is written.</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-toml">[plugins.filetree]
+show_hidden = true
+git_status = true
+filter = "!*.lock"
+close_on_esc = false
+max_panels = 2
+persist = true
+</code></pre>
+<p>Commands: <code>:filetree</code> (toggle), <code>:filetree-open [dir]</code> (second panel; root = the given dir or the
+current file’s directory), <code>:filetree-reveal</code>, <code>:filetree-find</code> (native picker over <code>rg --files</code>),
+<code>:filetree-search &lt;query&gt;</code> (content search).</p>
+<p>Keys: <code>Enter</code>/<code>o</code> open · <code>h</code>/<code>l</code> collapse/enter · <code>&lt;Up&gt;</code>/<code>&lt;Down&gt;</code> move · <code>/</code> search by name
+(<code>Tab</code> switches to the whole repo) · <code>G</code> content search (<code>←</code>/<code>→</code> collapse a file group) · <code>&gt;</code>
+filter expression · <code>H</code> dotfiles · <code>F</code> follow the current file · <code>R</code> refresh · <code>a</code>/<code>A</code> new
+file/directory · <code>m</code> rename · <code>d</code> delete · <code>P</code> go to parent · <code>q</code> close · <code>?</code> help.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="editor-1"><a href="#editor-1" class="header">Editor</a></h1>
 <h2 id="editor"><a class="header" href="#editor">Editor</a></h2>
