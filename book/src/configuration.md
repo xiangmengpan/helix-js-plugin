@@ -44,3 +44,44 @@ signal to the Helix process, such as by using the command `pkill -USR1 hx`.
 Finally, you can have a `config.toml` and a `languages.toml` local to a project by putting it under a `.helix` directory in your repository.
 Its settings will be merged with the configuration directory and the built-in configuration.
 
+## Plugin configuration
+
+Plugins declare their own keys (`helix.define_config`) and they live under
+`[plugins.<plugin-name>]`. Plugin keys keep the **exact** names the plugin declared (usually
+`snake_case` — unlike `[editor]`, which is `kebab-case`), and a misspelled key is reported
+(`filetree.show_hiden: not declared in define_config (ignored)`) instead of being silently
+dropped.
+
+Plugins that snapshot their config when they load only pick up new values after
+`:plugin-reload`; `:config-reload` alone re-validates and is enough for plugins that read on
+use. `filetree` is a snapshot-at-load plugin.
+
+### `[plugins.filetree]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `show_hidden` | boolean | `false` | Show dotfiles in the tree. Also toggled at runtime with `H`. |
+| `filter` | string | `""` | Filter expression applied when the panel opens (same syntax as the `>` bar: globs, `#M`/`#?` git predicates, `#E`/`#W` diagnostics, `!` negation). Empty = no filter. |
+| `git_status` | boolean | `false` | Show the git status column (`M`/`A`/`D`/`R`/`?`) and enable the `#` git predicates. Reads `git status` once when the panel opens and on `R`. |
+| `max_panels` | number | `2` | How many tree panels may be open at once (`:filetree-open` adds one; further attempts are refused with a message). `1` = single panel. |
+| `close_on_esc` | boolean | `true` | `true`: `Esc` closes the panel. `false`: `Esc` only returns focus to the editor and keeps the panel — use `q` to close. Handy when the tree is a permanent left column. |
+| `persist` | boolean | `false` | Remember the filter expression and the expanded directories **per root** and restore them next time. Written to `filetree-state.json` next to the user plugin root (`<config-dir>/plugins/`); `false` = nothing is written. |
+
+```toml
+[plugins.filetree]
+show_hidden = true
+git_status = true
+filter = "!*.lock"
+close_on_esc = false
+max_panels = 2
+persist = true
+```
+
+Commands: `:filetree` (toggle), `:filetree-open [dir]` (second panel; root = the given dir or the
+current file's directory), `:filetree-reveal`, `:filetree-find` (native picker over `rg --files`),
+`:filetree-search <query>` (content search).
+
+Keys: `Enter`/`o` open · `h`/`l` collapse/enter · `<Up>`/`<Down>` move · `/` search by name
+(`Tab` switches to the whole repo) · `G` content search (`←`/`→` collapse a file group) · `>`
+filter expression · `H` dotfiles · `F` follow the current file · `R` refresh · `a`/`A` new
+file/directory · `m` rename · `d` delete · `P` go to parent · `q` close · `?` help.

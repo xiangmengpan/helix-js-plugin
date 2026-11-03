@@ -83,7 +83,12 @@ Packaging:
   append-only and never rotated (18 MB / 128k lines after a few months). User-level config only
   — a workspace `.helix/config.toml` cannot set it.
 
+* `book/src/configuration.md` gained a **plugin configuration** section documenting
+  `[plugins.filetree]` (all six keys with types/defaults) and the reload semantics
+  (`:plugin-reload` for snapshot-at-load plugins).
+
 Fixes:
+
 * `filetree`: the panel now splits at the **root** (`open_panel({at:"root"})`), so it takes the
   full-height left column and later splits (`editor` / terminal) land to its right — the layout
   is `filetree | editor / term` instead of the tree being cut in half by an existing split.
