@@ -1047,55 +1047,62 @@ impl LayoutTree {
     /// 从 target 的直接父开始向上回溯：遇到方向匹配的祖先 Split 时，若 target 在
     /// 对侧则返回该祖先对侧子树靠分割边的极值叶子；全程无匹配 → None（边界）。
     pub fn neighbor_leaf(&self, target: u64, dir: SplitDir, first_side: bool) -> Option<u64> {
-        // 祖先链（从直接父到根），记录每层 target 在 first/second 侧
-        let mut chain: Vec<(&LayoutNode, bool)> = Vec::new();
-        fn collect<'a>(
-            node: &'a LayoutNode,
-            target: u64,
-            chain: &mut Vec<(&'a LayoutNode, bool)>,
-        ) -> bool {
+        neighbor_in(&self.root, target, dir, first_side)
+    }
+
+    /// `id` 最近（最深）的**祖先组** id。根级叶子 → 根分割（等价于整棵树）；
+    /// 单叶树（根就是叶子）→ None。
+    pub fn innermost_group_of(&self, id: u64) -> Option<u64> {
+        fn go(node: &LayoutNode, id: u64, best: Option<u64>) -> Option<u64> {
             match node {
-                LayoutNode::Leaf { id } => *id == target,
-                LayoutNode::Split { first, second, .. } => {
-                    if collect(first, target, chain) {
-                        chain.push((node, true));
-                        true
-                    } else if collect(second, target, chain) {
-                        chain.push((node, false));
-                        true
-                    } else {
-                        false
+                LayoutNode::Leaf { id: leaf } => (*leaf == id).then_some(best).flatten(),
+                LayoutNode::Split {
+                    id: gid,
+                    first,
+                    second,
+                    ..
+                } => {
+                    if let Some(found) = go(first, id, Some(*gid)) {
+                        return Some(found);
                     }
+                    if let Some(found) = go(second, id, Some(*gid)) {
+                        return Some(found);
+                    }
+                    None
                 }
             }
         }
-        if !collect(&self.root, target, &mut chain) {
-            return None;
-        }
-        for (parent, target_in_first) in chain {
-            let LayoutNode::Split {
-                dir: sd,
-                first,
-                second,
-                ..
-            } = parent
-            else {
-                unreachable!()
-            };
-            if *sd != dir {
-                continue; // 方向不匹配：继续向上层找
+        go(&self.root, id, None)
+    }
+
+    /// 聚焦方向邻居，**按作用域**（`[editor] focus-scope`）：
+    ///
+    /// * `Geometry` → 纯几何（`neighbor_leaf`），可以跨组；
+    /// * `Group` → 只在最近的组内部找，到组边界就返回 None（跨组交给 `p`/`P`/`Tab`）。
+    pub fn focus_dir_scoped(
+        &mut self,
+        id: u64,
+        dir: SplitDir,
+        first_side: bool,
+        scope: helix_view::editor::FocusScope,
+    ) -> Option<u64> {
+        use helix_view::editor::FocusScope;
+        let nb = match scope {
+            FocusScope::Geometry => self.neighbor_leaf(id, dir, first_side)?,
+            FocusScope::Group => {
+                // 没有更小的组（根就是叶子）⇒ 退化成几何
+                let within = match self
+                    .innermost_group_of(id)
+                    .and_then(|g| find_node(&self.root, g))
+                {
+                    Some(node) => neighbor_in(node, id, dir, first_side),
+                    None => self.neighbor_leaf(id, dir, first_side),
+                };
+                within?
             }
-            if first_side && !target_in_first {
-                // 找 first 侧邻居：first 子树靠分割边的极值（沿 second 走到底）
-                return Some(extreme_leaf(first, false));
-            }
-            if !first_side && target_in_first {
-                // 找 second 侧邻居：second 子树靠分割边的极值（沿 first 走到底）
-                return Some(extreme_leaf(second, true));
-            }
-            // 该层方向匹配但 target 已在目标侧：继续向上（上层可能跨过更大分割）
-        }
-        None
+        };
+        self.active = nb;
+        Some(nb)
     }
 
     /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None。
@@ -2448,6 +2455,58 @@ fn first_leaf_skipping(node: &LayoutNode, skip: Option<u64>) -> Option<u64> {
     }
 }
 
+/// 在 `scope` 这棵子树**内部**找方向邻居（不越界）。算法与老的 `neighbor_leaf` 同源：
+/// 沿 target 的祖先链向上找第一个方向匹配、且 target 在对侧的分割。
+fn neighbor_in(scope: &LayoutNode, target: u64, dir: SplitDir, first_side: bool) -> Option<u64> {
+    // 祖先链（从直接父到 scope 根），记录每层 target 在 first/second 侧
+    let mut chain: Vec<(&LayoutNode, bool)> = Vec::new();
+    fn collect<'a>(
+        node: &'a LayoutNode,
+        target: u64,
+        chain: &mut Vec<(&'a LayoutNode, bool)>,
+    ) -> bool {
+        match node {
+            LayoutNode::Leaf { id } => *id == target,
+            LayoutNode::Split { first, second, .. } => {
+                if collect(first, target, chain) {
+                    chain.push((node, true));
+                    true
+                } else if collect(second, target, chain) {
+                    chain.push((node, false));
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+    if !collect(scope, target, &mut chain) {
+        return None;
+    }
+    for (parent, target_in_first) in chain {
+        let LayoutNode::Split {
+            dir: sd,
+            first,
+            second,
+            ..
+        } = parent
+        else {
+            unreachable!()
+        };
+        if *sd != dir {
+            continue; // 方向不匹配：继续向上层找
+        }
+        if first_side && !target_in_first {
+            return Some(extreme_leaf(first, false));
+        }
+        if !first_side && target_in_first {
+            return Some(extreme_leaf(second, true));
+        }
+        // 该层方向匹配但 target 已在目标侧：继续向上（上层可能跨过更大分割）
+    }
+    None
+}
+
 /// 子树里最靠前的叶子 id（组 → 第一个叶子；叶子 → 它自己）
 fn first_leaf_of(node: &LayoutNode) -> Option<u64> {
     match node {
@@ -3397,6 +3456,56 @@ mod group_tests {
             &tree.layout_skip_ids(),
         );
         assert_eq!(v.len(), 2);
+    }
+
+    /// 两种焦点作用域的差别：`geometry` 能跨组，`group` 走到组边界就停
+    #[test]
+    fn focus_scope_group_stops_at_group_boundary() {
+        use helix_view::editor::FocusScope;
+        // 0 | (b / c)：b、c 在一个组里，0 在组外
+        let mut tree = LayoutTree::default();
+        tree.set_editor(term(0));
+        let b = tree.split_side(0, SplitDir::H, false, term(1)).unwrap();
+        let c = tree.split_side(b, SplitDir::V, false, term(2)).unwrap();
+
+        // geometry：从 b 往右 → 跨组到 0 吗？0 在**左**边，所以往右没邻居；往左才是 0
+        assert_eq!(
+            tree.neighbor_leaf(b, SplitDir::H, true),
+            Some(0),
+            "几何：左边是 0"
+        );
+        // 从 c 往右：c 在组里最右边，几何会跨组吗？0 在左边，右边没人
+        assert_eq!(tree.neighbor_leaf(c, SplitDir::H, false), None);
+
+        // group：b 往左**出组**——组内左边没邻居 ⇒ 停住
+        tree.active = b;
+        assert_eq!(
+            tree.focus_dir_scoped(b, SplitDir::H, true, FocusScope::Group),
+            None,
+            "group 作用域：到组边界就停（不跨到 0）"
+        );
+        assert_eq!(tree.active(), b, "没动");
+        assert_eq!(
+            tree.focus_dir_scoped(b, SplitDir::H, true, FocusScope::Geometry),
+            Some(0),
+            "geometry 作用域：跨到 0"
+        );
+
+        // 组内上下的移动两种作用域一致（都在组内）
+        tree.active = b;
+        assert_eq!(
+            tree.focus_dir_scoped(b, SplitDir::V, false, FocusScope::Group),
+            Some(c),
+            "组内的下邻居照常"
+        );
+        // 组外叶子（0）没有更小的组 ⇒ 退化成几何（往右到组的第一个叶子）
+        let first_in_group = tree.group_leaves(tree.sibling_of(0).unwrap())[0];
+        tree.active = 0;
+        assert_eq!(
+            tree.focus_dir_scoped(0, SplitDir::H, false, FocusScope::Group),
+            Some(first_in_group),
+            "根级叶子的 group 作用域 = 整棵树"
+        );
     }
 
     /// 组级 resize：只改它自己那条分界（"这一排占多少"），不动祖先

@@ -764,3 +764,57 @@ async fn stack_a_leaf_with_a_group_and_rotate() -> anyhow::Result<()> {
     assert_eq!(b.x, 0, "组拿到同一块区域（零映射）");
     Ok(())
 }
+
+/// `[editor] focus-scope = "group"`：方向移动止步于组边界（geometry 会跨出去）。
+#[tokio::test(flavor = "multi_thread")]
+async fn focus_scope_group_does_not_cross_group_boundary() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hi\n")?;
+
+    let build = |scope: helix_view::editor::FocusScope| -> anyhow::Result<Application> {
+        let mut cfg = test_config();
+        cfg.editor.focus_scope = scope;
+        AppBuilder::new()
+            .with_file(file.clone(), None)
+            .with_config(cfg)
+            .build()
+    };
+
+    // 造形状：0 | (b / c)（r = 右分，d = 下分），焦点回到组里的 b
+    async fn shape(app: &mut Application) -> anyhow::Result<()> {
+        pump(app, "<C-p>r").await?;
+        pump(app, "d").await?;
+        pump(app, "k").await?; // 组内上移到 b
+        Ok(())
+    }
+
+    // ① group：b 往左 ⇒ 组边界，不动
+    let mut app = build(helix_view::editor::FocusScope::Group)?;
+    shape(&mut app).await?;
+    let b = app.compositor.layout_tree().active();
+    assert_ne!(b, 0, "前置：焦点在组内（不是 0）");
+    pump(&mut app, "h").await?;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        b,
+        "focus-scope=group：不许跨出组（{b} 应留在原地）"
+    );
+    let st = status_text(&app);
+    assert!(
+        st.contains("边界"),
+        "走到组边界要有提示，不能像按键坏了（实得 {st:?}）"
+    );
+
+    // ② geometry（默认）：同样的按键跨到 0
+    let mut app2 = build(helix_view::editor::FocusScope::Geometry)?;
+    shape(&mut app2).await?;
+    assert_eq!(app2.compositor.layout_tree().active(), b);
+    pump(&mut app2, "h").await?;
+    assert_eq!(
+        app2.compositor.layout_tree().active(),
+        0,
+        "focus-scope=geometry：跨到组外的 0"
+    );
+    Ok(())
+}

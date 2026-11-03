@@ -387,7 +387,13 @@ impl UiOp {
             UiOp::SetFixed { id, fixed } => compositor.set_leaf_fixed(id, fixed, js.as_deref_mut()),
             UiOp::FocusLeafDir { id, dir, first } => {
                 if compositor
-                    .focus_leaf_dir(id, dir, first, js.as_deref_mut())
+                    .focus_leaf_dir(
+                        id,
+                        dir,
+                        first,
+                        editor.config().focus_scope,
+                        js.as_deref_mut(),
+                    )
                     .is_none()
                 {
                     editor.set_error("layout_focus: 该方向无邻居（边界）");

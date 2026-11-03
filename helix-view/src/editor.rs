@@ -371,6 +371,12 @@ pub struct Config {
     /// * `true` = **批量发**:同一批变更攒到**边界**(帧首)再发,条数与顺序不变,但每条
     ///   事件都在**最终布局**上观察(省掉同一批里重复的 JS 往返)。
     pub js_layout_change_batch: bool,
+    /// 焦点移动的作用域（Pane 模式的 h/j/k/l 与 `helix.pane.focus_dir`）。
+    ///
+    /// * `geometry`（默认）= 纯几何：按屏幕位置找最近的方向邻居，可以跨组、可以进贴边叶；
+    /// * `group` = **组是导航的最小单位**：只在最近的组内部移动，走到组边界就停住
+    ///   （跨组用 `p` / `P` / `Tab` 环切）。根级叶子没有更小的组 ⇒ 退化成几何。
+    pub focus_scope: FocusScope,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
     /// Configuration of the statusline elements
@@ -880,6 +886,30 @@ pub enum BufferLine {
     Multiple,
 }
 
+/// 焦点移动的作用域（`[editor] focus-scope`）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FocusScope {
+    /// 纯几何：按屏幕位置找最近的方向邻居，可以跨组（旧行为）
+    #[default]
+    Geometry,
+    /// **组是导航的最小单位**：方向移动只在最近的组内部生效，走到组边界就停住；
+    /// 跨组用 `p` / `P` / `Tab`（Pane 模式的环切），或临时切回 `geometry`。
+    Group,
+}
+
+impl std::str::FromStr for FocusScope {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "geometry" | "geometric" | "geo" => Ok(Self::Geometry),
+            "group" | "groups" => Ok(Self::Group),
+            _ => anyhow::bail!("focus-scope can only be `geometry` or `group` (got '{s}')"),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LineNumber {
@@ -1209,6 +1239,7 @@ impl Default for Config {
             completion_trigger_len: 2,
             auto_info: true,
             js_layout_change_batch: false,
+            focus_scope: FocusScope::default(),
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             statusline: StatusLineConfig::default(),
@@ -2900,5 +2931,19 @@ mod tests {
         assert_eq!(editor.last_error.as_deref(), Some("boom"));
         editor.set_error("boom2");
         assert_eq!(editor.last_error.as_deref(), Some("boom2"));
+    }
+
+    /// `[editor] focus-scope = "..."` 必须真的解析成枚举（kebab-case + 两种值）
+    #[test]
+    fn focus_scope_deserializes_from_kebab_case_toml() {
+        let cfg: Config = toml::from_str("focus-scope = \"group\"").unwrap();
+        assert_eq!(cfg.focus_scope, FocusScope::Group);
+        let cfg: Config = toml::from_str("focus-scope = \"geometry\"").unwrap();
+        assert_eq!(cfg.focus_scope, FocusScope::Geometry);
+        // 缺省 = geometry（老手感）
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.focus_scope, FocusScope::Geometry);
+        // 拼错直接报错（deny_unknown_fields + 枚举白名单）
+        assert!(toml::from_str::<Config>("focus-scope = \"nope\"").is_err());
     }
 }

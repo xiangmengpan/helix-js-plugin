@@ -1373,15 +1373,17 @@ impl Compositor {
         self.sync_layout_cache(js);
     }
 
-    /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None
+    /// 聚焦方向邻居（布局模式 h/j/k/l）；无邻居返回 None。
+    /// `scope` 来自 `[editor] focus-scope`（geometry = 可跨组；group = 只在组内）。
     pub fn focus_leaf_dir(
         &mut self,
         id: u64,
         dir: crate::ui::layout::SplitDir,
         first: bool,
+        scope: helix_view::editor::FocusScope,
         js: Option<&mut helix_js::host::JsHost>,
     ) -> Option<u64> {
-        let ret = self.main_tree.focus_dir(id, dir, first);
+        let ret = self.main_tree.focus_dir_scoped(id, dir, first, scope);
         self.sync_layout_cache(js);
         ret
     }
@@ -1439,7 +1441,17 @@ impl Compositor {
     fn window_mode_focus(&mut self, c: char, cx: &mut Context) {
         let (dir, side) = Self::window_dir(c);
         let a = self.main_tree.active();
-        let _ = self.focus_leaf_dir(a, dir, side, cx.js.as_deref_mut());
+        let scope = cx.editor.config().focus_scope;
+        let moved = self
+            .focus_leaf_dir(a, dir, side, scope, cx.js.as_deref_mut())
+            .is_some();
+        if !moved && scope == helix_view::editor::FocusScope::Group {
+            // `group` 作用域下"没动"是**正常**结果（到组边界了），必须说出来，
+            // 否则用户以为按键坏了。
+            cx.editor.set_status(
+                "已到当前组的边界：p / P / Tab 跨组（或 [editor] focus-scope = \"geometry\"）",
+            );
+        }
         self.sync_editor_focus(cx.editor);
     }
 
