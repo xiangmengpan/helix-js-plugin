@@ -1131,6 +1131,23 @@ interface Helix {
     focus_dir(id: number, dir: SplitDir): void;
     /** 与方向邻居交换(浮窗则搬位置) */
     move(id: number, dir: SplitDir): void;
+    /**
+     * **事后修形**：把一个已有 pane（或**整组**）搬到目标位置的边缘。
+     *
+     * 典型用法：布局已经切成 `ed1 | (ed2 / term)`，把 term 提成整宽底部条（不用重开）。
+     * `id` 收叶子 id `pane.list()` 里的 id，也收**组 id**（`place:"group"` 的条目 ⇒ 整组搬）。
+     *
+     * - `at`：`"root"`（缺省）/`"active"` = 整窗边缘；数字 = 那个**组 id**（搬过去与该组并排）。
+     * - `dir`：落在目标哪条边，`"bottom"`（缺省）/ `"top"` / `"left"` / `"right"`。
+     * - `size`：**绝对单元格数**（按目标在该方向的尺寸换算成比例，clamp 0.1..0.9），缺省 10。
+     *
+     * 拒绝（此时什么都不会发生，语义等于 no-op）：搬 `rail`/`dock`（必须贴边全高/全宽）、
+     * 搬一个**包含** rail/dock 的组、搬根组、搬进自己的子树。
+     */
+    move_into(
+      id: number,
+      opts?: { at?: "root" | "active" | number; dir?: SplitDir; size?: number },
+    ): void;
     resize(id: number, ratio: number): void;
     zoom(id: number): void;
     unzoom(): void;

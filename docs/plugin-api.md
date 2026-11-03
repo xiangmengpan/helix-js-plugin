@@ -335,6 +335,9 @@ helix.set_register(text, register?)             // 写寄存器(默认 `"`,同�
 helix.input_badges()                            // 输入层徽标串(栈序,如 "DEBUG│PANE")
 helix.key_frecency()                            // 按键频率统计 {"space g b": 12}（which-key 排序用）
 helix.pane.focus(id)                             // 布局叶子 id
+helix.pane.move_into(id, {at?, dir?, size?})     // 事后修形:把 pane/整组搬到整窗或某个组的边缘
+                                                 // at: "root"(缺省)/"active"/组 id;dir: bottom(缺省)/top/left/right
+                                                 // size: **绝对单元格数**(缺省 10);拒绝搬 rail/dock/根组
 helix.pane.focus_panel(id)                      // **面板实例 id**(open_panel 的返回值)
 helix.layout.get()                              // {tree, active, zoomed} | null
 helix.layout.restore(layoutObj)                 // 仅写缓存
@@ -417,7 +420,7 @@ helix.plugin.unload(name)                       // 卸载**单个**插件(入队
 > 下面这块与 `helix.d.ts` / Rust 注册表**逐名一致**(生成方式见本节末尾)。
 
 ```
-helix.pane.*   close, embed, equalize, fix, float, focus, focus_dir, info, list, minimize, move, pin, raise, resize, unzoom, zoom
+helix.pane.*   close, embed, equalize, fix, float, focus, focus_dir, info, list, minimize, move, move_into, pin, raise, resize, unzoom, zoom
 helix.layout.*   delete, get, list, load, restore, save
 helix.stack.*   activate, create, list, remove
 helix.buffer.*   current, focus, list
