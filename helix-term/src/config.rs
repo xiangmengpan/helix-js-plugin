@@ -2,7 +2,7 @@ use crate::keymap;
 use crate::keymap::{merge_keys, KeyTrie};
 use helix_loader::merge_toml_values;
 use helix_view::{document::Mode, theme};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs;
@@ -20,6 +20,34 @@ pub struct Config {
     pub editor: helix_view::editor::Config,
     /// config.toml 的 `[plugins] / [plugins.<name>]` 段(插件配置;原始 TOML 表)
     pub plugins: Option<toml::Table>,
+    /// `[logging]` —— 日志文件策略（**只认用户级 config**，见 `LoggingConfig`）
+    pub logging: LoggingConfig,
+}
+
+/// 日志文件的默认上限：10 MiB。
+///
+/// 为什么要有：helix.log 是**追加写、从不轮转**的（`logging::init_file` 用 `append`），
+/// 长期使用能长到几十 MB（实测 18 MB / 12.8 万行）—— 想查一次插件报错反而要先翻山。
+pub const DEFAULT_LOG_MAX_SIZE: u64 = 10 * 1024 * 1024;
+
+/// `[logging]` 段。
+///
+/// **全局作用域**：workspace 的 `.helix/config.toml` 里的 `[logging]` **不生效**
+/// （与 `editor.workspace-trust` 同理 —— 不能让一个仓库决定你的日志怎么存）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct LoggingConfig {
+    /// 日志文件大小上限（字节）。写入会超过它时**清空重写**（不是轮转出多个文件）。
+    /// `0` = 不限制。默认 10 MiB。
+    pub max_size: u64,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            max_size: DEFAULT_LOG_MAX_SIZE,
+        }
+    }
 }
 
 /// `[keys.*]` 的容错解析：未知的模式名（`[keys.debug]`、写错的 `[keys.nromal]`）
@@ -93,6 +121,8 @@ pub struct ConfigRaw {
     pub keys: Option<KeysConfig>,
     pub editor: Option<toml::Value>,
     pub plugins: Option<toml::Table>,
+    /// `[logging]`：直接按结构体解析（`deny-unknown-fields` ⇒ 拼错的键会明确报错）
+    pub logging: Option<LoggingConfig>,
 }
 
 impl Default for Config {
@@ -104,6 +134,7 @@ impl Default for Config {
             warnings: Vec::new(),
             editor: helix_view::editor::Config::default(),
             plugins: None,
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -175,6 +206,9 @@ impl Config {
                     warnings,
                     editor,
                     plugins: local.plugins.or(global.plugins),
+                    // `[logging]` 只认用户级 config：workspace 的 `.helix/config.toml` 不参与
+                    // （与 `editor.workspace-trust` 同理 —— 别让一个仓库决定日志怎么存）
+                    logging: global.logging.unwrap_or_default(),
                 }
             }
             // if any configs are invalid return that first
@@ -203,6 +237,7 @@ impl Config {
                         |val| val.try_into().map_err(ConfigLoadError::BadConfig),
                     )?,
                     plugins: config.plugins,
+                    logging: config.logging.unwrap_or_default(),
                 }
             }
 
@@ -281,6 +316,48 @@ mod tests {
             cfg.keys_debug.search(&[n]),
             Some(crate::keymap::KeyTrie::MappableCommand(_))
         ));
+    }
+
+    #[test]
+    fn logging_max_size_from_config_and_defaults() {
+        // 不写 `[logging]` ⇒ 默认 10 MiB
+        assert_eq!(
+            Config::load_test("").logging.max_size,
+            DEFAULT_LOG_MAX_SIZE,
+            "没有 [logging] 时要有默认上限"
+        );
+        // 显式配置（kebab-case，与其它段一致）
+        let cfg = Config::load_test(
+            r#"
+            [logging]
+            max-size = 4096
+            "#,
+        );
+        assert_eq!(cfg.logging.max_size, 4096);
+        // 0 = 不限制（合法值，不能当成"没配"而回退默认）
+        let cfg = Config::load_test(
+            r#"
+            [logging]
+            max-size = 0
+            "#,
+        );
+        assert_eq!(cfg.logging.max_size, 0, "0 要原样保留（= 不限制）");
+        // 拼错的键要明确报错（deny-unknown-fields），而不是静默忽略
+        assert!(
+            toml::from_str::<ConfigRaw>("[logging]\nmax_sise = 1\n").is_err(),
+            "拼错的键应报错"
+        );
+    }
+
+    #[test]
+    fn logging_section_is_global_only() {
+        // workspace 的 `.helix/config.toml` 不该决定日志怎么存（与 workspace-trust 同理）
+        let cfg = Config::load(
+            Ok(&"[logging]\nmax-size = 111\n".to_owned()),
+            Ok("[logging]\nmax-size = 999\n".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(cfg.logging.max_size, 111, "只认用户级 config");
     }
 
     #[test]

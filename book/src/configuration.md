@@ -25,6 +25,11 @@ select = "underline"
 
 [editor.file-picker]
 hidden = false
+
+[logging]
+# 日志文件（`:log-open` 那个）的大小上限，单位字节；写入会超过它就**清空重写**（不轮转）。
+# 默认 10 MiB；`0` = 不限制。只认用户级 config：workspace 的 `.helix/config.toml` 里写这个**不生效**。
+max-size = 10485760
 ```
 
 You can use a custom configuration file by specifying it with the `-c` or

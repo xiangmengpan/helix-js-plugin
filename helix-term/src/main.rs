@@ -142,6 +142,10 @@ FLAGS:
         }
     };
 
+    // 日志文件上限来自 config（`[logging] max-size`）—— logging 先于 config 初始化，
+    // 所以这里补一次（`log` 的 logger 只能装一次，上限用全局原子量传递）。
+    helix_term::logging::set_max_size(config.logging.max_size);
+
     let workspace_trust =
         helix_loader::workspace_trust::WorkspaceTrust::new((&config.editor.workspace_trust).into());
 

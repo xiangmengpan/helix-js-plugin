@@ -973,6 +973,9 @@ impl Application {
             let default_config = Config::load_default()
                 .map_err(|err| anyhow::anyhow!("Failed to load config: {}", err))?;
 
+            // `[logging] max-size` 跟着 `:config-reload` 一起生效（下次写入就按新上限走）
+            crate::logging::set_max_size(default_config.logging.max_size);
+
             // Apply any change to editor.workspace_trust before reading local language config.
             self.editor
                 .workspace_trust

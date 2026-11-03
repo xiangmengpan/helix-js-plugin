@@ -69,6 +69,14 @@ Usability improvements:
   next to the user plugin root as `filetree-state.json`). The format is v2 (one record per
   root) and migrates v1 files.
 
+Packaging:
+
+* `helix.log` now has a **size cap** (`[logging] max-size`, bytes, default 10 MiB, `0` =
+  unlimited). When a write would exceed it the file is truncated and restarted (overwrite, not
+  rotation), and an already-oversized file is cleared at startup. Previously the log was
+  append-only and never rotated (18 MB / 128k lines after a few months). User-level config only
+  — a workspace `.helix/config.toml` cannot set it.
+
 Fixes:
 
 * `filetree`: character keys are input in search mode again — `j`, `k` and `?` used to be
