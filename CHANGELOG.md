@@ -52,6 +52,10 @@ Features:
   captured automatically — previously they only reached the status bar, which is a single
   slot that the next message overwrites.
 
+* `[plugins.filetree] close_on_esc` (default `true`): set to `false` and `Esc` in the tree
+  just returns focus to the editor, keeping the panel (use `q` to close). Handy when the tree is
+  a permanent left column.
+
 Commands:
 
 * `:js-log [level]` / `:js-log-clear` — the plugin log in a scratch buffer (core command, so it

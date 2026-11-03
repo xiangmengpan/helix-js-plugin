@@ -31,6 +31,11 @@ helix.define_config("filetree", {
     default: false,
     doc: "显示 git 状态列（M/A/D/?），并启用 `#M`/`#A`/`#D`/`#?` 谓词；打开面板与 R 时各读一次 git status",
   },
+  close_on_esc: {
+    type: "boolean",
+    default: true,
+    doc: "Esc 是否关闭面板：true（默认）关闭；false = 只把焦点还给编辑器、面板保留（关面板改用 q）",
+  },
   max_panels: {
     type: "number",
     default: 2,
@@ -59,7 +64,7 @@ const CFG = helix.get_config("filetree") || {};
 // 状态分层：`G` 是编辑器事实/全局偏好（含 `panels` 注册表 + `active`），每面板一份的视图状态
 // 在 `new_panel()` 的实例里；`:filetree-open` 开第二个（上限 `[plugins.filetree] max_panels`）。
 // 设计：docs/superpowers/specs/2026-11-03-filetree-multi-instance-design.md
-// 配置（config.toml `[plugins.filetree]`）：show_hidden · filter（初始表达式）·
+// 配置（config.toml `[plugins.filetree]`）：show_hidden · filter（初始表达式）· close_on_esc（false = Esc 只回焦点、面板保留）·
 //       git_status（行尾 M/A/D/R/? 列 + `#` 谓词）· persist（记住表达式与展开目录，
 //       **默认关**；写到 <用户插件根>/filetree-state.json —— 插件没有写 config.toml 的 API）。
 //       **C-\ 保留面板、焦点回编辑器**；其余 C-*/M-* **穿透给编辑器**（面板非模态，
@@ -1850,6 +1855,14 @@ function handle_key_with(panel, key) {
   if (panel.mode === "filter") return filter_key(panel, key);
   switch (key.name) {
     case "Esc":
+      // `close_on_esc = false`：Esc 只回焦点（面板保留），关面板改用 `q` —— 这是"树常驻"的用法。
+      // 搜索/过滤态里的 Esc 走各自的分支（先退出那种态），语义不受此配置影响。
+      if (CFG.close_on_esc === false) {
+        helix.pane.focus(0);
+        return "handled";
+      }
+      close_panel();
+      return "handled";
     case "q": close_panel(); return "handled";
     case "Up":
     case "k": move(panel, -1); return "handled";
@@ -1902,7 +1915,8 @@ function show_help() {
     "filetree: Enter/o 打开 · h/l 折叠/进入 · ↑↓ 移动 · / 搜索（Tab 切全库） · G 内容搜索" +
     " · > 过滤表达式（*.rs !*.lock #M）" +
     "（←/→ 折叠） · H 隐藏文件 · :filetree-find 全库找文件 · :filetree-search <词> 直接内容搜 · " +
-    "R 刷新 · a 新建文件 · A 新建目录 · m 重命名 · d 删除 · P 上级 · F 跟随 · q/Esc 关闭"
+    "R 刷新 · a 新建文件 · A 新建目录 · m 重命名 · d 删除 · P 上级 · F 跟随 · q 关闭 · " +
+    (CFG.close_on_esc === false ? "Esc 回编辑器（close_on_esc=false）" : "Esc 关闭")
   );
 }
 

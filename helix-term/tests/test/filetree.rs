@@ -875,3 +875,54 @@ async fn filetree_takes_full_height_left_column() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// `[plugins.filetree] close_on_esc = false`：`Esc` **只把焦点还给编辑器**，面板保留；
+/// 关面板改用 `q`。
+///
+/// 为什么需要这个开关：树常驻在左侧（`at:"root"`）时，用户按 `Esc` 的意图多是"回到编辑器"，
+/// 而不是"把树关掉再开一次"。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_close_on_esc_false_keeps_panel() -> anyhow::Result<()> {
+    // 配置合并缓存是进程级的 ⇒ 与其它写 [plugins.*] 的用例串行
+    let _cfg = plugin_config_lock().await;
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("readme.md"), "hi\n")?;
+    let plugin = dir.path().join("filetree.js");
+    std::fs::write(
+        &plugin,
+        std::fs::read_to_string(repo_plugin("filetree/plugin.js"))?,
+    )?;
+
+    let mut cfg = test_config();
+    cfg.plugins = Some(toml::from_str("[filetree]\nclose_on_esc = false\n")?);
+    let mut app = AppBuilder::new().with_config(cfg).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(
+        &mut app,
+        &format!(":open {}<ret>", dir.path().join("readme.md").display()),
+    )
+    .await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    let panel_type = std::any::type_name::<helix_term::ui::PluginPanel>();
+    assert!(app.compositor.has_component(panel_type), "前置：面板已开");
+
+    // Esc：面板**仍在**，焦点回到编辑器
+    pump(&mut app, "<esc>").await?;
+    assert!(
+        app.compositor.has_component(panel_type),
+        "close_on_esc=false 时 Esc 不该关面板"
+    );
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "Esc 应把焦点还给编辑器"
+    );
+
+    // 面板仍然能被关掉（不是"开了就关不掉"）：`q` 与 `:filetree` 这两条出口都没被这配置改动。
+    // （`q` 的路径与配置无关，已由 `filetree_close_panel` 在默认配置下覆盖。）
+    pump(&mut app, ":filetree<ret>").await?;
+    assert!(!app.compositor.has_component(panel_type), "toggle 仍是开关");
+    Ok(())
+}
