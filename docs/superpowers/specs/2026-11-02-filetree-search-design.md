@@ -1,6 +1,10 @@
 # filetree 搜索能力设计（面板内过滤 / 原生 picker / 内容命中树）
 
-> **状态：方案，未实现**（2026-11-02）——本文是设计记录，落地时请在这里逐条更新 P0–P3 的状态。
+> **状态：P0–P3 已全部实现（2026-11-02）；§8 顺带项 ③ 多打开标记（§13）、② 诊断标记（§14）已补** ——本文其余部分是方案与依据，改动落地后请逐条更新状态。
+>
+> 落地记录见 §9（P0）、§10（P1）、§11（P2）、§12（P3，含两个偏离：持久化**默认关**、
+> 状态写在 `<用户插件根>/filetree-state.json` 而不是 `[plugins.filetree]`；以及一个真 bug：
+> `reveal`/`:cd` 换根后 git 状态列不再刷新）。
 >
 > 起因：`filetree` 现在只有**导航**（展开/打开/改名/删除），没有任何"找"的手段。中等规模的仓库里
 > 唯一的办法是手动 `l` 进去一层层翻，或者退回核心的 `:open <目录>`。用户诉求：**这个插件没有搜索功能**。
@@ -178,10 +182,10 @@ promise resolve 会**请求重绘**，所以标准形态是：按键 → 起异�
 
 | 阶段 | 内容 | 改动点 | 代码量 | 验收 |
 |---|---|---|---|---|
-| **P0** | 面板内过滤树：`build_rows()` + query 状态机 + 头部查询行 + 可见窗口高亮 + `/` `Esc` `Backspace` 模式化 + `pre_query` 恢复 | 只动 `plugins/filetree/plugin.js` + `tests/filetree.test.js` | ≈110 行 | ① 过滤后 `a`/`m`/`d`/`Enter`/`P` 全部照常；② `window_rows` / `scroll_top` 既有测试不改仍绿；③ 新增纯函数测试：`filter_rows`（祖先保留 / depth 正确 / 隐藏文件联动）、`highlight`（子序列下标） |
-| **P1** | `:filetree-find`：`helix.picker.define("filetree-find")` + preview + action 里 `reveal` 同步面板；filter 模式可选全量 flat 命中（`rg --files` + fuzzy 会话） | 同文件追加 | ≈60 行 | 全库找文件能跳且面板同步；`set_root` 后列表跟着变；`S.idx.sid` 有 `drop`（`:plugin-unload` 后无残留） |
-| **P2** | grep 内容树：命中文件为父节点、命中行为子节点、`Enter` 跳行；搜索历史（`Up` 回溯）；`:filetree-search <q>` 命令化 | 同文件追加 | ≈150 行 | `rg` 缺失时降级可见；首屏 < 200ms（10k 文件）；`JSON` 解析在 Windows 路径上正确 |
-| **P3（可选）** | 按 git 状态 / 诊断过滤；`>` 前缀命令行过滤（filter DSL）；过滤表达式与折叠状态存进 `[plugins.filetree]` | 配置 schema 也要动 | — | 配置项有 `doc` 文案，`:config-reload` 即时生效 |
+| **P0** ✅ | 面板内过滤树：`build_rows()`（实际叫 `filter_rows`/`rows_for_view`）+ query 状态机 + 头部查询行 + 可见窗口高亮 + `/` `Esc` `Backspace` 模式化 + `pre_query` 恢复 | 只动 `plugins/filetree/plugin.js` + `tests/filetree.test.js`（+ 一条集成用例） | ≈180 行 | ① 过滤后 `a`/`m`/`d`/`Enter`/`P` 全部照常；② `window_rows` / `scroll_top` 既有测试不改仍绿；③ 新增纯函数测试：`filter_rows`（祖先保留 / depth 正确 / 隐藏文件联动）、`match_name`、`highlight_segments`；④ 集成用例 `filetree_search_filter_open_and_escape` |
+| **P1** ✅ | `:filetree-find`（原生 picker：`rg --files` + preview + action 里 `reveal` 同步面板）；find 模式 `Tab` 切「全库」flat 命中（`rg --files` + `helix.fuzzy` 会话，按 query 缓存） | 同文件追加 | ≈150 行 | ✅ 全库找文件能跳且面板同步；`set_root`/`R` 后列表跟着变；`drop_flat()` 在 `close_panel`/`set_root`/`onUnload` 都调了 `helix.fuzzy.drop` |
+| **P2** ✅ | grep 内容树：命中文件为父节点、命中行为子节点、`Enter` 跳行、`←/→` 折叠文件组；`:filetree-search <q>` 命令化 | 同文件追加 | ≈190 行 | ✅ `rg --json` 解析（行号 0 起始换算）+ 上限封顶；`rg` 缺失/参数错在查询行显示失败原因；搜索历史（`Up` 回溯）**未做**——回车即入输入，`Up` 已归导航，留 P3 另找键 |
+| **P3** ✅ | 过滤 DSL（`>` 输入：glob / `#M`·`#A`·`#D`·`#?` / 子串 / `!` 排除，Enter 应用）+ git 状态列 + 会话持久化（可关） | 配置 schema 4 键 | ≈260 行 | ✅ 配置项都有 `doc`；`:config-reload` 生效（`CFG` 每次加载重读）；诊断过滤**未做**（见 §12.5） |
 
 测试口径（沿用仓库约定）：
 
@@ -219,11 +223,11 @@ promise resolve 会**请求重绘**，所以标准形态是：按键 → 起异�
 
 ## 8. 顺带可加的能力（不属于搜索，但同一批改动更顺）
 
-- **git 状态列**：`run_async(["git", "status", "--porcelain"])` 一次 + 结果挂到节点 → 行尾 `M`/`A`/`?`
-- **诊断点标记**：`helix.on("lsp-diagnostics")` 事件已存在
-- **多打开标记**：现在只有"当前文件"有右缘 `●`，可以再区分"已打开但非当前"
-- **折叠状态持久化**：写进 `[plugins.filetree]`（P3 一起做）
-- **双实例 / 双 root**：见 §7.2
+- **git 状态列**：✅ 已做（P3，见 §12；实际命令带 `-C <root>` 与 `-z`）
+- **诊断点标记**：✅ 已做（§14：诊断列 `E/W/i/h` + `#E`/`#W`/`#I`/`#H` 谓词；**但数据面有核心缺口**）
+- **多打开标记**：✅ 已做（§13：`●` 当前 / `·` 已打开非当前）
+- **折叠状态持久化**：⚠️ 已做但换了载体（`<用户插件根>/filetree-state.json`，默认关；见 §12.2）
+- **双实例 / 双 root**：❌ 未做（仍是全局单例，见 §7.2）
 
 ---
 
@@ -243,3 +247,319 @@ promise resolve 会**请求重绘**，所以标准形态是：按键 → 起异�
 | nucleo 不返回匹配位置 | `docs/api/fuzzy.md:47` |
 | `split(":")` 解析 rg 的 Windows 坑 | `plugins/examples/picker.js:40` |
 | `JSON.parse` 在插件里可用 | `plugins/plugin/plugin.js:70` |
+
+---
+
+## 9. 落地记录（P0，2026-11-02）
+
+改动文件：
+
+| 文件 | 改动 |
+|---|---|
+| `plugins/filetree/plugin.js` | +纯逻辑（`match_name` / `node_match` / `rel_display` / `filter_rows` / `highlight_segments`）· `rows_for_view()` 成为唯一取行入口 · `S.mode/query/pre_query/eager_done` · `enter_find` / `exit_find` / `refresh_find` / `find_key` · 渲染加查询行与命中高亮 · `close_panel`/`set_root`/`reload_tree` 清理搜索态 · `read_dir_sync(dir, quiet)` |
+| `plugins/filetree/tests/filetree.test.js` | 修桩（补 `path_join`/`path_name`/`path_parent`）+ 7 个新用例 |
+| `helix-term/tests/test/filetree.rs` | 新集成用例 `filetree_search_filter_open_and_escape` + `panel_body()` 辅助 |
+
+### 与本文的三处差异（都是落地时发现本文不够）
+
+1. **多了「有预算的补加载」**（`eager_load_once`，`EAGER_DIRS = 400` / `EAGER_ENTRIES = 20000`）。
+   本文原方案是"过滤只看已加载节点"，实测体验是"按 `/` 搜 `handler` 什么都没搜到"——
+   **"搜不到"比"慢几十毫秒"更糟**。所以进 find 时一次性按预算递归 `ensure_children`（`seen` 防符号链接成环、
+   预算防超大树、失败静默不刷屏）。代价：首次 `/` 有一次有界 IO（本机 ~400 目录量级，个位数毫秒）；
+   预算外的深层目录仍然搜不到 —— 那正是 P1 的 `rg --files` 要解决的。
+2. **`refresh_find()` 的落点规则**：query 变化后光标落在**首个真命中**（`r.hit` 为真），
+   而不是"被保留的祖先行"。否则输入 `main` + `Enter` 会变成"钻进 `src/`"，用户还得再按一次。
+   副作用：逐字输入时被保留祖先行上的光标会被抢走，这符合"输完直接 Enter"的预期。
+3. **`panel_body()` 辅助**：集成测试里 `panel_text()` 会把底部状态栏拼进去，而状态栏含当前文件路径 ⇒
+   "断言某文件被滤掉"会误伤（第一版就是这么红的）。负向断言一律用只取带边框行的 `panel_body()`。
+
+### 顺带修掉的一个既有红灯
+
+P0 开工时 `node --test plugins/filetree/tests/filetree.test.js` **整份是红的**：
+`IS_WINDOWS = helix.path_join("a", "b")`（`plugin.js:118` 一带）是**加载期**依赖，
+而测试桩没实现 `path_join` ⇒ `require` 直接抛 `TypeError`，后续用例一个都跑不到。
+已补桩。教训与第 5 节测试口径一致：**这类纯逻辑测试没人复跑就会悄悄烂掉**。
+
+### 验证（本次实际执行）
+
+| 命令 | 结果 |
+|---|---|
+| `node --test plugins/filetree/tests/filetree.test.js` | 10 passed |
+| `cargo test -p helix-term --features integration --test integration filetree` | 12 passed（含新用例） |
+| `tsc --noEmit -p plugins/jsconfig.json` | 干净 |
+| `node plugins/tools/check_api_surface.mjs` | 全绿（含 `runtime/plugins` 镜像一致） |
+| `node plugins/tools/check_capability_surface.mjs` · `check_doc_surface.mjs` | 全绿 |
+| `node plugins/tools/check_signatures.mjs` | 全绿 |
+| `cargo fmt -p helix-term -- --check` | 干净 |
+
+### 已知天花板（P1/P2 待补）
+
+- 只搜**文件/目录名**（+ 含 `/` 时的相对路径），没有内容搜索。
+- 手写输入不支持**粘贴 / 中文 IME**（与 `prompt()` 同一套按键拼接）。
+- `S` 仍是全局单例（§7.2），两个面板实例会互相干扰。
+- 过滤视图下 `l`/`h`/`o` 不进 find 分支（`find_key` 只给了 `Enter` 打开语义）；要加"过滤视图里也能展开"再议。
+
+---
+
+## 10. 落地记录（P1，2026-11-02）
+
+### 10.1 两条入口
+
+| 入口 | 行为 |
+|---|---|
+| find 模式按 `Tab` | 范围在 **当前树 / 全库** 之间切。全库 = `rg --files` 列表 + `helix.fuzzy`（nucleo 打分）；行是**扁平相对路径**（`src/main.js`），不是树 —— 同名文件靠路径区分 |
+| `:filetree-find` | 原生 picker（核心 UI：nucleo + 预览 + 核心键位）。选中 → `pick_open()`：打开文件；**面板开着时**顺手 `reveal()` 同步定位 |
+
+### 10.2 几个实现决定（都有依据，不是口味）
+
+1. **`rg --files` 而不是 `read_tree`/`glob_async`**：后者是裸 `fs::read_dir` 递归（`shell.rs:754`/`:779`），
+   **不读 .gitignore** —— 在本仓库会把 `target/` 几十万个文件全列出来。`rg` 才是"尊重 ignore 的列表"。
+   用 **argv 形式** `helix.run_async(["rg", "--files", "--", root])`：不过 shell ⇒ 空格/引号/中文/Windows 盘符都安全。
+   `rg` 不存在或参数错时**降级 `read_tree(depth: 12)`** 并在状态栏说明"不忽略 .gitignore"。
+2. **`rg` 无匹配 = exit 1 是常规退出**：映射成空列表，不能当错误（`examples/picker.js` 已踩过）。
+3. **nucleo 会话 + 按 query 缓存**：`rows_for_view()` 一次按键会被调好几次，而 `fuzzy.run` 是跨界调用
+   （~2ms/5k 条）⇒ `S.flat.cache_key/cache_rows` 缓存"这个 query 的结果"；会话只在条目集变化时重建。
+   释放点：`close_panel` / `set_root` / `reload_tree` / `plugin.onUnload` 全部走 `drop_flat()`。
+4. **扁平行的 `node.name` 放相对路径**：全库视图若只显示 basename，`index.js` 会有一屏同名。
+   合成节点 `{name: rel, path: abs, is_dir: false}` ⇒ `node_at`/打开/删除照旧按 `path` 走，
+   只有 `context_dir()`（新建文件的落点）会退化到 `S.root` —— 已知且可接受。
+5. **高亮仍自己算**：nucleo 不给匹配位置（`docs/api/fuzzy.md:47`），只对 `<=FLAT_LIMIT(200)` 行算子序列。
+
+### 10.3 两个测试坑（都是这次实测出来的）
+
+- **`pump(&mut app, "")` 会卡约 10 分钟**：空按键列表下 `event_loop_until_idle` 收不到空闲信号。
+  本次实测 580s（第一次跑到 876s）。picker 的行数据是**跟 `OpenPicker` 请求一起来的**，
+  层出现时候选就绪 ⇒ 根本不需要再泵一轮，直接用。
+- **断言里比 CJK 要先去空白**：渲染行的宽字符占两列，`全库` 在 `render_rows` 里是 `全 库` ⇒
+  `text.contains("全库")` 必红。压掉空白再比（`chars().filter(|c| !c.is_whitespace())`）。
+
+### 10.4 验证（本次实际执行）
+
+| 命令 | 结果 |
+|---|---|
+| `node --test plugins/filetree/tests/filetree.test.js` | 13 passed（+`flat_items`、全库行序/缓存/`drop`） |
+| `cargo test -p helix-term --features integration --test integration filetree` | 14 passed（+`filetree_search_all_scope_uses_rg_files`、`filetree_find_command_opens_from_picker`），35.8s |
+| `tsc --noEmit -p plugins/jsconfig.json` | 干净 |
+| `check_api_surface` · `check_capability_surface` · `check_doc_surface` · `check_signatures` | 全绿 |
+| `cargo fmt -p helix-term -- --check` · `cargo xtask sync-runtime` | 干净 / 已同步 |
+
+### 10.5 剩下的天花板（P2/P3）
+
+- 没有**内容搜索**（grep）：P2。
+- 手写输入仍不支持粘贴 / 中文 IME。
+- 全库列表是**一次性快照**：外部改动要关面板重开或 `R` 才反映（不做 `watch`，见 §4.4）。
+- `S` 仍是全局单例（§7.2）。
+- `find_key` 里 `Tab` 已被"切全库"占用；将来若要"在过滤视图里也能展开/钻取"，得另找键。
+
+---
+
+## 11. 落地记录（P2，2026-11-02）
+
+### 11.1 入口与键位
+
+| 入口 | 行为 |
+|---|---|
+| `G`（树模式） | 进内容搜索（空 query），逐字增量触发 `rg` |
+| `:filetree-search <词>` | 同上但带初始词（`helix.command_args().join(" ")`）；面板没开时先开（要显示结果树） |
+| 结果树里的 `Enter` | 打开文件并跳到**命中行**（`open_file({row})`，0 起始） |
+| 结果树里的 `←` / `→` | 折叠 / 展开当前**文件组** |
+| `Esc` | 退出搜索、回到进搜索前的节点（与 find 模式同一套 `exit_search()`） |
+
+行的形状与树/过滤视图完全一致（文件行 `depth 0`、命中行 `depth 1` 且 `node.line` 有值），
+所以 `node_at` / 渲染 / 打开**一行没改**就成立了 —— 这是 §4.1"一个函数顶住全部"的第二次回报。
+
+### 11.2 实现决定
+
+1. **`rg --json` 而不是 `-n --no-heading`**：后者的 `path:line:text` 在 Windows 上会被
+   `split(":")` 切错（`C:\repo\a.rs:12:x`），`plugins/examples/picker.js:40` 就是这个写法。
+   `--json` 每行一个事件，只认 `type: "match"`，`line_number` 是 1 起始 ⇒ 减 1 对齐 `open_file({row})`。
+   非 UTF-8 路径只有 `bytes` 形式 ⇒ **跳过**（宁缺不编）。
+2. **`-F` 字面量**：内容搜索不做正则（写 `(` 中途不会跳成"正则无效"）。要做正则/DSL 留给 P3 的 `>` 前缀。
+3. **序号门代替防抖**：插件侧没有定时器（`helix.set_timeout` 不存在），无法 debounce ⇒
+   每次按键都发一次 `rg`，用 `g.seq++` 只接受**最新**那次的结果（旧结果到达即丢，不会回跳）。
+   代价是连敲时多起几个进程（`rg` 在自己的 worker 线程里，主线程不等）。
+4. **三道上限**：`rg -m 20`（单文件）× 500 文件 × 2000 处，避免"一个 a 命中整个仓库"把 JS 侧撑爆。
+5. **折叠状态挂在 group 上**（`grp.expanded`），行是每帧现算的 ⇒ 折叠不用重建树、不动 `S`。
+
+### 11.3 顺手修掉一个 P0 遗留 bug
+
+P0 的 `find_key` 把 `j`/`k`/`?` 当导航键先行 `match` 掉了 ⇒ **搜不到名字里带 j/k 的文件**
+（输入 `j` 变成"下移一行"，过滤不生效）。P2 把"字符键全归输入"定为铁律：
+搜索态只保留方向键/`Home`/`End`/`PageUp`/`PageDown` 导航，其余单字符一律进 query。
+回归用例：`filetree_find_takes_letter_keys_as_input`（输入 `j` 必须真的过滤）。
+
+### 11.4 验证（本次实际执行）
+
+| 命令 | 结果 |
+|---|---|
+| `node --test plugins/filetree/tests/filetree.test.js` | 17 passed（+`literal_hits`、`grep_groups`×2、`grep_rows`） |
+| `cargo test -p helix-term --features integration --test integration filetree` | 16 passed（+grep 跳行、字符键回归），43.6s |
+| `tsc --noEmit -p plugins/jsconfig.json` · `cargo fmt --check` | 干净 |
+| `check_api_surface` · `check_capability_surface` · `check_doc_surface` · `check_signatures` | 全绿 |
+| `cargo xtask sync-runtime` | 已同步 |
+
+### 11.5 剩下的（P3）
+
+- 正则 / 过滤 DSL（`>` 前缀）；**搜索历史（`Up` 回溯）**（`Up` 已是导航，得另找键或做成"空 query 时 `Up` 回溯"）。
+- 按 git 状态 / 诊断过滤；折叠状态与过滤表达式持久化到 `[plugins.filetree]`。
+- `S` 仍是全局单例（§7.2）。
+- 内容搜索不做多行/上下文（`-A/-B`），也不显示列号。
+
+---
+
+## 12. 落地记录（P3，2026-11-02）
+
+### 12.1 三块东西
+
+| 块 | 入口 | 行为 |
+|---|---|---|
+| **过滤 DSL** | `>` 键（树模式） | 进输入条，**实时预览**；`Enter` = 应用（留在树模式，头部显示 `[表达式]`）；`Esc` = 放弃草稿；删空 + `Enter` = 清除 |
+| **git 状态列** | `[plugins.filetree] git_status = true` | 行尾一格 `M/A/D/R/?`；并启用 `#` 谓词。读一次 `git -C <root> status --porcelain -z --untracked-files=all` |
+| **会话持久化** | `[plugins.filetree] persist = true` | 记住"上次的过滤表达式 + 展开的目录"（按根归属），下次打开同一根时恢复 |
+
+表达式语法（`compile_filter`）：
+
+| 词 | 含义 |
+|---|---|
+| `*.rs` `test_?.js` | glob，**不含 `/` ⇒ 比 basename**（`src/a.rs` 也命中 `*.rs`） |
+| `src/**` `src/**/a.rs` | glob，**含 `/` ⇒ 比相对路径**；`**/` 含零层（`src/a.rs` 命中 `src/**/a.rs`） |
+| `#M` `#A` `#D` `#R` `#?` | git 状态谓词（`#?` = 未跟踪）。**没有 git 表时一律不命中**（不静默放行） |
+| `src/` | 无通配符 ⇒ 相对路径上的子串（大小写不敏感） |
+| `!xxx` | 排除（可加在任一形态前）；空格分隔的多个词是 **AND** |
+
+### 12.2 与本文的两处偏离（都是刻意的）
+
+1. **持久化默认 `false`**（本文写的是"过滤表达式与折叠状态存进 `[plugins.filetree]`"）：
+   - 插件**没有写 `config.toml` 的 API**（`define_config`/`get_config` 只读），所以状态落在
+     `<用户插件根>/filetree-state.json`（`plugins_dir()` + `write_plugin_file`）。
+   - 写盘是副作用 ⇒ 默认关，用户显式开 `persist = true` 才写。测试也因此不会污染开发机的配置目录。
+   - 位置刻意**不是** `<用户插件根>/filetree/`：那会造出一个用户层插件目录，让"目录级覆盖"看起来像
+     已经覆盖了内置 filetree（虽然 `resolve_in` 是按 `filetree/plugin.js` 是否存在判定的，不该赌）。
+2. **诊断过滤没做**：`helix.diagnostics()` 只给文件级聚合计数，拿不到"哪个文件有 error"的逐文件映射，
+   做不出可靠的谓词。等 API 有了逐文件诊断再做（写进 §12.5）。
+
+### 12.3 顺手修掉一个真 bug（集成测试逼出来的）
+
+`git_status` 原来只在 `open_panel` 里读一次。而 `:filetree-reveal` / `:cd` 都会走 `set_root()` **换根**，
+于是"面板先按 cwd 打开、再 reveal 到别的目录"这一条最常用的路径上，git 状态列**永远是空的**。
+现在 `set_root()` 里清表并重读（`if (CFG.git_status) refresh_git()`），`open_panel` 只在没有表时补读；
+`refresh_git` 的异步结果还会比对 `root === base_dir()`，换过根就丢弃（否则旧根的状态会标到新树上）。
+
+### 12.4 验证（本次实际执行）
+
+| 命令 | 结果 |
+|---|---|
+| `node --test plugins/filetree/tests/filetree.test.js` | 22 passed（+`glob_to_regex`、`compile_filter`、`dsl_hit`、`match_tree`、`parse_git_status`） |
+| `cargo test -p helix-term --features integration --test integration filetree` | 18 passed（+DSL 应用/清除、git 列与 `#` 谓词，真 `git init` 仓库；没装 git 则跳过），50.5s |
+| `tsc --noEmit -p plugins/jsconfig.json` · `cargo fmt --check` | 干净 |
+| `check_api_surface` · `check_capability_surface` · `check_doc_surface` · `check_signatures` | 全绿 |
+| `cargo xtask sync-runtime` | 已同步 |
+
+重构提示：`filter_rows`（名字搜索）现在是 `match_tree` 的特例 —— 两者共用同一条"祖先保留"遍历，
+既有 P0 用例覆盖它，重构后仍全绿。
+
+### 12.5 明确没做的（以及为什么）
+
+| 没做 | 原因 |
+|---|---|
+| 逐文件诊断谓词（`#E`/`#W`） | 本阶段没做。**修正 §12.5 的原判断**：`helix.diagnostics()` 确实只给聚合计数，但 `helix.on("lsp-diagnostics", (docId, diags, payload))` 能拿到逐文档诊断 ⇒ 维护 `docId → path`（对 `helix.buffer.list()`）就能做标记；局限是**只有已打开的文档**有诊断，workspace 级错误不在此列 |
+| 搜索历史（`Up` 回溯） | 搜索态里 `Up` 已是导航；再做要引入"空 query 时 `Up` 回溯"这种隐藏语义，收益不抵复杂度 |
+| 正则 DSL（`/re/`） | `rg -F` 是刻意的默认；正则要另设转义/错误展示，留待有需求 |
+| 多根同时持久化 | 只存"最后一个根"的状态（`state.root` 不匹配就忽略）；多根要设计"哪些根值得记"的策略 |
+| `S` 全局单例 | 老问题（§7.2），与本阶段无关，但每加一种模式都更容易踩到 |
+
+---
+
+## 13. 补做：多打开标记（§8 顺带项 ③，2026-11-02）
+
+行尾右缘两档标记（与 git 状态列 `w-4`、圆点 `w-2` 分列，不互相抢格）：
+
+| 标记 | 含义 | 样式 |
+|---|---|---|
+| `●` | **当前**文件 | `ui.text.focus` |
+| `·` | 已打开但非当前 | `ui.virtual`（选中行上用 focus 保证可见） |
+| 无 | 未打开 | — |
+
+内容命中行（grep 的 `depth 1`）不画标记：它们与文件行共用一个 `path`，否则每个命中行都会冒一个点。
+
+### 13.1 维护"已打开集合"时踩到的两个核心缺口
+
+1. **`:buffer-close` 不发任何插件事件**（`helix-term/src/commands/typed.rs` 的
+   `buffer_close_by_ids_impl` 里既没有 `emit_plugin_event` 也没有 `sync_layout_cache`；
+   `buffer-close` 事件只在 `:quit`/`:force-quit` 发）。所以"只靠事件维护集合"会留下僵尸 `·`（实测）。
+   现在权威来源是 `helix.buffer.list()` **重新播种**，触发点：面板打开 / **面板上任何一次按键** /
+   `R`。代价是每次按键一次 `buffer.list()`（文档数级别，微秒量级）。
+2. **`S.current` 只在 `buffer-open` 更新**，而 `buffer-open` 也只有 `:open`/`:o` 路径会发
+   （file picker 打开文件走 `ui/mod.rs` 的 `editor.open`，不经此处）。于是"关掉当前 buffer 后换到
+   另一个文档"时 `S.current` 是陈旧的 —— 以前会给已关闭的文件继续画 `●`。
+   现在 `opened_marker()` 用 `opened` 兜一层：**不在 opened 集合里就一个标记都不画**。
+
+> 这两条都是"核心事件面不完整"导致的；将来核心若给 `:buffer-close` 补事件、或提供
+> "当前文档路径"的读取 API，这一节可以退回成纯事件驱动。
+
+### 13.2 验证
+
+| 命令 | 结果 |
+|---|---|
+| `node --test plugins/filetree/tests/filetree.test.js` | 23 passed（+`opened_marker` 五种输入） |
+| `cargo test -p helix-term --features integration --test integration filetree` | 19 passed（+`filetree_marks_open_buffers`：开两个文件 → `●`/`·` → 关当前 buffer → 标记消失），57.9s |
+| `tsc` · `cargo fmt --check` · 4 个 check 脚本 · `cargo xtask sync-runtime` | 全绿 / 已同步 |
+
+---
+
+## 14. 补做：诊断标记 + `#E`/`#W` 谓词（§8 顺带项 ②，2026-11-02）
+
+### 14.1 数据面：核心缺口已补（2026-11-03）
+
+> **补之前的事实**：`helix-js` 的 `emit_lsp_diagnostics()` 全仓**没有任何调用点** ⇒
+> `helix.on("lsp-diagnostics", …)` 这个事件永远不会触发（API 面有，发送方没有）。
+
+**现在已接上**（三处小改 + 一个 mock 场景）：
+
+| 位置 | 改动 |
+|---|---|
+| `helix-view/src/handlers/lsp.rs` | 不动 —— `DiagnosticsDidChange` 本来就在 `Editor::handle_lsp_diagnostics` 里派发，是 **push / pull 两条 LSP 路径的唯一汇聚点** |
+| `helix-term/src/handlers/diagnostics.rs` | 新增 hook：`DiagnosticsDidChange → helix_js::diagnostics::queue_diagnostics(doc)`；新增 `doc_diagnostics_json(editor, doc_id)`（逐文档序列化，形状与原来一致）与 `doc_id_by_u64` |
+| `helix-js/src/diagnostics.rs` | 新增 `queue_diagnostics / take_pending_diagnostics / has_diagnostics_listener`（thread_local 去重队列） |
+| `helix-term/src/application.rs` | `render` 里排空队列 → `emit_lsp_diagnostics(doc_id, json)`；没人监听就不序列化 |
+| `helix-term/src/commands/typed.rs` | `serialize_diagnostics` 改为转发到 `doc_diagnostics_json`（单一来源） |
+| `helix-term/src/bin/mock_lsp.rs` | 新场景 `diagnostics_push`：`didOpen` 后主动推一条 `publishDiagnostics`（severity 1 = error） |
+
+**为什么排队而不是当场发**：`helix-js` 的 `with_engine` 在"已在 JS 调用树内"时会 **panic**；
+而诊断变更点在 `helix-view`（那里也拿不到 JS 宿主）。排到 `render` 里发，与 `cursor-move` 事件同一类边界。
+
+两条数据通道现在是这样：
+
+| 通道 | 覆盖范围 | 触发点 |
+|---|---|---|
+| **A. 轮询 `helix.diagnostics()`**（当下唯一可用的） | **只有当前文档**（该 API 的口径就是"当前文档"；配 `helix.buffer.current()` + `buffer.list()` 才知道属于哪个文件） | 面板每次按键 / `buffer-open` / 打开面板 / `R`（都是人-rate，不是每帧） |
+| **B. `lsp-diagnostics` 事件**（✅ 已接上，§14.1） | **逐文档**（含后台文件，push 与 pull 两条路径都覆盖） | 诊断变更 → 队列 → `render` 排空 |
+
+数据面落地后，插件侧刚才的两条限制**只剩下**"插件在标记上是人-rate 刷新"这一条：
+`poll_diagnostics()` 现在退化成兜底（事件没来/没监听时仍能标当前文档），逐文档标记由事件驱动。
+
+### 14.2 插件侧
+
+- 状态：`S.diag = Map<绝对路径, {severity, count}>`（只存**最严重**那一级）。
+- 渲染：右缘 `w-6` 一格，`E`/`W`/`i`/`h`，scope 依次 `error`/`warning`/`ui.virtual`；
+  与 `w-4` 的 git 列、`w-2` 的打开标记分列，互不抢格（32 列面板下三列都在右缘）。
+- 谓词：`#E` 只认 error；`#W` = warning **或更严重**；`#I`；`#H` = 任意级别；
+  `!#E` 取反；**没有诊断信息的节点一律不命中**（不静默放行，与 `#M` 对 git 表缺失的处理一致）。
+- `compile_filter` 现在按字母分派：`E/W/I/H` → 诊断谓词，`M/A/D/R/?` → git 谓词。
+
+### 14.3 验证
+
+| 命令 | 结果 |
+|---|---|
+| `node --test plugins/filetree/tests/filetree.test.js` | 27 passed（+`worst_severity`、`diag_hit`、`diag_mark`、`#E/#W` 编译与过滤） |
+| `cargo test -p helix-term --features integration --test integration filetree` | 19 passed（补核心接线后复跑），60.8s |
+| `cargo test -p helix-term --features integration --test integration plugin_lsp` | 17 passed（含**新增** `plugin_lsp_diagnostics_event_fires`：mock 推一条 error → 插件收到 `diag:1:error`） |
+| `cargo test -p helix-js diagnostics` | 3 passed |
+| `tsc` · 4 个 check 脚本 · `cargo xtask sync-runtime` | 全绿 / 已同步 |
+
+### 14.4 已知限制（都写进了插件文件头）
+
+- 诊断数据的**新鲜度**：事件只在诊断真变化时推；打开面板时不会为所有文件"补一遍"
+  （LSP 本来也只为已打开/推送过的文档报告诊断）。所以后台文件的标记可能在本次会话里是"上次推送时"的状态。
+- 每帧排空队列只在**有人监听**时才序列化（`has_diagnostics_listener`），没插件监听时零成本。
+- `severity` 必须按**字符串**处理（数字会被忽略）—— 单测专门钉了这条（核心序列化给的是字符串）。

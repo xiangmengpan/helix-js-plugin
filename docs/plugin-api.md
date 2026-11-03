@@ -152,7 +152,7 @@ config 加载报 `unknown field`**)。**已知时序**:该配置在 `plugins/ico
 
 ### 终端与布局树
 
-`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`pane.close`/`pane.zoom`/`pane.unzoom`/`pane.resize`/`layout.*`/`pane.focus`/`layout.get`/`layout.restore`;窗口管理走 compositor 层的**zellij 式平级模式**(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll;旧 `C-w` 已删),模式与键位表对插件可见:`helix.pane_mode.current()/keymap()` + `pane-mode-change` 事件;`helix.pane.list()` 给出统一 pane 清单(含浮窗)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;filetree 即此模式;`layout.get` 叶子带 `rail` 标记)。
+`helix.open_terminal`(原生 pty 面板)/`term_write/feed/kill/list/close/resize/clear/save`/`set_terminal_mode`(dock/fullscreen/floating/minimized)/`term_state`(跨会话持久化);布局:`buffer_open`(开新叶)/`pane.close`/`pane.zoom`/`pane.unzoom`/`pane.resize`/`layout.*`/`pane.focus`/`layout.get`/`layout.restore`;窗口管理走 compositor 层的**zellij 式平级模式**(`C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll;旧 `C-w` 已删),模式与键位表对插件可见:`helix.pane_mode.current()/keymap()` + `pane-mode-change` 事件;`helix.pane.list()` 给出统一 pane 清单(含浮窗)。`open_panel({side:"left"/"right", rail:true})` 注册**侧栏 rail**(贴边全高、不被窗口分割;`layout.get` 叶子带 `rail` 标记)。**filetree 用的是普通分屏面板(不是 rail)** —— 它要靠 `:filetree-open` 同时挂两个(rail 全局只能有一条)。
 
 - 优点:原生 pty(引擎为 `alacritty_terminal`:真实 reflow、鼠标上报、括号粘贴、CJK/组合字符);四种显示模式;滚动缓冲;zellij 式平级模式 + 多浮窗;layout_fix;布局可还原。
 - 局限:OSC 4/10/11 查颜色与 OSC52 **读**剪贴板未接;PTY 仅 Unix。堆叠组**已**进 `layout.get()`(重启可还原)。

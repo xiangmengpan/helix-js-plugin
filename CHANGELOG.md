@@ -20,6 +20,62 @@ Updated languages and queries:
 Packaging:
 -->
 
+# Unreleased
+
+Features:
+
+* The `filetree` panel can now **find** things, not just navigate: `/` filters the tree
+  (subsequence on names, substring on relative paths when the query contains `/`), `Tab`
+  switches to a whole-repo list (`rg --files` + in-process nucleo matching), and `G` (or
+  `:filetree-search <query>`) runs a content search whose hits are projected back into the
+  panel as a two-level tree (file → matching lines, `Enter` jumps to the line, `←`/`→`
+  collapse/expand a file group). `:filetree-find` opens the native picker on the panel root.
+* Filter expressions (`>`): space-separated AND terms with globs (`*.rs`, `src/**/a.rs`),
+  git predicates (`#M` `#A` `#D` `#R` `#?`), diagnostic predicates (`#E` `#W` `#I` `#H`),
+  plain substrings and `!` negation. `Enter` applies the expression (shown in the header),
+  `Esc` discards the draft, emptying it clears the filter.
+* Row decorations in the panel: `●` current file, `·` open but not current, a diagnostics
+  column (`E`/`W`/`i`/`h`) and a git status column (`M`/`A`/`D`/`R`/`?`, behind
+  `[plugins.filetree] git_status`).
+* `filetree` supports **two panels with independent roots** (`:filetree-open [dir]`, up to
+  `[plugins.filetree] max_panels`, default 2). Each panel keeps its own tree, cursor, search
+  and filter state; per-buffer/per-diagnostics facts stay shared.
+* `lsp-diagnostics` is now actually emitted (`helix-js`'s `emit_lsp_diagnostics` had no
+  caller, so the documented event never fired). Diagnostics changes are queued in
+  `helix-view`'s `DiagnosticsDidChange` hook and drained in `Application::render`, which
+  covers both push (`publishDiagnostics`) and pull diagnostics.
+
+Commands:
+
+* `:filetree-search <query>` — content search from the command line.
+* `:filetree-find` — whole-repo file picker rooted at the panel.
+* `:filetree-open [dir]` — open another filetree panel (root defaults to the current file's
+  directory).
+
+Usability improvements:
+
+* `filetree` layout state (filter expression + expanded directories) can be persisted per
+  root across sessions (`[plugins.filetree] persist`, off by default; the state file lives
+  next to the user plugin root as `filetree-state.json`). The format is v2 (one record per
+  root) and migrates v1 files.
+
+Fixes:
+
+* `filetree`: character keys are input in search mode again — `j`, `k` and `?` used to be
+  swallowed by navigation, so files containing them could not be searched for.
+* `filetree`: the git status column now refreshes when the root changes (`:filetree-reveal`
+  and `:cd` both change it), and results for a stale root are dropped.
+* `filetree`: `·` markers no longer go stale — the core only emits `buffer-close` for
+  `:quit`, so the open-buffer set is re-seeded from `helix.buffer.list()` on panel keys.
+* `filetree`: panels opened with an explicit root now build their tree (they used to render
+  empty), and opening a second panel no longer squeezes the first one by splitting its leaf.
+* `filetree`: `onClose`/`onUnload` clean up registry entries and nucleo sessions (the
+  unload hook referenced an undefined binding and would have thrown).
+* `filetree`: node tests were red for a while (`helix.path_join` was used at load time but
+  never stubbed), which had silently disabled the whole test file.
+* `mock_lsp` gained a `diagnostics_push` scenario (publishes one error diagnostic on
+  `didOpen`) so the `lsp-diagnostics` wiring has an end-to-end test.
+
 # 25.07.1 (2025-07-18)
 
 This is a patch release which lowers the GLIBC requirements of the release artifacts published to GitHub ([#13983](https://github.com/helix-editor/helix/pull/13983))

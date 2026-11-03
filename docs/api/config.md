@@ -109,7 +109,7 @@ schema 是在**插件脚本执行时**才注册的,所以"合并结果"必须在
 | 段 | 键 |
 |---|---|
 | `[plugins.dashboard]` | `enabled` / `logo` / `width` / `height` |
-| `[plugins.filetree]` | `show_hidden` |
+| `[plugins.filetree]` | `show_hidden` / `filter` / `git_status` / `persist`（后两个见 [`superpowers/specs/2026-11-02-filetree-search-design.md`](../superpowers/specs/2026-11-02-filetree-search-design.md) §12） |
 | `[plugins.icons]` | `nerd_font` |
 | `[plugins.picker-ui]` | `max_items` / `width` / `height` |
 | `[plugins.statusline]` | `left` / `center` / `right`(段名数组)· `zones`(比例数组)· `corners` |
