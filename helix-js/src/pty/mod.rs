@@ -32,7 +32,9 @@ pub(crate) trait PtyResize: Send + Sync {
 ///
 /// 调用方用它给出**人话错误**（而不是让用户看到"unknown id"这种内部术语，也不是假装可用）。
 ///
-/// Windows 侧的 ConPTY 实现已经写完了（见 [`windows::open`] / [`windows::spawn_child`]），
+/// Windows 侧的 ConPTY 实现已经写完了（见 `pty::windows::open` / `pty::windows::spawn_child`；
+/// 这两个符号只在 `cfg(not(unix))` 下存在 ⇒ 这里**不能**写成 intra-doc 链接：Linux 上跑
+/// `cargo doc -D warnings` 会因"unresolved link"直接红），
 /// 但**还没在任何一台 Windows 上验过** —— 开发机（Windows 11 26200）的 ConPTY 链路本身是坏的：
 /// 本实现、MS 示例式 C 程序、`portable-pty` 0.9 三个独立实现全都起不来子进程（`0xC0000142`
 /// 或永远不退出、pty 零字节），且绕开 WSL interop（计划任务）后依旧复现 ⇒ 与代码无关。按本仓的规矩：
