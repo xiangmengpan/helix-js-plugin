@@ -69,7 +69,7 @@
 `helix.log(msg)` / `helix.log(level, msg)`，`level` ∈ `error|warn|info|debug`（认不出按 `info`，**不静默丢**）。
 条目自动带插件名，进**内存环缓冲（最近 500 条）**并转发到 `log` crate（即 `~/.cache/helix/helix.log`）。
 
-| 查看 | `:js-log`（核心命令：**不依赖任何插件** —— 插件坏了才最需要看日志）· `:js-log-clear` 清空 · `:log-open` 看完整 helix.log |
+| 查看 | `:js-log [level]`（核心命令：**不依赖任何插件** —— 插件坏了才最需要看日志）· `level` ∈ `error\|warn\|info\|debug`，语义是"**至少**这么严重"（`:js-log warn` = warn + error），省略 = 全部；认不出的级别**报错**（不静默退化）· `:js-log-clear` 清空 · `:log-open` 看完整 helix.log |
 | 自动收录 | 插件命令抛异常、`helix.on(...)` 处理器失败、picker 行宽/reject、`onUnload` 失败、cursor/edit/decoration 应用失败、layout-change 派发失败 —— 这些**同时**仍会进状态栏 |
 
 - 为什么要有它：状态栏是**单槽**（`editor.status_msg = Some(..)`，下一条消息直接盖掉）⇒ 插件错误

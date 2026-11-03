@@ -646,6 +646,19 @@ pub async fn plugin_config_lock() -> tokio::sync::MutexGuard<'static, ()> {
     PLUGIN_CONFIG_LOCK.lock().await
 }
 
+/// 插件日志缓冲是**进程级**的（`helix_js::log` 的环形缓冲）⇒ 断言它的用例必须串行，
+/// 否则一个用例 `:js-log-clear` 会把另一个的条目清掉（实测：单跑绿、组跑红）。
+///
+/// ```ignore
+/// let _log = plugin_log_lock().await;
+/// ```
+pub static PLUGIN_LOG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 拿插件日志锁（见 [`PLUGIN_LOG_LOCK`]）
+pub async fn plugin_log_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    PLUGIN_LOG_LOCK.lock().await
+}
+
 /// 只**读** cwd 的用例(不改它)拿这把锁,防止别的用例在此期间 `chdir` 走。
 ///
 /// ```ignore

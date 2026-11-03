@@ -580,6 +580,8 @@ async fn plugin_keymap() -> anyhow::Result<()> {
 /// 下一条消息直接盖掉）⇒ 事后完全查不到。现在进环形缓冲（最近 500 条）并可写盘（helix.log）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_log_visible_via_js_log_command() -> anyhow::Result<()> {
+    // 日志缓冲是进程级的 ⇒ 与同文件的其它日志用例串行（清空/断言会互相打架）
+    let _log = plugin_log_lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -623,6 +625,8 @@ async fn plugin_log_visible_via_js_log_command() -> anyhow::Result<()> {
 /// `:js-log-clear` 清空缓冲；空缓冲要有明确说明（"什么都没有"和"功能坏了"要能区分）。
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_log_clear_and_empty_notice() -> anyhow::Result<()> {
+    // 日志缓冲是进程级的 ⇒ 与同文件的其它日志用例串行（清空/断言会互相打架）
+    let _log = plugin_log_lock().await;
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("a.txt");
     std::fs::write(&file, "hello\n")?;
@@ -645,5 +649,64 @@ async fn plugin_log_clear_and_empty_notice() -> anyhow::Result<()> {
     let text = doc.text().to_string();
     assert!(text.contains("日志为空"), "空缓冲要给明确说明: {text}");
     assert!(!text.contains("only one"), "清空后不该还有旧条目: {text}");
+    Ok(())
+}
+
+/// `:js-log <level>` 的过滤语义：**至少**这么严重（`:js-log warn` = warn + error），
+/// 认不出的级别要**报错**（不能静默退化成"全部"，否则用户以为过滤生效了、只是恰好没条目）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_log_level_filter() -> anyhow::Result<()> {
+    // 日志缓冲是进程级的 ⇒ 与同文件的其它日志用例串行（清空/断言会互相打架）
+    let _log = plugin_log_lock().await;
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n")?;
+    let path = dir.path().join("logger3.js");
+    std::fs::write(
+        &path,
+        r#"
+        helix.register_command("log-mixed", () => {
+            helix.log("info", "info-line");
+            helix.log("warn", "warn-line");
+            helix.log("error", "error-line");
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", path.display())).await?;
+    pump(&mut app, ":log-mixed<ret>").await?;
+
+    // 只留 error（warn/info 不该出现）
+    pump(&mut app, ":js-log error<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    let text = doc.text().to_string();
+    assert!(
+        text.contains("error-line"),
+        ":js-log error 应含 error: {text}"
+    );
+    assert!(!text.contains("warn-line"), "error 档不该含 warn: {text}");
+    assert!(!text.contains("info-line"), "error 档不该含 info: {text}");
+    assert!(text.contains("级别 ≥ ERROR"), "头部要写明过滤条件: {text}");
+
+    // `warn` = warn + error
+    pump(&mut app, ":js-log warn<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    let text = doc.text().to_string();
+    assert!(
+        text.contains("warn-line") && text.contains("error-line"),
+        "{text}"
+    );
+    assert!(!text.contains("info-line"), "warn 档不该含 info: {text}");
+
+    // 不带参数 = 全部
+    pump(&mut app, ":js-log<ret>").await?;
+    let (_, doc) = current_ref!(app.editor);
+    let text = doc.text().to_string();
+    assert!(text.contains("info-line"), "不过滤时 info 也要在: {text}");
+
+    // 认不出的级别：报错（状态栏可见），而不是静默当"全部"
+    pump(&mut app, ":js-log nope<ret>").await?;
+    let st = status_text(&app);
+    assert!(st.contains("级别要"), "非法级别要报错: {st:?}");
     Ok(())
 }

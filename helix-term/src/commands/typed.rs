@@ -3115,15 +3115,31 @@ fn show_scratch(cx: &mut compositor::Context, text: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// `:js-log` —— 插件日志（最近 500 条：插件自己 `helix.log()` 的 + 所有插件失败）。
+/// `:js-log [level]` —— 插件日志（最近 500 条：插件自己 `helix.log()` 的 + 所有插件失败）。
 ///
 /// 为什么是**核心命令**而不是插件：插件坏了才最需要看日志。用无依赖的 scratch buffer，
 /// 内容是纯文本（`:w` 即可落盘）。
-fn js_log(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+///
+/// `level` = `error|warn|info|debug`，语义是"**至少**这么严重"（`:js-log warn` = warn + error，
+/// 日志的通行惯例）；省略 = 全部。认不出的级别**报错**而不是静默退化成"全部"
+/// —— 否则用户会以为过滤生效了、只是恰好没有条目。
+fn js_log(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    let text = helix_js::log::format_all();
+    let min = match args.first() {
+        None => None,
+        Some(raw) => match helix_js::log::Level::parse(raw) {
+            Some(level) => Some(level),
+            None => {
+                return Err(anyhow!(
+                    "级别要 error / warn / info / debug（省略 = 全部），收到 '{}'",
+                    raw
+                ))
+            }
+        },
+    };
+    let text = helix_js::log::format_filtered(min);
     show_scratch(cx, &text)
 }
 
@@ -4649,11 +4665,11 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "js-log",
         aliases: &[],
-        doc: "Open the plugin log (helix.log() entries + plugin failures) in a scratch buffer.",
+        doc: "Open the plugin log in a scratch buffer. Optional level (error|warn|info|debug) = at least that severe.",
         fun: js_log,
         completer: CommandCompleter::none(),
         signature: Signature {
-            positionals: (0, Some(0)),
+            positionals: (0, Some(1)),
             ..Signature::DEFAULT
         },
     },

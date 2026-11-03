@@ -41,6 +41,22 @@ impl Level {
         }
     }
 
+    /// 严重度序号（越小越严重）。过滤按"**至少**这么严重"的惯例：
+    /// `:js-log warn` = warn + error，与 `RUST_LOG`/日志库的用法一致。
+    fn rank(self) -> u8 {
+        match self {
+            Level::Error => 0,
+            Level::Warn => 1,
+            Level::Info => 2,
+            Level::Debug => 3,
+        }
+    }
+
+    /// 本条是否达到 `min` 的严重度（`min = Warn` ⇒ Error 与 Warn 都算）。
+    pub fn at_least(self, min: Level) -> bool {
+        self.rank() <= min.rank()
+    }
+
     /// JS 侧的宽松解析：`"error"`/`"warn"`/`"warning"`/`"info"`/`"debug"`，大小写不敏感。
     /// 认不出 ⇒ `None`（调用方退回 Info，**不静默丢条目**）。
     pub fn parse(s: &str) -> Option<Level> {
@@ -139,20 +155,49 @@ pub fn len() -> usize {
     entries().lock().map(|q| q.len()).unwrap_or(0)
 }
 
-/// 整份快照的纯文本形式（`:js-log` 用）。空缓冲也给出**明确**的一句，
-/// 而不是一个空白 buffer（"什么都没有"和"功能坏了"要能区分）。
+/// 整份快照（不过滤）。
 pub fn format_all() -> String {
-    let items = snapshot();
-    if items.is_empty() {
+    format_filtered(None)
+}
+
+/// 按**最低级别**过滤后的纯文本形式（`:js-log` 用；`None` = 全部）。
+///
+/// 语义是"**至少**这么严重"（`:js-log warn` = warn + error），日志的通行惯例。
+/// 三条边界都要**说清楚**，否则用户会以为日志坏了：
+/// - 完全空缓冲 → 怎么记 + 会记多少；
+/// - 有条目但被过滤空 → 说"没有 ≥ X 的条目"并给出总数（否则像是丢了）；
+/// - 过滤生效 → 头部写明过滤条件与"X / 共 Y"。
+pub fn format_filtered(min: Option<Level>) -> String {
+    let all = snapshot();
+    if all.is_empty() {
         return "（插件日志为空）\n\n插件可以用 helix.log(\"error\", \"...\") 记录；\n\
                 插件失败会自动记在这里（最近 500 条）。\n"
             .to_string();
     }
+    let items: Vec<&Entry> = match min {
+        Some(m) => all.iter().filter(|e| e.level.at_least(m)).collect(),
+        None => all.iter().collect(),
+    };
+    if items.is_empty() {
+        return format!(
+            "（没有 {} 及更严重的条目；缓冲里共 {} 条 —— 直接 :js-log 看全部）\n",
+            min.map(Level::as_str).unwrap_or("?"),
+            all.len()
+        );
+    }
     let mut out = String::new();
-    out.push_str(&format!(
-        "helix 插件日志 —— {} 条（最多 {CAPACITY}）\n\n",
-        items.len()
-    ));
+    match min {
+        Some(m) => out.push_str(&format!(
+            "helix 插件日志 —— {} 条（级别 ≥ {}；共 {} 条 / 最多 {CAPACITY}）\n\n",
+            items.len(),
+            m.as_str(),
+            all.len()
+        )),
+        None => out.push_str(&format!(
+            "helix 插件日志 —— {} 条（最多 {CAPACITY}）\n\n",
+            all.len()
+        )),
+    }
     for e in items {
         out.push_str(&format!(
             "{} {:<5} [{}] {}\n",
@@ -280,6 +325,67 @@ mod tests {
         assert!(text.contains("[my-plugin]"), "{text}");
         assert!(text.contains("回调炸了"), "{text}");
         clear();
+    }
+
+    #[test]
+    fn format_filtered_means_at_least_that_severe() {
+        let _g = lock();
+        clear();
+        error("t", "E1");
+        record(Level::Warn, "t", "W1");
+        record(Level::Info, "t", "I1");
+        record(Level::Debug, "t", "D1");
+
+        let warn_up = format_filtered(Some(Level::Warn));
+        assert!(
+            warn_up.contains("E1") && warn_up.contains("W1"),
+            "{warn_up}"
+        );
+        assert!(
+            !warn_up.contains("I1") && !warn_up.contains("D1"),
+            "info/debug 不该出现: {warn_up}"
+        );
+        assert!(
+            warn_up.contains("级别 ≥ WARN"),
+            "头部要写明过滤条件: {warn_up}"
+        );
+        assert!(
+            warn_up.contains("共 4 条"),
+            "要给出总数（否则像是丢了）: {warn_up}"
+        );
+
+        let err_only = format_filtered(Some(Level::Error));
+        assert!(err_only.contains("E1"));
+        assert!(!err_only.contains("W1"), "error 档只留 error: {err_only}");
+
+        let all = format_filtered(None);
+        assert!(
+            all.contains("E1") && all.contains("D1"),
+            "不过滤时全在: {all}"
+        );
+        assert!(!all.contains("级别 ≥"), "不过滤不该出现过滤标记: {all}");
+        clear();
+    }
+
+    #[test]
+    fn format_filtered_empty_after_filter_says_so_and_gives_total() {
+        let _g = lock();
+        clear();
+        record(Level::Info, "t", "只有 info");
+        let text = format_filtered(Some(Level::Error));
+        assert!(text.contains("没有 ERROR 及更严重的条目"), "{text}");
+        assert!(text.contains("共 1 条"), "要说明缓冲里有几条: {text}");
+        assert!(text.contains(":js-log"), "要告诉用户怎么看全部: {text}");
+        clear();
+    }
+
+    #[test]
+    fn at_least_ordering() {
+        assert!(Level::Error.at_least(Level::Warn));
+        assert!(Level::Warn.at_least(Level::Warn));
+        assert!(!Level::Info.at_least(Level::Warn));
+        assert!(Level::Debug.at_least(Level::Debug));
+        assert!(Level::Error.at_least(Level::Error));
     }
 
     #[test]

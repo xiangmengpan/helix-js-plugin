@@ -54,8 +54,9 @@ Features:
 
 Commands:
 
-* `:js-log` / `:js-log-clear` — the plugin log in a scratch buffer (core command, so it still
-  works when plugins are broken).
+* `:js-log [level]` / `:js-log-clear` — the plugin log in a scratch buffer (core command, so it
+  still works when plugins are broken). `level` (`error|warn|info|debug`) filters to *at least*
+  that severe; an unknown level is an error rather than silently showing everything.
 * `:filetree-search <query>` — content search from the command line.
 * `:filetree-find` — whole-repo file picker rooted at the panel.
 * `:filetree-open [dir]` — open another filetree panel (root defaults to the current file's
