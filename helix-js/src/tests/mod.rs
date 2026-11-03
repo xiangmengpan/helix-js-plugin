@@ -135,6 +135,7 @@ mod draw_ops;
 mod events_cwd;
 mod events_lsp;
 mod fs_async;
+mod log_api;
 mod pane_stack;
 mod plugin;
 mod popup_panel;

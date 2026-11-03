@@ -647,8 +647,13 @@ async fn plugin_log_clear_and_empty_notice() -> anyhow::Result<()> {
     pump(&mut app, ":js-log<ret>").await?;
     let (_, doc) = current_ref!(app.editor);
     let text = doc.text().to_string();
-    assert!(text.contains("日志为空"), "空缓冲要给明确说明: {text}");
     assert!(!text.contains("only one"), "清空后不该还有旧条目: {text}");
+    // 不断言"日志为空"：缓冲是**进程级**的，别的用例（并行跑）可能在这两步之间写进条目。
+    // 空态文案由 `helix-js` 的单测 `format_all_empty_is_explicit` 负责钉死。
+    assert!(
+        text.contains("日志为空") || text.contains("插件日志 ——"),
+        ":js-log 必须给出可读状态（空态提示或有条目的表头）: {text}"
+    );
     Ok(())
 }
 

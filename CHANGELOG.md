@@ -73,7 +73,9 @@ Packaging:
 
 * `helix.log` now has a **size cap** (`[logging] max-size`, bytes, default 10 MiB, `0` =
   unlimited). When a write would exceed it the file is truncated and restarted (overwrite, not
-  rotation), and an already-oversized file is cleared at startup. Previously the log was
+  rotation). An already-oversized file is cleared on the first write *after* the configured
+  limit is known (not at open time — that would wipe history before the user's own limit is
+  read). Previously the log was
   append-only and never rotated (18 MB / 128k lines after a few months). User-level config only
   — a workspace `.helix/config.toml` cannot set it.
 

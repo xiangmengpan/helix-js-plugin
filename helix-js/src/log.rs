@@ -115,15 +115,23 @@ pub fn record(level: Level, target: &str, msg: impl AsRef<str>) {
         msg: msg.as_ref().to_string(),
     };
     if let Ok(mut q) = entries().lock() {
-        while q.len() >= CAPACITY {
-            q.pop_front();
-        }
-        q.push_back(entry.clone());
+        push_capped(&mut q, entry.clone());
     }
     let f = sink().lock().ok().and_then(|s| *s);
     if let Some(f) = f {
         f(entry.level, &entry.target, &entry.msg);
     }
+}
+
+/// 环缓冲写入（纯逻辑，便于单测）：满了先挤掉最旧的。
+///
+/// 之所以抽出来：`record()` 动的是**进程级**缓冲，别的测试（并行）随时在往里写 ⇒ 在全局量上
+/// 断言"恰好 CAPACITY 条"必然偶发红。不变式本身在这里测，全局那层只测"自己的条目在不在"。
+fn push_capped(q: &mut VecDeque<Entry>, entry: Entry) {
+    while q.len() >= CAPACITY {
+        q.pop_front();
+    }
+    q.push_back(entry);
 }
 
 /// 便捷：`record(Level::Error, ..)`（失败路径用得最多）。
@@ -245,14 +253,11 @@ pub(crate) fn js_log(
     let first = args.first().cloned().unwrap_or(JsValue::undefined());
     let (level, msg) = match args.len() {
         0 => (Level::Info, String::new()),
+        // 单参形态：那个参数**就是消息**，级别一律 info。
+        // 不能"顺手猜级别"：`helix.log("error")` 是想记一条内容为 "error" 的消息，
+        // 猜成级别会让它变成一条空 error —— 与 d.ts 的 `log(msg)` 声明也对不上。
         1 => (
-            Level::parse(
-                &first
-                    .to_string(context)
-                    .map(|s| s.to_std_string_escaped())?,
-            )
-            .unwrap_or(Level::Info),
-            // 单参形态：那个参数**就是消息**
+            Level::Info,
             first.to_string(context)?.to_std_string_escaped(),
         ),
         _ => {
@@ -270,10 +275,11 @@ pub(crate) fn js_log(
 mod tests {
     use super::*;
 
-    /// 这些用例共享进程级缓冲 ⇒ 串行（并各自先清空）。
+    /// 缓冲是**进程级**的 ⇒ 所有动它的用例必须共用同一把锁。
+    /// 用 `crate::tests::TEST_LOCK`（而不是本模块私有的一把）：`tests/log_api.rs` 走 JS 面
+    /// 也会清空它，两把锁各锁各的等于没锁（实测：单跑绿、组跑红）。
     fn lock() -> std::sync::MutexGuard<'static, ()> {
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(()))
+        crate::tests::TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
@@ -293,16 +299,41 @@ mod tests {
         assert_eq!(len(), 0);
     }
 
+    /// 封顶不变式：纯函数上钉死（不受并发写者影响 —— 这条最早写在全局缓冲上，偶发红）。
     #[test]
-    fn ring_buffer_is_capped() {
+    fn push_capped_drops_the_oldest() {
+        let _g = lock();
+        let mut q: VecDeque<Entry> = VecDeque::new();
+        for i in 0..(CAPACITY + 10) {
+            push_capped(
+                &mut q,
+                Entry {
+                    seq: i as u64,
+                    ts_ms: 0,
+                    level: Level::Debug,
+                    target: "t".to_string(),
+                    msg: format!("m{i}"),
+                },
+            );
+        }
+        assert_eq!(q.len(), CAPACITY, "容量封顶");
+        assert_eq!(q.front().unwrap().msg, "m10", "最旧的被挤掉");
+        assert_eq!(q.back().unwrap().msg, format!("m{}", CAPACITY + 9));
+    }
+
+    /// 全局层只断言"自己的条目在里面"（别的测试并行写进来的条目不算错）。
+    #[test]
+    fn record_puts_the_entry_into_the_global_buffer() {
         let _g = lock();
         clear();
-        for i in 0..(CAPACITY + 10) {
-            record(Level::Debug, "t", format!("m{i}"));
-        }
-        assert_eq!(len(), CAPACITY, "容量封顶");
+        record(Level::Warn, "capped-test", "marker-entry");
         let snap = snapshot();
-        assert_eq!(snap[0].msg, "m10", "最旧的被挤掉");
+        assert!(
+            snap.iter()
+                .any(|e| e.msg == "marker-entry" && e.target == "capped-test"),
+            "自己的条目必须在缓冲里: {snap:?}"
+        );
+        assert!(len() <= CAPACITY, "任何时候都不该超过容量");
         clear();
     }
 

@@ -104,9 +104,20 @@ helix.export({ helper: () => {} });                        // 可选:供别的�
 | 脚本 | 查什么 | 用法 |
 |---|---|---|
 | `check_api_surface.mjs` | **注册表 ↔ `helix.d.ts` 对账**(少写的 API / 不存在的名字 / 位置过时的旧名 / 由插件补的名字)+ `runtime/plugins` 与源**逐文件**一致 | **`cargo xtask api-check`**(门禁入口)/`node plugins/tools/check_api_surface.mjs` 等价 |
-| `:js-log` / `:js-log-clear` | **插件日志**（不是脚本，是核心命令）：最近 500 条 `helix.log()` 条目 + 所有插件失败（命令抛异常/事件处理器失败/picker 报错…）。`helix.log` 同时写进 `helix.log` 文件（`:log-open`） |
 | `check_signatures.mjs` | 插件 JS 语法 + `icons` 6 个函数的参数名/函数体使用/导出一致性 | `node plugins/tools/check_signatures.mjs` |
 | `sync-runtime`（Rust）/ `sync_runtime.sh`（薄封装） | 把源的**已有副本**更新到最新:`.js` + `helix.d.ts` / `README.md` / `jsconfig.json`(**只更新,不新建**)| `cargo xtask sync-runtime` |
+
+### 插件报错看哪里
+
+插件**失败**（命令抛异常、事件处理器失败、picker 报错、`onUnload` 失败…）与插件自己写的
+`helix.log([level,] msg)` 都进同一个环形缓冲（最近 500 条），并转发给 `log` crate 落进
+`helix.log`：
+
+| 命令 | 作用 |
+|---|---|
+| `:js-log [level]` | 在 scratch buffer 里看日志；`level` = `error\|warn\|info\|debug`，语义是"**至少**这么严重"（`:js-log warn` = warn + error），省略 = 全部。**核心命令**，插件坏了也能用 |
+| `:js-log-clear` | 清空缓冲（状态栏回报清了几条） |
+| `:log-open` | 打开完整 `helix.log`（落盘那份，含 `js/<插件名>` 条目；大小上限见 `[logging] max-size`） |
 
 > 为什么要有这两个 `check_*`:它们都是**一次事故**固化下来的 —— 前者因为 `helix.d.ts` 是手工维护且曾**说谎**
 > (声明了核心没注册的名字),后者因为一次机械替换改坏了函数参数名而事后没人能复跑。

@@ -11,7 +11,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// 用全局原子量而不是把它塞进 `Logger`：`log` crate 的 logger 只能装一次，而**上限来自
 /// config**，config 又是在 logging 之后才加载的 ⇒ 由 `set_max_size()` 在启动后补上。
-static MAX_SIZE: AtomicU64 = AtomicU64::new(crate::config::DEFAULT_LOG_MAX_SIZE);
+///
+/// **初值必须是 0（不限制），不能是默认 10 MiB**：`init_file`/`CappedFile::open` 发生在
+/// `Config::load_default()` **之前**。若这里先填默认值，一个配了 `max-size = 100MB` 的用户，
+/// 他那份 50MB 的日志会在启动瞬间被"默认 10 MiB"清掉 —— 在知道用户意图之前不删任何东西。
+/// 真正的上限在 config 读完后由 `set_max_size()` 落定，第一次写入时生效。
+static MAX_SIZE: AtomicU64 = AtomicU64::new(0);
 
 /// 设定上限（`0` = 不限制）。启动时由 `main` 在读完 config 后调用；也可以在运行期改。
 pub fn set_max_size(bytes: u64) {
@@ -42,7 +47,8 @@ impl CappedFile {
             written: file.metadata().map(|m| m.len()).unwrap_or(0),
             file,
         };
-        // 启动时就已经超了（上次会话写的）⇒ 立刻清空，别等下一次写入
+        // 上限**已经配好**且文件已超限 ⇒ 立刻清空（启动时配置尚未加载 ⇒ `max_size()==0`
+        // ⇒ 这里什么都不做，不会在知道用户意图前删数据）
         me.truncate_if_needed(0)?;
         Ok(me)
     }
@@ -253,6 +259,33 @@ mod cap_tests {
         }
         f.flush().unwrap();
         assert_eq!(read_all(&path).lines().count(), 1000, "0 = 不限制");
+        set_max_size(crate::config::DEFAULT_LOG_MAX_SIZE);
+    }
+
+    /// **回归**：启动时 config 还没读，上限必须视为"不限制" —— 否则配了大上限的用户
+    /// 会被默认值清掉历史日志（这是本功能最初的真 bug）。
+    #[test]
+    fn open_does_not_truncate_before_the_limit_is_known() {
+        let _g = lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.log");
+        set_max_size(0); // = 启动时（config 未加载）的状态
+        {
+            let mut f = CappedFile::open(&path).unwrap();
+            for _ in 0..100 {
+                writeln!(f, "0123456789").unwrap();
+            }
+            f.flush().unwrap();
+        }
+        let before = std::fs::metadata(&path).unwrap().len();
+        assert!(before > 500);
+        // 重新打开（模拟下一次启动、config 仍未加载）：**不许**清空
+        let _f = CappedFile::open(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            before,
+            "上限未落定时不能删任何数据"
+        );
         set_max_size(crate::config::DEFAULT_LOG_MAX_SIZE);
     }
 
