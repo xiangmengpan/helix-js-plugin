@@ -672,3 +672,46 @@ async fn completion_icon_hook_is_called() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// `lsp-diagnostics` 事件（核心接线）：mock 在 didOpen 后推一条 error 诊断 ⇒ 插件收到
+/// `(docId, diags)`，`severity` 是**字符串** "error"。
+///
+/// 回归点：`helix_js::diagnostics::emit_lsp_diagnostics` 此前**没有任何调用点** ——
+/// 事件在 API 面上存在但永远不触发（插件侧的诊断标记/#E 谓词拿不到数据）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_lsp_diagnostics_event_fires() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.mock");
+    std::fs::write(&file, "one\n")?;
+    let plugin_path = dir.path().join("diag.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.on("lsp-diagnostics", (docId, diags) => {
+            const first = (diags && diags[0]) || {};
+            helix.echo("diag:" + (Array.isArray(diags) ? diags.length : -1) + ":" + first.severity);
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config_with_lsp())
+        .with_lang_loader(mock_lsp_loader("diagnostics_push", &[]))
+        .build()?;
+    pump(
+        &mut app,
+        &format!(":plugin-load {}<ret>", plugin_path.display()),
+    )
+    .await?;
+
+    // 事件是异步的（didOpen → mock 推 publishDiagnostics → 下一帧 render 排空队列）
+    pump_until(
+        &mut app,
+        "<esc>",
+        D5,
+        "lsp-diagnostics 事件（diag:1:error）",
+        |a| status_text(a).contains("diag:1:error"),
+    )
+    .await?;
+    Ok(())
+}

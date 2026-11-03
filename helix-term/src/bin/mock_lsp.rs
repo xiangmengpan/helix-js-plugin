@@ -15,6 +15,8 @@
 //!   (`argv[2]` 来源标识 tag：title "mock-fix-{tag}" + edit "one"→"ONE-{tag}"，缺省 "A"；codeAction/resolve 返回本 server 的 edit——
 //!   多 server execute 路由判别器)
 //! - no_response：hoverProvider；仅 initialize 正常响应，其余方法挂起不响应 → 客户端 per-server timeout 触发
+//! - diagnostics_push：textDocumentSync；收到 `textDocument/didOpen` 后**主动**推一条
+//!   `textDocument/publishDiagnostics`（severity 1 = error）→ 测 `lsp-diagnostics` 事件（核心 emit 接线）
 
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -52,6 +54,12 @@ fn main() {
         // 收到 exit 通知立即退出（helix 关闭时先发 shutdown/exit，随后 EOF）
         if msg.get("method").and_then(|m| m.as_str()) == Some("exit") {
             return;
+        }
+        // 主动通知（publishDiagnostics 之类）：先写出去，再按需写响应
+        if let Some(notif) = push_notification(&msg, scenario) {
+            let json = serde_json::to_string(&notif).unwrap();
+            write!(out, "Content-Length: {}\r\n\r\n{}", json.len(), json).unwrap();
+            out.flush().unwrap();
         }
         let Some(response) = respond(&msg, scenario, &args) else {
             continue;
@@ -163,6 +171,35 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
+/// 场景主动推送的通知（没有就 None）。目前只有 `diagnostics_push`：
+/// 客户端 `didOpen`/`didChange` 之后推一条带 error 的 publishDiagnostics。
+fn push_notification(msg: &serde_json::Value, scenario: &str) -> Option<serde_json::Value> {
+    if scenario != "diagnostics_push" {
+        return None;
+    }
+    let method = msg.get("method").and_then(|m| m.as_str())?;
+    if !matches!(method, "textDocument/didOpen" | "textDocument/didChange") {
+        return None;
+    }
+    let uri = msg["params"]["textDocument"]["uri"].clone();
+    Some(json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "diagnostics": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "severity": 1,           // 1 = Error
+                "source": "mock",
+                "message": "mock diagnostics"
+            }]
+        }
+    }))
+}
+
 /// 路径 → `file://` URI。
 ///
 /// **必须走 URL 语义**（`Url::from_file_path`），不能 `format!("file://{}", path)`：
@@ -190,6 +227,8 @@ fn capabilities(scenario: &str) -> serde_json::Value {
             json!({ "triggerCharacters": [] }),
         ),
         "goto_definition_basic" => set(&mut caps, "definitionProvider", json!(true)),
+        // 声明 textDocumentSync(1 = full)，客户端才会发 didOpen；通知由 push_notification 推
+        "diagnostics_push" => set(&mut caps, "textDocumentSync", json!(1)),
         "symbols_basic" => set(&mut caps, "documentSymbolProvider", json!(true)),
         "format_basic" => set(&mut caps, "documentFormattingProvider", json!(true)),
         "rename_cross_file" | "rename_stale" => set(&mut caps, "renameProvider", json!(true)),
