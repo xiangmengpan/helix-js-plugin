@@ -45,7 +45,7 @@ plugins/
 | `picker-ui` | `:pick*` 系列(JS 自绘 picker:`:pick` `:pick-close` `:pick-core` `:pick-core-draw` `:pick-default-draw` `:pick-diag`) | ✅ |
 | `terminal` | `:term` `:vterm` `:hterm` `:term-list` `:term-close` `:term-save`(浮动/分屏终端) | ✅ |
 | `statusline` | 状态栏三段分栏(`set_statusline`) | ✅ |
-| `filetree` | `:filetree` `:filetree-reveal`(侧边文件树 rail 面板) | ✅ |
+| `filetree` | `:filetree` `:filetree-open` `:filetree-reveal` `:filetree-find` `:filetree-search`（侧边文件树面板（**普通分屏，非 rail**）；`/` 按名搜索（Tab 切全库）· `G` 内容搜索树 · `>` 过滤表达式（glob / git 谓词）· `:filetree-find` 原生 picker · `:filetree-search <词>` 直接内容搜；配置 `show_hidden`/`filter`/`git_status`/`persist`/`max_panels`；支持**两个面板**（`:filetree-open`）） | ✅ |
 | `which-key` | 按键提示(`set_keymap_hint` 接管原生 Info,含中文说明) | ❌ 需自己加一行 |
 | `arsenal` | `:arsenal`(工具市场窗,server 管理前端) | ❌ 需自己加一行 |
 | `tabbar` | 布局标签条示范组件(`helix.TABBAR_ID` 槽位) | ❌ 需自己加一行 |

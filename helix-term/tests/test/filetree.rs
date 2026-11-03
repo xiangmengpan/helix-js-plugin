@@ -353,9 +353,9 @@ async fn filetree_find_command_opens_from_picker() -> anyhow::Result<()> {
     )
     .await?;
 
-    // 候选是一次性拉取的异步列表：再让事件泵跑几轮，确保行已填充
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    pump(&mut app, "").await?;
+    // 行数据是**跟 OpenPicker 请求一起来**的 ⇒ 层出现时候选已就绪，不必再等。
+    // ⚠️ 别在这里加 `pump(&mut app, "")`（空按键列表）：event_loop_until_idle 收不到空闲信号，
+    //    实测会阻塞 ~10 分钟（一次真实踩坑）。
     pump(&mut app, "main<ret>").await?;
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(
@@ -365,5 +365,398 @@ async fn filetree_find_command_opens_from_picker() -> anyhow::Result<()> {
         main_js.to_str(),
         "picker 里 Enter 应打开选中的 src/main.js"
     );
+    Ok(())
+}
+
+/// 内容搜索（P2）：`G` / `:filetree-search <词>` → `rg --json` 结果树
+/// （文件行为父、命中行为子），Enter 跳到**那一行**。
+///
+/// 钉三件事：① rg 的输出被解析成树（不是一坨平文本）；② 行号是 **0 起始**且真的被用来跳转；
+/// ③ 解析走 `--json` 而不是 `split(":")`（Windows 盘符）。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_grep_search_tree_and_jump() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let main_js = dir.path().join("src").join("main.js");
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    // 命令形态（`<词>` 来自 helix.command_args()）
+    pump(&mut app, ":filetree-search console<ret>").await?;
+
+    // rg 是异步的：等内容树出现（文件行 + 命中行）
+    let mut text = String::new();
+    for _ in 0..60 {
+        text = panel_body(&mut app);
+        if text.contains("console.log(1)") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("内容·"),
+        "查询行应显示内容搜索计数: {text:?}"
+    );
+    assert!(text.contains("src/main.js"), "文件行应是相对路径: {text:?}");
+    assert!(
+        text.contains("console.log(1)"),
+        "命中行应是该行原文: {text:?}"
+    );
+    assert!(text.contains('1'), "命中行图标位应是行号: {text:?}");
+
+    // 光标已在首个命中行 ⇒ Enter 直接跳到那一行（第 1 行 = 0 起始 0）
+    pump(&mut app, "<ret>").await?;
+    let (view, doc) = current_ref!(app.editor);
+    assert_eq!(
+        doc.path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .as_deref(),
+        main_js.to_str(),
+        "Enter 应打开命中所在的 src/main.js"
+    );
+    let pos = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    assert_eq!(
+        pos, 0,
+        "光标应落在命中的那一行（rg 的 1 起始 → open_file 的 0 起始）"
+    );
+    Ok(())
+}
+
+/// 回归：搜索态里**字符键必须当输入**（`j` 曾被导航吞掉 ⇒ 搜不到名字带 j 的文件）
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_find_takes_letter_keys_as_input() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    pump(&mut app, "/").await?;
+    pump(&mut app, "j").await?; // `j` 若是导航键，过滤就不会生效
+    let text = panel_body(&mut app);
+    assert!(
+        text.contains("main.js"),
+        "query \"j\" 应命中 main.js: {text:?}"
+    );
+    assert!(
+        !text.contains("readme.md"),
+        "字符 j 被当成导航吞掉了（过滤没生效）: {text:?}"
+    );
+    Ok(())
+}
+
+/// 过滤表达式（P3）：`>` 进输入 → `*.md` → Enter 应用（树里只剩 md）；
+/// 再 `>` 删空后 Enter 清除（全部回来）。
+///
+/// 钉三件事：① 表达式**应用**后留在树模式（不是一按 Enter 就丢）；② glob 的 basename 语义
+/// 真的把 `src/` 整个滤掉了；③ 删空 = 清除过滤（用户不必记住怎么关）。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_filter_dsl_apply_and_clear() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let readme = dir.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    // 注意：`src/` 此时是折叠的（reveal 只展开了 readme.md 所在的那条链）⇒ 前置断言看 `src`
+    assert!(
+        panel_body(&mut app).contains("src"),
+        "前置：完整树含 src 目录"
+    );
+
+    // `>` 进过滤输入（`<gt>` 是宏里的 `>`），输入 *.md 并应用
+    pump(&mut app, "<gt>").await?;
+    pump(&mut app, "*.md<ret>").await?;
+    let text = panel_body(&mut app);
+    assert!(
+        text.contains("readme.md"),
+        "`*.md` 应留下 readme.md: {text:?}"
+    );
+    // 进过滤时做过一次有预算的补加载 ⇒ src 的子节点已加载，`main.js` 不命中 `*.md`，
+    // 于是 `src` 连"祖先保留"的资格都没有（整棵子树枝被滤掉）
+    assert!(!text.contains("src"), "`*.md` 应把 src/ 整枝滤掉: {text:?}");
+    assert!(!text.contains("filetree.js"), "也滤掉别的 .js: {text:?}");
+
+    // 再进 `>`：输入框应从已应用的表达式接着改；删空 + Enter = 清除
+    pump(&mut app, "<gt>").await?;
+    pump(
+        &mut app,
+        "<backspace><backspace><backspace><backspace><ret>",
+    )
+    .await?;
+    let text = panel_body(&mut app);
+    assert!(text.contains("src"), "清空表达式后应恢复完整树: {text:?}");
+    assert!(
+        text.contains("filetree.js"),
+        "恢复后 .js 也应回来: {text:?}"
+    );
+    Ok(())
+}
+
+/// git 状态列 + `#` 谓词（P3）：真仓库里 `M`/`?` 能显示，也能按 `#M` / `#?` 过滤。
+///
+/// 没装 git 就**跳过**（不该因为环境没 git 就红）；断言只看含文件名的行，避开边框/表头。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_git_status_and_hash_predicates() -> anyhow::Result<()> {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return Ok(()); // 环境没 git：跳过
+    }
+    let _cfg = plugin_config_lock().await;
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_str().unwrap().to_string();
+    let git = |args: &[&str]| -> anyhow::Result<()> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(())
+    };
+    git(&["init", "-q"])?;
+    std::fs::write(dir.path().join("alpha.txt"), "one\n")?;
+    git(&["add", "alpha.txt"])?;
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "one",
+    ])?;
+    std::fs::write(dir.path().join("alpha.txt"), "one\ntwo\n")?; // 已跟踪 + 改动 ⇒ M
+    std::fs::write(dir.path().join("beta.txt"), "new\n")?; // 未跟踪 ⇒ ?
+    std::fs::write(dir.path().join("gamma.rs"), "fn main() {}\n")?; // 未跟踪 ⇒ ?
+
+    let plugin = dir.path().join("filetree.js");
+    std::fs::write(
+        &plugin,
+        std::fs::read_to_string(repo_plugin("filetree/plugin.js"))?,
+    )?;
+    let mut cfg = test_config();
+    cfg.plugins = Some(toml::from_str("[filetree]\ngit_status = true\n")?);
+    let mut app = AppBuilder::new().with_config(cfg).build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(
+        &mut app,
+        &format!(":open {}<ret>", dir.path().join("alpha.txt").display()),
+    )
+    .await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    // git 状态是异步读的：**必须用 pump 推动事件循环**（只 render + sleep 不泵 JS 作业，
+    // 实测 promise 的 .then 永远不跑）；`<up>` 是面板里无副作用的手柄键。
+    let mut text = String::new();
+    for _ in 0..40 {
+        text = panel_body(&mut app);
+        if text.contains('M') && text.contains('?') {
+            break;
+        }
+        pump(&mut app, "<up>").await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let line_of = |text: &str, name: &str| -> String {
+        text.lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        line_of(&text, "alpha.txt").contains('M'),
+        "改动过的 alpha.txt 应有 M 标记: {:?}",
+        line_of(&text, "alpha.txt")
+    );
+    assert!(
+        line_of(&text, "beta.txt").contains('?'),
+        "未跟踪的 beta.txt 应有 ? 标记: {:?}",
+        line_of(&text, "beta.txt")
+    );
+
+    // `#M` 谓词：只剩 alpha.txt
+    pump(&mut app, "<gt>").await?;
+    pump(&mut app, "#M<ret>").await?;
+    let text = panel_body(&mut app);
+    assert!(
+        text.contains("alpha.txt"),
+        "#M 应留下改动过的文件: {text:?}"
+    );
+    assert!(!text.contains("beta.txt"), "#M 应滤掉未跟踪文件: {text:?}");
+    assert!(
+        !text.contains("gamma.rs"),
+        "#M 应滤掉未跟踪的 gamma.rs: {text:?}"
+    );
+
+    // `#?` 谓词：只剩未跟踪的两个
+    pump(&mut app, "<gt>").await?;
+    pump(&mut app, "<backspace><backspace><ret>").await?;
+    pump(&mut app, "<gt>").await?;
+    pump(&mut app, "#?<ret>").await?;
+    let text = panel_body(&mut app);
+    assert!(text.contains("beta.txt"), "#? 应留下未跟踪文件: {text:?}");
+    assert!(!text.contains("alpha.txt"), "#? 应滤掉已跟踪文件: {text:?}");
+    Ok(())
+}
+
+/// 多打开标记（③）：`●` = 当前文件，`·` = 已打开但非当前，其余没有标记。
+///
+/// 回归点：以前只有"当前文件"有圆点 ⇒ 切走之后面板再也看不出哪些文件还开着。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_marks_open_buffers() -> anyhow::Result<()> {
+    let (dir, mut app) = setup().await?;
+    let readme = dir.path().join("readme.md");
+    let main_js = dir.path().join("src").join("main.js");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+
+    // 再开一个文件 ⇒ readme.md 变成"已打开但非当前"，main.js 是当前
+    pump(&mut app, &format!(":open {}<ret>", main_js.display())).await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    let text = panel_body(&mut app);
+    let line_of = |name: &str| -> String {
+        text.lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        line_of("main.js").contains('●'),
+        "当前文件应有 ●: {:?}",
+        line_of("main.js")
+    );
+    assert!(
+        line_of("readme.md").contains('·'),
+        "已打开但非当前应有 ·: {:?}",
+        line_of("readme.md")
+    );
+    assert!(
+        !line_of("filetree.js").contains('●') && !line_of("filetree.js").contains('·'),
+        "未打开的文件不该有标记: {:?}",
+        line_of("filetree.js")
+    );
+
+    // 关掉**当前** buffer（此刻是 main.js）：标记要随之消失。
+    // 核心不为 `:buffer-close` 发任何插件事件 ⇒ 面板在下次按键时会用 buffer.list() 重新播种，
+    // 所以这里补一次按键（`<up>` 是面板里的无副作用键）。
+    pump(&mut app, ":buffer-close!<ret>").await?;
+    pump(&mut app, "<up>").await?;
+    let text = panel_body(&mut app);
+    let main_line = text
+        .lines()
+        .find(|l| l.contains("main.js"))
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !main_line.contains('●') && !main_line.contains('·'),
+        "关掉的 buffer 不该再有任何标记: {main_line:?}"
+    );
+    assert!(
+        text.lines()
+            .find(|l| l.contains("readme.md"))
+            .unwrap_or_default()
+            .contains('·'),
+        "readme.md 仍开着（只是非当前）⇒ 仍应有 ·: {text:?}"
+    );
+    Ok(())
+}
+
+/// 整帧文本（不裁列）—— 双面板时两个根名都在同一行里，用 `panel_text`（只取左 32 列）看不到第二个
+fn frame_text(app: &mut Application) -> String {
+    render_rows(app, helix_view::graphics::Rect::new(0, 0, 120, 30))
+        .iter()
+        .map(|r| r.trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 双实例（第 4 步）：`:filetree-open <dir>` 真的开出第二个面板，两个 root 各自成树；
+/// 再开第三个会被 `max_panels`（默认 2）拒绝，且状态栏有说明。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_two_panels_side_by_side() -> anyhow::Result<()> {
+    let (dir_a, mut app) = setup().await?;
+    // 第二个 root：另一个临时目录（带一个只在它里面出现的文件名）
+    let dir_b = tempfile::tempdir()?;
+    std::fs::write(dir_b.path().join("beta.md"), "b\n")?;
+    let name_a = dir_a.path().file_name().unwrap().to_string_lossy().into_owned();
+    let name_b = dir_b.path().file_name().unwrap().to_string_lossy().into_owned();
+
+    let readme = dir_a.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    pump(&mut app, &format!(":filetree-open {}<ret>", dir_b.path().display())).await?;
+
+    let frame = frame_text(&mut app);
+    assert!(frame.contains(&name_a), "面板 A 的 root 名应在帧里: {frame}");
+    assert!(frame.contains(&name_b), "面板 B 的 root 名应在帧里: {frame}");
+    assert!(frame.contains("beta.md"), "面板 B 应显示自己的树: {frame}");
+
+    // 第三个：被上限拒绝（状态栏有说明，且帧里没多出第三个面板）
+    pump(&mut app, &format!(":filetree-open {}<ret>", dir_a.path().display())).await?;
+    let st = status_text(&app);
+    assert!(st.contains("最多 2 个面板"), "超上限应明确说明: {st:?}");
+    Ok(())
+}
+
+/// 双实例的 `:filetree-reveal`：**归属优先** —— 文件属于哪个面板的 root 就落哪个，
+/// 不动 active 面板的 root（设计文档 §4.3 的 ①② 顺序按实测调换了）。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_reveal_prefers_owning_panel() -> anyhow::Result<()> {
+    let (dir_a, mut app) = setup().await?;
+    let dir_b = tempfile::tempdir()?;
+    std::fs::write(dir_b.path().join("beta.md"), "b\n")?;
+    let name_b = dir_b.path().file_name().unwrap().to_string_lossy().into_owned();
+
+    let readme = dir_a.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    pump(&mut app, &format!(":filetree-open {}<ret>", dir_b.path().display())).await?;
+    // 此时 active 是 B；打开 A 里的另一个文件 ⇒ 跟随/定位应落在 A（B 的 root 不能被拽走）
+    let other = dir_a.path().join("src").join("main.js");
+    pump(&mut app, &format!(":open {}<ret>", other.display())).await?;
+    let frame = frame_text(&mut app);
+    assert!(
+        frame.contains(&name_b),
+        "B 的 root 不该被 reveal 拽走: {frame}"
+    );
+    assert!(frame.contains("main.js"), "A 应该显示被 reveal 的文件: {frame}");
+    Ok(())
+}
+
+/// 双实例下 `:filetree` 的语义：关掉**目标**面板（active），而不是关掉全部/关错那个。
+#[tokio::test(flavor = "multi_thread")]
+async fn filetree_toggle_closes_active_panel() -> anyhow::Result<()> {
+    let (dir_a, mut app) = setup().await?;
+    let dir_b = tempfile::tempdir()?;
+    std::fs::write(dir_b.path().join("beta.md"), "b\n")?;
+    let name_a = dir_a.path().file_name().unwrap().to_string_lossy().into_owned();
+    let name_b = dir_b.path().file_name().unwrap().to_string_lossy().into_owned();
+
+    let readme = dir_a.path().join("readme.md");
+    pump(&mut app, &format!(":open {}<ret>", readme.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    pump(&mut app, ":filetree-reveal<ret>").await?;
+    pump(&mut app, &format!(":filetree-open {}<ret>", dir_b.path().display())).await?;
+    assert!(frame_text(&mut app).contains(&name_b), "前置：B 已开");
+
+    pump(&mut app, ":filetree<ret>").await?; // 关 active（B）
+    let frame = frame_text(&mut app);
+    assert!(!frame.contains(&name_b), "B 应被关掉: {frame}");
+    assert!(frame.contains(&name_a), "A 必须还在: {frame}");
     Ok(())
 }
