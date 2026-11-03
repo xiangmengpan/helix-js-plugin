@@ -128,6 +128,32 @@ fn engine_config(history: usize) -> TermConfig {
     }
 }
 
+/// 终端内的**本地**鼠标选择（不经过 pty 应用）。
+///
+/// 用**绝对行**（含滚回）+ 显示列定位：这样滚回/回底后高亮仍贴着同一批文字。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TermSelection {
+    /// 锚点（按下处）
+    anchor: (i32, usize),
+    /// 活动端（拖到哪）
+    cursor: (i32, usize),
+}
+
+impl TermSelection {
+    /// 规范化成阅读顺序（左上→右下）
+    fn normalized(&self) -> ((i32, usize), (i32, usize)) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
+    fn is_point(&self) -> bool {
+        self.anchor == self.cursor
+    }
+}
+
 /// 终端网格(引擎支撑)。
 ///
 /// 公开方法与旧手写实现同形,调用方(PluginTerminal / 单测)基本不用改;
@@ -372,6 +398,54 @@ impl TerminalGrid {
         }
         out
     }
+
+    /// pane 内容区坐标(左上角 = 0,0) → 绝对 (行, 显示列)。
+    /// 绝对行包含滚回偏移 ⇒ 选区不随滚回飘移。
+    fn cell_pos(&self, row: u16, col: u16) -> (i32, usize) {
+        let off = self.term.grid().display_offset() as i32;
+        (row as i32 - off, col as usize)
+    }
+
+    /// 取某行 `[c0, c1)` 显示列范围的文本(宽字符占位格跳过、零宽跟随、去行尾空白)
+    fn row_text_range(&self, line: Line, c0: usize, c1: usize) -> String {
+        let grid = self.term.grid();
+        let mut s = String::new();
+        for col in c0..c1.min(self.cols as usize) {
+            let c = &grid[line][Column(col)];
+            if c.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            s.push(if c.c == '\t' { ' ' } else { c.c });
+            if let Some(zw) = c.zerowidth() {
+                s.extend(zw.iter());
+            }
+        }
+        s.trim_end().to_string()
+    }
+
+    /// 选区文本(多行 `\n` 连接;首行从起列开始、末行到止列结束)
+    fn selection_text(&self, sel: &TermSelection) -> String {
+        let (start, end) = sel.normalized();
+        let grid = self.term.grid();
+        // 内容可能因 resize/clear 缩水:先夹进网格的真实行范围（越界索引会 panic）
+        let (lo, hi) = (grid.topmost_line().0, grid.bottommost_line().0);
+        let start = (start.0.clamp(lo, hi), start.1);
+        let end = (end.0.clamp(lo, hi), end.1);
+        let mut out = String::new();
+        for line in start.0..=end.0 {
+            if line > start.0 {
+                out.push('\n');
+            }
+            let c0 = if line == start.0 { start.1 } else { 0 };
+            let c1 = if line == end.0 {
+                end.1 + 1
+            } else {
+                self.cols as usize
+            };
+            out.push_str(&self.row_text_range(Line(line), c0, c1));
+        }
+        out
+    }
 }
 
 /// 引擎单元 → 渲染视图
@@ -597,8 +671,11 @@ pub struct PluginTerminal {
     input_mode: TermInputMode,
     /// 上次渲染尺寸（None = 尚未渲染；首次渲染触发 resize + TIOCSWINSZ）
     last_size: Option<(u16, u16)>,
-    /// 上次渲染区域(鼠标坐标换算用:组件不持有 area,只能由 render 记录)
-    last_area: Option<Rect>,
+    /// 上次渲染的**网格**区域(有 JS 标题条时它比组件区域下移 1 行)。
+    /// 鼠标上报坐标与本地选择都以此为准
+    last_grid_area: Option<Rect>,
+    /// 本地鼠标选区（Shift 拖选 / 应用未开鼠标上报时的拖选）
+    sel: Option<TermSelection>,
     /// 标题条脏格 diff 渲染器(JS 视图层内容只重绘变化格)
     diff: crate::ui::comp_layout::DiffRenderer,
 }
@@ -616,7 +693,8 @@ impl PluginTerminal {
             mode: TermMode::Dock,
             input_mode: TermInputMode::Insert,
             last_size: None,
-            last_area: None,
+            last_grid_area: None,
+            sel: None,
             diff: Default::default(),
         }
     }
@@ -631,6 +709,7 @@ impl PluginTerminal {
 
     pub(crate) fn clear(&mut self) {
         self.grid.clear();
+        self.sel = None; // 内容没了，选区也不再指着文字
     }
 
     pub fn view_id(&self) -> u64 {
@@ -696,7 +775,7 @@ impl PluginTerminal {
         if !mode.intersects(EngineMode::MOUSE_MODE) {
             return None;
         }
-        let area = self.last_area?;
+        let area = self.last_grid_area?;
         if mouse.column < area.x
             || mouse.row < area.y
             || mouse.column >= area.x + area.width
@@ -759,23 +838,137 @@ impl PluginTerminal {
         self.grid.full_text()
     }
 
-    /// 鼠标：应用开了上报就编码发 pty(优先于本地滚动);否则滚轮走本地滚回。
+    /// 鼠标：**本地选择优先**（Shift 强制本地 / 应用未开鼠标上报时也走本地），
+    /// 否则把事件编成 CSI 上报给 pty；滚轮回退到本地回看。
+    ///
+    /// 为什么要 Shift 优先：vim/htop 这类应用一开 `?1000h` 就把鼠标全吃走了，
+    /// 不给一个“抢回本地选择”的键就只能右键系统菜单。这也是 tmux/zellij/xterm 的约定。
     fn on_mouse(&mut self, mouse: &helix_view::input::MouseEvent) -> EventResult {
-        use helix_view::input::MouseEventKind;
-        if let Some(report) = self.mouse_report(mouse) {
-            let _ = helix_js::term_write(self.pty_id, &report);
-            return EventResult::Consumed(None);
+        use helix_view::input::{KeyModifiers, MouseEventKind};
+        let report = self.mouse_report(mouse);
+        let force_local = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        if force_local || report.is_none() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.grid.scroll_up_view(3);
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.grid.scroll_down_view(3);
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {
+                    if let Some(r) = self.local_select(mouse) {
+                        return r;
+                    }
+                }
+                _ => {}
+            }
         }
+        match report {
+            Some(report) => {
+                let _ = helix_js::term_write(self.pty_id, &report);
+                EventResult::Consumed(None)
+            }
+            None => EventResult::Ignored(None),
+        }
+    }
+
+    /// 终端内的本地选择：Down 起锚、Drag 伸到、Up 复制。
+    /// 高亮在 Up 后**保留**（能看到到底复制了什么），下次点击/按键时清除。
+    /// 返回 `None` = 这次事件不归本地选择（没选区或单击），让调用方继续往下走。
+    fn local_select(&mut self, mouse: &helix_view::input::MouseEvent) -> Option<EventResult> {
+        use helix_view::input::{MouseButton, MouseEventKind};
+        let area = self.last_grid_area?;
+        // 拖到 pane 外也继续选：夹进内容区（不靠事件坐标合法性）
+        let row = mouse
+            .row
+            .saturating_sub(area.y)
+            .min(area.height.saturating_sub(1));
+        let col = mouse
+            .column
+            .saturating_sub(area.x)
+            .min(area.width.saturating_sub(1));
+        let cell = self.grid.cell_pos(row, col);
         match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                self.grid.scroll_up_view(3);
-                EventResult::Consumed(None)
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.sel = Some(TermSelection {
+                    anchor: cell,
+                    cursor: cell,
+                });
+                Some(EventResult::Consumed(None))
             }
-            MouseEventKind::ScrollDown => {
-                self.grid.scroll_down_view(3);
-                EventResult::Consumed(None)
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let sel = self.sel.as_mut()?;
+                sel.cursor = cell;
+                Some(EventResult::Consumed(None))
             }
-            _ => EventResult::Ignored(None),
+            MouseEventKind::Up(MouseButton::Left) => {
+                let sel = self.sel?;
+                if sel.is_point() {
+                    self.sel = None; // 单击：不复制，也不吞事件
+                    return None;
+                }
+                let text = self.grid.selection_text(&sel);
+                if text.trim().is_empty() {
+                    self.sel = None; // 白空格选区：不往寄存器里塞空格
+                    return None;
+                }
+                Some(EventResult::Consumed(Some(Box::new(
+                    move |_compositor, cx| {
+                        let values = vec![text.clone()];
+                        let _ = cx.editor.registers.write('"', values.clone());
+                        let _ = cx.editor.registers.write('+', values);
+                        cx.editor.set_status(format!(
+                            "终端选区已复制：{} 行 / {} 字符（p 粘贴）",
+                            text.lines().count().max(1),
+                            text.chars().count()
+                        ));
+                    },
+                ))))
+            }
+            _ => None,
+        }
+    }
+
+    /// 把选区画成高亮（只换底色，保留终端自己的前景色）
+    fn paint_selection(&self, area: Rect, surface: &mut Surface, theme: &helix_view::theme::Theme) {
+        let Some(sel) = self.sel else { return };
+        let bg = theme
+            .get("ui.selection")
+            .bg
+            .or_else(|| theme.get("ui.cursor").bg);
+        let (start, end) = sel.normalized();
+        let off = self.grid.scroll_offset() as i32;
+        let last_col = (area.width as usize).saturating_sub(1);
+        for line in start.0..=end.0 {
+            let row = line + off;
+            if row < 0 || row >= area.height as i32 {
+                continue;
+            }
+            let (c0, c1) = if start.0 == end.0 {
+                (start.1, end.1)
+            } else if line == start.0 {
+                (start.1, last_col)
+            } else if line == end.0 {
+                (0, end.1)
+            } else {
+                (0, last_col)
+            };
+            for col in c0..=c1.min(last_col) {
+                if let Some(cell) = surface.get_mut(area.x + col as u16, area.y + row as u16) {
+                    match bg {
+                        Some(c) => {
+                            cell.set_style(Style::default().bg(c));
+                        }
+                        None => {
+                            let mut st = cell.style();
+                            st.add_modifier |= Modifier::REVERSED;
+                            cell.set_style(st);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -792,6 +985,8 @@ impl PluginTerminal {
     /// 按键总入口：term-key 钩子（插件决策优先）→ `C-\\` 模式切换 → 按输入模式分流。
     fn on_key(&mut self, key: &helix_view::input::KeyEvent, cx: &mut Context) -> EventResult {
         use helix_view::input::{KeyCode, KeyModifiers};
+        // 任何按键都结束本地选区（与“下次点击清除”对齐）
+        self.sel = None;
         // 钩子说了算时直接返回；`None` = 无钩子/未拦截，继续本地语义
         if let Some(result) = self.term_key_decision(key, cx) {
             return result;
@@ -981,7 +1176,6 @@ impl Component for PluginTerminal {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        self.last_area = Some(area);
         // OSC 52:引擎收到的剪贴板写入请求在此落地(只有 render 拿得到 editor)。
         // 走 registers.write 而不是直接碰 config 里的 provider:选区语义与 helix 一致。
         for (reg, text) in self.grid.take_clipboard() {
@@ -1026,6 +1220,7 @@ impl Component for PluginTerminal {
             return;
         }
         let grid_area = if has_view { area.clip_top(1) } else { area };
+        self.last_grid_area = Some(grid_area);
         let rows = grid_area.height.max(1);
         let cols = grid_area.width.max(1);
         // 尺寸变化 → TIOCSWINSZ + 网格 resize（首次渲染 last_size=None 也会触发）
@@ -1037,6 +1232,8 @@ impl Component for PluginTerminal {
             self.last_size = Some((rows, cols));
         }
         self.grid.render(grid_area, surface);
+        // 本地鼠标选区高亮（画在网格之上、光标之下：光标那块依旧反色可见）
+        self.paint_selection(grid_area, surface, &cx.editor.theme);
         // 终端光标：insert 模式在网格光标处画反色块(主题 ui.cursor)；normal 模式隐藏(滚动查看)
         if self.input_mode == TermInputMode::Insert {
             let (row, col) = self.grid.cursor();
@@ -1090,6 +1287,69 @@ mod tests {
         g2.feed("abc".as_bytes()); // 光标到末列 (0,3)
         g2.feed("中".as_bytes()); // wrap 到下一行再写（末列宽字符先 wrap）
         assert_eq!(g2.cursor(), (1, 2), "末列宽字符 wrap 后占 2 格");
+    }
+
+    #[test]
+    fn selection_text_slices_rows_and_columns() {
+        let mut g = grid(3, 20);
+        g.feed(b"alpha beta\r\ngamma delta\r\nlast line");
+
+        // 单行取列区间（末列包含）
+        let one = TermSelection {
+            anchor: (0, 0),
+            cursor: (0, 4),
+        };
+        assert_eq!(g.selection_text(&one), "alpha");
+
+        // 跨行：首行从起列、末行到止列
+        let multi = TermSelection {
+            anchor: (0, 6),
+            cursor: (1, 4),
+        };
+        assert_eq!(g.selection_text(&multi), "beta\ngamma");
+
+        // 反向拖（从下往上）与正向选中一样
+        let rev = TermSelection {
+            anchor: (1, 4),
+            cursor: (0, 6),
+        };
+        assert_eq!(g.selection_text(&rev), g.selection_text(&multi));
+
+        // 单击（起点=终点）也返回那一格
+        let point = TermSelection {
+            anchor: (2, 0),
+            cursor: (2, 0),
+        };
+        assert_eq!(g.selection_text(&point), "l");
+
+        // 宽字符：占位格跳过，不凭空多出空格
+        let mut cjk = grid(1, 8);
+        cjk.feed("中文ab".as_bytes());
+        let sel = TermSelection {
+            anchor: (0, 0),
+            cursor: (0, 4),
+        };
+        assert_eq!(cjk.selection_text(&sel), "中文a");
+    }
+
+    #[test]
+    fn selection_uses_absolute_lines_across_scrollback() {
+        // 选区存绝对行 ⇒ 滚回/回底后仍指着同一批文字
+        let mut g = grid(2, 8);
+        g.feed(b"one\r\ntwo\r\nthree"); // "one" 进滚回
+        assert_eq!(g.scrollback_len(), 1);
+        g.scroll_up_view(1); // 视口上滚：屏幕第 0 行是历史里的 "one"
+                             // 当前屏幕最上一行(原始坐标为负)就是滚回里的 "one"
+        let sel = TermSelection {
+            anchor: g.cell_pos(0, 0),
+            cursor: g.cell_pos(0, 2),
+        };
+        assert_eq!(sel.anchor.0, -1, "绝对行含滚回（负 = 历史）");
+        assert_eq!(g.selection_text(&sel), "one");
+        // 回底→再上滚，绝对行不变
+        g.set_scroll_offset(0);
+        g.scroll_up_view(1);
+        assert_eq!(g.selection_text(&sel), "one");
     }
 
     #[test]
@@ -1448,9 +1708,36 @@ mod tests {
     fn mouse_term(seq: &str) -> PluginTerminal {
         let mut t = PluginTerminal::new(0, 0, 80);
         // 故意偏移的 pane:验证屏幕坐标→pane 内 1-based 坐标的换算
-        t.last_area = Some(Rect::new(10, 2, 70, 20));
+        t.last_grid_area = Some(Rect::new(10, 2, 70, 20));
         t.feed(seq);
         t
+    }
+
+    /// 应用自己把鼠标吃走（`?1000h`）时，Shift 必须能把鼠标抢回本地选择。
+    /// 不这样做，vim/htop 里就永远无法用鼠标选字（只能去右键系统菜单）。
+    #[test]
+    fn shift_click_forces_local_selection_over_app_mouse_mode() {
+        use helix_view::input::{KeyModifiers, MouseButton};
+        let mut t = mouse_term("");
+        t.feed("\u{1b}[?1000h"); // vim/htop 的做法：打开鼠标上报
+        assert!(
+            t.mouse_report(&mouse_ev(MouseEventKind::Down(MouseButton::Left)))
+                .is_some(),
+            "前提：应用已要求鼠标上报"
+        );
+
+        // 普通点击：归 pty，不起本地选区
+        t.on_mouse(&mouse_ev(MouseEventKind::Down(MouseButton::Left)));
+        assert!(t.sel.is_none(), "应用要鼠标时，普通点击不该抢成本地选区");
+
+        // Shift 点击：抢回本地选区
+        let mut ev = mouse_ev(MouseEventKind::Down(MouseButton::Left));
+        ev.modifiers = KeyModifiers::SHIFT;
+        t.on_mouse(&ev);
+        assert!(
+            t.sel.is_some(),
+            "Shift 必须抢回本地选择（tmux/zellij 约定）"
+        );
     }
 
     fn mouse_ev(kind: MouseEventKind) -> helix_view::input::MouseEvent {
