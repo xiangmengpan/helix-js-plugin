@@ -93,6 +93,56 @@ async fn mouse_click_moves_layout_focus() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Scroll 模式（`C-y`）：**编辑器叶子**也要真滚——只滚视口、不动光标。
+/// 回归：`pane_scroll` 曾经只认终端叶子 ⇒ 编辑器里按 `C-y` 后 `j/k/d/u/f/b`
+/// 全是**静默空操作**，看上去就像“模式没生效”。
+#[tokio::test(flavor = "multi_thread")]
+async fn scroll_mode_scrolls_editor_viewport() -> anyhow::Result<()> {
+    let file = tempfile::NamedTempFile::new()?;
+    let body: String = (0..300).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(file.path(), body)?;
+    let mut app = AppBuilder::new().with_file(file.path(), None).build()?;
+
+    let focused_doc = |app: &mut Application| {
+        let vid = app.editor.tree.focus;
+        let doc_id = app.editor.tree.get(vid).doc;
+        (vid, doc_id)
+    };
+    // 视口顶端在第几行（view_offset 的 anchor 就是“视口第一行”那个字符：
+    // 无 soft-wrap 时 `vertical_offset` 始终为 0，滚动体现在 anchor 上）
+    let top_line = |app: &mut Application| {
+        let (vid, doc_id) = focused_doc(app);
+        let doc = &app.editor.documents[&doc_id];
+        let len = doc.text().len_chars();
+        doc.text()
+            .char_to_line(doc.view_offset(vid).anchor.min(len))
+    };
+    let cursor = |app: &mut Application| {
+        let (vid, doc_id) = focused_doc(app);
+        let doc = &app.editor.documents[&doc_id];
+        doc.selection(vid).primary().cursor(doc.text().slice(..))
+    };
+
+    assert_eq!(top_line(&mut app), 0, "初始视口在顶部");
+    pump(&mut app, "<C-y>jjj").await?;
+    assert_eq!(top_line(&mut app), 9, "j 每次 3 行（3×3）");
+    assert_eq!(cursor(&mut app), 0, "滚视口不能动光标");
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Scroll,
+        "连续滚动仍在 Scroll 模式"
+    );
+
+    pump(&mut app, "k").await?;
+    assert_eq!(top_line(&mut app), 6, "k 反向滚回 3 行");
+    pump(&mut app, "d").await?;
+    assert_eq!(top_line(&mut app), 18, "d = 半页 12 行");
+    pump(&mut app, "b").await?;
+    assert_eq!(top_line(&mut app), 0, "b = 整页 24 行，碰顶夹在 0");
+    assert_eq!(cursor(&mut app), 0, "全程光标未动");
+    Ok(())
+}
+
 /// Pane 模式:`w`/`e` 切换浮动态(阶段② 接通),`i` 对浮窗 pin
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_mode_float_toggle_and_pin() -> anyhow::Result<()> {

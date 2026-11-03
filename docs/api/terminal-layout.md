@@ -94,6 +94,10 @@ const local = ev.y - p.area.y;   // 组件级鼠标坐标 → 面板内第几行
 窗口管理走 compositor 层的 **zellij 式平级模式**(任意叶子焦点可用,详见
 [`../arsenal.md`](../arsenal.md) 同级的 `docs/` 下的模式说明):
 `C-g` Locked / `C-p` Pane / `C-n` Resize / `C-h` Move / `C-y` Scroll。
+
+Scroll 模式滚的是**活动叶子的视口**：终端叶子 → 回看缓冲；编辑器叶子 / `BufferLeaf`
+→ 只搬 `view_offset`、**不动光标**（`commands::scroll_view`，`j/k` 3 行、`d/u` 半页、
+`f/l`/`b/h`/`PgUp`/`PgDn` 整页）。`s`（滚动搜索）还没接，只给提示。
 旧的全局 `C-w` 单模式**已删除**。`layout_fix(id, true)` 固定叶子(免疫交换/关闭/最小化)。
 
 **鼠标点击 = 换布局焦点**(保持当前模式;`focused` 字段与聚焦边框都跟着走)。两个例外:

@@ -1530,17 +1530,20 @@ impl Compositor {
                 }
             }
             PaneMode::Scroll => match ch {
-                Some('j') => self.pane_scroll(3),
-                Some('k') => self.pane_scroll(-3),
-                Some('d') => self.pane_scroll(12),
-                Some('u') => self.pane_scroll(-12),
-                Some('f') | Some('l') => self.pane_scroll(24),
-                Some('b') | Some('h') => self.pane_scroll(-24),
+                Some('j') => self.pane_scroll(3, cx),
+                Some('k') => self.pane_scroll(-3, cx),
+                Some('d') => self.pane_scroll(12, cx),
+                Some('u') => self.pane_scroll(-12, cx),
+                Some('f') | Some('l') => self.pane_scroll(24, cx),
+                Some('b') | Some('h') => self.pane_scroll(-24, cx),
+                Some('s') => cx
+                    .editor
+                    .set_status("Scroll 模式的搜索（s）还没接：终端回看与编辑器视口都未实现"),
                 _ => match key.code {
-                    KeyCode::Down => self.pane_scroll(3),
-                    KeyCode::Up => self.pane_scroll(-3),
-                    KeyCode::PageDown => self.pane_scroll(24),
-                    KeyCode::PageUp => self.pane_scroll(-24),
+                    KeyCode::Down => self.pane_scroll(3, cx),
+                    KeyCode::Up => self.pane_scroll(-3, cx),
+                    KeyCode::PageDown => self.pane_scroll(24, cx),
+                    KeyCode::PageUp => self.pane_scroll(-24, cx),
                     _ => {}
                 },
             },
@@ -1549,15 +1552,48 @@ impl Compositor {
         true // 模式内未绑定的键吞掉(不穿透)
     }
 
-    /// Scroll 模式:滚动当前焦点叶子的回看缓冲。
-    /// 编辑器叶子的视口滚动与 `s` 搜索尚未接(见阶段① 的未完成项)。
-    fn pane_scroll(&mut self, lines: i32) {
+    /// Scroll 模式:滚动当前活动叶子的视口/回看缓冲，**不动光标**。
+    ///
+    /// - 终端叶子 → 滚回看缓冲（`PluginTerminal::scroll_by`）；
+    /// - 编辑器叶子（id=0 里当前那个 view）与 `BufferLeaf`（自己持有的 view）→ 只搬
+    ///   `view_offset`（`commands::scroll_view`）。
+    ///
+    /// 曾经的实现只看终端叶子 ⇒ 在编辑器里按 `C-y` 后 `j/k` 是**完全静默的空操作**，
+    /// 看上去就是“模式没生效”。
+    fn pane_scroll(&mut self, lines: i32, cx: &mut Context) {
+        use helix_core::movement::Direction;
         let active = self.main_tree.active();
         if let Some(t) =
             self.find_where::<crate::ui::plugin_terminal::PluginTerminal>(|t| t.view_id() == active)
         {
             t.scroll_by(lines);
+            return;
         }
+        // 编辑器叶子：view 可能被其它叶子（BufferLeaf）认领，得避开
+        let view_id = if active == 0 {
+            let claimed = self.main_tree.claimed_view_ids();
+            let focus = cx.editor.tree.focus;
+            if claimed.contains(&focus) || cx.editor.tree.try_get(focus).is_none() {
+                cx.editor
+                    .tree
+                    .views()
+                    .find(|(v, _)| !claimed.contains(&v.id))
+                    .map(|(v, _)| v.id)
+            } else {
+                Some(focus)
+            }
+        } else {
+            self.main_tree.view_id_of(active)
+        };
+        let Some(view_id) = view_id else {
+            return;
+        };
+        let (direction, n) = if lines >= 0 {
+            (Direction::Forward, lines as usize)
+        } else {
+            (Direction::Backward, lines.unsigned_abs() as usize)
+        };
+        crate::commands::scroll_view(cx.editor, view_id, n, direction);
     }
 
     /// 窗口模式:创建新窗(v/s 同 doc 分屏,n 新空 buffer)。创建后保持模式可连续操作。

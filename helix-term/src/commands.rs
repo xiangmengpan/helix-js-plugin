@@ -2164,6 +2164,39 @@ fn switch_to_lowercase(cx: &mut Context) {
     });
 }
 
+/// 滚**指定 view** 的视口，**不动光标/选择**。
+///
+/// `scroll(.., sync_cursor=false)` 的指定-view 版：它只吃 `editor.tree.focus`，
+/// 而 zellij 式 Scroll 模式滚的是**布局树里活动叶子的 view**（可能是 `BufferLeaf`
+/// 自己持有的 view，也可能是编辑器叶子里当前那个 view）。
+/// 只搬 `view_offset`：不调 `ensure_cursor_in_view`、也不拖选择 —— 这就是规格里
+/// “编辑器叶子只滚视图、不动光标”的含义（光标可能离开视口，下次移动时自会拉回）。
+pub fn scroll_view(editor: &mut Editor, view_id: ViewId, offset: usize, direction: Direction) {
+    use Direction::*;
+    let doc_id = editor.tree.get(view_id).doc;
+    let view = editor.tree.get(view_id);
+    let doc = doc_mut!(editor, &doc_id);
+
+    let mut view_offset = doc.view_offset(view.id);
+    let viewport = view.inner_area(doc);
+    let text_fmt = doc.text_format(viewport.width, None);
+    let delta = match direction {
+        Forward => offset as isize,
+        Backward => -(offset as isize),
+    };
+    let annotations = view.text_annotations(&*doc, None, None);
+    (view_offset.anchor, view_offset.vertical_offset) = char_idx_at_visual_offset(
+        doc.text().slice(..),
+        view_offset.anchor,
+        view_offset.vertical_offset as isize + delta,
+        0,
+        &text_fmt,
+        &annotations,
+    );
+    drop(annotations);
+    doc.set_view_offset(view.id, view_offset);
+}
+
 pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor: bool) {
     use Direction::*;
     let config = cx.editor.config();
