@@ -41,7 +41,11 @@ jobs:
     name: Test Suite
     runs-on: ${{ matrix.os }}
     if: github.repository == 'helix-editor/helix' || github.event_name != 'schedule'
-    timeout-minutes: 30
+    # 30 分钟不够了：集成套件现在有 464 个用例，**本机 2 线程实测 22.5 分钟**（全绿），
+    # CI 的 2 核机器更慢，再加 `cargo test --workspace` 与编译 ⇒ 会撞 30 分钟上限被 cancel，
+    # 而日志里只有一句 "The operation was canceled"（看起来跟真实失败一模一样）。
+    # 60 分钟留够余量；真要缩时间应该给集成套件做分片，而不是继续压预算。
+    timeout-minutes: 60
     env:
       RUST_BACKTRACE: 1
       HELIX_LOG_LEVEL: info
