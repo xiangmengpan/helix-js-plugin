@@ -283,6 +283,15 @@ function literal_hits(text, query) {
 
 // ============================ 纯逻辑：过滤表达式（DSL）/ 通用过滤遍历 / git 状态 ============================
 
+// `run_async` 失败消息的形态是 `exit <code>: <stderr>`。
+// **只有 exit 1** 才是"rg 没找到匹配"（常规退出，不是错误）；写成 `/^exit 1/` 会前缀命中
+// `exit 1xx` —— 例如没装 rg 时退出码 127 ⇒ 被当成"没有匹配"，于是**静默返回空列表、降级分支也
+// 不走**（2026-11-04 CI 实测：GitHub runner 上没有 rg，全库列表恒为 0 项）。
+function is_no_match(err) {
+  const msg = String((err && err.message) || err);
+  return /^exit 1(:|\s|$)/.test(msg);
+}
+
 // 小 glob → 正则：`**` 跨目录（含零层）、`*` 不跨 `/`、`?` 单字符、`[...]` 透传、其余字面量
 function glob_to_regex(pat) {
   let re = "";
@@ -618,7 +627,7 @@ function list_files(root) {
     (out) => flat_items(out, root),
     (err) => {
       // rg 无匹配 = exit 1（常规退出，不是错误）⇒ 空表
-      if (err && /^exit 1/.test(String(err.message))) return [];
+      if (is_no_match(err)) return [];
       // 真的没 rg / 参数错 ⇒ 降级 read_tree（不忽略 .gitignore，有 FLAT_MAX_ITEMS 封顶）
       helix.echo("filetree: 未找到 rg，已降级为目录遍历（不忽略 .gitignore）");
       return helix.read_tree(root, { depth: 12 }).then((es) =>
@@ -1741,7 +1750,7 @@ function start_grep(panel) {
         g.groups = [];
         // rg 无匹配 = exit 1（常规退出）；其它（无 rg / 参数错）才是真的错误
         const msg = String((err && err.message) || err);
-        g.error = /^exit 1/.test(msg) ? null : msg;
+        g.error = is_no_match(err) ? null : msg;
         refresh_find(panel);
       },
     );
@@ -2056,7 +2065,8 @@ if (typeof module !== "undefined" && module.exports) {
     // 搜索（纯逻辑；refresh_find/enter_find 依赖 helix 状态，不导出）
     match_name, filter_rows, highlight_segments, rows_for_view, flat_items, drop_flat,
     grep_groups, literal_hits, grep_rows,
-    compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter,
+    compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter, is_no_match,
+    list_files,
     opened_marker, worst_severity, diag_hit, diag_mark,
   };
 // render/open_panel 依赖 helix，node 测试需先 stub global.helix

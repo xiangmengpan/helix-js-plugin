@@ -351,10 +351,21 @@ async fn filetree_find_command_opens_from_picker() -> anyhow::Result<()> {
     )
     .await?;
 
-    // 行数据是**跟 OpenPicker 请求一起来**的 ⇒ 层出现时候选已就绪，不必再等。
-    // ⚠️ 别在这里加 `pump(&mut app, "")`（空按键列表）：event_loop_until_idle 收不到空闲信号，
-    //    实测会阻塞 ~10 分钟（一次真实踩坑）。
-    pump(&mut app, "main<ret>").await?;
+    // 先把查询打进去，再**等选中项真的变成 src/main.js**，最后才 Enter。
+    // 一次性 `pump("main<ret>")` 在慢机器上会让 Enter 赶在过滤之前生效 —— 实测 CI 上
+    // 打开的是当前文件（readme.md）而不是选中的 main.js。
+    //
+    // 判据用**右侧预览**：picker 的候选行不在这条渲染路径里（`render_rows` 只拿到浮层骨架），
+    // 但预览显示的是"选中项的内容"，`console.log(1)` 正是 setup 里 src/main.js 的正文。
+    pump(&mut app, "main").await?;
+    wait_frame(
+        &mut app,
+        Duration::from_secs(20),
+        "picker 选中 main.js（预览显示其内容）",
+        |f| f.contains("console.log(1)"),
+    )
+    .await?;
+    pump(&mut app, "<ret>").await?;
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(
         doc.path()
@@ -373,6 +384,9 @@ async fn filetree_find_command_opens_from_picker() -> anyhow::Result<()> {
 /// ③ 解析走 `--json` 而不是 `split(":")`（Windows 盘符）。
 #[tokio::test(flavor = "multi_thread")]
 async fn filetree_grep_search_tree_and_jump() -> anyhow::Result<()> {
+    if !has_ripgrep() {
+        return Ok(()); // 内容搜索走 `rg --json`，没有 rg 就没有等价实现（全库列表才有 read_tree 兜底）
+    }
     let (dir, mut app) = setup().await?;
     let main_js = dir.path().join("src").join("main.js");
     let readme = dir.path().join("readme.md");
@@ -692,6 +706,39 @@ async fn wait_panel(
         pump(app, "<pageup>").await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// 等**整帧**（含浮层）满足条件 —— 同样每轮 pump（见 [`wait_panel`]）。
+async fn wait_frame(
+    app: &mut Application,
+    budget: Duration,
+    what: &str,
+    ok: impl Fn(&str) -> bool,
+) -> anyhow::Result<String> {
+    let t0 = std::time::Instant::now();
+    loop {
+        let frame = frame_text(app);
+        if ok(&frame) {
+            return Ok(frame);
+        }
+        anyhow::ensure!(
+            t0.elapsed() < budget,
+            "等待超时（{what}，预算 {budget:?}）：\n{frame}"
+        );
+        pump(app, "<pageup>").await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// 这份构建里有没有 `rg`：内容搜索（`rg --json`）**必须**有它，全库列表则有 read_tree 兜底。
+fn has_ripgrep() -> bool {
+    std::process::Command::new("rg")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// 整帧文本（不裁列）—— 双面板时两个根名都在同一行里，用 `panel_text`（只取左 32 列）看不到第二个

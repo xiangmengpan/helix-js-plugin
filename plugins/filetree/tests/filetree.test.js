@@ -45,7 +45,8 @@ global.helix = {
 const {
   window_rows, scroll_top, match_name, filter_rows, highlight_segments, flat_items,
   literal_hits, grep_groups, grep_rows,
-  compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter,
+  compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter, is_no_match,
+  list_files,
   opened_marker, worst_severity, diag_hit, diag_mark, new_panel, G,
   target_panel, panel_for_path, close_panel,
   state_encode, state_decode, save_state, load_state, state_for_root,
@@ -742,5 +743,60 @@ test('close_panel：关掉两个中的一个，另一个仍可被解析', () => 
     G.panels = saved.panels;
     G.active = saved.active;
     global.helix.close_panel = savedClose;
+  }
+});
+
+// ============================ 「rg 没找到」vs「rg 不存在」（回归）============================
+//
+// `run_async` 的失败消息是 `exit <code>: <stderr>`。**只有 exit 1** 才是"没匹配"。
+// 曾经写成 `/^exit 1/` —— 前缀匹配会连带命中 `exit 127`（没装 rg 的机器）⇒ 被当成"没有匹配"，
+// 于是全库列表静默返回空表、降级到 read_tree 的分支根本不走
+// （2026-11-04 CI 实测：GitHub runner 上没有 rg，三个用例一起红）。
+
+test('is_no_match：只认 exit 1，不认 exit 127/2/10', () => {
+  const err = (m) => ({ message: m });
+  assert.equal(is_no_match(err('exit 1: ')), true, 'rg 没匹配');
+  assert.equal(is_no_match(err('exit 1')), true);
+  assert.equal(is_no_match({ message: 'exit 127: spawn rg ENOENT' }), false, '没装 rg 不是"没匹配"');
+  assert.equal(is_no_match({ message: 'exit 2: regex parse error' }), false, '参数错也不是');
+  assert.equal(is_no_match({ message: 'exit 10: x' }), false, '前缀相同但码不同');
+  assert.equal(is_no_match(null), false);
+  assert.equal(is_no_match(new Error('boom')), false);
+});
+
+test('list_files：rg 不存在（exit 127）⇒ 降级 read_tree；exit 1（真没匹配）⇒ 空表且不降级', async () => {
+  const saved = {
+    run_async: global.helix.run_async,
+    read_tree: global.helix.read_tree,
+    echo: global.helix.echo,
+  };
+  let readTreeCalls = 0;
+  const stubReadTree = () =>
+    Promise.resolve([
+      { name: 'a.rs', is_dir: false, path: '/r/a.rs' },
+      { name: 'b.rs', is_dir: false, path: '/r/src/b.rs' },
+      { name: 'src', is_dir: true, path: '/r/src' },
+    ]);
+  try {
+    global.helix.echo = () => {};
+
+    // ① 没装 rg：降级到 read_tree（目录被过滤掉、显示名按根算相对路径）
+    global.helix.run_async = () => Promise.reject(new Error('exit 127: spawn rg ENOENT'));
+    global.helix.read_tree = () => {
+      readTreeCalls++;
+      return stubReadTree();
+    };
+    const items = await list_files('/r');
+    assert.equal(readTreeCalls, 1, 'exit 127 必须触发降级');
+    assert.deepEqual(items.map((i) => i.rel), ['a.rs', 'src/b.rs'], '只留文件、rel 相对根');
+
+    // ② 真的没匹配（exit 1）：空表，**不**降级（否则每次空搜索都白跑一遍目录树）
+    readTreeCalls = 0;
+    global.helix.run_async = () => Promise.reject(new Error('exit 1: '));
+    const none = await list_files('/r');
+    assert.deepEqual(none, []);
+    assert.equal(readTreeCalls, 0, 'exit 1 不该降级');
+  } finally {
+    Object.assign(global.helix, saved);
   }
 });
