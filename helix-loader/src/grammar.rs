@@ -802,3 +802,34 @@ pub fn load_runtime_file(language: &str, filename: &str) -> Result<String, std::
     let path = crate::runtime_file(PathBuf::new().join("queries").join(language).join(filename));
     std::fs::read_to_string(path)
 }
+
+#[cfg(test)]
+mod tests {
+    /// 生效的语法集合里**不该再有 sr.ht 宿主**。
+    ///
+    /// 由来（2026-11-04）：`git.sr.ht` 对 GitHub runner 回 `503`，而 `helix-term` 的 build script
+    /// 会把 `languages.toml` 里所有未排除的语法一次性拉一遍 ⇒ 一个拉不到，`cargo check` /
+    /// `cargo test` / `nix build` **全部**红。CI 实测：失败的恰好就是没被 `use-grammars.except`
+    /// 排除的那几个 sr.ht 语法。
+    ///
+    /// 这条测试锁的是"机制真的生效"：`get_grammar_configs()` 会按 `use-grammars` 过滤，
+    /// 所以只要有人往 `languages.toml` 加一个 sr.ht 语法却忘了排除，这里就会红并给出原因。
+    #[test]
+    fn effective_grammar_set_has_no_sr_ht_sources() {
+        let grammars = super::get_grammar_configs().expect("languages.toml 应能解析");
+        let offenders: Vec<(String, String)> = grammars
+            .iter()
+            .filter_map(|g| match &g.source {
+                super::GrammarSource::Git { remote, .. } if remote.contains("sr.ht") => {
+                    Some((g.grammar_id.clone(), remote.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "这些语法还在从 sr.ht 拉（CI 会 503 ⇒ 整个构建红），请加进 languages.toml 的 \
+             `use-grammars.except`：{offenders:?}"
+        );
+    }
+}

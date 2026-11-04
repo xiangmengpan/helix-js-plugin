@@ -1,7 +1,13 @@
 # Language support configuration.
 # See the languages documentation: https://docs.helix-editor.com/master/languages.html
 
-use-grammars = { except = [ "wren", "gemini", "cylc" ] }
+# Grammars listed under `except` are **not** fetched/built at all (both the Rust build script and
+# `grammars.nix` honour this list). Everything hosted on `git.sr.ht` is excluded: that host
+# answers GitHub runners with `503` (their own "looking up pusher" error), and one unreachable
+# grammar aborts the whole build (`helix-term`'s build script fetches all of them). Verified
+# 2026-11-04: the failing grammars in CI were *exactly* the sr.ht ones missing from this list.
+# Remove an entry if the host becomes reliable again (and re-run `:grammar fetch`).
+use-grammars = { except = [ "wren", "gemini", "cylc", "hare", "slisp", "metamath" ] }
 
 [language-server]
 
