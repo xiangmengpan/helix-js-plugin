@@ -91,9 +91,9 @@ bin = "asset-ra"
 version = "1.0.0"
 [[server-manager.registry.asset-ra.asset]]
 target = "{target}"
-url = "file://{}"
+url = "{}"
 "#,
-            arc.display()
+            toml_url(&arc)
         );
         let tbl: toml::Table = toml::from_str(&cfg).unwrap();
         let sm = tbl
@@ -274,12 +274,37 @@ url = "file://{}"
         registry::set_ext(Vec::new());
         g
     }
+    /// 把路径拼成 `file://` URL 并**按 TOML 基本字符串转义**，供测试里的 `format!` 模板使用。
+    ///
+    /// 为什么不直接 `format!("file://{}", p.display())`：Windows 路径含 `\\`，写进 TOML 后
+    /// `\\U` / `\\t` 会被当成转义序列 ⇒ `toml::from_str` 报
+    /// "too few unicode value digits, expected unicode hexadecimal value"（CI 在 windows-latest
+    /// 上有 13 个 server_manager 用例因此一起红）。Linux 路径不含 `\\`，本机永远复现不到。
+    fn toml_url(p: &Path) -> String {
+        format!("file://{}", p.display().to_string().replace('\\', "\\\\"))
+    }
+
     fn tmp_root() -> PathBuf {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let d = std::env::temp_dir().join(format!("sm-test-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    #[test]
+    fn toml_url_escapes_windows_paths() {
+        // 回归：`file://C:\Users\x\a.tar.gz` 直接塞进 TOML 会被当成 unicode 转义而解析失败
+        let win = Path::new(r"C:\Users\runner\a.tar.gz");
+        let doc = format!("url = \"{}\"", toml_url(win));
+        let tbl: toml::Table =
+            toml::from_str(&doc).unwrap_or_else(|e| panic!("转义后 TOML 应能解析: {e}\n{doc}"));
+        assert_eq!(
+            tbl["url"].as_str().unwrap(),
+            r"file://C:\Users\runner\a.tar.gz",
+            "解析后应还原成单反斜杠（download_to 去掉 file:// 后直接 fs::copy）"
+        );
     }
 
     #[test]
@@ -359,9 +384,9 @@ bin = "asset-only"
 
 [[server-manager.registry.asset-only.asset]]
 target = "{target}"
-url = "file://{}"
+url = "{}"
 "#,
-            arc.display()
+            toml_url(&arc)
         );
         let parsed: toml::Table = toml::from_str(&doc).unwrap();
         let sm = parsed.get("server-manager").unwrap().as_table().unwrap();
