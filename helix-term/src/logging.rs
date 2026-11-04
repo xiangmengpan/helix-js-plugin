@@ -41,6 +41,11 @@ impl CappedFile {
     fn open(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .append(true)
+            // `write(true)` 与 `append(true)` 一起给：语义上等价于只写 append（Rust 文档明说），
+            // 但 **Windows 上必须这样**才拿到截断权限 —— 只开 `append(true)` 的句柄不允许
+            // `SetEndOfFile`，`set_len(0)` 会直接 `Access is denied`（CI 在 windows-latest 上
+            // 实测：两个 `cap_tests` 一起红）。
+            .write(true)
             .create(true)
             .open(path)?;
         let mut me = CappedFile {
