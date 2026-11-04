@@ -28,5 +28,24 @@ jobs:
         name: helix
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
+    # 重试是**必须**的，不是偷懒：`grammars.nix` 在求值期用 `builtins.fetchTree` 逐个拉语法仓库，
+    # 其中一个宿主抖动就会让整个 derivation 求值失败。实测（2026-11-03）：`hare` 的宿主
+    # `git.sr.ht` 返回 503（"Error occured looking up pusher"）⇒ 整条 Nix 构建红，
+    # 而同一 rev 事后 `git fetch` 取得到、sr.ht 也是 200 —— 纯粹是第三方瞬断。
+    # 用 shell 循环而不是第三方 retry action：少一个需要 SHA 锁定的供应链面。
     - name: Build nix flake
-      run: nix build -L
+      run: |
+        for attempt in 1 2 3; do
+          echo "::group::nix build (attempt $attempt/3)"
+          if nix build -L; then
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+          if [ "$attempt" = 3 ]; then
+            echo "nix build 连续 3 次失败（含语法仓库拉取）" >&2
+            exit 1
+          fi
+          echo "第 $attempt 次失败（可能是语法仓库宿主瞬断），30s 后重试…" >&2
+          sleep 30
+        done
