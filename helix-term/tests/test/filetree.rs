@@ -304,14 +304,12 @@ async fn filetree_search_all_scope_uses_rg_files() -> anyhow::Result<()> {
     pump(&mut app, "<tab>").await?; // 切全库（异步列表）
 
     // rg 是异步的：等列表到达（查询行的计数从"载入中"变成"全库 · N 项"）
-    let mut text = String::new();
-    for _ in 0..60 {
-        text = panel_body(&mut app);
-        if text.contains("全库 ·") && !text.contains("载入中") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // CJK 在渲染行里占两列（"全 库"）⇒ 条件判断也要先压掉空白，否则永远等不到
+    let text = wait_panel(&mut app, Duration::from_secs(20), "全库列表", |t| {
+        let c: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+        c.contains("全库·") && !c.contains("载入中")
+    })
+    .await?;
     // 注意：CJK 在渲染行里占两列（"全 库"，字符后跟一个填充空格）⇒ 断言前先压掉空白
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(compact.contains("全库"), "查询行应标出全库范围: {text:?}");
@@ -386,14 +384,13 @@ async fn filetree_grep_search_tree_and_jump() -> anyhow::Result<()> {
     pump(&mut app, ":filetree-search console<ret>").await?;
 
     // rg 是异步的：等内容树出现（文件行 + 命中行）
-    let mut text = String::new();
-    for _ in 0..60 {
-        text = panel_body(&mut app);
-        if text.contains("console.log(1)") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let text = wait_panel(
+        &mut app,
+        Duration::from_secs(20),
+        "内容搜索结果",
+        |t| t.contains("console.log(1)"),
+    )
+    .await?;
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
         compact.contains("内容·"),
@@ -560,15 +557,10 @@ async fn filetree_git_status_and_hash_predicates() -> anyhow::Result<()> {
 
     // git 状态是异步读的：**必须用 pump 推动事件循环**（只 render + sleep 不泵 JS 作业，
     // 实测 promise 的 .then 永远不跑）；`<up>` 是面板里无副作用的手柄键。
-    let mut text = String::new();
-    for _ in 0..40 {
-        text = panel_body(&mut app);
-        if text.contains('M') && text.contains('?') {
-            break;
-        }
-        pump(&mut app, "<up>").await?;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let text = wait_panel(&mut app, Duration::from_secs(20), "git 状态列", |t| {
+        t.contains('M') && t.contains('?')
+    })
+    .await?;
     let line_of = |text: &str, name: &str| -> String {
         text.lines()
             .find(|l| l.contains(name))
@@ -672,6 +664,34 @@ async fn filetree_marks_open_buffers() -> anyhow::Result<()> {
         "readme.md 仍开着（只是非当前）⇒ 仍应有 ·: {text:?}"
     );
     Ok(())
+}
+
+/// 等面板正文满足条件 —— **每轮都 `pump` 一次**。
+///
+/// 为什么必须 pump：`rg` / nucleo / git 都是异步的，它们的 promise 续体只有在事件循环被驱动时
+/// 才跑（只 `sleep` + 渲染是不够的 —— 本地机器快、恰好在之前的 `pump` 里就跑完了，CI 的
+/// 2 核机器上则永远等不到，于是同一个用例本地绿、CI 红）。
+/// 用 `<pageup>` 当"驱动键"：它在**所有**模式里都是无害的（列表导航，光标夹到顶部），
+/// 不像 `?`/`j` 之类会在搜索态被当成输入。
+async fn wait_panel(
+    app: &mut Application,
+    budget: Duration,
+    what: &str,
+    ok: impl Fn(&str) -> bool,
+) -> anyhow::Result<String> {
+    let t0 = std::time::Instant::now();
+    loop {
+        let body = panel_body(app);
+        if ok(&body) {
+            return Ok(body);
+        }
+        anyhow::ensure!(
+            t0.elapsed() < budget,
+            "等待超时（{what}，预算 {budget:?}）：\n{body}"
+        );
+        pump(app, "<pageup>").await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// 整帧文本（不裁列）—— 双面板时两个根名都在同一行里，用 `panel_text`（只取左 32 列）看不到第二个

@@ -63,6 +63,10 @@ jobs:
         run: cargo integration-test
 
     strategy:
+      # 不要让一个平台先红就把其它平台**取消**掉：矩阵 fail-fast 会把还在编译/运行的
+      # 5 个 job 一起杀掉（实测：Windows 单测一红，ubuntu 的集成套件连日志都没跑出来，
+      # 只能看到 "* The operation was canceled"），排障成本翻倍。
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, ubuntu-24.04-arm, windows-11-arm]
 

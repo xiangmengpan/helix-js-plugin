@@ -200,7 +200,7 @@ fn executables_under(dir: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 stack.push((path, depth + 1));
-            } else if is_executable(&path) && !name.ends_with(".so") && !name.contains('.') {
+            } else if is_executable(&path) && !is_shared_library(&name) {
                 out.push(path);
             }
         }
@@ -344,6 +344,20 @@ fn is_executable(p: &Path) -> bool {
             p.extension().and_then(|e| e.to_str()),
             Some("exe") | Some("cmd") | Some("bat")
         )
+}
+
+/// 共享库不算"可执行候选"：CMake 构建目录里全是 `libfoo.so` / `libfoo.so.1` / `foo.dll`。
+///
+/// 为什么不再用"文件名里含 `.` 就跳过"：那条规则在 **Windows 上必然全盘失效** ——
+/// 真正的可执行文件是 `app.exe`，一律带扩展名 ⇒ CMake 项目一个候选都找不到
+/// （CI 实测：`cmake_with_build_dir_finds_executables` 在 windows-latest 上恒为 `None`）。
+/// 平台差异交给 [`is_executable`]（unix 看 x 位、windows 看扩展名），这里只排共享库。
+fn is_shared_library(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".so")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".dll")
+        || lower.contains(".so.") // libfoo.so.1.2
 }
 
 /// 单引号包裹（POSIX shell）。Windows 上由执行器换成 `cmd /C` 能接受的写法。
@@ -589,7 +603,8 @@ mod tests {
         let got = detect(Some(&f), d.path(), false);
         let build = got.build.expect("应推导出构建命令");
         assert!(build.starts_with("cc -g -gdwarf-4 -O0 -o "), "{build}");
-        assert!(build.ends_with("hello.c"), "{build}");
+        // `shell_quote` 在 Windows 上**总是**加双引号（`"…\hello.c"`）⇒ 不能用 ends_with("hello.c")
+        assert!(build.contains("hello.c"), "{build}");
         assert_eq!(got.program, Some(d.path().join("hello")));
     }
 
@@ -636,7 +651,12 @@ mod tests {
         std::fs::write(d.path().join("CMakeLists.txt"), "x").unwrap();
         let b = d.path().join("build");
         std::fs::create_dir_all(&b).unwrap();
-        let exe = b.join("app");
+        // Windows 侧 `is_executable` 按扩展名判定（exe/cmd/bat），文件名不带 .exe 就永远不是候选
+        let exe = if cfg!(windows) {
+            b.join("app.exe")
+        } else {
+            b.join("app")
+        };
         std::fs::write(&exe, "bin").unwrap();
         #[cfg(unix)]
         {
