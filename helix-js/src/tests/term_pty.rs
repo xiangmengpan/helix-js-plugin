@@ -346,7 +346,10 @@ fn pty_spawn() {
         selection: ((0, 0), (0, 0)),
     };
 
-    // tty：stdin 是 pty → 输出 /dev/pts/N（CRLF 行尾，用 contains 断言）
+    // tty：stdin 是 pty → 打印**设备路径**。路径形状随平台变：
+    //   Linux `/dev/pts/N`、macOS/BSD `/dev/ttysNNN` ⇒ 只能断言"是个 /dev/ 下的设备"，
+    //   不能写死 `/dev/pts/`（macOS CI 就是这么红的：263 passed / 1 failed）。
+    //   同时排除非 pty 时的输出 "not a tty"。
     assert!(crate::host::with_state_or_init(|st| run_command(st, "pty-tty", &ctx)).unwrap());
     let events = wait_for_term_event(|e| matches!(e, TermEvent::Exit(_, _, _)));
     for ev in &events {
@@ -361,9 +364,16 @@ fn pty_spawn() {
             .unwrap(),
         }
     }
+    let msgs = take_messages();
+    let tty_out = msgs
+        .iter()
+        .find_map(|m| m.strip_prefix("out:"))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
     assert!(
-        take_messages().iter().any(|m| m.contains("/dev/pts/")),
-        "tty command sees a pty"
+        tty_out.starts_with("/dev/"),
+        "tty 在 pty 里应打印设备路径（Linux /dev/pts/N、macOS /dev/ttysNNN），实际 {tty_out:?}；消息: {msgs:?}"
     );
 
     // stty size：默认 winsize 24×80（输出顺序 rows cols）
