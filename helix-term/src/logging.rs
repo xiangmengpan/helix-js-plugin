@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,22 +35,20 @@ struct CappedFile {
     file: File,
     /// 已写入的字节数（跨进程用文件长度初始化）
     written: u64,
+    /// 截断时要重新打开，所以要记住路径（`set_len` 在 Windows 的 append 句柄上不可用，见下面注释）
+    path: PathBuf,
 }
 
 impl CappedFile {
     fn open(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .append(true)
-            // `write(true)` 与 `append(true)` 一起给：语义上等价于只写 append（Rust 文档明说），
-            // 但 **Windows 上必须这样**才拿到截断权限 —— 只开 `append(true)` 的句柄不允许
-            // `SetEndOfFile`，`set_len(0)` 会直接 `Access is denied`（CI 在 windows-latest 上
-            // 实测：两个 `cap_tests` 一起红）。
-            .write(true)
             .create(true)
             .open(path)?;
         let mut me = CappedFile {
             written: file.metadata().map(|m| m.len()).unwrap_or(0),
             file,
+            path: path.to_path_buf(),
         };
         // 上限**已经配好**且文件已超限 ⇒ 立刻清空（启动时配置尚未加载 ⇒ `max_size()==0`
         // ⇒ 这里什么都不做，不会在知道用户意图前删数据）
@@ -65,10 +63,30 @@ impl CappedFile {
             return Ok(()); // 0 = 不限制
         }
         if self.written.saturating_add(incoming as u64) > limit {
-            self.file.set_len(0)?;
-            self.file.seek(SeekFrom::Start(0))?;
-            self.written = 0;
+            self.truncate()?;
         }
+        Ok(())
+    }
+
+    /// 清空文件并从头续写。
+    ///
+    /// 为什么不用 `set_len(0)`：**Windows 上 `append(true)` 打开的句柄不允许 `SetEndOfFile`**，
+    /// 会直接 `Access is denied`（CI 在 windows-latest 上实测：两个 `cap_tests` 一起红）。
+    /// 而 clippy 又明确禁止用 `.write(true)` 去提权（`ineffective_open_options`：append 已隐含
+    /// write）—— 所以干脆**绕开句柄权限**：用一个"截断方式"打开的临时句柄清空文件，
+    /// 再以 append 重新打开续写。截断本身极少发生（每写满一个上限一次），两次 open 的代价无所谓。
+    fn truncate(&mut self) -> std::io::Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&self.path)?;
+        self.file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.path)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.written = 0;
         Ok(())
     }
 }
