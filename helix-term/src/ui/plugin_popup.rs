@@ -14,6 +14,9 @@ pub struct PluginPopup {
     size_hint: Option<(u16, u16)>,
     /// 本弹窗所在图层名(open_popup layer;None = 直构/单测,Close 时回退 pop)
     layer: Option<&'static str>,
+    /// 绑定的键位作用域（B 阶段：状态栏徽标与 Esc 兜底）—— 由 `OpenPopupReq.scope` 带下来，
+    /// **不**在渲染期反查宿主（多宿主下会查错表，实测踩过）
+    scope: Option<String>,
 }
 
 /// 弹窗的共享层差异:恒收集可聚焦节点;**不做**焦点失效重置(与面板不同,保持原行为)。
@@ -29,8 +32,15 @@ impl PluginPopup {
         Self {
             surface: crate::ui::js_surface::JsSurface::new(id),
             size_hint,
+            scope: None,
             layer: None,
         }
+    }
+
+    /// 绑定键位作用域（`open_popup({scope})`）
+    pub fn with_scope(mut self, scope: Option<String>) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// 记录本弹窗图层名:JS onKey 返回 "close" 时按层名移除自身
@@ -119,6 +129,10 @@ impl Component for PluginPopup {
         }
     }
 
+    fn key_scope(&self) -> Option<String> {
+        self.scope.clone()
+    }
+
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         self.surface.refresh(cx, (area.width, area.height), OPTS);
         // 脏格 diff 渲染:只重绘变化格
@@ -158,7 +172,7 @@ impl Component for PluginPopup {
 // ponytail: 若 KeyEvent 将来增加 kind 字段，需在此过滤 KeyEventKind::Press。
 // 注：不存在 `KeyCode::BackTab` —— `input.rs` 把 termina 的 BackTab 归一化成
 // `Tab + SHIFT`，所以 Shift-Tab 在 JS 侧就是 `{name:"Tab", shift:true}`。
-pub(crate) fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
+pub fn key_to_plugin_key(key: &KeyEvent) -> Option<PluginKey> {
     let name = match key.code {
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Esc => "Esc".into(),

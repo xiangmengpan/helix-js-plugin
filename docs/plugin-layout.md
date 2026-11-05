@@ -44,7 +44,8 @@
 │   ├── plugin.json              #   可选 manifest(见 §5)
 │   ├── lib/                     #   该插件**私有**模块(仅本插件 require)
 │   └── tests/                   #   该插件自己的 node 测试
-├── lib/                         # 跨插件**共享**库(如 icons 薄壳)
+├── lib/                         # 跨插件**共享**库(当前**没有**:图标等已进核心;
+│                                #   真需要时只放这里,别塞进某个插件)
 └── examples/                    # 示例/模板 —— **不参与加载**
 ```
 
@@ -54,7 +55,7 @@
 |---|---|---|
 | 插件目录 | **kebab-case 的插件名**:`filetree/` `server-manager/` `which-key/` | `picker.js`(散文件)、`lsp-hover/index.js`(目录名与入口不一) |
 | 入口文件 | **一律 `plugin.js`** | `index.js` / `<name>.js` / `main.js` |
-| 共享库 | **只在根 `lib/`**,不放进某个插件 | 每个插件自带一份 icons |
+| 共享库 | **只在根 `lib/`**,不放进某个插件;能进核心的先进核心(现状:`lib/` 为空) | 每个插件自带一份 icons |
 | 示例 | **只在 `examples/`** | 模板混在 `features/` 里(已修) |
 | 插件名 | 与 `helix.plugin("<name>")` 的 name **一致**;与目录名一致 | 目录 `filetree` 但 name 叫别的 |
 

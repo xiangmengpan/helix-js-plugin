@@ -38,6 +38,9 @@ pub enum LayerKind {
     Pane(PaneMode),
     /// 终端输入（焦点在终端叶子且它在 Insert 直通态）
     TerminalInput,
+    /// **插件层**（B 阶段）：当前焦点在带 `scope` 的弹层/面板上，
+    /// 键先归它的 `onKey`（`passthrough` 里的键除外）。徽标 = 作用域名大写。
+    Plugin,
     /// 编辑模式（栈底，永驻）
     Editing,
 }
@@ -63,12 +66,45 @@ pub fn layers_with_terminal(
     debug_paused: bool,
     terminal_insert: bool,
 ) -> Vec<Layer> {
+    layers_with_terminal_and_plugin(pane, debug_paused, terminal_insert, None)
+}
+
+/// 同上，外加**插件层**（栈序：终端 → 插件 → 调试 → 平级模式）。
+///
+/// 位置的选择：插件层比 `DEBUG`/`PANE` 更靠**内**（它是"某个叶子/弹层自己的键"，
+/// 而调试与平级模式是"更外面的接管"）⇒ 徽标顺序 `TERM│FILETREE│DEBUG│PANE`。
+/// 注意：本函数只负责**显示**；按键路由仍由 `plan_layered` 决定（Esc 兜底见 compositor）。
+pub fn layers_with_terminal_and_plugin(
+    pane: PaneMode,
+    debug_paused: bool,
+    terminal_insert: bool,
+    plugin_scope: Option<&str>,
+) -> Vec<Layer> {
     let mut out = Vec::new();
+    push_layers(&mut out, pane, debug_paused, terminal_insert, plugin_scope);
+    out
+}
+
+fn push_layers(
+    out: &mut Vec<Layer>,
+    pane: PaneMode,
+    debug_paused: bool,
+    terminal_insert: bool,
+    plugin_scope: Option<&str>,
+) {
     if terminal_insert {
         out.push(Layer {
             kind: LayerKind::TerminalInput,
             badge: "TERM",
             swallow: Swallow::Pass,
+        });
+    }
+    if let Some(scope) = plugin_scope {
+        // 徽标 = 作用域名大写（`filetree` → `FILETREE`）；静态字符串没法带，用 leak 池
+        out.push(Layer {
+            kind: LayerKind::Plugin,
+            badge: plugin_badge(scope),
+            swallow: Swallow::Consume,
         });
     }
     if debug_paused {
@@ -95,7 +131,27 @@ pub fn layers_with_terminal(
         badge: "",
         swallow: Swallow::Pass,
     });
-    out
+}
+
+/// 作用域名 → `'static` 的大写徽标。
+///
+/// `Layer::badge` 是 `&'static str`（栈里就那几个字面量），而作用域名是运行期字符串。
+/// 这里用一个**小缓存**把每个作用域名 leak 一次：数量 = 插件作用域数（个位数），
+/// 且与进程同寿命 —— 比起把 `badge` 改成 `Cow` 去动十几处调用点，这个代价更小。
+fn plugin_badge(scope: &str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(b) = cache.get(scope) {
+        return b;
+    }
+    let leaked: &'static str = Box::leak(scope.to_uppercase().into_boxed_str());
+    cache.insert(scope.to_string(), leaked);
+    leaked
 }
 
 fn pane_badge(mode: PaneMode) -> &'static str {
@@ -112,6 +168,24 @@ fn pane_badge(mode: PaneMode) -> &'static str {
 /// 状态栏徽标串：`DEBUG│PANE`（从栈顶往下，跳过无徽标的层）。
 pub fn badges(pane: PaneMode, debug_paused: bool) -> String {
     badges_with_terminal(pane, debug_paused, false)
+}
+
+/// 同上，外加**插件层**（`helix.keymap.scope` 声明的名字，B 阶段）。
+///
+/// 插件层在栈上意味着"当前的键先归这个插件"（弹层/面板），徽标 = 作用域名大写
+/// （`FILETREE`）—— 与 `PANE`/`DEBUG` 同一条显示通道，状态栏的 `layers` 段自动带上。
+pub fn badges_with_plugin(
+    pane: PaneMode,
+    debug_paused: bool,
+    terminal_insert: bool,
+    plugin_scope: Option<&str>,
+) -> String {
+    layers_with_terminal_and_plugin(pane, debug_paused, terminal_insert, plugin_scope)
+        .iter()
+        .map(|l| l.badge)
+        .filter(|b| !b.is_empty())
+        .collect::<Vec<_>>()
+        .join("│")
 }
 
 /// 同上，带终端直通态。
@@ -372,6 +446,32 @@ mod tests {
     }
 
     /// 未命中策略：调试层放行、平级模式吞掉、Locked 放行。
+    /// B 阶段：插件层进栈 ⇒ 徽标 = 作用域名大写，栈序在 `DEBUG`/`PANE` 之内
+    #[test]
+    fn plugin_layer_badge() {
+        assert_eq!(
+            badges_with_plugin(PaneMode::Normal, false, false, Some("filetree")),
+            "FILETREE",
+            "插件层单独在栈上"
+        );
+        assert_eq!(
+            badges_with_plugin(PaneMode::Normal, false, false, None),
+            "",
+            "没有插件层 ⇒ 与改动前一致（不留空徽标）"
+        );
+        assert_eq!(
+            badges_with_plugin(PaneMode::Pane, true, false, Some("dapui")),
+            "DAPUI│DEBUG│PANE",
+            "栈序：终端 → 插件 → 调试 → 平级模式"
+        );
+        // 同一个名字多次查不会重复 leak（缓存命中）
+        assert_eq!(
+            plugin_badge("filetree"),
+            plugin_badge("filetree"),
+            "徽标缓存应命中同一个 'static"
+        );
+    }
+
     #[test]
     fn swallow_policy_per_layer() {
         let l = layers(PaneMode::Pane, true);

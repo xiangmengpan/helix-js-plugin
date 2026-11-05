@@ -1582,6 +1582,7 @@ pub static API: &[Entry] = &[
         &[],
     ),
     e_kind(Target::Ns("icons"), "git", 1, MemberKind::Dynamic, &[]),
+    e_kind(Target::Ns("icons"), "sys", 1, MemberKind::Dynamic, &[]),
     e_kind(
         Target::Ns("icons"),
         "completion",
@@ -1590,6 +1591,58 @@ pub static API: &[Entry] = &[
         &[],
     ),
     e_kind(Target::Ns("icons"), "enabled", 1, MemberKind::Dynamic, &[]),
+    // ── keymap：插件**作用域键位**（面板/弹窗的按键声明表，见 `keymap_scope.rs`）
+    e(
+        Target::Ns("keymap"),
+        "scope",
+        2,
+        crate::keymap_scope::js_scope,
+        "js_scope",
+        &[],
+    ),
+    e(
+        Target::Ns("keymap"),
+        "resolve",
+        2,
+        crate::keymap_scope::js_resolve,
+        "js_resolve",
+        &[],
+    ),
+    e(
+        Target::Ns("keymap"),
+        "hints",
+        1,
+        crate::keymap_scope::js_hints,
+        "js_hints",
+        &[],
+    ),
+    e(
+        Target::Ns("keymap"),
+        "active_scope",
+        0,
+        crate::state::js_active_scope,
+        "js_active_scope",
+        &[],
+    ),
+    e(
+        Target::Ns("keymap"),
+        "unregister",
+        1,
+        crate::keymap_scope::js_unregister,
+        "js_unregister",
+        &[],
+    ),
+    // ── 进程自省：本进程 CPU 时间 / 常驻内存（跨平台）。
+    //    **不声明能力**：Linux 分支读的是 `/proc/self/*`（无路径参数 ⇒ 不能放大成任意读），
+    //    macOS/Windows 分支是纯 syscall。理由见 `proc_stats.rs` 的模块注释。
+    e(
+        Target::Root,
+        "proc_stats",
+        0,
+        crate::proc_stats::js_proc_stats,
+        "js_proc_stats",
+        &[],
+    ),
     // ── `helix.plugin.unload`：挂在**函数对象**上的原生成员(`plugin` 本身可调用，
     //    所以不是普通命名空间对象；挂载见 `build_plugin`/`attach_plugin_members`)。
     //    `.install/.update/.remove` 是 JS 侧挂的，不走这张表。
@@ -1626,6 +1679,7 @@ pub static ATTACH: &[Attach] = &[
     Attach::Ns("server"),
     Attach::Ns("pane"),
     Attach::Ns("icons"),
+    Attach::Ns("keymap"),
     Attach::Ns("fuzzy"),
     Attach::Ns("stack"),
     Attach::Ns("draw"),

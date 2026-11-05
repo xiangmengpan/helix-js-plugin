@@ -779,6 +779,13 @@ impl LayoutTree {
         })
     }
 
+    /// 活动叶子占用的键位作用域（插件面板；编辑器叶子 ⇒ `None`）
+    pub fn active_leaf_scope(&self) -> Option<String> {
+        self.components
+            .get(&self.active())
+            .and_then(|c| c.key_scope())
+    }
+
     /// 聚焦：叶子 → 它自己；**组** → 组内第一个叶子（组没有组件，不能当 active）。
     pub fn focus(&mut self, id: u64) {
         if self.components.contains_key(&id) {

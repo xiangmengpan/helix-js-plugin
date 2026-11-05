@@ -22,6 +22,8 @@
 2. **zellij 式平级模式**:五个平级模式(`C-g`/`C-p`/`C-n`/`C-h`/`C-y`),任意叶子焦点下可用;已取代旧的全局 `C-w` 单模式
 3. **终端增强**:原生终端面板(引擎换成 `alacritty_terminal`:真实 reflow、鼠标上报、括号粘贴、CJK/组合字符;Esc 切滚动模式、滚动缓冲、复制、钩子 API、状态持久化)
 4. **快捷键提示插件化**:which-key 中文提示,位置可配置,替代内置 Info
+5. **插件键位作用域**:面板/弹窗的键位是**声明式数据** —— 用户可在 `[plugins.<插件名>.keys]` 改键,
+   `?` / `:keys` / `:which-key` 读同一份表,并接进输入层(全局前缀可穿透、Esc 回焦点、状态栏 `layers` 段显示层名)
 
 原版 Helix 文档:[官网](https://helix-editor.com) · [文档](https://docs.helix-editor.com/) · [键位表](https://docs.helix-editor.com/keymap.html)
 
@@ -57,6 +59,51 @@ Rust 提供底层服务(布局树、pty、网格、绘制原语、状态机),JS 
 - **鼠标交互**:`helix.on("component-event", ...)` → 点击组件交给 JS 决策
 - **终端钩子**:term-key/close/open/exit/title/resize/mode-change + `term_state` 持久化
 
+### 插件键位作用域
+
+面板/弹窗把键位**声明成数据**,不再在 `onKey` 里按键名分支:
+
+```js
+helix.keymap.scope("filetree", {
+  keys: {
+    q:      { action: "close", desc: "关闭面板" },
+    "C-\\":  "leave",                              // 简写:值就是动作名
+    j:      { action: "down",  desc: "下移" },
+  },
+  extends:     "panel",                 // 可选预设:q / Esc / ? / / / j k / g
+  passthrough: [":", "C-w", "C-p"],     // 这些全局前缀永远交回编辑器
+  esc:         "blur",                  // 插件没消费 Esc ⇒ 回焦点、面板保留
+});
+
+// onKey 里只按**动作名**分派
+const hit = helix.keymap.resolve("filetree", key);   // onKey 的对象或 "C-\\" 字符串都收
+if (!hit) return "ignore";                            // 未绑定 ⇒ 穿透(面板非模态)
+if (hit.command) { helix.run_command(hit.command); return "handled"; }
+switch (hit.action) { case "close": /* … */ }
+```
+
+用户在**插件自己的表**里改键 —— 不改插件源码、不重启:
+
+```toml
+[plugins.filetree]
+show_hidden = false            # 普通插件配置也在这张表里
+
+[plugins.filetree.keys]        # 主作用域:scope 名 = 插件名
+"q"   = ":filetree"
+"C-s" = ":filetree-find"       # 命令在插件加载后解析 ⇒ 插件自己的命令能直接写
+
+[plugins.filetree.keys.help]   # 辅助作用域:`filetree.help`(`?` 帮助弹层)
+"esc" = ":filetree"
+```
+
+- 单一来源:`?` 帮助、`:keys` 的「插件作用域」段、`:which-key`、配置表读的是同一份声明。
+- 给 `open_panel` / `open_popup` 传 `scope`,该层占着键盘时状态栏 `layers` 段显示 `FILETREE`
+  (`helix.keymap.active_scope()` 返回名字)。
+- `passthrough` 在调 `onKey` **之前**放行 ⇒ 模态弹窗里 `:` / `C-w` 照常可用；
+  但**别**给文本输入弹层加 `:` —— 那里 `:` 是要输入的字符。
+- `helix.map` 覆盖内置键会提示一次(状态栏 + 插件日志),`:keys` 里标 `←插件 <名字>`。
+- 限制:只支持单键(无 `"gg"` 序列);键名用核心写法(`esc`,不写 `<esc>`)。
+
 ### 终端增强
 
 - Esc → normal 滚动模式(滚动缓冲、`y` 复制、`g`/`G` 跳转),i → insert 直通
@@ -75,8 +122,8 @@ helix.register_command("my-cmd", (ctx) => { ... }, "我的命令");
 helix.on("save", (doc) => { ... });
 
 // 加载/导出模块
-helix.load("lib/icons.js");                  // 相对插件目录
-helix.plugin("my-plugin", { deps: ["lib/icons.js"] });
+helix.load("filetree");                      // 按**插件名**加载另一个插件
+helix.plugin("my-plugin", { deps: ["filetree"] }); // deps 也是插件名
 helix.export({ run: myFn });                 // 供其他插件 load 后调用
 ```
 
@@ -115,11 +162,20 @@ helix.icons.diagnostic("error"); helix.icons.git("M"); helix.icons.completion(3)
 helix.icons.enabled(false);  // 一处关掉全部 nerd font 图标
                              //(或 config.toml 里 [plugins.icons] nerd_font = false)
 helix.pane_mode.current(); helix.pane_mode.keymap();  // 当前模式 + 其键位表(唯一来源)
+
+// ── keymap.*(面板/弹窗的键位作用域 —— 见"插件键位作用域")──
+helix.keymap.scope("filetree", { keys: { q: "close" }, passthrough: [":"] });
+helix.keymap.resolve("filetree", key);   // → {action} | {command} | null
+helix.keymap.hints("filetree");          // 与 `?`、`:keys` 同一份文本
+helix.keymap.active_scope();             // 当前占着键盘的作用域名(或 null)
+
+// ── 进程自省 ──
+helix.proc_stats();   // → {cpu_ms, rss_kb},本进程(跨平台)
 ```
 
 > **旧的扁平名已删除**(`focus` / `zoom` / `get_layout` / `buffers` / `layout_fix` /
-> `layout_minimize` / `layout_resize` …),由上面的命名空间取代。
-> 仅 `split` / `layout_swap` / `layout_resize` 保留(暂无新等价物)。
+> `layout_minimize` …),改用上面的命名空间。
+> 只有 `split`、`layout_resize`、`layout_swap` 还是扁平名(暂无命名空间化替代)。
 
 ### UI 渲染
 
@@ -270,19 +326,22 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 | `run_async(cmd)` | 异步执行 | 不阻塞;Promise 恢复回主线程 | 无流式输出 |
 | `spawn({cmd, onChunk, onExit})` | 流式进程 | 逐块输出,pty 支持 | 需自己处理块拼接 |
 
-**异步文件系统**(均返回 Promise,worker 线程执行)
+**文件系统**(同步对在主线程;`*_async` 走 worker)
 
 | API | 说明 | 优点 | 局限 |
 |---|---|---|---|
+| `read_file(path)` / `write_file(path, text)` | 同步读写文件 | 不用接 Promise | 阻塞主线程;UTF-8 lossy |
 | `read_dir(path)` | 列目录(同步) | 简单 | 同步阻塞;不递归 |
-| `read_file_async/write_file_async` | 读写文件 | 异步不阻塞 | UTF-8 lossy |
+| `read_file_async/write_file_async` | 异步读写文件 | 不阻塞 | UTF-8 lossy |
 | `stat_async(path)` | 文件元数据 | `{is_dir, size, mtime}` | — |
 | `glob_async(pattern)` | 通配匹配 | `*`/`**`/`?` | 相对 CWD |
 | `read_tree(path, {depth})` | 递归目录树 | 目录先行按名排序;depth 限深 | 一次性返回,大目录有延迟 |
 
 **事件钩子** `on(event, fn)`:`save` `mode-change` `buffer-open` `buffer-close` `doc-change`(带合并范围)`theme-change` `lsp-diagnostics` `cursor-move` `selection-change` + 终端系(`term-open/mode-change/exit/close/resize/title/key`)`component-event`。优点:同事件多处理器按序;处理器抛错不阻断主流程。局限:doc 是只读快照 + 编辑队列。
 
-**键位绑定** `map(mode, key, command|fn)`:重复绑定即覆盖;支持多键序列与修饰键;回调自动注册隐藏命令。局限:重启失效(插件启动时重新注册)。
+**键位绑定(全局)** `map(mode, key, command|fn)`:重复绑定即覆盖,且**覆盖会提示一次**(状态栏 + 插件日志),`:keys` 标 `←插件 <名字>`;支持多键序列与修饰键;回调自动注册隐藏命令。局限:JS 绑定不落盘(插件启动时重新注册);`:config-reload` 会重建键表并**重放**这些绑定。
+
+**键位作用域(面板/弹窗)** `keymap.scope/resolve/hints/unregister/active_scope` —— 见[插件键位作用域](#插件键位作用域)。局限:只支持单键。
 
 **弹窗/面板/组件树**:`open_popup`(覆盖层弹窗,onKey 可 return close/handled/ignore;`layer` 同层替换/异层并存,`position:"center"`+`width/height:"NN%"` 居中浮层)`open_panel`(侧边面板,布局树叶子)`close_panel` `move_panel` `el`(组件树:row/col/scroll/button/input)。优点:渲染与布局引擎分离,脏格 diff;input 组件引擎权威(onChange 自动回调)。局限:无 layer 时 popup 重复打开替换前一个;浮层百分比仅 center 模式(须 width/height 成对)。
 
@@ -290,11 +349,21 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 
 **终端**:`open_terminal` `term_write/feed/kill/list/close/resize/clear/save` `set_terminal_mode` `term_state`(跨会话持久化)+ 终端钩子(`term-key` 返回 normal/pass/consume/minimize/close)。优点:原生 pty 面板,四种显示模式,滚动缓冲。局限:键位直通需手动管理模式。
 
-**布局树**:`split` `buffer_open` `close_leaf` `zoom/unzoom` `resize_leaf` `layout_resize/swap/minimize/focus/swap_dir/equalize/fix` `focus` `get_layout` `restore_layout`。优点:zellij 式窗口管理,任意叶子焦点;layout_fix 免疫交换/关闭。局限:restore_layout 序列化半成品(见 §14)。
+**窗格与布局**:`pane.list/info/focus/focus_dir/move/resize/close/zoom/unzoom/minimize/equalize/fix/float/embed/raise/pin` · `pane.open`(由 `pane-open` 插件提供)· `stack.create/activate/remove/list` · `layout.get/restore/save/load/list/delete` · `split` `buffer_open`(仅存的两个扁平名)。优点:zellij 式窗口管理,任意叶子焦点,`fix` 免疫交换/关闭,命名布局会话。局限:堆叠恒为一对;`split` 尚无命名空间化的替代。
 
-**Buffer/诊断/监听**:`buffers` `current_buffer` `focus_buffer` `diagnostics` `watch/unwatch`(notify 支撑 500ms 防抖)。优点:文档快照只读安全。局限:id 会话内有效。
+**Buffer/诊断/监听**:`buffer.list/current/focus` · `diagnostics` · `watch/unwatch`(notify 支撑,500ms 防抖)。优点:文档快照只读安全。局限:id 仅会话内有效。
 
 **界面定制**:`set_statusline` `set_buffer_icon` `set_completion_render`(候选行 JS 渲染,回退原生两列)`set_completion_icon`(kind → 图标字符)`set_diagnostic_icons` `set_component_render`(组件外观 JS 绘制)`get_component_state` `set_keymap_hint`(which-key)。优点:渲染层全可定制;未注册/抛错回退默认。局限:completion 行钩子每帧每行调用——不要跑重逻辑。
+
+**进程自省与日志**:`proc_stats()` → **本进程**的 `{cpu_ms, rss_kb}`(Linux `/proc`、macOS `getrusage`+`task_info`、Windows `GetProcessTimes`+`GetProcessMemoryInfo`)· `log(level, msg)` → 插件日志(环形缓冲 + 应用日志,`:js-log` 查看)· `command_args()` → `:cmd a b` 的参数 · `viewport()`。优点:零能力的自我观测,便宜。局限:`proc_stats` 不自带节流,由调用方决定频率。
+
+**服务器管理(LSP/DAP 工具链)**:`server.list/search/install/update/remove/status/task/rows`。局限:单向请求 —— 结果走状态栏,不回传返回值。
+
+**绘制原语**:`draw.rect/text/hline/vline/fill/braille/push_clip/push_scroll/pop/done` + `text.width/pad/truncate`。优点:弹层可以整帧自绘,不必搭 `el` 树;宽度助手保证 CJK 对齐。局限:布局数学自己算(无自动换行)。
+
+**图标**:`icons.file/dir/mode/diagnostic/git/completion/sys/enabled` —— 表在核心,插件**零依赖**;`enabled(false)`(或 `[plugins.icons] nerd_font = false`)一处关掉 nerd 字形,调用方自动退回文字。状态栏的 `cpu`/`mem` 用的就是 `icons.sys`。局限:字形取决于字体,`sys` 因此只取 Font Awesome 段。
+
+**模糊匹配**:`fuzzy.session/run/drop` —— 进程内 nucleo;候选集稳定、只有查询在变时保留会话(比每次重过滤快约 25 倍)。局限:生命周期自己管。
 
 **主题**:`set_theme`(实时覆盖,scope 级)`reset_theme` `get_style` `theme_info` `set_theme_name`(异步切换)。优点:即时生效,继承主题正确;语法 scope 也覆盖。局限:颜色不支持引用另一 scope。
 
@@ -310,7 +379,7 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 <插件根>/
 ├── init.js          # 可选:该根入口(用户写的覆盖内置)
 ├── <name>/plugin.js # ← 一个插件。目录名 = 插件名 = helix.plugin("<name>")
-├── lib/             # 跨插件共享库
+├── <name>/tests/    # 该插件的 node 测试(不参与加载)
 └── examples/        # 示例/模板 —— 不参与自动加载
 ```
 
@@ -331,10 +400,13 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 
 | 插件 | 功能 |
 |---|---|
-| `filetree/` | 侧边文件树面板(图标、展开/折叠、Enter 打开并聚焦) |
+| `filetree/` | 侧边文件树:导航 + **`/` 按名搜索**(`Tab` 切全库)· **`G` 内容搜索** · `>` 过滤表达式(glob/git/诊断)· `?` 键位 · 最多两个面板 |
+| `dapui/` | DAP 前端:变量/监视树(右)+ REPL/Output/断点三页(底);键位以作用域声明 |
+| `picker-ui/` | JS 自绘 picker(`:pick*`):files/grep/buffers/symbols 任意源 |
+| `dashboard/` | LazyVim 风格启动屏(`:dashboard`) |
 | `terminal/` | 终端命令(:term/:vterm/:hterm)、面板管理 |
-| `statusline/` | 状态栏(模式图标、文件类型图标、git 分支、诊断) |
-| `which-key/` | 快捷键中文提示(位置可配置) |
+| `statusline/` | 状态栏三段分栏:`cpu`/`mem`(本进程,跨平台)、诊断、git、LSP 进度;分区段名可在 `[plugins.statusline]` 配 |
+| `which-key/` | 键位提示(中文/英文):平级模式表 + **当前插件作用域**(`:which-key`,或直接追加到任何前缀键提示) |
 | `tabbar/` | 布局标签条示范(顶部槽位,点击聚焦) |
 | `arsenal/` | 浮层市场窗(`:arsenal`)—— 取代已废弃的 server-manager |
 | `icons/` | 只有 `[plugins.icons]` 配置;图标表本身在核心(`helix.icons.*`) |

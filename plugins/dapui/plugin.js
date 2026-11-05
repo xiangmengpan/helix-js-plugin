@@ -238,6 +238,29 @@ function is_focus_editor_key(key) {
   return !!key.ctrl && (key.name === "\\" || key.name === "4");
 }
 
+/// 弹窗尺寸：**按视口夹紧**（自适应终端）。
+///
+/// 早先三个弹窗都写死宽高（`64×6` / `60×18` / `60×16`）：小终端上底部会被切掉，
+/// 大终端上又浪费。这里统一成"想要多少 → 夹到视口以内"（边框各留 1 格 + 上下留 2 行余量）。
+/// 拿不到视口（旧二进制 / 测试夹具）⇒ 80×24 兜底，与旧行为一致。
+function popup_box(want_w, want_h) {
+  let vw = 80;
+  let vh = 24;
+  try {
+    const vp = helix.viewport ? helix.viewport() : null;
+    if (vp && vp[0] > 0 && vp[1] > 0) {
+      vw = vp[0];
+      vh = vp[1];
+    }
+  } catch (e) {
+    // 没有视口信息 ⇒ 用兜底值
+  }
+  return {
+    width: Math.min(Math.max(20, want_w), Math.max(20, vw - 4)),
+    height: Math.min(Math.max(3, want_h), Math.max(3, vh - 4)),
+  };
+}
+
 function say(msg) {
   helix.echo("dapui: " + msg);
 }
@@ -283,14 +306,15 @@ function refocus_panel() {
 
 function ask_text(title, initial, on_submit) {
   let value = String(initial === null || initial === undefined ? "" : initial);
+  const box = popup_box(64, 6);
   helix.open_popup({
-    width: 64,
-    height: 6,
+    ...box,
     // 样式与 picker-ui 的弹窗一致：圆角边框 + 标题 + 分隔线 + 底部提示。
     // （面板用核心的直角框，**浮层**统一用圆角框 —— 一眼区分"浮在我上面的"和"贴着边的"）
     render: (_focus, ctx) => {
-      const w = Math.max(28, (ctx && ctx.width) || 64);
-      const h = Math.max(5, (ctx && ctx.height) || 6);
+      // 尺寸一律听弹窗的：早先 `Math.max(28, …)` 的硬下限在窄终端上会把外框画到框外
+      const w = Math.max(1, (ctx && ctx.width) || box.width);
+      const h = Math.max(3, (ctx && ctx.height) || box.height);
       helix.draw.rect(0, 0, w, h, {
         border: "round",
         title: ` ${title} `,
@@ -349,12 +373,13 @@ function ask_text(title, initial, on_submit) {
 function ask_multi(title, items, enabled, on_done) {
   let cursor = 0;
   const picked = new Set(enabled || []);
+  // 早先是 `min(18, 项数+5)`：20 行以上的终端也硬截到 18。现在交给视口算。
+  const box = popup_box(60, Math.max(6, items.length + 5));
   helix.open_popup({
-    width: 60,
-    height: Math.min(18, Math.max(6, items.length + 5)),
+    ...box,
     render: (_focus, ctx) => {
-      const w = Math.max(28, (ctx && ctx.width) || 60);
-      const h = Math.max(6, (ctx && ctx.height) || 8);
+      const w = Math.max(1, (ctx && ctx.width) || box.width);
+      const h = Math.max(3, (ctx && ctx.height) || box.height);
       helix.draw.rect(0, 0, w, h, {
         border: "round",
         title: ` ${title} `,
@@ -420,15 +445,27 @@ function ask_multi(title, items, enabled, on_done) {
 /** items: `[{label, payload}]`;`on_pick(payload)` 只在 Enter 时调。 */
 function ask_choice(title, items, on_pick) {
   let cursor = 0;
+  const box = popup_box(60, Math.max(3, items.length + 2));
   helix.open_popup({
-    width: 60,
-    height: Math.min(16, Math.max(3, items.length + 2)),
+    ...box,
     render: () => {
-      const rows = items.map((it, i) =>
-        helix.el("text", (i === cursor ? "▸ " : "  ") + it.label, {
-          style: i === cursor ? "ui.selection" : "ui.text",
-        }),
+      // 行数超过弹窗内容区时**窗口化**（原来把 items 全画出来 ⇒ 溢出边框/被硬切）。
+      // 内容区 = 高度 - 标题(1) - gap(1) - 边框(2)
+      const body = Math.max(1, box.height - 4);
+      const top = Math.min(
+        Math.max(0, cursor - Math.floor(body / 2)),
+        Math.max(0, items.length - body),
       );
+      const rows = [];
+      for (let i = 0; i < body && top + i < items.length; i++) {
+        const idx = top + i;
+        const it = items[idx];
+        rows.push(
+          helix.el("text", (idx === cursor ? "▸ " : "  ") + it.label, {
+            style: idx === cursor ? "ui.selection" : "ui.text",
+          }),
+        );
+      }
       return helix.el("col", [helix.el("text", title, { style: "ui.virtual" }), ...rows], {
         gap: 1,
       });
@@ -1349,30 +1386,88 @@ function refresh_watches(parent) {
   });
 }
 
+// ─────────────────── 面板键位（作用域声明）───────────────────
+// 面板**永远不是第二套键位表**（这条设计不变）：会话动作 n/s/o/c/p/b/t/f/… 一律 `ignore`
+// 冒泡给编辑器，由 `dap_keymap()` 在任何焦点下统一接管；这里声明的只是**树内独有**的动作。
+// 声明化的收益：`[plugins.dapui.keys]` 可改键、`?`/`:keys` 同一份来源、覆盖内置键时状态栏有提示。
+const SCOPE = "dapui";
+const TREE_KEYS = {
+  q: { action: "close", desc: "关闭面板" },
+  Up: { action: "up", desc: "上移" },
+  k: { action: "up", desc: "上移" },
+  Down: { action: "down", desc: "下移" },
+  j: { action: "down", desc: "下移" },
+  Enter: { action: "expand", desc: "展开 / 切会话" },
+  Right: { action: "expand", desc: "展开 / 切会话" },
+  l: { action: "expand", desc: "展开 / 切会话" },
+  Left: { action: "collapse", desc: "折叠" },
+  h: { action: "collapse", desc: "折叠" },
+  g: { action: "top", desc: "到顶" },
+  G: { action: "bottom", desc: "到底" },
+  w: { action: "watch", desc: "监视选中变量" },
+  W: { action: "clear-watches", desc: "清空监视" },
+  "/": { action: "search", desc: "搜索变量（名字或值）" },
+  n: { action: "next-match", desc: "下一个匹配（仅在搜索中）" },
+  N: { action: "prev-match", desc: "上一个匹配（仅在搜索中）" },
+  y: { action: "yank", desc: "复制值 / 帧位置" },
+  d: { action: "delete-watch", desc: "删掉这条监视" },
+  e: { action: "edit-value", desc: "改变量值" },
+};
+if (helix.keymap && helix.keymap.scope) {
+  helix.keymap.scope(SCOPE, {
+    keys: TREE_KEYS,
+    // 面板是叶子式非模态层：插件没消费 Esc 时让核心把焦点挪回编辑器（面板保留）。
+    // 现状 `key_tree` 自己把 Esc 映射成 `focus_editor()`，声明它是**保险 + 意图**；
+    // 弹层（ask_text/ask_multi）不绑这个作用域 —— 模态层的 Esc 语义是"关闭"。
+    esc: "blur",
+  });
+}
+
+/// 查键 → 动作名（`null` = 没绑定 ⇒ 穿透给编辑器，会话动作靠这条冒泡）。
+function tree_scope_action(key) {
+  if (helix.keymap && helix.keymap.resolve) {
+    const hit = helix.keymap.resolve(SCOPE, key);
+    if (!hit) return null;
+    if (hit.command) {
+      helix.run_command(hit.command);
+      return "done";
+    }
+    return hit.action || null;
+  }
+  // 旧编辑器兜底：与 TREE_KEYS 等价
+  const nm = key && key.name !== undefined ? String(key.name) : String(key);
+  const byName = {
+    q: "close",
+    Up: "up", k: "up", Down: "down", j: "down",
+    Enter: "expand", Right: "expand", l: "expand", Left: "collapse", h: "collapse",
+    g: "top", G: "bottom", w: "watch", W: "clear-watches",
+    "/": "search", n: "next-match", N: "prev-match", y: "yank",
+    d: "delete-watch", e: "edit-value",
+  };
+  return byName[nm] || null;
+}
+
 function key_tree(key, doc) {
   if (key.ctrl || key.alt) {
     if (is_focus_editor_key(key)) return focus_editor();
     return "ignore";
   }
-  switch (key.name) {
-    // Esc = 焦点回编辑器（**面板保留**）：调试时"看一眼代码"最常用的动作。
-    case "Esc":
-      return focus_editor();
-    case "q":
+  const action = tree_scope_action(key);
+  if (action === "done") return "handled"; // 用户把键覆盖成了命令，已执行
+  switch (action) {
+    // Esc 不再在这里处理：作用域声明了 `esc: "blur"`，核心会在"onKey 返回 ignore"时
+    // 把焦点挪回编辑器（面板保留）。删掉这份重复实现，语义**只有一处**。
+    case "close":
       close_tree();
       return "handled";
     // ── 树内导航（只跟"选中项"有关，编辑器里没有对应语义）──
-    case "Up":
-    case "k":
+    case "up":
       T.cursor = Math.max(0, T.cursor - 1);
       return "handled";
-    case "Down":
-    case "j":
+    case "down":
       T.cursor = Math.min(Math.max(0, T.nodes.length - 1), T.cursor + 1);
       return "handled";
-    case "Right":
-    case "l":
-    case "Enter": {
+    case "expand": {
       const node = T.nodes[T.cursor];
       // 选中**别的会话**：Enter = 切过去（比记住 S 弹层快）
       if (node && node.session && T.ctx && node.session !== T.ctx.id) {
@@ -1385,27 +1480,26 @@ function key_tree(key, doc) {
       expand_node(node, 0);
       return "handled";
     }
-    case "Left":
-    case "h":
+    case "collapse":
       collapse_node(T.nodes[T.cursor]);
       return "handled";
-    case "g":
+    case "top":
       T.cursor = 0;
       return "handled";
-    case "G":
+    case "bottom":
       T.cursor = Math.max(0, T.nodes.length - 1);
       return "handled";
     // ── 与选中项有关、编辑器里没有的动作 ──
-    case "w":
+    case "watch":
       add_watch(doc);
       return "handled";
-    case "W":
+    case "clear-watches":
       T.watches = [];
       watches_save();
       load_roots();
       say("已清空监视");
       return "handled";
-    case "/": {
+    case "search": {
       ask_text("搜索变量（名字或值；空 = 清除）", T.filter || "", (v) => {
         T.filter = String(v || "").trim();
         flatten();
@@ -1425,15 +1519,15 @@ function key_tree(key, doc) {
       });
       return "handled";
     }
-    case "n": {
+    case "next-match": {
       if (!T.filter) return "ignore"; // 没在搜索 ⇒ 交回全局（n = 单步跳过）
       return jump_match(1);
     }
-    case "N": {
+    case "prev-match": {
       if (!T.filter) return "ignore";
       return jump_match(-1);
     }
-    case "y": {
+    case "yank": {
       const node = T.nodes[T.cursor];
       // 帧节点：复制 `file:line`（"这个帧在哪"，贴到 issue/聊天里常用）
       if (node && node.frame && T.ctx && T.ctx.source) {
@@ -1448,7 +1542,7 @@ function key_tree(key, doc) {
       say(`已复制 ${node.label} = ${text}`);
       return "handled";
     }
-    case "d": {
+    case "delete-watch": {
       const node = T.nodes[T.cursor];
       const idx = node && /^w\d+$/.test(node.id) ? Number(node.id.slice(1)) : -1;
       if (idx >= 0 && idx < T.watches.length) {
@@ -1460,7 +1554,7 @@ function key_tree(key, doc) {
       }
       return "ignore";
     }
-    case "e": {
+    case "edit-value": {
       const node = T.nodes[T.cursor];
       if (node && node.parent_ref) {
         ask_text(`设值 ${node.label} =`, String(node.raw ?? node.value ?? ""), (v) =>
@@ -1492,6 +1586,8 @@ function open_tree(auto) {
   T.panel_id = helix.open_panel({
     side: "right",
     size: num("panel_size", 34),
+    // 绑键位作用域（B 阶段）：徽标 `DAPUI` + Esc 兜底（`esc: "blur"`）
+    scope: SCOPE,
     // 注意：**不要**写 `rail: true`。rail 是"贴边全高轨道"，全局**只能有一条** ——
     // 注册新的会把旧的取掉（filetree 也是侧栏，两个一起用会互相驱逐）。
     // 面板打开后本身就是活动叶子 ⇒ 按键直达 `onKey`（`tests/test/window_rail.rs` 有断言）。
@@ -2681,6 +2777,7 @@ helix.register_statusline_segment("dap", statusline_segment);
 // 那把 promise 不会兑现（实测：then/catch 都不进），所以挪到命令/按键上下文里。
 
 helix.export({
+  popup_box,
   open_tree,
   close_tree,
   toggle_tree,

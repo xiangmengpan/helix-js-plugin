@@ -6,10 +6,12 @@ mod fuzzy;
 pub mod host;
 mod icons;
 mod input;
+pub mod keymap_scope;
 mod layout_api;
 mod lsp;
 pub mod picker;
 mod popup;
+pub mod proc_stats;
 mod register;
 // pty.rs 是纯 POSIX 实现(openpt / ioctl / winsize + 裸 fd):只在 unix 编译。
 // 调用点(shell.rs / popup.rs)各自已有 cfg(unix) / cfg(not(unix)) 分支 ✓
@@ -50,11 +52,11 @@ pub use shell::*;
 // 外部无法分辨边界,而且新增一个内部访问器就会自动变成公共 API。
 // 现在新增导出必须在这里加一行 —— 边界是可见的。
 pub use state::{
-    cache_buffers, cache_configs, cache_diagnostics, cache_input_badges, cache_layout,
-    cache_pane_mode, cache_panes, cache_plugin_overrides, clear_command_args, config_schemas,
-    register_component_state, seed_config_schema, set_command_args, set_layouts_dir,
-    set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake, set_viewport,
-    statusline_replaces, statusline_zones, take_messages, take_ui_requests,
+    cache_active_scope, cache_buffers, cache_configs, cache_diagnostics, cache_input_badges,
+    cache_layout, cache_pane_mode, cache_panes, cache_plugin_overrides, clear_command_args,
+    config_schemas, register_component_state, seed_config_schema, set_command_args,
+    set_layouts_dir, set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake,
+    set_viewport, statusline_replaces, statusline_zones, take_messages, take_ui_requests,
     unregister_component_state,
 };
 // **L3 过渡入口**:helix-term 的"无宿主分支"与 `Drop` 实现拿不到 `&HostState` ⇒

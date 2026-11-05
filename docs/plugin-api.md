@@ -124,6 +124,50 @@
 - 优点:声明式树 + 焦点;input 引擎权威;渲染脏格 diff;补全/组件外观全可定制且回退安全。
 - 局限:scroll O(内容);无树内点击命中;面板无节点焦点;completion 行钩子每帧每行(勿跑重逻辑)。
 
+#### 插件作用域键位（`helix.keymap.*`，2026-11-04）
+
+面板/弹窗的按键不再硬编码在插件里，改成**声明表**：
+
+```js
+helix.keymap.scope("filetree", {
+  extends: "panel",                                  // 预设：q 关闭 / Esc 回焦点 / ? / / / j k / g
+  keys: {
+    "q":      { action: "close", desc: "关闭面板" },
+    "C-\\":   "leave",                               // 简写：值就是动作名
+    "S-Tab":  { action: "prev", desc: "上一个" },
+  },
+});
+
+// onKey 里只按动作分派，不再认键名：
+const hit = helix.keymap.resolve("filetree", key);   // 对象或 "C-\\" 字符串都收
+if (hit && hit.action === "close") { close_panel(); return "handled"; }
+if (hit && hit.command) { helix.run_command(hit.command); return "handled"; }
+```
+
+* 用户可用 `[plugins.filetree.keys]` 覆盖（值写成 `":命令"`，键名用核心写法 `esc`/`C-s`）：
+  **覆盖优先于插件声明**，且 `:config-reload` 即生效。命令在插件加载后才解析，所以
+  `":filetree-find"` 这种**插件自己的命令**也能直接写（解析期只校验键名）。
+  一个插件的**多个作用域**用嵌套表表达：`[plugins.filetree.keys.help]` ⇒ scope 名 `filetree.help`。
+* 提示只有一份：`helix.keymap.hints(scope)` = `?` 帮助 = `:keys` 的"插件作用域"段。
+* **`active_scope()`（B 阶段）**：当前占着键盘的插件作用域名。两个消费方：
+  ① which-key 的 `:which-key` 据此弹出**当前插件层**的键位表；
+  ② 更顺手的路径 —— **前缀键提示里自动追加**该层的键位（面板是非模态的，未绑定的前缀键
+  会冒泡给编辑器触发 which-key，比如在 filetree 面板里按 `space` 就能同时看到 space 子表和面板键位）。
+  两者与 `?`/`:keys` 读的是同一份 `hints()`。
+* **状态栏徽标（B 阶段）**：弹层/面板带 `scope` 时，`helix.input_badges()` 里多一层作用域名
+  （大写，如 `FILETREE`）⇒ 状态栏 `layers` 段自动显示"键现在归谁"。
+* **Esc 兜底（B 阶段）**：`esc: "blur"` ⇒ 插件层没消费 Esc 时，核心把焦点挪回编辑器、**面板保留**
+  （叶子式面板才有效；弹层是模态的，"Esc 关闭"请照旧在 `onKey` 里返回 `"close"`）。
+* **弹层不再吞掉一切（B 阶段）**：给 `open_popup`/`open_panel` 传 `scope`，再在作用域里声明
+  `passthrough: [":", "C-w"]` ⇒ 这些**全局前缀**在弹层里照常可用（核心在调 `onKey` **之前**放行）；
+  `swallow: "unmapped"` ⇒ JS 没给明确答复（`undefined`）时交回编辑器。
+  **不要**把 `:` 加给文本输入弹层 —— 那里 `:` 是要输入的字符。
+
+* 同一个键在**多个插件**里互不影响（作用域隔离）；`:plugin-unload/reload` 按属主自动清理，
+  也可手动 `helix.keymap.unregister(scope)`。
+* 已知限制：作用域键位只支持**单键**（`"gg"` 这类序列暂不支持）；键名用核心写法（`esc`，不是 `<esc>`），
+  写错会在启动时提示一条。
+
 #### 状态栏的外部段(`register_statusline_segment`)
 
 `statusline` 插件的段是**闭集**(它自己的 `SEGMENTS` 表)，`set_statusline` 的**追加模式**又会被
@@ -149,7 +193,7 @@ helix.statusline_segment("dap", ctx);   // → 段函数结果，原样当段用
 ### Picker 与主题
 
 **图标(`helix.icons.*`)**:`file(path)` / `dir(expanded)` / `mode(mode)` / `diagnostic(sev)` /
-`git(status)` / `completion(kind)` / `enabled(on?)`。图标表在**核心**(`helix-js/src/icons.rs`,7 组 145 条),
+`git(status)` / `completion(kind)` / `sys(kind)`(`cpu` / `mem`,状态栏用) / `enabled(on?)`。图标表在**核心**(`helix-js/src/icons.rs`,8 组 147 条),
 所以**所有插件零依赖可用** —— 不需要再声明 `deps: ["lib/icons.js"]`(那 4 处已删)。
 `enabled(false)` 一处降级:文件类图标变空、目录回退 `▸/▾`,或在 `config.toml` 里写
 **`[plugins.icons] nerd_font = false`**(方案 C 的段名;**`[icons]` 是旧写法,写了会让
@@ -425,7 +469,10 @@ helix.layout.*   delete, get, list, load, restore, save
 helix.stack.*   activate, create, list, remove
 helix.buffer.*   current, focus, list
 helix.pane_mode.*   current, keymap
-helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode
+helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode, sys
+helix.proc_stats()  → {cpu_ms, rss_kb} | null   // 本进程自省(跨平台,不消耗能力)
+helix.keymap.*   active_scope, hints, resolve, scope, unregister   // 插件作用域键位(面板/弹窗)
+                //   scope / resolve / hints / unregister 四个成员
 helix.fuzzy.*   drop, run, session
 helix.picker.*   define, run
 helix.lsp.*   code_actions, completion, document_symbols, execute_code_action, format, goto_definition, hover, rename

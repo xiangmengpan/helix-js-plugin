@@ -37,6 +37,8 @@ mod test {
     mod plugin_fsasync;
     mod plugin_input;
     mod plugin_input_multiline;
+    mod plugin_keys_live;
+    mod plugin_keys_scope;
     mod plugin_layout;
     mod plugin_layout2;
     mod plugin_lsp;

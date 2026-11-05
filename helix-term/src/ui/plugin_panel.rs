@@ -21,6 +21,8 @@ pub struct PluginPanel {
     side: PanelSide,
     /// 节点焦点路由开关（open_panel focusable;未启用零行为变化）
     focusable: bool,
+    /// 绑定的键位作用域（B 阶段：徽标 / Esc 兜底）
+    scope: Option<String>,
 }
 
 impl PluginPanel {
@@ -29,7 +31,14 @@ impl PluginPanel {
             surface: crate::ui::js_surface::JsSurface::new(id),
             side,
             focusable,
+            scope: None,
         }
+    }
+
+    /// 绑定键位作用域（`open_panel({scope})`，B 阶段：徽标 / Esc 兜底）
+    pub fn with_scope(mut self, scope: Option<String>) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// 共享层差异:只有 `focusable` 面板才收集焦点、才做焦点失效重置(未启用 = 零行为变化)。
@@ -178,6 +187,10 @@ impl Component for PluginPanel {
                 }
             }
         }
+    }
+
+    fn key_scope(&self) -> Option<String> {
+        self.scope.clone()
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {

@@ -96,12 +96,30 @@ pub struct HostState {
     /// 主题覆盖的属主(scope → 插件名)。`:plugin-unload` 按它回收该插件的覆盖。
     pub(crate) theme_owners: RefCell<HashMap<String, String>>,
 
+    /// **作用域键位表**（`helix.keymap.scope`，见 `keymap_scope` 模块）。
+    /// 面板/弹窗的按键声明都在这张表里 —— 与 `keymaps`(原生 trie) 是两套命名空间。
+    pub(crate) key_scopes: RefCell<HashMap<String, crate::keymap_scope::Scope>>,
+
+    /// 用户 `[keys.<作用域>]` 的覆盖（由 helix-term 推入；`resolve` 时优先于声明）。
+    pub(crate) key_overrides: RefCell<
+        HashMap<
+            String,
+            std::collections::BTreeMap<crate::keymap_scope::KeyId, crate::keymap_scope::Binding>,
+        >,
+    >,
+
     /// scope → 当前样式查询回调。**按宿主**：原先是进程级 `OnceLock`，多 app 并行时
     /// A 的插件会读到 B 的主题（于是 `helix.get_style` 在集成测试里时对时错）。
     pub(crate) style_source: RefCell<Option<Box<crate::theme::StyleQuery>>>,
 
     /// 当前主题名 + 可用主题列表。**按宿主**（同上）。
     pub(crate) theme_info_source: RefCell<Option<Box<crate::theme::ThemeInfoQuery>>>,
+
+    /// 键位绑定的**完整记录**((mode, key) → (命令, 属主))。
+    ///
+    /// 比 `keymap_owners` 多存了命令名：`:config-reload` 会重建键位表，
+    /// 重建后要**重放**插件的 `helix.map`（早先是"启动快照"，改完必须重启才生效）。
+    pub(crate) keymap_bindings: RefCell<HashMap<(String, String), (String, String)>>,
 
     /// 键位绑定的属主((mode, key) → 插件名)。卸载时对每条入队 `MapKey{unbind}`。
     pub(crate) keymap_owners: RefCell<HashMap<(String, String), String>>,
@@ -127,6 +145,10 @@ pub struct HostState {
     pub(crate) pane_mode: RefCell<String>,
     /// 输入层徽标串（`DEBUG│PANE`，栈序）。compositor 每帧在写状态栏时同步一次。
     pub(crate) input_badges: RefCell<String>,
+
+    /// 当前**占着键盘的插件层作用域**（`helix.keymap.active_scope()`，B 阶段）。
+    /// 由 compositor 每帧推（它才知道焦点在哪个弹层/面板上）。
+    pub(crate) active_scope: RefCell<String>,
 
     /// pane 清单快照 JSON(1b)
     pub(crate) panes: RefCell<String>,
@@ -318,6 +340,9 @@ impl JsHost {
             config_overrides: RefCell::new(String::new()),
             configs: RefCell::new(String::new()),
             theme_owners: RefCell::new(HashMap::new()),
+            key_scopes: RefCell::new(HashMap::new()),
+            keymap_bindings: RefCell::new(HashMap::new()),
+            key_overrides: RefCell::new(HashMap::new()),
             style_source: RefCell::new(None),
             theme_info_source: RefCell::new(None),
             keymap_owners: RefCell::new(HashMap::new()),
@@ -328,6 +353,7 @@ impl JsHost {
             serialized: Cell::new((0, 0)),
             pane_mode: RefCell::new(String::new()),
             input_badges: RefCell::new(String::new()),
+            active_scope: RefCell::new(String::new()),
             panes: RefCell::new(String::new()),
             open_terms: RefCell::new(HashMap::new()),
             plugin_roots: RefCell::new(&[]),

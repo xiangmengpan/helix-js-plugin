@@ -14,21 +14,31 @@ pub(crate) fn handle_open_popup(
         layer,
         center,
         size_pct,
+        scope,
+        esc_blur,
     }: OpenPopupReq,
 ) -> anyhow::Result<()> {
     let lid = layer_id(&layer);
     // center → 居中浮层(layer 层可叠多张,同层替换);anchor → 现状(参照点/尺寸 hint)
     let popup = if center {
-        ui::Popup::new(lid, ui::PluginPopup::new(id, None).with_layer(lid))
-            .floating(width, height, size_pct)
-            .auto_close(false)
+        ui::Popup::new(
+            lid,
+            ui::PluginPopup::new(id, None)
+                .with_layer(lid)
+                .with_scope(scope.clone()),
+        )
+        .floating(width, height, size_pct)
+        .auto_close(false)
     } else {
         ui::Popup::new(
             lid,
-            ui::PluginPopup::new(id, width.zip(height)).with_layer(lid),
+            ui::PluginPopup::new(id, width.zip(height))
+                .with_layer(lid)
+                .with_scope(scope),
         )
         .position(position.map(|(row, col)| helix_core::Position::new(row as usize, col as usize)))
         .auto_close(false)
+        .ignore_escape_key(esc_blur)
     };
     // 由事件循环在下一轮推层并渲染。
     job::dispatch_blocking(move |_editor, compositor, mut _js| {

@@ -5575,12 +5575,13 @@ pub(crate) fn apply_ui_requests(
                         }
                     };
                     helix_js::host::push_message(format!(
-                        "unloaded {}: {} commands / {} handlers / {} hooks / {} keys / {} themes / {} popups / {} panels",
+                        "unloaded {}: {} commands / {} handlers / {} hooks / {} keys / {} key-scopes / {} themes / {} popups / {} panels",
                         report.name,
                         report.commands,
                         report.handlers,
                         report.hooks,
                         report.keymaps,
+                        report.scopes,
                         report.themes,
                         report.popups,
                         report.panels
@@ -5652,7 +5653,7 @@ pub(crate) fn apply_ui_requests(
 
 /// 解析 helix.map 的 mode / 键序列 / 命令名为 owned 数据（job 闭包要求 'static + Send）。
 /// 实际注入（链式 KeyTrieNode → merge_keys → store）在 Keymaps::insert_binding。
-fn parse_plugin_binding(
+pub(crate) fn parse_plugin_binding(
     mode: &str,
     key: &str,
     command: &str,
@@ -6033,12 +6034,13 @@ fn plugin_unload(
         }
     };
     helix_js::host::push_message(format!(
-        "unloaded {}: {} commands / {} handlers / {} hooks / {} keys / {} themes / {} popups / {} panels",
+        "unloaded {}: {} commands / {} handlers / {} hooks / {} keys / {} key-scopes / {} themes / {} popups / {} panels",
         report.name,
         report.commands,
         report.handlers,
         report.hooks,
         report.keymaps,
+        report.scopes,
         report.themes,
         report.popups,
         report.panels
@@ -6097,6 +6099,89 @@ pub fn build_plugin_configs(
             helix_js::refresh_plugin_configs_or_init()
         }
     }
+}
+
+/// 把 `[plugins.<name>.keys]` 推给 JS 宿主（`helix.keymap.resolve` 时**优先于**插件声明），
+/// 并对"没有插件认领"的作用域名发警告（写了 `[plugins.ghost.keys]` 但没这个插件 ⇒ 可见）。
+///
+/// **v1 只支持单键绑定**：键位树里的多键序列（如 `"gg"`）在这个通道表达不了
+/// （`PluginKey` 是单次按键的快照）⇒ 跳过并警告，不假装生效。
+///
+/// 返回要显示给用户的警告（调用方 `editor.set_status`）。
+pub fn apply_key_scope_overrides(
+    js: Option<&helix_js::host::JsHost>,
+    config: &crate::config::Config,
+) -> Vec<String> {
+    use helix_js::PluginKey;
+    use std::str::FromStr;
+
+    let mut overrides: HashMap<String, Vec<(PluginKey, String)>> = HashMap::new();
+    let mut warnings = Vec::new();
+
+    for (scope, entries) in &config.key_scopes {
+        let mut out: Vec<(PluginKey, String)> = Vec::new();
+        for (key, command) in entries {
+            // 到这里插件已加载 ⇒ 命令能解析了（`配置解析期`只校验键名，见 Config::key_scopes）
+            let key_event = match helix_view::input::KeyEvent::from_str(key) {
+                Ok(k) => k,
+                Err(_) => continue, // 解析期已警告过
+            };
+            let Some(pk) = crate::ui::plugin_popup::key_to_plugin_key(&key_event) else {
+                warnings.push(format!(
+                    "[plugins.{scope}.keys] {key:?}: 这个键无法表达给插件（只支持字符/常见功能键）"
+                ));
+                continue;
+            };
+            // 命令存在性：宏（`@:cmd<ret>`）不校验；普通命令在这里给一次性提示
+            //（此时插件命令已注册，所以能分辨"真拼错"与"插件没启用"）
+            let name = command.trim();
+            if !name.starts_with('@') && helix_term_cmd_unknown(name) {
+                warnings.push(format!(
+                    "[plugins.{scope}.keys] {key:?} = {name:?}: 没有这个命令（插件没启用？\
+                     插件自己的命令请写成宏 `@:{}\u{3c}ret\u{3e}`）⇒ 仍然绑上，按下时才报错",
+                    name.trim_start_matches(':')
+                ));
+            }
+            out.push((pk, name.trim_start_matches(':').to_string()));
+        }
+        overrides.insert(scope.clone(), out);
+    }
+
+    match js {
+        Some(host) => helix_js::keymap_scope::set_overrides(host.state(), overrides),
+        None => {
+            let st = helix_js::host::state_handle_or_init();
+            helix_js::keymap_scope::set_overrides(&st, overrides)
+        }
+    };
+
+    // 有没有插件认领：插件在 config 之后加载 ⇒ 这一步必须在**插件加载完成之后**调
+    let claimed: std::collections::HashSet<String> = match js {
+        Some(host) => helix_js::keymap_scope::scope_names(host.state())
+            .into_iter()
+            .collect(),
+        None => {
+            let st = helix_js::host::state_handle_or_init();
+            helix_js::keymap_scope::scope_names(&st)
+                .into_iter()
+                .collect()
+        }
+    };
+    for scope in config.key_scopes.keys() {
+        if !claimed.contains(scope) {
+            warnings.push(format!(
+                "[plugins.{scope}.keys] 已读到键位，但**没有插件注册作用域** `{scope}`\
+                 （插件没启用？`:keys` 末尾有当前已注册的作用域名）⇒ 已缓存，暂不生效"
+            ));
+        }
+    }
+    warnings
+}
+
+/// 这条命令名现在（插件加载后）存在吗？（宏不参与；带 `:` 前缀先剥掉）
+fn helix_term_cmd_unknown(name: &str) -> bool {
+    use std::str::FromStr;
+    crate::commands::MappableCommand::from_str(name.trim_start_matches(':')).is_err()
 }
 
 /// 插件脚本(重)执行后重建配置缓存。

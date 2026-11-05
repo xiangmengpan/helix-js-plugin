@@ -210,9 +210,12 @@ async fn plugin_statusline_right_flush_edge() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// zones 2:3:1：左区 1/3、中区居中、右区右对齐（宽 90 → 左 30/中 30/右 30）
+/// **弹性布局**：三段都放得下时，`zones` 比例**不参与** —— 左贴左、右贴右、中区居中于两者之间。
+///
+/// 回归锁（用户实测的 bug）：以前按 `zones` 硬分宽，中区空着时那段宽度白扔，
+/// 左边稍微长一点就被截断。现在先量内容宽度，比例只在"真放不下"时当压缩权重（见下一条）。
 #[tokio::test(flavor = "multi_thread")]
-async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
+async fn plugin_statusline_flex_ignores_zones_when_content_fits() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("zr.txt");
     std::fs::write(&file, "x\n")?;
@@ -258,12 +261,186 @@ async fn plugin_statusline_zones_ratio() -> anyhow::Result<()> {
         helix_term::ui::statusline::render(&mut rc, area, &mut buf);
     }
     let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
-    // zones 2:3:1，宽 90 → left_w=30, right_w=15, center_w=45（center_x=30, right_x=75）
+    // 内容自适应（宽 90）：L 在 x0，R 在 x89，M 居中于 [1, 89) ⇒ x = 1 + (87-1)/2 = 44
+    // （旧行为是 52：那时按 zones 2:3:1 硬分 30/45/15）
     assert_eq!(row.chars().next().unwrap(), 'L', "左区 x0: {row:?}");
-    // 中区居中：x = 30 + (45-1)/2 = 52
-    assert_eq!(row.chars().nth(52).unwrap(), 'M', "中区居中: {row:?}");
-    // 右区右对齐：x = 75 + 15 - 1 = 89
+    assert_eq!(
+        row.chars().nth(44).unwrap(),
+        'M',
+        "中区居中于左右之间: {row:?}"
+    );
     assert_eq!(row.chars().nth(89).unwrap(), 'R', "右区右对齐: {row:?}");
+    assert_eq!(row.chars().nth(2).unwrap(), ' ', "段尾不留内容: {row:?}");
+    Ok(())
+}
+
+/// 用户报的场景：中区空着 ⇒ 左边**不该**被截断（旧实现 left_w = 40*1/6 ≈ 6 ⇒ 长文件名被切）。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_flex_no_truncate_when_center_empty() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("fx.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slfx.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: "a-very-long-file-name.rs" },
+            { text: "1:1", zone: "right" },
+        ], { replace: true, zones: [1, 3, 2] });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    let area = helix_view::graphics::Rect::new(0, 0, 40, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            None,
+            String::new(),
+            "editor",
+            None,
+            None,
+        )
+        .with_state(helix_js::host::state_handle());
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+    let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+    assert!(
+        row.starts_with("a-very-long-file-name.rs"),
+        "中区空着时左侧不得被压缩/截断: {row:?}"
+    );
+    assert_eq!(row.len(), 40, "整行就是视口宽度: {row:?}");
+    assert!(row.ends_with("1:1"), "右侧仍贴行尾: {row:?}");
+    assert!(
+        row[24..37].chars().all(|c| c == ' '),
+        "左右之间的中间空隙应是纯空格: {row:?}"
+    );
+    Ok(())
+}
+
+/// 中区挤不下（但左右都放得下）⇒ 中区**整段不画**，不是画一半。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_center_skipped_when_no_room() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("cn.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slcn.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: "LLLLLLLL" },
+            { text: "CCCCCCCCCC", zone: "center" },
+            { text: "RRRR", zone: "right" },
+        ], { replace: true, zones: [1, 1, 1] });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    // 宽 16：需要 8+1+10+1+4=24 ⇒ 超；但 8+1+4=13 ≤ 16 ⇒ 情形 2
+    let area = helix_view::graphics::Rect::new(0, 0, 16, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            None,
+            String::new(),
+            "editor",
+            None,
+            None,
+        )
+        .with_state(helix_js::host::state_handle());
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+    let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+    assert!(row.starts_with("LLLLLLLL"), "左侧完整: {row:?}");
+    assert!(row.ends_with("RRRR"), "右侧完整: {row:?}");
+    assert!(!row.contains('C'), "中区挤不下就整段不画: {row:?}");
+    Ok(())
+}
+
+/// **真放不下**时 `zones` 才生效（当压缩权重）：左右按比例分宽，中区让位。
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_statusline_zones_compress_on_overflow() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("ov.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin_path = dir.path().join("slov.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+        helix.set_statusline((ctx) => [
+            { text: "LLLLLLLL" },
+            { text: "CC", zone: "center" },
+            { text: "RRRR", zone: "right" },
+        ], { replace: true, zones: [1, 1, 1] });
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+    for key_event in parse_macro(&format!(":plugin-load {}<ret>", plugin_path.display()))? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+    }
+    app.event_loop_until_idle(&mut rx_stream).await;
+
+    // 宽 10：内容需要 8+1+4=13 ⇒ 超载。zones [1,*,1] ⇒ usable=9，左 4 / 右 5
+    let area = helix_view::graphics::Rect::new(0, 0, 10, 1);
+    let mut buf = tui::buffer::Buffer::empty(area);
+    let spinners = helix_term::ui::ProgressSpinners::default();
+    {
+        let (view, doc) = current_ref!(app.editor);
+        let mut rc = helix_term::ui::statusline::RenderContext::new(
+            &app.editor,
+            doc,
+            view,
+            true,
+            &spinners,
+            false,
+            None,
+            String::new(),
+            "editor",
+            None,
+            None,
+        )
+        .with_state(helix_js::host::state_handle());
+        helix_term::ui::statusline::render(&mut rc, area, &mut buf);
+    }
+    let row: String = buf.content.iter().map(|c| c.symbol.as_str()).collect();
+    assert!(row.starts_with("LLLL"), "超载时按 zones 压缩左侧: {row:?}");
+    assert!(row.ends_with("RRRR"), "右侧贴行尾: {row:?}");
+    assert!(!row.contains('C'), "超载时中区让位: {row:?}");
     Ok(())
 }
 

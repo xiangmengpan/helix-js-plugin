@@ -23,16 +23,19 @@ plugins/
 └── jsconfig.json      # `tsc --noEmit -p plugins/jsconfig.json` 用
 ```
 
-四条可判定的规则:
+五条可判定的规则:
 
 1. 目录名 = 插件名 = `helix.plugin("<name>")` 的 name(kebab-case,发布后不改)
 2. 入口文件**一律 `plugin.js`**(不再 `index.js` / `<name>.js`)
 3. `deps` 写**插件名**(如 `["icons"]`),不写文件路径
 4. 用户层覆盖是**目录级**:有就是全有,没有就全用内置 —— 避免"用户的 plugin.js + 内置的 lib/"这种混合体
+5. **面板/弹窗的键位写成声明表**:有 ≥3 个固定动作键就 `helix.keymap.scope(name, { keys })`,
+   并把 `scope` 传给 `open_panel` / `open_popup`(徽标、`Esc` 兜底、`?`/`:keys`/`:which-key` 都靠它);
+   用户改键走 `[plugins.<name>.keys]`。**纯文本输入不声明**(搜索框/重命名框里字符是内容,不是绑定)
 
 细则与理由见 [`docs/plugin-layout.md`](../docs/plugin-layout.md) §3–§5。
 
-## 2. 内置插件一览(13 个)
+## 2. 内置插件一览(14 个)
 
 | 插件 | 提供 | 自带 `init.js` 自动加载? |
 |---|---|---|
@@ -44,9 +47,10 @@ plugins/
 | `dashboard` | `:dashboard` `:dashboard-close` `:dashboard-diag`(LazyVim 风格启动屏) | ✅ |
 | `picker-ui` | `:pick*` 系列(JS 自绘 picker:`:pick` `:pick-close` `:pick-core` `:pick-core-draw` `:pick-default-draw` `:pick-diag`) | ✅ |
 | `terminal` | `:term` `:vterm` `:hterm` `:term-list` `:term-close` `:term-save`(浮动/分屏终端) | ✅ |
-| `statusline` | 状态栏三段分栏(`set_statusline`) | ✅ |
-| `filetree` | `:filetree` `:filetree-open` `:filetree-reveal` `:filetree-find` `:filetree-search`（侧边文件树面板（**普通分屏，非 rail**）；`/` 按名搜索（Tab 切全库）· `G` 内容搜索树 · `>` 过滤表达式（glob / git 谓词）· `:filetree-find` 原生 picker · `:filetree-search <词>` 直接内容搜；配置 `show_hidden`/`filter`/`git_status`/`persist`/`max_panels`/`close_on_esc`；支持**两个面板**（`:filetree-open`）） | ✅ |
-| `which-key` | 按键提示(`set_keymap_hint` 接管原生 Info,含中文说明) | ❌ 需自己加一行 |
+| `statusline` | 状态栏三段分栏(`set_statusline`):`cpu`/`mem`(本进程,跨平台)· 诊断 · git · LSP 进度 | ✅ |
+| `dapui` | DAP 前端:`:dapui-focus tree\|bottom` · 变量/监视树(右)+ REPL/Output/断点三页(底);键位以**作用域**声明(`[plugins.dapui.keys]` 可改) | ✅ |
+| `filetree` | `:filetree` `:filetree-open` `:filetree-reveal` `:filetree-find` `:filetree-search`（侧边文件树面板（**普通分屏，非 rail**）；`/` 按名搜索（Tab 切全库）· `G` 内容搜索树 · `>` 过滤表达式（glob / git 谓词）· `?` 键位 · `:filetree-find` 原生 picker · `:filetree-search <词>` 直接内容搜；配置 `show_hidden`/`filter`/`git_status`/`persist`/`max_panels`/`close_on_esc`；键位可在 **`[plugins.filetree.keys]`** 改；支持**两个面板**（`:filetree-open`）） | ✅ |
+| `which-key` | 按键提示(`set_keymap_hint` 接管原生 Info,含中文说明);`:which-key` 与任何前缀键提示都会带上**当前插件作用域**的键位 | ❌ 需自己加一行 |
 | `arsenal` | `:arsenal`(工具市场窗,server 管理前端) | ❌ 需自己加一行 |
 | `tabbar` | 布局标签条示范组件(`helix.TABBAR_ID` 槽位) | ❌ 需自己加一行 |
 

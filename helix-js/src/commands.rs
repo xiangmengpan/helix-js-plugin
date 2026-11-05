@@ -997,6 +997,15 @@ pub(crate) fn js_map(
     let owner = crate::permissions::current_owner().or_else(crate::permissions::current_declared);
     let st = crate::host::host_state(context);
     let slot = (mode.clone(), key.clone());
+    // 重放用：记下命令名（`keymap_owners` 只有属主，重建键位表时不够用）
+    st.keymap_bindings.borrow_mut().remove(&slot);
+    if !unbind {
+        if let Some(o) = owner.as_deref() {
+            st.keymap_bindings
+                .borrow_mut()
+                .insert(slot.clone(), (command.clone(), o.to_string()));
+        }
+    }
     crate::state::with_keymap_owners(st, |m| match (&owner, unbind) {
         (Some(o), false) => {
             m.insert(slot, o.clone());
@@ -1016,6 +1025,7 @@ pub(crate) fn js_map(
             key,
             command,
             unbind,
+            owner: owner.clone(),
         }));
     Ok(JsValue::undefined())
 }
@@ -2887,6 +2897,8 @@ pub struct UnloadReport {
     pub popups: usize,
     pub panels: usize,
     pub keymaps: usize,
+    /// 清掉的**作用域键位表**数（`helix.keymap.scope` 注册的面板键位）
+    pub scopes: usize,
     pub themes: usize,
     pub scripts: usize,
 }
@@ -2931,6 +2943,7 @@ pub fn unload_plugin(st: &HostState, name: &str) -> UnloadReport {
 
     // 4) 键位 / 5) 主题覆盖 / 6) 导出与加载清单
     report.keymaps = unbind_owned_keymaps(st, name);
+    report.scopes = crate::keymap_scope::drop_owned(st, name);
     report.themes = drop_owned_theme_scopes(st, name);
     report.scripts = forget_owned_scripts(name);
 
@@ -3053,6 +3066,24 @@ fn reclaim_owned_callbacks(
     }
 }
 
+/// 当前所有**插件键位绑定** `(mode, key, command)` —— `:config-reload` 重建键位表后重放用。
+///
+/// 只有属主记录(`keymap_owners`)不够：重建需要**命令名**才知道要绑什么。
+pub fn plugin_key_bindings(st: &HostState) -> Vec<(String, String, String, Option<String>)> {
+    st.keymap_bindings
+        .borrow()
+        .iter()
+        .map(|((mode, key), (command, owner))| {
+            (
+                mode.clone(),
+                key.clone(),
+                command.clone(),
+                Some(owner.clone()),
+            )
+        })
+        .collect()
+}
+
 /// 4) 该插件的每条键位入队解绑(term 侧 `remove_binding` 是真摘叶),返回条数
 fn unbind_owned_keymaps(st: &HostState, name: &str) -> usize {
     // 4) 键位:该插件的每条绑定都入队解绑(term 侧 remove_binding 是真摘叶)
@@ -3078,6 +3109,7 @@ fn unbind_owned_keymaps(st: &HostState, name: &str) -> usize {
                 key: key.clone(),
                 command: String::new(),
                 unbind: true,
+                owner: Some(name.to_string()),
             }));
     }
     keys.len()
@@ -3229,5 +3261,47 @@ pub fn reload_all(st: &HostState) -> Result<()> {
             errors.len(),
             errors.join("; ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod plugin_binding_record_tests {
+    use super::plugin_key_bindings;
+
+    /// `:config-reload` 重建键位表后要**重放**插件绑定 ⇒ 只记属主不够，得把命令名一起记下。
+    /// 这条钉住记录/清理两侧（重放那半边是 helix-term 里二十行 glue）。
+    #[test]
+    fn map_records_command_and_owner_for_replay() {
+        crate::init();
+        let st = crate::host::state_handle_or_init();
+        let _ = crate::take_ui_requests(); // 清掉前面用例的残留
+
+        crate::load_script(
+            r#"
+            helix.plugin("ks-replay", { deps: [], permissions: {} });
+            helix.map("normal", "gn", "wclose");
+            "#,
+        )
+        .unwrap();
+
+        let recorded = plugin_key_bindings(&st);
+        assert_eq!(recorded.len(), 1, "应记下一条: {recorded:?}");
+        let (mode, key, command, owner) = recorded[0].clone();
+        assert_eq!((mode.as_str(), key.as_str()), ("normal", "gn"));
+        assert_eq!(command, "wclose", "必须记下**命令名**（重放要用）");
+        assert_eq!(
+            owner.as_deref(),
+            Some("ks-replay"),
+            "属主要记（:keys 标注与解绑都靠它）"
+        );
+
+        // unbind ⇒ 记录一起清掉（否则 config-reload 会把已删的绑定又装回去）
+        let _ = crate::take_ui_requests();
+        crate::load_script(r#"helix.map("normal", "gn", "wclose", { unbind: true });"#).unwrap();
+        assert!(
+            plugin_key_bindings(&st).is_empty(),
+            "解绑后不该留记录: {:?}",
+            plugin_key_bindings(&st)
+        );
     }
 }

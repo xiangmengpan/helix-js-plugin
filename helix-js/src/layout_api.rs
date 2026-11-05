@@ -49,6 +49,12 @@ pub(crate) fn js_split(
                 ));
             }
             let on_key = panel.get(JsString::from("onKey"), ctx)?;
+            // B 阶段：`helix.split(.., {panel:{render,onKey,scope}})` 同样可绑作用域
+            let key_scope: Option<String> = panel
+                .get(JsString::from("scope"), ctx)
+                .ok()
+                .filter(|v| !v.is_null_or_undefined())
+                .and_then(|v| v.try_js_into::<String>(ctx).ok());
             let size: u16 = obj_opt_u16(&panel, "size", ctx, "helix.split")?.unwrap_or(30);
             with_popups(crate::host::host_state(ctx), |p| {
                 p.insert(
@@ -57,6 +63,7 @@ pub(crate) fn js_split(
                         render,
                         on_key: on_key.as_callable().map(|_| on_key),
                         on_close: None,
+                        key_scope: key_scope.clone(),
                         last: None,
                         last_key: None,
                         pure: false,

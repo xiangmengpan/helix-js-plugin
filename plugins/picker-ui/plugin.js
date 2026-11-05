@@ -162,6 +162,50 @@ let cur_source = "files"; // 当前源 ✓
 // JS 渲染器是否已成功注册(供 :pick-diag 断言 ✓ —— 不依赖易被覆盖的状态栏文案 ✗)
 let core_draw = 0;
 let def_draw = 0;   // ② 默认渲染器是否已注册 ✓
+// ────────────────────────── 面板键位（作用域声明）──────────────────────────
+// 为什么这么写（2026-11-04 A 阶段）：键位是**数据**，不是散在 onKey 里的 if 链。
+//   · 声明表可以被 `[plugins.picker-ui.keys]` 覆盖（用户改键不用改插件源码）
+//   · `helix.keymap.hints("picker-ui")` 与 `:keys` 末尾的"插件作用域"段同源
+// 未在表里的键仍按"可打印字符 = 追加查询"处理（输入不是绑定）。
+const SCOPE = "picker-ui";
+const PANEL_KEYS = {
+  "<esc>": { action: "close", desc: "关闭 picker" },
+  "C-c": { action: "close", desc: "关闭 picker" },
+  "Enter": { action: "accept", desc: "打开选中项" },
+  "Backspace": { action: "backspace", desc: "退格（删查询字符）" },
+  "Up": { action: "prev", desc: "上一个" },
+  "C-p": { action: "prev", desc: "上一个" },
+  "Down": { action: "next", desc: "下一个" },
+  "C-n": { action: "next", desc: "下一个" },
+};
+
+if (helix.keymap && helix.keymap.scope) {
+  helix.keymap.scope(SCOPE, { keys: PANEL_KEYS });
+}
+
+/// 查一个键 → 动作名（`null` = 没绑定，交给文本输入分支）
+/// 旧编辑器没有 `helix.keymap` ⇒ 退回内置表（行为不变，只是不可覆盖/不可提示）
+function panel_action(key) {
+  if (helix.keymap && helix.keymap.resolve) {
+    const hit = helix.keymap.resolve(SCOPE, key);
+    if (!hit) return null;
+    if (hit.command) {
+      // 用户把它覆盖成了命令 ⇒ 直接执行（这是 `[plugins.picker-ui.keys]` 的语义）
+      helix.run_command(hit.command);
+      return "done";
+    }
+    return hit.action || null;
+  }
+  // 兜底：与 PANEL_KEYS 等价的旧式匹配（键名/修饰键 → 动作）
+  const nm = key && key.name !== undefined ? String(key.name) : String(key);
+  if (nm === "Esc" || (key && key.ctrl && nm === "c")) return "close";
+  if (nm === "Enter") return "accept";
+  if (nm === "Backspace") return "backspace";
+  if (nm === "Up" || (key && key.ctrl && nm === "p")) return "prev";
+  if (nm === "Down" || (key && key.ctrl && nm === "n")) return "next";
+  return null;
+}
+
 let onkey_hits = 0; // S6 onKey 被调用的次数 ✓
 let onkey_last = ""; // S6 最后一次认领时读到的选中行 ✓
 
@@ -397,23 +441,28 @@ function open_picker(source_name) {
         position: "center",
         render,
         onKey: (key) => {
+          // 先查**声明表**（可被 `[plugins.picker-ui.keys]` 覆盖），再落到文本输入
+          const action = panel_action(key);
+          switch (action) {
+            case "done": // 用户覆盖成了命令，已执行
+              return "handled";
+            case "close":
+              return "close";
+            case "accept":
+              return accept();
+            case "backspace":
+              query = query.slice(0, -1);
+              refilter();
+              return "handled";
+            case "prev":
+              sel = Math.max(0, sel - 1);
+              return "handled";
+            case "next":
+              sel = Math.min(Math.max(0, shown.length - 1), sel + 1);
+              return "handled";
+          }
+          // 没绑定的可打印单字符 ⇒ 追加查询 ✓(多字符/特殊名一律忽略,避免误吞 ✓)
           const nm = key && key.name !== undefined ? String(key.name) : String(key);
-          if (nm === "Esc" || nm === "C-c") return "close";
-          if (nm === "Enter" || nm === "Ret") return accept();
-          if (nm === "Backspace") {
-            query = query.slice(0, -1);
-            refilter();
-            return "handled";
-          }
-          if (nm === "Up" || nm === "C-p") {
-            sel = Math.max(0, sel - 1);
-            return "handled";
-          }
-          if (nm === "Down" || nm === "C-n") {
-            sel = Math.min(Math.max(0, shown.length - 1), sel + 1);
-            return "handled";
-          }
-          // 可打印单字符 ⇒ 追加查询 ✓(多字符/特殊名一律忽略,避免误吞 ✓)
           if (nm.length === 1 && nm >= " " && nm !== "\u007f") {
             n_typed++;
             query += nm;

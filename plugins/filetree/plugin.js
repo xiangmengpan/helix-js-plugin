@@ -48,6 +48,97 @@ helix.define_config("filetree", {
   },
 });
 const CFG = helix.get_config("filetree") || {};
+
+// ============================ 面板键位（作用域声明）============================
+// 键位是**数据**，不是散在 handle_key 里的 switch 键名字面量：
+//   · 用户可写 `[plugins.filetree.keys]` 改键（值 = `":命令"`），不用改插件源码
+//   · `?` 帮助、`:keys` 末尾的「插件作用域」段、将来看 which-key 都是**同一份**数据
+//   · 覆盖内置键时状态栏会有提示（"插件 x 覆盖了 …"），不再静默
+// 设计：docs/superpowers/plans/2026-11-04-panel-keybinding-scopes.md
+const SCOPE = "filetree";
+/// 帮助弹层单独一个作用域：它是**模态**层，Esc 语义是"关闭"而不是 blur
+/// （模态层声明 `esc:"blur"` 等于空动作 —— 按键仍先到它，见 compositor 的注释）。
+const HELP_SCOPE = "filetree-help";
+const TREE_KEYS = {
+  q: { action: "close", desc: "关闭面板" },
+  "<esc>": { action: "esc", desc: "关闭（close_on_esc=false ⇒ 只回编辑器）" },
+  Up: { action: "up", desc: "上移" },
+  k: { action: "up", desc: "上移" },
+  Down: { action: "down", desc: "下移" },
+  j: { action: "down", desc: "下移" },
+  PageUp: { action: "page-up", desc: "上翻 10 行" },
+  PageDown: { action: "page-down", desc: "下翻 10 行" },
+  Home: { action: "top", desc: "到顶" },
+  End: { action: "bottom", desc: "到底" },
+  Enter: { action: "open", desc: "打开 / 展开" },
+  o: { action: "open", desc: "打开 / 展开" },
+  Right: { action: "enter-dir", desc: "进入目录" },
+  l: { action: "enter-dir", desc: "进入目录" },
+  Left: { action: "leave-dir", desc: "折叠 / 上级" },
+  h: { action: "leave-dir", desc: "折叠 / 上级" },
+  Backspace: { action: "up-root", desc: "把根切到上级目录" },
+  P: { action: "up-root", desc: "把根切到上级目录" },
+  H: { action: "toggle-hidden", desc: "显示/隐藏点文件" },
+  R: { action: "reload", desc: "刷新树 + git 状态" },
+  F: { action: "toggle-follow", desc: "跟随当前文件" },
+  a: { action: "new-file", desc: "新建文件" },
+  A: { action: "new-dir", desc: "新建目录" },
+  m: { action: "rename", desc: "重命名" },
+  d: { action: "remove", desc: "删除" },
+  "?": { action: "help", desc: "显示键位" },
+  "/": { action: "find", desc: "按名字搜索（Tab 切全库）" },
+  G: { action: "grep", desc: "全库内容搜索" },
+  ">": { action: "filter", desc: "过滤表达式" },
+  "C-\\": { action: "leave", desc: "回编辑器（保留面板）" },
+};
+if (helix.keymap && helix.keymap.scope) {
+  helix.keymap.scope(SCOPE, {
+    keys: TREE_KEYS,
+    // B 阶段：这些**全局前缀**永远交回编辑器。面板本来就是非模态（未映射键穿透），
+    // 这里主要给**弹层**用（见 show_help 的 `scope`）：不然 `?` 帮助开着时按 `:`/`C-w`
+    // 会被弹层吃掉，用户视角就是"莫名其妙没反应"。
+    // 注意**不要**把 `:` 加给文本输入弹层（prompt）——那里 `:` 是要输入的字符。
+    passthrough: [":", "C-w", "C-p"],
+    // 面板是**叶子式**非模态层：插件自己没消费 Esc 时，让核心把焦点挪回编辑器
+    // （面板保留）。今天 filetree 自己处理了 Esc（close_on_esc 两态），所以这是
+    // **声明意图 + 保险**：将来某条分支漏了 Esc，也不会漏成"Esc 落给编辑器改选区"。
+    esc: "blur",
+  });
+  // 帮助弹层是**模态**层：Esc 的语义是"关掉它"，不能声明 blur（模态层 blur 等于空动作）。
+  helix.keymap.scope(HELP_SCOPE, {
+    keys: { "<esc>": { action: "close", desc: "关闭帮助" }, q: { action: "close", desc: "关闭帮助" } },
+    passthrough: [":", "C-w", "C-p"],
+  });
+}
+
+/// 查键 → 动作名（`null` = 没绑定 → 穿透）。旧编辑器没有 `helix.keymap` 时用内置表兜底，
+/// 保证**行为不变**（只是不可覆盖、不进 `?`/`:keys`）。
+function tree_action(key) {
+  if (helix.keymap && helix.keymap.resolve) {
+    const hit = helix.keymap.resolve(SCOPE, key);
+    if (!hit) return null;
+    if (hit.command) {
+      // 用户把键覆盖成了命令 ⇒ 直接执行（`[plugins.filetree.keys]` 的语义）
+      helix.run_command(hit.command);
+      return "done";
+    }
+    return hit.action || null;
+  }
+  const nm = key && key.name !== undefined ? String(key.name) : String(key);
+  if (key && key.ctrl && nm === "\\") return "leave";
+  if (key && (key.ctrl || key.alt)) return null;
+  const byName = {
+    q: "close", Esc: "esc",
+    Up: "up", k: "up", Down: "down", j: "down",
+    PageUp: "page-up", PageDown: "page-down", Home: "top", End: "bottom",
+    Enter: "open", o: "open", Right: "enter-dir", l: "enter-dir",
+    Left: "leave-dir", h: "leave-dir", Backspace: "up-root", P: "up-root",
+    H: "toggle-hidden", R: "reload", F: "toggle-follow",
+    a: "new-file", A: "new-dir", m: "rename", d: "remove",
+    "?": "help", "/": "find", G: "grep", ">": "filter",
+  };
+  return byName[nm] || null;
+}
 // 用法:init.js 里 helix.load("filetree")(裸名 → filetree/plugin.js),:filetree 开关面板。
 // 键位：Enter/o 打开或展开，h/l 折叠/进入，Up/Down 导航，H 隐藏文件，
 //       R 刷新，a/A 新建文件/目录，m 重命名，d 删除，P 上级目录，F 跟随当前文件，q/Esc 关闭。
@@ -1317,6 +1408,9 @@ function open_panel(root) {
   panel.id = helix.open_panel({
     side: "left",
     size: 32,
+    // 绑键位作用域（B 阶段）：状态栏 `layers` 段显示 `FILETREE`，
+    // 且面板没消费 Esc 时核心按 `esc: "blur"` 把焦点还回编辑器（面板保留）。
+    scope: SCOPE,
     // 在**根节点**上切：filetree 拿左边缘的整列（全高），之后的切分（编辑器 / 终端）
     // 都发生在右边的区域里 ⇒ 想看到的布局就是 `filetree | editor / term`。
     // 不加这条时切的是"当前叶子"：编辑器已经分过屏，树只会挂在其中一半上。
@@ -1848,22 +1942,27 @@ function handle_key_with(panel, key) {
   // 面板每次按键重新播种"已打开"集合：核心不发 `:buffer-close` 事件，不这样 `·` 会留尸
   seed_opened();
   poll_diagnostics(); // 诊断同理：没有逐文档事件，只能按人-rate 拉"当前文档"
-  // C-\ 回编辑器（保留面板；与终端 C-\ 语义统一）
-  if (key.ctrl && key.name === "\\") {
+
+  // ① 先查**声明表**（可被 `[plugins.filetree.keys]` 覆盖）
+  const action = tree_action(key);
+  if (action === "done") return "handled"; // 用户把键覆盖成了命令，已执行
+  // C-\ 回编辑器（保留面板；与终端 C-\ 语义统一）—— 必须在"修饰键放行"之前判
+  if (action === "leave") {
     helix.pane.focus(0);
     return "handled";
   }
-  // 修饰键组合（C-x / M-x）**穿透给编辑器** —— 面板是非模态的（`open_panel`，不是 popup），
+  // ② 修饰键组合（C-x / M-x）**穿透给编辑器** —— 面板是非模态的（`open_panel`，不是 popup），
   // 用户在 `[keys]` / `helix.map` 里绑的 C-* 必须照常生效；被吞掉会变成"静默失效"。
-  // 上面 C-\ 已单独处理（保留面板、焦点回编辑器），所以这里不需要再留特例。
   // 对照：`arsenal` / `dashboard` 是 popup（模态），它们在 onKey 里 `return "handled"` 是对的。
   if (key.ctrl || key.alt) return "ignore";
-  // 搜索态优先（C-*/M-* 已在上面放过 ⇒ 非模态约束不变）
+  // ③ 搜索/过滤态优先（它们是"文本输入态"，按键归输入而不是绑定表）
   if (panel.mode === "find") return find_key(panel, key);
   if (panel.mode === "grep") return grep_key(panel, key);
   if (panel.mode === "filter") return filter_key(panel, key);
-  switch (key.name) {
-    case "Esc":
+
+  // ④ 树模式：只按**动作名**分派（`[plugins.filetree.keys]` 把某个键换掉后，这里一行都不用改）
+  switch (action) {
+    case "esc":
       // `close_on_esc = false`：Esc 只回焦点（面板保留），关面板改用 `q` —— 这是"树常驻"的用法。
       // 搜索/过滤态里的 Esc 走各自的分支（先退出那种态），语义不受此配置影响。
       if (CFG.close_on_esc === false) {
@@ -1872,39 +1971,33 @@ function handle_key_with(panel, key) {
       }
       close_panel();
       return "handled";
-    case "q": close_panel(); return "handled";
-    case "Up":
-    case "k": move(panel, -1); return "handled";
-    case "Down":
-    case "j": move(panel, 1); return "handled";
-    case "PageUp": move(panel, -10); return "handled";
-    case "PageDown": move(panel, 10); return "handled";
-    case "Home": panel.cursor = 0; return "handled";
-    case "End": panel.cursor = Math.max(0, count_visible(panel) - 1); return "handled";
-    case "Enter":
-    case "o": open_selected(panel); return "handled";
-    case "Right":
-    case "l": enter_dir(panel); return "handled";
-    case "Left":
-    case "h": leave_dir(panel); return "handled";
-    case "Backspace":
-    case "P": {
+    case "close": close_panel(); return "handled";
+    case "up": move(panel, -1); return "handled";
+    case "down": move(panel, 1); return "handled";
+    case "page-up": move(panel, -10); return "handled";
+    case "page-down": move(panel, 10); return "handled";
+    case "top": panel.cursor = 0; return "handled";
+    case "bottom": panel.cursor = Math.max(0, count_visible(panel) - 1); return "handled";
+    case "open": open_selected(panel); return "handled";
+    case "enter-dir": enter_dir(panel); return "handled";
+    case "leave-dir": leave_dir(panel); return "handled";
+    case "up-root": {
       const hit = node_at(panel, panel.cursor);
       const dir = hit ? (hit.node.is_dir ? hit.node.path : (find_parent(panel.tree, hit.node.path) || {}).path) : null;
       if (dir && dir !== panel.root) set_root(panel, dir);
       return "handled";
     }
-    case "H": G.show_hidden = !G.show_hidden; return "handled";
-    case "R": reload_tree(panel); refresh_git(panel); poll_diagnostics(); return "handled";
-    case "F": G.follow = !G.follow; helix.echo(G.follow ? "跟随当前文件: 开" : "跟随当前文件: 关"); return "handled";
-    case "a": new_file(panel); return "handled";
-    case "A": new_dir(panel); return "handled";
-    case "m": rename(panel); return "handled";
-    case "d": remove(panel); return "handled";
-    case "?": show_help(); return "handled";
-    case "/": enter_find(panel); return "handled";
-    case "G": enter_grep(panel, ""); return "handled";
-    case ">": enter_filter(panel); return "handled";
+    case "toggle-hidden": G.show_hidden = !G.show_hidden; return "handled";
+    case "reload": reload_tree(panel); refresh_git(panel); poll_diagnostics(); return "handled";
+    case "toggle-follow": G.follow = !G.follow; helix.echo(G.follow ? "跟随当前文件: 开" : "跟随当前文件: 关"); return "handled";
+    case "new-file": new_file(panel); return "handled";
+    case "new-dir": new_dir(panel); return "handled";
+    case "rename": rename(panel); return "handled";
+    case "remove": remove(panel); return "handled";
+    case "help": show_help(); return "handled";
+    case "find": enter_find(panel); return "handled";
+    case "grep": enter_grep(panel, ""); return "handled";
+    case "filter": enter_filter(panel); return "handled";
     // 未映射键穿透（面板非模态）：: 命令、i 等仍可用
     default: return "ignore";
   }
@@ -1919,14 +2012,106 @@ function pick_open(path) {
   if (panel.id !== null) reveal(panel, path);
 }
 
-function show_help() {
-  helix.echo(
-    "filetree: Enter/o 打开 · h/l 折叠/进入 · ↑↓ 移动 · / 搜索（Tab 切全库） · G 内容搜索" +
-    " · > 过滤表达式（*.rs !*.lock #M）" +
-    "（←/→ 折叠） · H 隐藏文件 · :filetree-find 全库找文件 · :filetree-search <词> 直接内容搜 · " +
-    "R 刷新 · a 新建文件 · A 新建目录 · m 重命名 · d 删除 · P 上级 · F 跟随 · q 关闭 · " +
-    (CFG.close_on_esc === false ? "Esc 回编辑器（close_on_esc=false）" : "Esc 关闭")
+/// 帮助弹窗的**尺寸决策**（纯函数，便于 node 测）。
+///
+/// 输入：内容行数、最长行宽（cell）、视口宽高；输出：弹窗宽高 + 内容区高度 + 要不要滚动。
+/// 规则：宽度/高度都**不超过视口**（边框各留 1 格 + 上下留 2 行余量），
+/// 内容放不下 ⇒ `need_scroll`，由调用方套 `helix.el("scroll", …)`。
+function help_geometry(line_count, widest_cell, vw, vh, title_cell) {
+  const CHROME = 3; // 标题 + footer + 上下边框
+  const width = Math.min(
+    Math.max(title_cell || 24, widest_cell + 2) + 4,
+    Math.max(20, vw - 4),
   );
+  const max_body = Math.max(3, vh - CHROME - 2);
+  const need_scroll = line_count > max_body;
+  const body_h = Math.min(Math.max(line_count, 1), max_body);
+  return { width, height: body_h + CHROME, body_h, need_scroll };
+}
+
+function show_help() {
+  // 内容来自作用域表（与 `:keys` 的"插件作用域"段、`[plugins.filetree.keys]` 覆盖**同源**）
+  const table = helix.keymap && helix.keymap.hints ? helix.keymap.hints(SCOPE) : null;
+  const lines = table ? table.split("\n") : [];
+  const pick = lines.length ? lines : ["（这个版本没有 helix.keymap.hints）"];
+
+  // ── 自适应终端 ──
+  // 早先是固定 `width:72, height:min(38, 行数+4)`：小终端上**静默截断**（实测 20 行时 `q` 那行
+  // 根本看不到）。现在按视口算：宽度跟最长一行走、高度跟内容走，两者都不超过视口，
+  // 真放不下时内容进 `scroll` 容器（可 j/k 滚动），**不再无声丢行**。
+  let vw = 80;
+  let vh = 24;
+  try {
+    const vp = helix.viewport ? helix.viewport() : null;
+    if (vp && vp[0] > 0 && vp[1] > 0) {
+      vw = vp[0];
+      vh = vp[1];
+    }
+  } catch (e) {
+    // 没有视口信息（旧二进制 / 测试夹具）⇒ 用保守默认值
+  }
+  const text_width = (t) =>
+    helix.text && helix.text.width ? helix.text.width(t) : String(t).length;
+  const widest = pick.reduce((m, l) => Math.max(m, text_width(l)), 24);
+  const title = "filetree 键位（[plugins.filetree.keys] 可改）";
+  const footer = "搜索/过滤态：字符即输入 · Tab 切全库 · Enter 应用 · Esc 逐级退出";
+  const geo = help_geometry(pick.length, widest, vw, vh, text_width(title));
+  const { width, height, body_h } = geo;
+  const need_scroll = geo.need_scroll;
+
+  // 放不下才滚动（放得下时用普通 col，读起来更平）
+  let offset = 0;
+  const body = () =>
+    need_scroll
+      ? [helix.el("scroll", pick.map((l) => helix.el("text", l, { style: "ui.popup" })), {
+          height: body_h,
+          offset,
+        })]
+      : pick.map((l) => helix.el("text", l, { style: "ui.popup" }));
+
+  helix.open_popup({
+    width,
+    height,
+    position: "center",
+    // 绑**弹层**作用域 ⇒ `:`/`C-w`/`C-p` 照常可用（Esc 仍是"关闭"，不是 blur）
+    scope: HELP_SCOPE,
+    render: () =>
+      helix.el(
+        "col",
+        [
+          helix.el("text", title, { style: "ui.virtual" }),
+          ...body(),
+          helix.el(
+            "text",
+            need_scroll ? footer + " · j/k 滚动" : footer,
+            { style: "ui.help" },
+          ),
+        ],
+        { gap: 0 },
+      ),
+    onKey: (key) => {
+      const nm = key && key.name !== undefined ? String(key.name) : String(key);
+      if (nm === "Esc" || nm === "q" || nm === "?") return "close";
+      // 只在真滚动时接管 j/k（否则 j/k 该关弹窗？不 —— 关弹窗用 Esc/q，这里吞掉更省心）
+      if (need_scroll && nm === "j") {
+        offset = Math.min(Math.max(0, pick.length - body_h), offset + 1);
+        return "handled";
+      }
+      if (need_scroll && nm === "k") {
+        offset = Math.max(0, offset - 1);
+        return "handled";
+      }
+      if (nm === "g") {
+        offset = 0;
+        return "handled";
+      }
+      if (nm === "G") {
+        offset = Math.max(0, pick.length - body_h);
+        return "handled";
+      }
+      return "handled";
+    },
+  });
 }
 
 // ============================ 事件 ============================
@@ -2068,6 +2253,7 @@ if (typeof module !== "undefined" && module.exports) {
     compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter, is_no_match,
     list_files,
     opened_marker, worst_severity, diag_hit, diag_mark,
+    help_geometry, show_help, tree_action,
   };
 // render/open_panel 依赖 helix，node 测试需先 stub global.helix
 }

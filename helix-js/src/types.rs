@@ -31,6 +31,11 @@ pub struct OpenPopupReq {
     pub center: bool,
     /// center 模式视口百分比 (width%, height%),两轴成对给定(78/75 → 78%×75%)
     pub size_pct: Option<(u16, u16)>,
+    /// 绑定的**键位作用域**（B 阶段：徽标与 Esc 兜底用；`None` = 没绑）
+    pub scope: Option<String>,
+    /// 该作用域声明了 `esc: "blur"` ⇒ 外层 `Popup` **不要**在 Esc 上自关，
+    /// 让 Esc 冒泡到 compositor 做 blur（B 阶段 T4.4）。否则外层的"Esc = 关层"会先吃掉它。
+    pub esc_blur: bool,
 }
 
 #[derive(Debug)]
@@ -45,6 +50,8 @@ pub struct OpenPanelReq {
     /// 切分目标：`None` = 当前窗口（旧行为）；`Some("root")` = 整窗切一刀；
     /// `Some("<组 id>")` = 在那个组的区域上切（`rail:true` 时以 rail 为准，忽略此项）
     pub at: Option<String>,
+    /// 绑定的**键位作用域**（B 阶段；`None` = 没绑）
+    pub scope: Option<String>,
 }
 
 /// `helix.plugin.unload(name)` —— 卸载单个插件。**入队**(命令边界执行):回收前要跑插件的
@@ -121,6 +128,8 @@ pub struct MapKeyReq {
     pub key: String,
     pub command: String,
     pub unbind: bool,
+    /// 绑定的插件名（`None` = 无主/内部调用）。term 侧用它做"抢键可见"的提示与 `:keys` 标注。
+    pub owner: Option<String>,
 }
 
 /// 打开原生终端面板：view_id 是面板 id（open_terminal 返回值，term_feed 按它路由），
@@ -632,6 +641,8 @@ pub(crate) struct PopupCallbacks {
     pub(crate) render: JsValue,
     pub(crate) on_key: Option<JsValue>,
     pub(crate) on_close: Option<JsValue>,
+    /// 这个弹窗/面板绑定的**键位作用域**（B 阶段）：`passthrough` / `swallow` 由它查。
+    pub(crate) key_scope: Option<String>,
     /// 脏渲染协议的**上次内容**:回调返回 null/undefined 表示"无变化"⇒ 复用这份,不再解析。
     /// 生命周期天然安全:注销(id 移除)、`:plugin-unload`(按 id 摘表)与 reload 的兜底回收都会丢掉它。
     pub(crate) last: Option<Content>,

@@ -284,6 +284,14 @@ pub trait Component: Any + AnyComponent {
     fn id(&self) -> Option<&'static str> {
         None
     }
+
+    /// 该组件占用的**键位作用域**（`helix.keymap.scope` 声明的名字，B 阶段）。
+    ///
+    /// 名字在**构造组件时**就随 `OpenPopupReq/OpenPanelReq.scope` 带下来了（见
+    /// `PluginPopup::with_scope`）—— 不在渲染期反查宿主：多宿主下会查错表（实测踩过）。
+    fn key_scope(&self) -> Option<String> {
+        None
+    }
 }
 
 /// 布局标签条组件 id：JS 侧经 set_component_render(TABBAR_ID, fn) 注册视图回调，
@@ -593,6 +601,32 @@ impl Compositor {
             };
         }
 
+        // ── B 阶段（T4.4）：插件层的 **Esc 兜底** ──
+        // 插件层没消费 Esc（`onKey` 返回 ignore/未注册）时，按作用域声明处理：
+        // `esc: "blur"` ⇒ 焦点回编辑器、面板/弹层**保留**（"退一层"，与原生 Esc 同义）。
+        // 默认 `ignore` = 现状，零行为变化。
+        if !consumed && matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc)
+        {
+            // 只对**叶子式**插件层（面板）有意义：弹层是模态的，焦点挪回编辑器后
+            // 按键仍然先到弹层（它压在层栈顶上）⇒ "blur" 对弹层是空动作。
+            // 弹层要"Esc 关闭"，请照旧在它的 `onKey` 里返回 "close"。
+            let modal_plugin_layer = self.plugin_layer_count() > 0;
+            if let Some(scope) = self.top_plugin_scope().filter(|_| !modal_plugin_layer) {
+                let action = cx
+                    .with_js(|h| helix_js::keymap_scope::esc_action(h.state(), &scope))
+                    .unwrap_or_default();
+                if action == helix_js::keymap_scope::EscAction::Blur {
+                    let editor_leaf = 0;
+                    if self.main_tree.active() != editor_leaf {
+                        self.main_tree.focus(editor_leaf);
+                        self.sync_editor_focus(cx.editor);
+                        self.sync_layout_cache(cx.js.as_deref_mut());
+                    }
+                    return true;
+                }
+            }
+        }
+
         // 瞬态层未消费 → 布局树（活动叶子优先，忽略则编辑器叶子兜底）
         if !consumed {
             match self.main_tree.handle_event(event, cx) {
@@ -700,13 +734,19 @@ impl Compositor {
         let (view, doc) = current_ref!(cx.editor);
         // 输入层徽标（栈序）同步给插件（`helix.input_badges()`）：which-key 的 line 提示要用
         let terminal_insert = self.terminal_passthrough();
-        let badges = crate::input_router::badges_with_terminal(
+        // B 阶段：当前占着键的**插件层**（最上层带 scope 的弹层/面板）⇒ 徽标 `FILETREE`
+        let plugin_scope = self.top_plugin_scope();
+        let badges = crate::input_router::badges_with_plugin(
             self.pane_mode,
             cx.editor.is_debug_paused(),
             terminal_insert,
+            plugin_scope.as_deref(),
         );
         if let Some(host) = cx.js.as_deref_mut() {
             helix_js::cache_input_badges(host.state(), &badges);
+            // 同一个来源也给 `helix.keymap.active_scope()`：which-key 之类"想显示
+            // 当前插件层键位"的消费方需要**名字**（徽标里是大写，不能反推）
+            helix_js::cache_active_scope(host.state(), plugin_scope.as_deref().unwrap_or(""));
         }
         let mut context = crate::ui::statusline::RenderContext::new(
             cx.editor,
@@ -736,6 +776,30 @@ impl Compositor {
                 cx.editor.autoinfo = Some(info)
             }
         }
+    }
+
+    /// 当前**占着键盘**的插件层作用域（B 阶段）。
+    ///
+    /// 顺序 = 键的真实去向：先弹层（`layers` 从顶往下），再活动叶子（面板等）。
+    /// 只认实现了 `key_scope()` 的组件（`PluginPopup` / `PluginPanel`）。
+    /// 当前可见的**插件层数量**（`key_scope()` 非空的层）。
+    ///
+    /// 用途：`esc: "blur"` 的语义是"回焦点但**保留**弹层" —— 这条要能观测，
+    /// 而 `has_component("PluginPopup")` 比不上（层里装的是 `Popup<PluginPopup>`）。
+    pub fn plugin_layer_count(&self) -> usize {
+        self.layers
+            .iter()
+            .filter(|l| l.key_scope().is_some())
+            .count()
+    }
+
+    pub fn top_plugin_scope(&self) -> Option<String> {
+        for layer in self.layers.iter().rev() {
+            if let Some(scope) = layer.key_scope() {
+                return Some(scope);
+            }
+        }
+        self.main_tree.active_leaf_scope()
     }
 
     /// 活动窗口类型与路径(状态栏窗口图标用):editor/buffer 带文件路径,terminal/panel 无

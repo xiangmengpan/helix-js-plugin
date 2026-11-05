@@ -16,9 +16,10 @@
 
 | 项目 | TOML 入口 | JS 入口 | 生效时机 | 谁赢 | 重启后 |
 |---|---|---|---|---|---|
-| **键位** | `[keys.<mode>]` | `helix.map(mode, key, cmd)` | TOML：**启动一次**；JS：运行期（job 通道写入同一个 Keymaps 槽） | **JS**（`insert_binding` 把新叶 merge 进同一棵树 ⇒ 同序列覆盖） | TOML 的还在；**JS 的全部丢失**（已知限制，插件每次启动重新注册） |
+| **键位** | `[keys.<mode>]` | `helix.map(mode, key, cmd)` | TOML：启动 + **`:config-reload` 重建**；JS：运行期（job 通道写入同一个 Keymaps 槽） | **JS**（`insert_binding` 把新叶 merge 进同一棵树 ⇒ 同序列覆盖；**覆盖会在状态栏提示一次**，`:keys` 里标 `←插件 名字`） | TOML 重新解析后生效；JS 由插件在加载时重新注册（宿主会记住每条绑定，`:config-reload` 时**重放**） |
 | **主题** | `[theme]` | `helix.set_theme_name()` / `helix.set_theme(scopes)` | `:config-reload` 会重读 `[theme]` 并应用；JS 覆盖在调用时立即生效 | **JS**（后调者覆盖） | 回落 `[theme]` |
 | **插件设置** | `[plugins.<name>]` | `helix.define_config(schema)` 只声明**默认值/类型**，无写入入口 | `:config-reload` 重建合并表；插件 load/reload 后也会重建 | 只有一个来源：**TOML 的值 + JS 的默认值** | 保留 |
+| **插件面板/弹层键位** | `[plugins.<名>.keys]`（辅助作用域 `.子名`） | `helix.keymap.scope(name, …)` | TOML：启动 + `:config-reload`；JS：插件加载时声明 | **用户 TOML**（`resolve()` 先查覆盖，再查声明） | TOML 的在；插件声明随插件重新加载而重建 |
 | **状态栏 / 图标 / 补全 UI / 面板** | ——（无 TOML 入口） | `set_statusline` / `set_*_icon` / `set_completion_render` / `open_panel` | 注册即生效 | JS | 插件重跑时重新注册 |
 
 ## 3. 只有一条路的三个例外

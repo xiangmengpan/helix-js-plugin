@@ -22,6 +22,9 @@ A deeply modified fork of [Helix editor](https://github.com/helix-editor/helix) 
 2. **zellij-style flat modes**: five sibling modes (`C-g`/`C-p`/`C-n`/`C-h`/`C-y`) available from any leaf focus — replaces the old single global `C-w` mode
 3. **Terminal enhancements**: native terminal panels (engine is now `alacritty_terminal`: real reflow, mouse reporting, bracketed paste, CJK/combining chars; Esc → scroll mode, scrollback buffer, yank, hook APIs, state persistence)
 4. **Pluginized keymap hints**: which-key Chinese hints, configurable position, replacing the built-in Info
+5. **Plugin key scopes**: a panel/popup declares its keys as data — remappable from `[plugins.<name>.keys]`,
+   visible in `?` / `:keys` / `:which-key`, and wired into the input layer (global prefixes pass through,
+   `Esc` blurs, the statusline `layers` badge names the layer)
 
 Upstream Helix docs: [Website](https://helix-editor.com) · [Documentation](https://docs.helix-editor.com/) · [Keymap](https://docs.helix-editor.com/keymap.html)
 
@@ -65,6 +68,53 @@ Rust provides low-level services (layout tree, pty, grid, draw primitives, state
 - **Mouse interaction**: `helix.on("component-event", ...)` → clicks delegated to JS
 - **Terminal hooks**: term-key/close/open/exit/title/resize/mode-change + `term_state` persistence
 
+### Plugin key scopes
+
+A panel or popup declares its keys **as data** instead of branching on key names:
+
+```js
+helix.keymap.scope("filetree", {
+  keys: {
+    q:     { action: "close", desc: "close the panel" },
+    "C-\\": "leave",                                  // shorthand: value = action name
+    j:     { action: "down",  desc: "move down" },
+  },
+  extends:     "panel",                 // optional preset: q / Esc / ? / / / j k / g
+  passthrough: [":", "C-w", "C-p"],     // global prefixes always go back to the editor
+  esc:         "blur",                  // plugin ignored Esc ⇒ focus returns, panel stays
+});
+
+// in onKey: dispatch on the action name only
+const hit = helix.keymap.resolve("filetree", key);   // takes the onKey object *or* a string
+if (!hit) return "ignore";                            // unbound ⇒ pass through (non-modal panel)
+if (hit.command) { helix.run_command(hit.command); return "handled"; }
+switch (hit.action) { case "close": /* … */ }
+```
+
+Users remap them in their own plugin table — no plugin source edit, no restart:
+
+```toml
+[plugins.filetree]
+show_hidden = false            # ordinary plugin options live here too
+
+[plugins.filetree.keys]        # main scope: scope name = plugin name
+"q"   = ":filetree"
+"C-s" = ":filetree-find"       # resolved after plugins load, so plugin commands work
+
+[plugins.filetree.keys.help]   # extra scope: `filetree.help` (the `?` help popup)
+"esc" = ":filetree"
+```
+
+- One source of truth: `?` help, `:keys` (its plugin-scope section), `:which-key` and the config
+  table all read the same declaration.
+- Pass `scope:` to `open_panel` / `open_popup`, and the statusline `layers` badge shows
+  `FILETREE` while that layer owns the keyboard (`helix.keymap.active_scope()` returns the name).
+- `passthrough` keys are handed back **before** `onKey`, so `:` / `C-w` keep working inside a modal
+  popup — don't route `:` through a text-input popup, that is where `:` is a character.
+- Overriding a built-in key with `helix.map` is reported once (status bar + plugin log), and
+  `:keys` marks the entry `←plugin <name>`.
+- Limits: single keys only (no `"gg"` sequences); key names use core spelling (`esc`, not `<esc>`).
+
 ### Terminal enhancements
 
 - `Esc` → normal scroll mode (scrollback, `y` yank, `g`/`G` jump), `i` → insert passthrough
@@ -83,8 +133,8 @@ helix.register_command("my-cmd", (ctx) => { ... }, "My command");
 helix.on("save", (doc) => { ... });
 
 // Load / export modules
-helix.load("lib/icons.js");                       // relative to plugin dir
-helix.plugin("my-plugin", { deps: ["lib/icons.js"] });
+helix.load("filetree");                           // load another plugin **by name**
+helix.plugin("my-plugin", { deps: ["filetree"] }); // deps are plugin names
 helix.export({ run: myFn });                      // callable after other plugins load it
 ```
 
@@ -124,11 +174,20 @@ helix.icons.diagnostic("error"); helix.icons.git("M"); helix.icons.completion(3)
 helix.icons.enabled(false);  // turn all nerd-font icons off in one place
                              // (or `[plugins.icons] nerd_font = false` in config.toml)
 helix.pane_mode.current(); helix.pane_mode.keymap();  // mode + its key table (single source)
+
+// ── keymap.* (panel/popup key scopes — see “Plugin key scopes”) ──
+helix.keymap.scope("filetree", { keys: { q: "close" }, passthrough: [":"] });
+helix.keymap.resolve("filetree", key);   // → {action} | {command} | null
+helix.keymap.hints("filetree");          // the same text `?` and `:keys` show
+helix.keymap.active_scope();             // scope that currently owns the keyboard (or null)
+
+// ── self-introspection ──
+helix.proc_stats();   // → {cpu_ms, rss_kb} for this process (cross-platform)
 ```
 
-> **The old flat names are gone** (`focus`, `zoom`, `get_layout`, `buffers`, `layout_fix`,
-> `layout_minimize`, `layout_resize`, …) — replaced by the namespaces above.
-> Only `split` / `layout_swap` / `layout_resize` remain (no new equivalent yet).
+> **The old flat names are gone** (`focus`, `zoom`, `get_layout`, `buffers`, `buffers`,
+> `layout_fix`, `layout_minimize`, …) — use the namespaces above.
+> Only `split`, `layout_resize` and `layout_swap` remain flat (no namespaced equivalent yet).
 
 ### UI rendering
 
@@ -279,45 +338,66 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 | `run_async(cmd)` | async execution | non-blocking; promise resumes on main thread | no streaming output |
 | `spawn({cmd, onChunk, onExit})` | streaming process | chunked output, pty support | caller joins chunks |
 
-**Async filesystem** (all return Promise, worker thread)
+**Filesystem** (sync pair on the main thread; the `*_async` ones run on a worker)
 
 | API | What | Pros | Cons |
 |---|---|---|---|
+| `read_file(path)` / `write_file(path, text)` | read/write a file, sync | no promise plumbing | blocks main thread; UTF-8 lossy |
 | `read_dir(path)` | list dir (sync) | simple | sync-blocking; not recursive |
-| `read_file_async/write_file_async` | read/write file | async, non-blocking | UTF-8 lossy |
+| `read_file_async` / `write_file_async` | read/write file | async, non-blocking | UTF-8 lossy |
 | `stat_async(path)` | file metadata | `{is_dir, size, mtime}` | — |
 | `glob_async(pattern)` | glob match | `*`/`**`/`?` | relative to CWD |
 | `read_tree(path, {depth})` | recursive tree | dirs first, sorted; depth limit | one-shot, delay on huge trees |
 
 **Event hooks** `on(event, fn)`: `save` `mode-change` `buffer-open` `buffer-close` `doc-change` (with merged ranges) `theme-change` `lsp-diagnostics` `cursor-move` `selection-change` + terminal family (`term-open/mode-change/exit/close/resize/title/key`) `component-event`. Pros: multiple handlers run in order; a throwing handler doesn't block the flow. Cons: `doc` is a read-only snapshot + edit queue.
 
-**Keybindings** `map(mode, key, command|fn)`: rebinding overwrites; multi-key sequences & modifiers; callbacks auto-register as hidden commands. Cons: lost on restart (re-register at plugin startup).
+**Keybindings (global)** `map(mode, key, command|fn)`: rebinding overwrites — and that override is now
+reported once, with `:keys` marking the entry `←plugin <name>`; multi-key sequences & modifiers;
+callbacks auto-register as hidden commands. Cons: JS bindings are not persisted (plugins re-register
+at startup); `:config-reload` rebuilds the table and replays them.
+
+**Key scopes (panels/popups)** `keymap.scope/resolve/hints/unregister/active_scope` — see
+[Plugin key scopes](#plugin-key-scopes). Cons: single keys only.
 
 **Popups/Panels/Component tree**: `open_popup` (overlay modal; onKey returns close/handled/ignore) `open_panel` (side panel, layout-tree leaf) `close_panel` `move_panel` `el` (row/col/scroll/button/input). Pros: render + layout engine separated, dirty-cell diff; input is engine-authoritative (onChange auto callback). Cons: repeated open_popup replaces the previous one.
+
+**Icons** `icons.file/dir/mode/diagnostic/git/completion/sys/enabled` — the table lives in core, so
+plugins need no `deps`; `enabled(false)` (or `[plugins.icons] nerd_font = false`) turns nerd-font
+glyphs off in one place and callers fall back to text. `icons.sys("cpu"|"mem")` is what the statusline
+uses. Cons: glyph availability depends on the font — `sys` deliberately stays inside the Font Awesome range.
+
+**Fuzzy matching** `fuzzy.session/run/drop` — in-process nucleo; keep a session when the candidate
+set is stable and only the query changes (≈25× faster than re-filtering). Cons: you own the lifecycle.
 
 **Picker** `helix.picker.define/run`: define a data source, open the **native Picker** (nucleo fuzzy match / scroll / preview / keys all core). Pros: native performance; arbitrary sources (files/grep/buffers/symbols); rows as array or `{cells, payload}`. Cons: one-shot candidates (no streaming); no per-row component rendering.
 
 **Terminal**: `open_terminal` `term_write/feed/kill/list/close/resize/clear/save` `set_terminal_mode` `term_state` (session persistence) + terminal hooks (`term-key` returns normal/pass/consume/minimize/close). Pros: native pty panels, four display modes, scrollback. Cons: passthrough key handling is manual.
 
-**Layout tree**: `split` `buffer_open` `close_leaf` `zoom/unzoom` `resize_leaf` `layout_resize/swap/minimize/focus/swap_dir/equalize/fix` `focus` `get_layout` `restore_layout`. Pros: zellij-style window management, any-leaf focus; layout_fix immune to swap/close. Cons: restore_layout serialization is half-baked (see §14).
+**Panes & layout**: `pane.list/info/focus/focus_dir/move/resize/close/zoom/unzoom/minimize/equalize/fix/float/embed/raise/pin` · `pane.open` (via the `pane-open` plugin) · `stack.create/activate/remove/list` · `layout.get/restore/save/load/list/delete` · `split` `buffer_open` (the two remaining flat names). Pros: zellij-style window management, any-leaf focus, `fix` immune to swap/close, named layout sessions. Cons: stacking is always a pair; `split` has no namespaced replacement yet.
 
-**Buffers/Diagnostics/Watch**: `buffers` `current_buffer` `focus_buffer` `diagnostics` `watch/unwatch` (notify-backed, 500ms debounce). Pros: read-only doc snapshots. Cons: ids valid within a session.
+**Buffers / diagnostics / watch**: `buffer.list/current/focus` · `diagnostics` · `watch/unwatch` (notify-backed, 500 ms debounce). Pros: read-only doc snapshots. Cons: ids are valid within a session only.
 
 **UI customization**: `set_statusline` `set_buffer_icon` `set_completion_render` (JS-rendered candidate rows, falls back to native two columns) `set_completion_icon` (kind → icon char) `set_diagnostic_icons` `set_component_render` (JS-drawn component appearance) `get_component_state` `set_keymap_hint` (which-key). Pros: render layer fully customizable; fallback on unregistered/throw. Cons: completion row hook runs per row per frame — no heavy logic inside.
+
+**Process & logging**: `proc_stats()` → `{cpu_ms, rss_kb}` for **this process** (Linux `/proc`, macOS
+`getrusage`+`task_info`, Windows `GetProcessTimes`+`GetProcessMemoryInfo`) · `log(level, msg)` → plugin
+log (ring buffer + app log, `:js-log`) · `command_args()` → `:cmd a b` arguments · `viewport()`.
+Pros: cheap self-introspection, no capability needed. Cons: `proc_stats` is sampled by the caller (no built-in throttling).
+
+**Server manager (LSP/DAP tools)**: `server.list/search/install/update/remove/status/task/rows`.
+Cons: one-way requests — results surface in the status bar, not as return values.
+
+**Draw primitives**: `draw.rect/text/hline/vline/fill/braille/push_clip/push_scroll/pop/done` +
+`text.width/pad/truncate`. Pros: popups can paint a whole frame without building the `el` tree;
+width helpers keep CJK alignment right. Cons: you own the layout math (no auto-wrap).
 
 **Theme**: `set_theme` (live override, scope-level) `reset_theme` `get_style` `theme_info` `set_theme_name` (async switch). Pros: instant effect, inheritance handled; syntax scopes also overridable. Cons: colors can't reference another scope.
 
 **Plugin management**: `helix.plugin(name, {deps})` declares load deps; `helix.plugin.install(path|git-url)` (manifest tracking + dep resolution + post-install load) `update` (git pull, keeps old on failure) `remove`. Pros: source tracking, uninstall, update, recursive deps, cycle detection; CLI via `:plugin install/update/pin/unpin/remove/status`. Cons: JS API results via status bar (fire-and-forget); pin is git-only.
 
 **LSP**: `helix.lsp.hover/completion/document_symbols/workspace_symbols/format/rename/code_actions/execute_code_action` (see [api/lsp.md](docs/api/lsp.md)). Pros: full query/edit chain, resolves null on failure instead of hanging. Cons: block_on freezes main thread (execute_code_action).
-`set_cursor` `set_selection` `get_str`
-`set_theme` `reset_theme` `get_style` `theme_info` `set_theme_name` `set_diagnostic_icons`
-`run` `run_async` `spawn` `read_file_async` `write_file_async` `stat_async` `glob_async`
-`set_component_render` `get_component_state` `set_keymap_hint` `term_state`
-
-**Event whitelist**: `save` `mode-change` `buffer-open` `buffer-close` `doc-change` `theme-change`
-`term-open` `term-mode-change` `term-exit` `term-close` `term-resize` `term-title` `term-key` `component-event`
-`lsp-diagnostics` `cursor-move` `selection-change`
+Full API index (signatures, pros/cons, every namespace): [`docs/plugin-api.md`](docs/plugin-api.md) ·
+per-domain detail in [`docs/api/`](docs/api/). Event list: [`docs/api/events.md`](docs/api/events.md).
 
 ## 📦 Bundled plugins & the two-layer model
 
@@ -328,12 +408,13 @@ helix.on("selection-change", (docId, { count, primary }) => { ... });
 <plugin root>/
 ├── init.js          # optional: this root's entry (user's wins over bundled)
 ├── <name>/plugin.js # ← a plugin. dir name = plugin name = helix.plugin("<name>")
-├── lib/             # shared libraries (cross-plugin)
+├── <name>/tests/    # that plugin's node tests (not loaded)
 └── examples/        # examples/templates — NOT auto-loaded
 ```
 
 `init.js` names plugins **by name** (no file paths): `helix.load("filetree")` → `<name>/plugin.js`.
-`deps` take plugin names too: `helix.plugin("filetree", { deps: ["icons"] })`.
+`deps` take plugin names too (rarely needed now — the icon table and most shared utilities moved into
+core, so a plugin usually needs no deps at all).
 
 **Two layers, one rule set** (Neovim `runtimepath` semantics — bundled first, user last ⇒ **user overrides bundled**):
 
@@ -349,10 +430,13 @@ DRY_RUN=1 sh contrib/install-plugins.sh
 
 | Plugin | Description |
 |---|---|
-| `filetree/` | Side file tree panel (icons, expand/collapse, Enter opens & focuses) |
+| `filetree/` | Side file tree panel: navigate + **`/` find** (name/path, `Tab` for the whole repo) · **`G` content search** · `>` filter expressions (globs / git / diagnostics) · `?` keys · up to two panels |
+| `dapui/` | DAP front-end: variables/watches tree (right), REPL/Output/breakpoints tabs (bottom); keys declared as a scope |
+| `picker-ui/` | JS-drawn picker (`:pick*`): files/grep/buffers/symbols over an arbitrary source |
+| `dashboard/` | LazyVim-style start screen (`:dashboard`) |
 | `terminal/` | Terminal commands (:term/:vterm/:hterm), panel management |
-| `statusline/` | Statusline (mode icon, file-type icon, git branch, diagnostics) |
-| `which-key/` | Keymap Chinese hints (configurable position) |
+| `statusline/` | Statusline: three zones with `cpu`/`mem` (this process, cross-platform), diagnostics, git, LSP progress; per-zone segment lists in `[plugins.statusline]` |
+| `which-key/` | Key hints (Chinese/English): pane-mode tables, plus the active **plugin scope** (`:which-key`, or appended to any prefix-key hint) |
 | `tabbar/` | Layout tab bar demo (top slot, click to focus) |
 | `arsenal/` | Overlay marketplace window (`:arsenal`) — replaces the deprecated server-manager |
 | `icons/` | `[plugins.icons]` config only — the icon table itself lives in core (`helix.icons.*`) |

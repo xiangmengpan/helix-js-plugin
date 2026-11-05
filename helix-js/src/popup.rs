@@ -157,6 +157,12 @@ pub(crate) fn js_open_popup(
     }
     let on_key = opts.get(JsString::from("onKey"), ctx)?;
     let on_key = on_key.as_callable().map(|_| on_key);
+    // B 阶段：弹窗/面板可以绑定一个**键位作用域**（`helix.keymap.scope` 声明的那个名字）
+    let key_scope: Option<String> = opts
+        .get(JsString::from("scope"), ctx)
+        .ok()
+        .filter(|v| !v.is_null_or_undefined())
+        .and_then(|v| v.try_js_into::<String>(ctx).ok());
     let on_close = opts.get(JsString::from("onClose"), ctx)?;
     let on_close = on_close.as_callable().map(|_| on_close);
     // 图层名/尺寸/位置在注册前解析：任一非法则整体失败，不产生半注册。
@@ -228,6 +234,7 @@ pub(crate) fn js_open_popup(
                 render,
                 on_key,
                 on_close,
+                key_scope: key_scope.clone(),
                 last: None,
                 last_key: None,
                 pure: false,
@@ -247,6 +254,14 @@ pub(crate) fn js_open_popup(
             layer,
             center,
             size_pct,
+            scope: key_scope.clone(),
+            esc_blur: key_scope
+                .as_deref()
+                .map(|s| {
+                    crate::keymap_scope::esc_action(crate::host::host_state(ctx), s)
+                        == crate::keymap_scope::EscAction::Blur
+                })
+                .unwrap_or(false),
         }));
     Ok(JsValue::from(id))
 }
@@ -315,6 +330,7 @@ pub(crate) fn js_set_component_render(
                 render: render.clone(),
                 on_key: None,
                 on_close: None,
+                key_scope: None,
                 last: None,
                 last_key: None,
                 pure,
@@ -356,6 +372,12 @@ pub(crate) fn js_open_panel(
     let on_close = on_close.as_callable().map(|_| on_close);
     let on_key = opts.get(JsString::from("onKey"), ctx)?;
     let on_key = on_key.as_callable().map(|_| on_key);
+    // B 阶段：弹窗/面板可以绑定一个**键位作用域**（`helix.keymap.scope` 声明的那个名字）
+    let key_scope: Option<String> = opts
+        .get(JsString::from("scope"), ctx)
+        .ok()
+        .filter(|v| !v.is_null_or_undefined())
+        .and_then(|v| v.try_js_into::<String>(ctx).ok());
     let size = {
         let v = opts.get(JsString::from("size"), ctx)?;
         let n: f64 = v
@@ -400,6 +422,7 @@ pub(crate) fn js_open_panel(
                 render,
                 on_key,
                 on_close,
+                key_scope: key_scope.clone(),
                 last: None,
                 last_key: None,
                 pure: false,
@@ -418,6 +441,7 @@ pub(crate) fn js_open_panel(
             focusable,
             rail,
             at,
+            scope: key_scope.clone(),
         }));
     Ok(JsValue::from(id))
 }
@@ -1741,6 +1765,25 @@ pub fn popup_key(
     crate::state::with_engine(|engine| {
         let callbacks = crate::state::with_popups(st, |p| p.get(&id).cloned())
             .ok_or_else(|| anyhow!("popup {id} not open"))?;
+        // ── B 阶段：**先问作用域，再调 JS** ──
+        // `passthrough` 里声明的键（`C-w`/`C-p`/`:` 这类全局前缀）永远交回编辑器：
+        // popup 是模态层，不这样做用户按 `:` 会"莫名其妙没反应"。
+        let scope = callbacks.key_scope.clone();
+        if let Some(scope) = scope.as_deref() {
+            let kid = crate::keymap_scope::KeyId {
+                name: crate::keymap_scope::KeyId::normalize_for(&key.name),
+                ctrl: key.ctrl,
+                alt: key.alt,
+                shift: key.shift,
+            };
+            if crate::keymap_scope::is_passthrough(st, scope, &kid) {
+                return Ok(PopupKeyResult::Ignored);
+            }
+        }
+        let gives_back = scope
+            .as_deref()
+            .map(|s| crate::keymap_scope::gives_back_unmapped(st, s))
+            .unwrap_or(false);
         let Some(on_key) = callbacks.on_key else {
             return Ok(if key.name == "Esc" {
                 PopupKeyResult::Close
@@ -1774,9 +1817,22 @@ pub fn popup_key(
             Some("close") => PopupKeyResult::Close,
             Some("handled") => PopupKeyResult::Handled,
             Some("ignore") => PopupKeyResult::Ignored,
-            _ => PopupKeyResult::Handled, // 未识别返回值 → 消费（安全默认）
+            // 未识别返回值：默认"消费"（安全默认）；声明了 `swallow: "unmapped"` 的
+            // 作用域则交回编辑器（面板非模态时这才是对的语义）
+            _ if gives_back => PopupKeyResult::Ignored,
+            _ => PopupKeyResult::Handled,
         })
     })
+}
+
+/// 该弹窗/面板绑定的**键位作用域**（B 阶段：状态栏徽标 `FILETREE` 与 Esc 兜底用）。
+pub fn popup_key_scope_in(st: &crate::host::HostState, id: u64) -> Option<String> {
+    crate::state::with_popups(st, |p| p.get(&id).and_then(|cb| cb.key_scope.clone()))
+}
+
+/// 同上，走"当前宿主"解析（无宿主 ⇒ `None`，不为了回答问题而建宿主）。
+pub fn popup_key_scope(id: u64) -> Option<String> {
+    crate::host::try_with_host_ref(|h| popup_key_scope_in(h.state(), id)).flatten()
 }
 
 /// 面板是否注册了 onKey 回调。helix-term 侧据此决定是否把按键交给 popup_key：
@@ -2628,6 +2684,8 @@ mod tests {
         match &reqs[0] {
             UiRequest::OpenPopup(OpenPopupReq {
                 id: _,
+                scope: _,
+                esc_blur: _,
                 width,
                 height,
                 position,
@@ -2723,6 +2781,8 @@ mod tests {
         match &reqs[0] {
             UiRequest::OpenPopup(OpenPopupReq {
                 id: _,
+                scope: _,
+                esc_blur: _,
                 width,
                 height,
                 position,

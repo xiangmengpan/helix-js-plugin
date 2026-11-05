@@ -4,10 +4,12 @@ helix.plugin("statusline", {
   deps: [],
   // 2.0:配置键改成 left/center/right/zones/corners(旧的 show_git_branch/show_diagnostics 已删,
   //      老配置会以"未在 define_config 中声明(已忽略)"报出来 —— 那就是迁移提示)。
-  version: "2.0",
+  // 2.1：`window` 段并进 `layers`（同一个信息不再占两格）；新增 `cpu` / `mem` 段（本进程自身开销）
+  //      ⇒ manifest 多要 `fs_read`（读 /proc，见「进程采样」节）。
+  version: "2.1",
   // 清单**声明面**版本(比的是本编辑器支持的 manifest 语义,现在 = 1),不是本插件配置的版本。
   schema_version: 1,
-  permissions: { process: true },
+  permissions: { process: true, fs_read: true },
 });
 
 // 依赖：icons（统一图标映射,已进核心 `helix.icons.*`）；set_statusline replace 模式 + zones 比例。
@@ -18,12 +20,16 @@ helix.plugin("statusline", {
 
 // ============================ 配置 ============================
 
-// 默认布局 = 2.0 之前的观感（长串拆成细粒度段,顺序不变）
-const DEFAULT_LEFT = ["window", "layers", "mode", "file", "git"];
+// 默认布局 = 2.0 之前的观感，但 `window` 段**已删**（并进 `layers`）：它只在分栏/面板态下
+// 显示，亮的是当前叶子类型的**图标**，而紧邻的 `file` 段已经在报同一个东西。
+// 2.1 起 `cpu` / `mem`（本进程自身开销）放在**右区最前**，`position` / `percent` 收在最右。
+// 右区只留"**每帧都会占宽度**的少数几条"+ 一堆"**有内容才出现**的"（modified/readonly/…）；
+// 常年占位又没什么信息量的 `indent` / `cwd` / `lines` 不再进默认布局（想要就自己加回）。
+const DEFAULT_LEFT = ["layers", "mode", "file", "git"];
 const DEFAULT_CENTER = ["diagnostics"];
 const DEFAULT_RIGHT = [
-  "position",
-  "percent",
+  "cpu",
+  "mem",
   "modified",
   "selections",
   "readonly",
@@ -31,13 +37,12 @@ const DEFAULT_RIGHT = [
   "line-ending",
   "register",
   "chars",
-  "indent",
   "filetype",
-  "cwd",
   "code-action",
   "workspace-diag",
   "spinner",
-  "lines",
+  "position",
+  "percent",
 ];
 
 helix.define_config("statusline", {
@@ -71,6 +76,110 @@ function current_cfg() {
 // ============================ 状态 ============================
 
 let gitBranch = ""; // 当前 git 分支（异步查询缓存）
+
+// ── 进程自采样（cpu / mem 段的唯一数据源）──
+// 状态栏是**每帧**钩子 ⇒ 采样必须节流（1s 一次，见 SAMPLE_MS）。
+// 数据源优先级：
+//   1. 核心 `helix.proc_stats()` —— **跨平台**（Linux /proc · macOS getrusage+task_info ·
+//      Windows GetProcessTimes+GetProcessMemoryInfo）。平台私事在 Rust 侧解决，插件只管格式化。
+//   2. 旧二进制没有这个 API ⇒ 回退读 `/proc/self/{schedstat,status}`（**仅 Linux**）。
+// 两样都拿不到 ⇒ 两段**静默隐藏**，不退回 `ps` 轮询（那要起进程，比状态栏本身贵）。
+const SAMPLE_MS = 1000; // 采样间隔：1s 内重复渲染复用同一次读数
+const procSample = { at: 0, cpuMs: null, cpuAt: 0, rssKb: null, cpuPct: null };
+
+// 与 hasProcess() 同一套降级语义:没声明/没批准 `fs_read` ⇒ 段直接不显示。
+function hasFsRead() {
+  try {
+    return !!(helix.permissions && helix.permissions().fs_read);
+  } catch (e) {
+    return true;
+  }
+}
+
+// 旧二进制（没有 `helix.proc_stats`）的回退：读 `/proc`，**只有 Linux 有**。
+function readCpuMsLegacy() {
+  try {
+    const ns = Number(String(helix.read_file("/proc/self/schedstat")).trim().split(/\s+/)[0]);
+    return isFinite(ns) ? Math.floor(ns / 1e6) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function readRssKbLegacy() {
+  try {
+    const m = /VmRSS:\s+(\d+)\s+kB/.exec(helix.read_file("/proc/self/status"));
+    return m ? Number(m[1]) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 取一次读数 → `{ cpuMs, rssKb }`（拿不到的那一项是 null）。
+// 优先核心 API（跨平台），其次旧二进制的 /proc 回退（Linux only）。
+function readProc() {
+  if (helix.proc_stats) {
+    try {
+      const s = helix.proc_stats();
+      if (!s) return { cpuMs: null, rssKb: null }; // 核心说"这个平台拿不到"
+      const cpu = Number(s.cpu_ms);
+      const rss = Number(s.rss_kb);
+      return {
+        cpuMs: isFinite(cpu) ? cpu : null,
+        // 0 = 核心表示"这一项不可用"，不是"用了 0 字节"
+        rssKb: isFinite(rss) && rss > 0 ? rss : null,
+      };
+    } catch (e) {
+      // 落到下面的回退
+    }
+  }
+  if (!hasFsRead()) return { cpuMs: null, rssKb: null }; // 没权限 ⇒ 不试一次再收拒绝
+  return { cpuMs: readCpuMsLegacy(), rssKb: readRssKbLegacy() };
+}
+
+// 采样一次(节流):cpu% = CPU 时间增量 / **墙钟**增量。
+// 首帧没有基线 ⇒ cpuPct 为 null(段隐藏,不编一个 0);多线程可 > 100%。
+function sampleProc() {
+  const now = Date.now();
+  if (now - procSample.at < SAMPLE_MS) return procSample;
+  procSample.at = now;
+  const cur = readProc();
+  procSample.rssKb = cur.rssKb;
+  if (cur.cpuMs === null) return procSample;
+  if (procSample.cpuMs !== null) {
+    const dtMs = now - procSample.cpuAt;
+    if (dtMs > 0) {
+      procSample.cpuPct = Math.max(0, Math.round(((cur.cpuMs - procSample.cpuMs) / dtMs) * 100));
+    }
+  }
+  procSample.cpuMs = cur.cpuMs;
+  procSample.cpuAt = now;
+  return procSample;
+}
+
+// 图标走**核心图标表**(`helix.icons.sys`,单一来源 ⇒ 字体降级策略只有一份)。
+// 拿不到图标(nerd font 关掉 / 旧二进制没有 sys 组)⇒ 返回空串。
+function sysIcon(kind) {
+  try {
+    if (helix.icons && helix.icons.sys) return helix.icons.sys(kind) || "";
+  } catch (e) {
+    // 旧二进制没有 sys 组：照样能用（纯文字）
+  }
+  return "";
+}
+
+// **有图标就只要图标**(`\uf2db 3%`),没有图标才带名字(`cpu 3%`) ——
+// 否则两者都显示既长又重复。值与单位的格式两种情形一致。
+function sysLabel(kind, value) {
+  const icon = sysIcon(kind);
+  return icon ? icon + " " + value : kind + " " + value;
+}
+
+// kB → `150M` / `1.2G`(小数点后一位只在 GB 档有意义)
+function fmtMem(kb) {
+  const mb = kb / 1024;
+  return mb < 1000 ? Math.round(mb) + "M" : (mb / 1024).toFixed(1) + "G";
+}
 
 // 能力清单查询(`helix.permissions()`):**不问就放行吗**。
 // 没声明 `permissions` 的插件(legacy)与内置插件恒为 true;声明了但没要 `process`
@@ -118,8 +227,12 @@ const CAP = "\ue0b6"; // 左圆角端帽(U+E0B6)
 const CAP_END = "\ue0b4"; // 右圆角端帽(U+E0B4)
 
 const SEGMENTS = {
-  // 输入层徽标（栈序，引擎 `input_router::badges` 的唯一下游）：
-  //   `[DEBUG]` / `[PANE]` / `[DEBUG│PANE]` —— "我现在在哪几个层"的唯一显示口。
+  // "我现在在哪几层"的**唯一**显示口：输入层栈徽标（引擎 `input_router::badges` 的下游）：
+  //   `DEBUG` / `PANE` / `RESIZE` / `MOVE` / `SCROLL` / `LOCKED` / `TERM`，栈序 `│` 分隔。
+  // 不再额外报 `window_mode`：`compositor.rs` 构造 `RenderContext` 时它就是
+  //   `pane_mode != Normal` 的**镜像**，而 pane 模式早已有 `PANE`/`LOCKED`/… 徽标
+  //   ⇒ 再亮一个 ` WIN ` 就是把同一件事报两遍（且把左区撑长）。
+  // 也不再插图标：那个虫子不携带任何信息，文字本身就是信息。
   // 为什么放在状态栏而不是 Info：Info 只在按前缀时出现，层可能一直挂着。
   layers: () => {
     let b = "";
@@ -128,16 +241,7 @@ const SEGMENTS = {
     } catch (e) {
       b = "";
     }
-    // 用**虫子图标 + 暗色**（不再用 `[DEBUG]` 方括号 + 插入态高亮 —— 那跟其它段不搭）
-    return b ? { text: `\uf188 ${b} `, style: "ui.virtual" } : null;
-  },
-  // 窗口模式指示(平级窗口/面板态)：图标跟当前窗口类型
-  window: (ctx) => {
-    if (!ctx.window_mode) return null;
-    let winIcon = helix.icons.file(ctx.active_leaf_path || "");
-    if (ctx.active_leaf_type === "terminal") winIcon = helix.icons.file("term.sh");
-    else if (ctx.active_leaf_type === "panel") winIcon = helix.icons.dir(false);
-    return { text: " " + winIcon + " ", style: "ui.statusline.insert" };
+    return b ? { text: b, style: "ui.virtual" } : null;
   },
   // mode 色块：关掉图标时**不能**变空,用模式首字母回退(保留信息)
   mode: (ctx) => {
@@ -211,7 +315,37 @@ const SEGMENTS = {
   },
   spinner: (ctx) => (ctx.spinner ? { text: ctx.spinner, style: "ui.virtual" } : null),
   lines: (ctx) => ({ text: String(ctx.total_lines || 1), style: "ui.virtual" }),
+  // 本进程自身开销（不是整机）:回答"编辑器自己吃了多少",与状态栏刷新频率无关。
+  // 拿不到 /proc / 没 fs_read ⇒ null（段自动隐藏,不留空格）。
+  cpu: () => {
+    const s = sampleProc();
+    return s.cpuPct == null
+      ? null
+      : { text: sysLabel("cpu", s.cpuPct + "%"), style: "ui.virtual" };
+  },
+  mem: () => {
+    const s = sampleProc();
+    return s.rssKb == null
+      ? null
+      : { text: sysLabel("mem", fmtMem(s.rssKb)), style: "ui.virtual" };
+  },
 };
+
+// 旧的 `window` 段（叶子类型图标）。已并入 `layers`：它报的 `window_mode` 就是
+// `pane_mode != Normal`，而 pane 模式早有 `PANE`/`LOCKED`/… 徽标。
+// 老配置里还写着 `window` **不报错**（它不是拼错，是合并），但会打一次日志提醒删。
+const MERGED_SEGMENTS = { window: "layers" };
+const mergedWarned = {};
+
+function pushMergedNotice(name) {
+  if (mergedWarned[name]) return;
+  mergedWarned[name] = true;
+  try {
+    helix.log("statusline: 段 `" + name + "` 已并入 `" + MERGED_SEGMENTS[name] + "`,配置里那条可以删掉");
+  } catch (e) {
+    // 没有 log 的引擎：静默（这里只是提醒，不影响渲染）
+  }
+}
 
 // ============================ 圆角 ============================
 // powerline 端帽要 fg = 该段的**底色**、bg = 状态栏底色 —— 而 `StatuslinePart.style` 只
@@ -281,6 +415,11 @@ function pushSegment(out, name, ctx, corners) {
   // 非内置段走 `helix.statusline_segment`：
   //   · 名字**未注册** ⇒ 它抛错（这里接住 ⇒ 红字 `!名字`，让拼错可见）
   //   · 段函数**自己抛错** ⇒ 它返回 null（只坏这一格，不拖掉整条）
+  // 已并进别处的旧段名：不渲染、不报红字（它不是拼错），只提醒一次。
+  if (Object.prototype.hasOwnProperty.call(MERGED_SEGMENTS, name)) {
+    pushMergedNotice(name);
+    return;
+  }
   let seg = SEGMENTS[name];
   let external = false;
   if (!seg) {

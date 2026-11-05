@@ -826,25 +826,57 @@ fn keys_help(cx: &mut Context) {
         );
         let mode = cx.editor.mode();
         let tree = crate::keymap::runtime_keymap(mode);
-        fn dump(trie: &KeyTrie, indent: usize, text: &mut String) {
+        // D 阶段：每条标**来源** —— 插件抢了内置键时，这里必须看得出来
+        //（否则"我的键怎么没了"只能靠猜）。
+        fn dump(
+            trie: &KeyTrie,
+            indent: usize,
+            text: &mut String,
+            path: &mut Vec<helix_view::input::KeyEvent>,
+            mode: helix_view::document::Mode,
+        ) {
             let KeyTrie::Node(node) = trie else { return };
             for (keys, child) in node.iter() {
+                path.push(*keys);
                 let doc = match child {
                     KeyTrie::MappableCommand(cmd) => cmd.doc().to_string(),
                     KeyTrie::Sequence(_) => "(macro)".to_string(),
                     KeyTrie::Node(n) => format!("[{} 个键]", n.len()),
                 };
+                let owner = crate::keymap::plugin_owner(mode, &crate::keymap::sequence_label(path));
+                let tag = match owner {
+                    Some(name) => format!("  ←插件 {name}"),
+                    None => String::new(),
+                };
                 text.push_str(&format!(
-                    "{pad}{:<10}  {doc}\n",
+                    "{pad}{:<10}  {doc}{tag}\n",
                     keys.key_sequence_format(),
                     pad = " ".repeat(indent),
                 ));
                 if matches!(child, KeyTrie::Node(_)) && indent < 16 {
-                    dump(child, indent + 2, text);
+                    dump(child, indent + 2, text, path, mode);
+                }
+                path.pop();
+            }
+        }
+        let mut path = Vec::new();
+        dump(&tree, 0, &mut text, &mut path, mode);
+    }
+
+    // 插件作用域（`helix.keymap.scope`）：面板/弹窗的键位也在同一份 `:keys` 里可见。
+    // 没有注册任何作用域 ⇒ 这一段完全不出现（不打扰纯原生用户）。
+    if let Some(js) = cx.js.as_deref() {
+        let st = js.state();
+        let names = helix_js::keymap_scope::scope_names(st);
+        if !names.is_empty() {
+            text.push_str("\n// ── 插件作用域（面板/弹窗的键位；要改键写 [keys.<作用域>]）──\n\n");
+            for name in names {
+                if let Some(sec) = helix_js::keymap_scope::section(st, &name) {
+                    text.push_str(&sec);
+                    text.push('\n');
                 }
             }
         }
-        dump(&tree, 0, &mut text);
     }
 
     // 复用同一个 buffer

@@ -56,6 +56,44 @@ Features:
   just returns focus to the editor, keeping the panel (use `q` to close). Handy when the tree is
   a permanent left column.
 
+* **Declarative key tables for plugin panels** (`helix.keymap.scope` / `resolve` / `hints` /
+  `unregister`). A panel or popup declares its keys as data instead of branching on key names in
+  `onKey`, which gives three things at once: users can remap them from `[plugins.<name>.keys]`
+  in `config.toml` (values are `":command"` — resolved *after* plugins load, so a plugin's own
+  commands work there; a plugin with several scopes writes `[plugins.<name>.keys.<sub>]`),
+  `:config-reload` applies them, the help text and
+  `:keys` read the same table, and `extends: "panel"` supplies a shared default set (`q` close,
+  `Esc` blur, `?` help, `/` filter, `j`/`k`, `g` prefix). `resolve()` takes either the raw
+  `{name, ctrl, alt, shift}` object handed to `onKey` or a string (`"C-\"`, `"<esc>"`), so the
+  declaration table and the dispatch call site never disagree about normalisation.
+  `:plugin-unload` / `:plugin-reload` drop a plugin's scopes by owner.
+
+* **Overriding a built-in key is visible now.** `helix.map()` used to replace a built-in binding
+  silently — the only symptom was "my key stopped working". A conflict is now reported once per
+  key (status bar + plugin log) naming the plugin, the sequence and what it replaced, and `:keys`
+  marks entries a plugin took over with `←plugin <name>`.
+
+* **`filetree` and `dapui` moved to declared key tables.** filetree's 30 tree keys and dapui's
+  tree panel no longer branch on key names; filetree's `?` help is now rendered from the same
+  table (`helix.keymap.hints`), so remapping a key updates the help automatically. dapui's modal
+  text/multi-select dialogs are deliberately left alone — they are text input, not binding tables.
+
+* **Plugin key scopes reach the input layer.** Panel/popup key tables are now first-class in the
+  editor's input plumbing instead of a second, private key world:
+  * `helix.keymap.scope(name, { passthrough: […], swallow: "all" | "unmapped" })` plus a `scope`
+    option on `open_popup` / `open_panel` / `helix.split({panel})`. Keys listed in `passthrough`
+    (`:`, `C-w`, `C-p`) are handed back to the editor **before** the JS `onKey` runs, so global
+    prefixes work inside a modal popup — previously a popup swallowed everything, `:` included.
+  * While a scoped panel/popup owns the keyboard, the status line `layers` badge names it
+    (`FILETREE`), `helix.input_badges()` includes it, and the new `helix.keymap.active_scope()`
+    returns the scope name (`null` when not in a plugin layer).
+  * `esc: "blur"` — when the plugin does not consume `Esc`, focus returns to the editor and the
+    panel stays open (`Esc` = "leave this layer"). `dapui` dropped its own copy of that logic.
+  * `which-key` shows the active scope: `:which-key` opens its key table, and any **prefix-key**
+    hint now appends a `── <scope> 面板键位 ──` section (the panel is non-modal, so a prefix key
+    it does not bind bubbles up and triggers the hint). `[plugins.which-key] show_scope_keys`
+    (default `true`) turns the appended section off.
+
 Commands:
 
 * `:js-log [level]` / `:js-log-clear` — the plugin log in a scratch buffer (core command, so it
@@ -65,8 +103,17 @@ Commands:
 * `:filetree-find` — whole-repo file picker rooted at the panel.
 * `:filetree-open [dir]` — open another filetree panel (root defaults to the current file's
   directory).
+* `:which-key` — show the key table of the plugin scope that currently owns the keyboard
+  (`helix.keymap.active_scope()` + `hints()`), so no per-plugin help key has to be memorised.
 
 Usability improvements:
+
+* Panel/popup sizes follow the terminal: filetree's `?` help and dapui's `ask_text` /
+  `ask_multi` / `ask_choice` dialogs used to be fixed (64×6, 60×18, 60×16, help capped at 20
+  rows). They are now measured against the viewport, and when the content still does not fit it
+  goes into a scroll container instead of being silently truncated (filetree's help is 30 rows;
+  at 20 terminal rows `q  关闭面板` used to be invisible). dapui's `ask_choice` also windows its
+  rows now — it used to draw every item past the border.
 
 * `filetree` layout state (filter expression + expanded directories) can be persisted per
   root across sessions (`[plugins.filetree] persist`, off by default; the state file lives
@@ -89,6 +136,22 @@ Packaging:
 
 Fixes:
 
+* `:config-reload` never rebuilt the keymaps — `[keys.*]` changes silently required a restart
+  (a `ponytail:` note called it a "startup snapshot"). It now rebuilds from config **and replays
+  the plugin bindings** recorded in the host, so neither side is lost on reload.
+* Unknown `[keys.<name>]` sections are reported again at **parse** time. They briefly had to be
+  accepted silently so that `[keys.filetree]` would not look like a typo; plugin keys now live in
+  `[plugins.<name>.keys]`, so `[keys]` is back to the four real modes and typos surface
+  immediately.
+* `:keys` did not show plugin bindings at all: the runtime snapshot it renders from was taken
+  once at startup. It is refreshed whenever a binding is inserted or removed.
+* `helix.keymap.hints()` / `resolve()` / `scope()` resolved the **implicit** host, but the
+  `set_keymap_hint` callback runs against the engine's host — they could return `null` for a
+  scope that was registered and visible everywhere else (`which-key` showed native keys only).
+  All four entry points now use the host that owns the running JS context.
+* `which-key`: the truncation footer (`… 还有 N 个键`) is appended last, so the new plugin-scope
+  section after it was cut off whenever the native sub-table was large (`space` has 60 entries).
+  Only the native table is capped now; the scope section is appended unwrapped.
 * `filetree`: the panel now splits at the **root** (`open_panel({at:"root"})`), so it takes the
   full-height left column and later splits (`editor` / terminal) land to its right — the layout
   is `filetree | editor / term` instead of the tree being cut in half by an existing split.

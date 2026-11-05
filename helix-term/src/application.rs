@@ -322,6 +322,12 @@ impl Application {
             editor.set_error(e);
         }
 
+        // `[keys.<作用域>]`：插件作用域键位覆盖。**必须在插件加载之后** ——
+        // 这一步要判"这个名字有没有插件认领"，插件没加载完就判，正常配置也会被当成拼错。
+        for e in crate::commands::typed::apply_key_scope_overrides(Some(&js_host), &config.load()) {
+            editor.set_error(e);
+        }
+
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
             editor.open(&path, Action::VerticalSplit)?;
@@ -1013,6 +1019,12 @@ impl Application {
                 self.js_host.as_deref(),
                 &default_config,
             );
+            // `[keys.<作用域>]` 覆盖也要跟着刷新（否则 `:config-reload` 后插件键位改动不生效）
+            let mut errors = errors;
+            errors.extend(crate::commands::typed::apply_key_scope_overrides(
+                self.js_host.as_deref(),
+                &default_config,
+            ));
             if let Some(first) = errors.first().cloned() {
                 self.editor.set_error(first);
             } else if let Some(first) = default_config.warnings.first().cloned() {
@@ -1020,6 +1032,38 @@ impl Application {
                 // 早先会让整份配置解析失败，现在降级成一条可见警告。
                 self.editor.set_warning(first);
             }
+            // 键位：`:config-reload` 以前**不重建**键位表（启动快照）⇒ 改了 `[keys.*]`
+            // 也必须重启才生效。现在重建 + **重放插件绑定**（`helix.map` 记录在宿主里），
+            // 两者一起换掉，避免"用户的改动生效了、插件的绑定没了"这种半吊子状态。
+            {
+                let rebuilt = crate::keymap::Keymaps::new(default_config.keys.clone());
+                crate::keymap::set_runtime_keymaps(&default_config.keys);
+                let bindings = match self.js_host.as_deref() {
+                    Some(host) => helix_js::plugin_key_bindings(host.state()),
+                    None => {
+                        let st = helix_js::host::state_handle_or_init();
+                        helix_js::plugin_key_bindings(&st)
+                    }
+                };
+                let mut replayed = 0usize;
+                for (mode, key, command, owner) in bindings {
+                    match crate::commands::typed::parse_plugin_binding(&mode, &key, &command) {
+                        Ok((m, keys, cmd)) => {
+                            rebuilt.insert_binding_owned(m, &keys, cmd, owner.as_deref());
+                            replayed += 1;
+                        }
+                        Err(e) => log::warn!("重放插件键位 {mode} {key:?} 失败: {e}"),
+                    }
+                }
+                if let Some(view) = self.compositor.find::<ui::EditorView>() {
+                    view.keymaps = rebuilt;
+                    if replayed > 0 {
+                        self.editor
+                            .set_status(format!("键位已重载（含 {replayed} 条插件绑定）"));
+                    }
+                }
+            }
+
             // Store new config
             self.config.store(Arc::new(default_config));
             Ok(())

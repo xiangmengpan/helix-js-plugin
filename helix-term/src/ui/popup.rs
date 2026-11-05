@@ -483,6 +483,14 @@ impl<T: Component> Component for Popup<T> {
     fn id(&self) -> Option<&'static str> {
         Some(self.id)
     }
+
+    /// 向外层**转发内层内容**的键位作用域（B 阶段）。
+    ///
+    /// 为什么必须转发：JS 弹窗在层栈里是 `Popup<PluginPopup>` —— 只看外层的话
+    /// `top_plugin_scope()` 永远是 `None`，徽标与 Esc 兜底都不会生效（实测踩过）。
+    fn key_scope(&self) -> Option<String> {
+        self.contents.key_scope()
+    }
 }
 
 #[cfg(test)]

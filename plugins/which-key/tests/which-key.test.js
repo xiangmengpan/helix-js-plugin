@@ -12,7 +12,7 @@ const PLUGIN = path.join(__dirname, '..', 'plugin.js');
 
 function load(cfg, pane_mode, opts) {
   const o = opts || {};
-  const cap = { hint: null, schema: null, exported: null, echoes: [] };
+  const cap = { hint: null, schema: null, exported: null, echoes: [], command: null, popup: null };
   global.helix = {
     plugin() {},
     define_config(name, schema) {
@@ -34,6 +34,19 @@ function load(cfg, pane_mode, opts) {
     // v2：which-key 用它排候选（测试可通过 opts.frecency 注入）
     key_frecency: () => o.frecency || {},
     pane_mode,
+    // ── 插件作用域键位（`:which-key`）的接线所需 ──
+    register_command: (name, fn, doc) => {
+      cap.command = { name, fn, doc };
+    },
+    open_popup: (opts) => {
+      cap.popup = opts;
+      return 1;
+    },
+    el: (kind, children, opts) => ({ kind, children: children || [], opts: opts || {} }),
+    keymap: {
+      active_scope: () => (o.scope === undefined ? null : o.scope),
+      hints: (scope) => (o.hints ? o.hints(scope) : null),
+    },
   };
   delete require.cache[require.resolve(PLUGIN)];
   require(PLUGIN);
@@ -345,4 +358,109 @@ test('调试命中提示：on_debug_hint=off 什么都不画、status 只 echo�
   cap = load({ language: 'zh-CN', mode: 'box', on_debug_hint: 'full' });
   got = cap.hint({ title: 'Debug', entries });
   assert.ok(got && got.text, `full 应有正文: ${JSON.stringify(got)}`);
+});
+
+// ───────────── 插件作用域键位：`:which-key`（B 阶段） ─────────────
+// 由来：面板/弹层的键位表在 `helix.keymap`（与 `?` 帮助、`:keys` 同源），
+// which-key 只多给一个**统一入口** —— 不用记每个插件把帮助放在哪个键上。
+const SCOPE_HINTS = 'q  关闭面板\nj  下移\nk  上移\n?  显示键位';
+
+test(':which-key 注册成命令', () => {
+  const cap = load({});
+  assert.equal(cap.command.name, 'which-key');
+  assert.ok(cap.command.doc.includes('插件层'));
+});
+
+test(':which-key 在插件层里弹窗显示作用域表', () => {
+  const cap = load({}, null, { scope: 'filetree', hints: () => SCOPE_HINTS });
+  assert.equal(cap.command.fn(), true, '应弹出弹窗');
+  assert.ok(cap.popup, '应调 open_popup');
+  const tree = cap.popup.render();
+  const text = JSON.stringify(tree.children);
+  assert.ok(text.includes('关闭面板'), `内容应来自作用域表: ${text}`);
+  assert.ok(text.includes('[plugins.filetree.keys] 可改'), '标题要点明新写法');
+});
+
+test(':which-key 不在插件层 ⇒ 状态栏一句话，不弹窗', () => {
+  const cap = load({}, null, { scope: null });
+  assert.equal(cap.command.fn(), false);
+  assert.equal(cap.popup, null, '不该弹窗');
+  assert.ok(cap.echoes.at(-1).includes('不在插件层'), cap.echoes.at(-1));
+});
+
+test(':which-key 作用域没有键位表 ⇒ 提示而不是空弹窗', () => {
+  const cap = load({}, null, { scope: 'empty', hints: () => null });
+  assert.equal(cap.command.fn(), false);
+  assert.ok(cap.echoes.at(-1).includes('没有可显示'), cap.echoes.at(-1));
+});
+
+test('scope_box:小终端收窄并标记滚动', () => {
+  const { scope_box } = load({}).exported;
+  const big = scope_box(30, 40, 120, 40, 30);
+  assert.equal(big.need_scroll, false);
+  const small = scope_box(30, 40, 80, 20, 30);
+  assert.equal(small.need_scroll, true);
+  assert.ok(small.height <= 20, `高度 ≤ 视口: ${small.height}`);
+});
+
+// ───────── 前缀键提示里带上「当前插件层的键位」（在插件层里也能触发）─────────
+// 面板是非模态的：未绑定的前缀键（如 `space`）会冒泡给编辑器触发 which-key。
+// 那时提示里**追加**一段作用域表 —— 既看 space 子表，也看"这个面板里还能按什么"。
+const SCOPE_TABLE = 'q  关闭面板\nj  下移';
+
+test('前缀键提示：插件层里追加作用域段（不替换原生表）', () => {
+  // `language: "en"`：默认 zh-CN 会把 doc 换成中文表，这里要断言"原生那几行还在"
+  const cap = load({ mode: 'box', language: 'en' }, null, {
+    scope: 'filetree',
+    hints: () => SCOPE_TABLE,
+  });
+  const out = cap.hint({ title: 'space', entries: goto() });
+  const lines = out.text.split('\n');
+  assert.ok(
+    lines.some((l) => l.includes('Goto definition')),
+    `原生子表仍在: ${out.text}`,
+  );
+  assert.ok(
+    lines.some((l) => l.includes('filetree 面板键位')),
+    `应追加作用域段: ${out.text}`,
+  );
+  assert.ok(lines.some((l) => l.includes('关闭面板')), '作用域键位应在里面');
+});
+
+test('前缀键提示：不在插件层时**不**追加任何东西', () => {
+  const cap = load({ mode: 'box' }, null, { scope: null });
+  const out = cap.hint({ title: 'space', entries: goto() });
+  assert.ok(!out.text.includes('面板键位'), `不该有作用域段: ${out.text}`);
+});
+
+test('show_scope_keys = false ⇒ 关掉追加（只看原生表）', () => {
+  const cap = load({ mode: 'box', show_scope_keys: false }, null, {
+    scope: 'filetree',
+    hints: () => SCOPE_TABLE,
+  });
+  const out = cap.hint({ title: 'space', entries: goto() });
+  assert.ok(!out.text.includes('面板键位'), `配置关掉后不该追加: ${out.text}`);
+});
+
+test('status 模式：作用域段也进那一行摘要', () => {
+  const cap = load({ mode: 'status' }, null, { scope: 'dapui', hints: () => SCOPE_TABLE });
+  cap.hint({ title: 'space', entries: goto() });
+  const line = cap.echoes.at(-1);
+  assert.ok(line.includes('dapui 面板键位'), `状态栏摘要应含作用域段: ${line}`);
+});
+
+test('原生子表很长时，截断只截原生表 —— 作用域段必须留着', () => {
+  // 实测踩过：space 有 60 个子键，`cap_lines` 把 "… 还有 N 个键" 放在末尾，
+  // 追加在后面的作用域段就被一起截掉了（面板键位一行都看不到）。
+  const many = Array.from({ length: 60 }, (_, i) => ({ keys: `k${i}`, doc: `doc${i}` }));
+  const cap = load({ mode: 'box', max_lines: 6, language: 'en' }, null, {
+    scope: 'filetree',
+    hints: () => SCOPE_TABLE,
+  });
+  const out = cap.hint({ title: 'space', entries: many });
+  assert.ok(out.text.includes('还有'), `原生表应被截断: ${out.text}`);
+  assert.ok(
+    out.text.includes('filetree 面板键位') && out.text.includes('关闭面板'),
+    `作用域段不能被截断挤掉: ${out.text}`,
+  );
 });

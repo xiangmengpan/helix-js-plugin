@@ -31,6 +31,24 @@ global.helix = {
     return global.__state_file;
   },
   icons: { dir: () => '▸', file: () => '·' },
+  // ── `?` 帮助弹窗（接线用例用）──
+  // 视口/提示表都可从用例里改：`global.__viewport` / `global.__hints`
+  viewport: () => global.__viewport || [120, 40],
+  open_popup: (opts) => {
+    global.__popup = opts;
+    return 1;
+  },
+  el: (kind, children, opts) => ({ kind, children: children || [], opts: opts || {} }),
+  text: {
+    // 够用的 cell 宽度：ASCII 1、CJK 2（与真实 `helix.text.width` 同口径）
+    width: (t) =>
+      [...String(t)].reduce((n, ch) => n + (ch.codePointAt(0) > 0x2e80 ? 2 : 1), 0),
+  },
+  // 只给 `hints`（`?` 弹窗要用）；**不给 `resolve`** ⇒ tree_action 走插件自带兜底表，
+  // 与"旧二进制没有 helix.keymap"完全同路径 —— 正是这组接线用例要覆盖的那条。
+  keymap: {
+    hints: (scope) => (global.__hints ? global.__hints(scope) : null),
+  },
   read_dir: () => [],
   path_join: (a, b) => (b === '' ? a + '/' : a.replace(/\/+$/, '') + '/' + b),
   path_name: (p) => String(p).split('/').pop() || null,
@@ -50,6 +68,7 @@ const {
   opened_marker, worst_severity, diag_hit, diag_mark, new_panel, G,
   target_panel, panel_for_path, close_panel,
   state_encode, state_decode, save_state, load_state, state_for_root,
+  help_geometry, show_help, tree_action,
 } = require('../plugin.js');
 
 const rows = (n) => Array.from({ length: n }, (_, i) => ({ node: { path: 'p' + i }, depth: 0 }));
@@ -799,4 +818,131 @@ test('list_files：rg 不存在（exit 127）⇒ 降级 read_tree；exit 1（真
   } finally {
     Object.assign(global.helix, saved);
   }
+});
+
+// ─────────────────── 帮助弹窗的自适应尺寸（`?`） ───────────────────
+// 由来（实测）：固定 20 行时 30 条键位会**静默截断**（`q 关闭面板` 那行看不到）。
+// 现在尺寸按视口算：不超视口、放不下就滚动。
+test('help_geometry:大终端一次显示完，不滚动', () => {
+  const { help_geometry } = require('../plugin.js');
+  const g = help_geometry(30, 40, 120, 40, 30);
+  assert.equal(g.need_scroll, false, '40 行终端装得下 30 条');
+  assert.equal(g.body_h, 30);
+  assert.equal(g.height, 33, '内容 + 标题 + footer + 边框');
+  assert.ok(g.width <= 116, `宽度不该超过视口: ${g.width}`);
+});
+
+test('help_geometry:小终端改成滚动，且弹窗不超出视口', () => {
+  const { help_geometry } = require('../plugin.js');
+  const g = help_geometry(30, 40, 80, 20, 30);
+  assert.equal(g.need_scroll, true, '20 行终端装不下 30 条 ⇒ 必须滚动');
+  assert.ok(g.height <= 20, `高度必须 ≤ 视口: ${g.height}`);
+  assert.ok(g.body_h >= 3, `内容区至少 3 行: ${g.body_h}`);
+  assert.ok(g.width <= 76, `宽度必须 ≤ 视口-4: ${g.width}`);
+});
+
+test('help_geometry:极窄视口也不返回 0/负数，内容区保底 3 行', () => {
+  const { help_geometry } = require('../plugin.js');
+  const g = help_geometry(30, 200, 10, 6, 30);
+  assert.ok(g.width >= 20, `宽度下限 20: ${g.width}`);
+  assert.ok(g.body_h >= 3, `内容区保底: ${g.body_h}`);
+  assert.equal(g.need_scroll, true);
+});
+
+// ─────────────── `?` 帮助弹窗的**接线**（不只是 help_geometry 的数学） ───────────────
+// 与 dapui 那边同一套做法：拿桩截到的 `global.__popup` 检查尺寸，并**真调 render()**
+// 检查内容结构（放得下用 col、放不下套 scroll）。上面三条只测纯函数，覆盖不到接线。
+const HELPER_LINES = Array.from({ length: 30 }, (_, i) => `k${i}  说明${i}`);
+
+test('? 的派发：按键 → "help" 动作（兜底表路径＝旧二进制的行为）', () => {
+  assert.equal(tree_action({ name: '?', ctrl: false, alt: false }), 'help');
+  assert.equal(tree_action({ name: 'q', ctrl: false, alt: false }), 'close');
+  // 未声明的键不产生动作（⇒ handle_key_with 会 return "ignore" 穿透给编辑器）
+  assert.equal(tree_action({ name: 'z', ctrl: false, alt: false }), null);
+});
+
+test('? 弹窗接线：大终端（120×40）按内容撑开，不套 scroll', () => {
+  global.__viewport = [120, 40];
+  global.__hints = () => HELPER_LINES.join('\n');
+  const widest = HELPER_LINES.reduce((m, l) => Math.max(m, helix.text.width(l)), 24);
+  const geo = help_geometry(HELPER_LINES.length, widest, 120, 40, helix.text.width('filetree 键位（[plugins.filetree.keys] 可改）'));
+  show_help();
+  assert.ok(global.__popup, '应打开弹窗');
+  assert.equal(global.__popup.width, geo.width, '宽度走 help_geometry');
+  assert.equal(global.__popup.height, geo.height, '高度走 help_geometry');
+  const tree = global.__popup.render();
+  const kinds = tree.children.map((c) => c.kind);
+  assert.equal(kinds[0], 'text', '第一行是标题');
+  assert.equal(kinds[kinds.length - 1], 'text', '最后一行是 footer');
+  assert.ok(!kinds.includes('scroll'), '放得下不该套 scroll');
+  assert.equal(tree.children.length, 1 + HELPER_LINES.length + 1, '标题 + 30 条 + footer');
+});
+
+test('? 弹窗接线：小终端（80×20）改滚动，且 footer 提示 j/k', () => {
+  global.__viewport = [80, 20];
+  global.__hints = () => HELPER_LINES.join('\n');
+  const widest = HELPER_LINES.reduce((m, l) => Math.max(m, helix.text.width(l)), 24);
+  const geo = help_geometry(HELPER_LINES.length, widest, 80, 20, helix.text.width('filetree 键位（[plugins.filetree.keys] 可改）'));
+  show_help();
+  assert.ok(global.__popup.height <= 20, `弹窗不得超高: ${global.__popup.height}`);
+  const tree = global.__popup.render();
+  const scroll = tree.children.find((c) => c.kind === 'scroll');
+  assert.ok(scroll, '放不下时必须套 scroll（不再静默丢行）');
+  assert.equal(scroll.opts.height, geo.body_h, '滚动窗口高度 = 内容区高度');
+  assert.equal(scroll.children.length, HELPER_LINES.length, '滚动容器里放**全部**行');
+  const footer = tree.children[tree.children.length - 1].children;
+  assert.ok(String(footer).includes('j/k'), `footer 要提示可滚动: ${footer}`);
+});
+
+test('? 弹窗接线：j/k/g/G 真的改滚动偏移，且夹在范围内', () => {
+  global.__viewport = [80, 20];
+  global.__hints = () => HELPER_LINES.join('\n');
+  show_help();
+  const tail = () => {
+    const tree = global.__popup.render();
+    return tree.children.find((c) => c.kind === 'scroll').opts.offset;
+  };
+  const maxoff =
+    HELPER_LINES.length -
+    help_geometry(
+      HELPER_LINES.length,
+      HELPER_LINES.reduce((m, l) => Math.max(m, helix.text.width(l)), 24),
+      80,
+      20,
+      helix.text.width('filetree 键位（[plugins.filetree.keys] 可改）'),
+    ).body_h;
+  assert.equal(tail(), 0, '初始偏移 0');
+  for (let i = 0; i < 100; i++) global.__popup.onKey({ name: 'j' });
+  assert.equal(tail(), maxoff, `j 到底后夹在 ${maxoff}`);
+  global.__popup.onKey({ name: 'k' });
+  assert.equal(tail(), maxoff - 1, 'k 回来一行');
+  global.__popup.onKey({ name: 'g' });
+  assert.equal(tail(), 0, 'g 到顶');
+  global.__popup.onKey({ name: 'G' });
+  assert.equal(tail(), maxoff, 'G 到底');
+  assert.equal(global.__popup.onKey({ name: 'Esc' }), 'close', 'Esc 关闭');
+});
+
+test('? 弹窗接线：没有 helix.keymap.hints（旧二进制）也有可读内容，不崩', () => {
+  global.__viewport = [120, 40];
+  global.__hints = null; // hints 返回 null
+  show_help();
+  const tree = global.__popup.render();
+  const body = String(tree.children[1].children);
+  assert.ok(body.includes('helix.keymap.hints'), `要给出降级提示: ${body}`);
+});
+
+test('? 弹窗接线：无视口信息（0×0）也不炸，尺寸退回保守默认', () => {
+  global.__viewport = [0, 0];
+  global.__hints = () => HELPER_LINES.join('\n');
+  show_help();
+  assert.ok(global.__popup.width >= 20 && global.__popup.height >= 3, JSON.stringify(global.__popup));
+  assert.ok(global.__popup.render().children.length > 0);
+});
+
+// 之后别的用例不该受这份全局状态影响
+test('? 帮助用例的全局桩复位（顺序无关）', () => {
+  global.__viewport = [120, 40];
+  global.__hints = null;
+  assert.equal(global.__viewport[0], 120);
 });

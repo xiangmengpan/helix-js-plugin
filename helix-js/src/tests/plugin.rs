@@ -1726,7 +1726,8 @@ helix.plugin.unload("a");"#,
 }
 
 /// 真插件（仓库里那份 `plugins/statusline/plugin.js`）的**配置面**回归：
-///   ① 默认布局 = 旧观感：两端 `╭`/`╮`、文件名、位置/百分比/行数各归其区
+///   ① 默认布局 = 旧观感：两端 `╭`/`╮`、文件名、位置/百分比各归其区（`lines`/`cwd`/`indent`
+///      已从默认右区移除；`cpu`/`mem` 进右区最前，但内容依赖 /proc ⇒ 只断言"别的没串味"）
 ///   ② `corners = "off"` ⇒ 无圆角
 ///   ③ `left/center/right` 列表决定**内容与所在区**；拼错的段名变成 `!名字`（红字可见，不静默）
 ///
@@ -1775,14 +1776,17 @@ fn real_statusline_layout_is_config_driven() {
         .map(|p| p.text.as_str())
         .collect();
     assert_eq!(center.len(), 2, "error+warning 两段进 center: {center:?}");
-    // 位置/百分比/行数在 right 区
+    // 位置/百分比在 right 区
     let right: Vec<&str> = parts
         .iter()
         .filter(|p| p.zone.as_deref() == Some("right"))
         .map(|p| p.text.as_str())
         .collect();
     assert!(right.contains(&"4:8"), "位置在 right: {right:?}");
-    assert!(right.contains(&"100"), "总行数在 right: {right:?}");
+    assert!(
+        !right.contains(&"100"),
+        "总行数(`lines`)已不在默认右区(精简过): {right:?}"
+    );
 
     // ②③ 配置覆盖：corners=off、左区只要文件名、右区拼错一个段名
     let mut host = crate::host::JsHost::new();

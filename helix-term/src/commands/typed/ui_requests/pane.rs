@@ -17,6 +17,7 @@ pub(crate) fn handle_open_panel(
         focusable,
         rail,
         at,
+        scope,
     }: OpenPanelReq,
 ) -> anyhow::Result<Option<UiOp>> {
     // side 已在 JS 侧白名单校验，此处仅防御性映射
@@ -42,6 +43,7 @@ pub(crate) fn handle_open_panel(
         focusable,
         rail,
         at,
+        scope,
     }))
 }
 

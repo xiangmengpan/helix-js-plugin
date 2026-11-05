@@ -359,6 +359,25 @@ function current_cfg() {
     "Switch": "space G s", // space G 下的 s 子菜单
   };
 
+  /// 当前插件层的作用域键位，变成「分隔行 + 若干 键/说明」；不在插件层 ⇒ 空数组。
+  /// 数据源与 `?`/`:keys` 完全同一份（`helix.keymap.hints`）。
+  function scope_section(cfg) {
+    if (cfg.show_scope_keys === false) return [];
+    if (!helix.keymap || !helix.keymap.active_scope) return [];
+    let scope = null;
+    let table = null;
+    try {
+      scope = helix.keymap.active_scope();
+      if (!scope || !helix.keymap.hints) return [];
+      table = helix.keymap.hints(scope);
+    } catch (e) {
+      return [];
+    }
+    if (!table) return [];
+    const head = "── " + scope + " 面板键位（[plugins." + scope.split(".")[0] + ".keys] 可改）──";
+    return [head].concat(table.split("\n"));
+  }
+
   function render(ctx) {
     const cfg = current_cfg();
     // 调试命中提示：单独一条策略（每次停下都会推一次，默认只写状态栏免得挡屏幕）
@@ -412,6 +431,11 @@ function current_cfg() {
     //   "en"       = 完全不碰中文表,直接显示引擎 doc —— 也就是原生 Info 的样子
     // 注意:平级模式(C-p 等)那张表来自引擎(compositor),不受此开关影响。
     const zh_cn = cfg.language !== "en";
+    // 当前在插件层（面板/弹层）⇒ 把该作用域的键**追加**在后面。
+    // 为什么不是"替换"：前缀键的原生表仍然有效（面板是非模态的，未绑定的键会冒泡给编辑器），
+    // 用户按 `space` 时既想看 space 的子表，也想看"这个面板里还能按什么"。
+    const scope_lines = scope_section(cfg);
+
     const prefix = PREFIX_KEY[ctx.title] ? PREFIX_KEY[ctx.title] + " " : "";
     const lines = ordered.map((e) => {
       // 组合键取首键(如 "g, G" → "g");前缀键 + 节点内键 拼完整序列匹配
@@ -422,18 +446,93 @@ function current_cfg() {
       const desc = zh || (!zh_cn || cfg.show_docs !== false ? e.doc : "");
       return e.keys + (desc ? "  " + desc : "");
     });
-    if (cfg.mode === "status") return emit_status(ctx.title || "keys", lines);
+    // **只对原生表做截断**，作用域段原样追加在后：否则原生子表很大时
+    // "… 还有 N 个键" 会把作用域段整段挤掉（实测：space 有 60 个子键 ⇒ 面板键位一行都看不到）。
+    const capped = cap_lines(lines, cfg.max_lines);
+    const all = scope_lines.length ? capped.concat(scope_lines) : capped;
+    if (cfg.mode === "status") return emit_status(ctx.title || "keys", all);
     if (cfg.mode === "line") {
       last_bar_position = pick_position(cfg, "*");
-      return emit_bar(tag(ctx.title || "keys"), lines);
+      return emit_bar(tag(ctx.title || "keys"), all);
     }
     last_line = null; // 回到 box 形态时清掉状态栏去重记忆
-    const text = cap_lines(lines, cfg.max_lines).join("\n");
+    const text = all.join("\n");
     return { text, position: pick_position(cfg, text) };
   }
 
+  // ── 插件作用域键位（B 阶段）─────────────────────────────────────────────
+  // 面板/弹层里的键位表在 `helix.keymap`（与 `?` 帮助、`:keys` 同源）。which-key 只多提供
+  // **一个统一入口** `:which-key`：不用记每个插件自己把帮助放在哪个键上。
+  // 弹层尺寸按视口算（与 filetree/dapui 的弹窗同一套做法），放不下就滚动。
+  function scope_box(line_count, widest, vw, vh, title_w) {
+    const CHROME = 3; // 标题 + footer + 上下边框
+    const width = Math.min(Math.max(title_w || 24, widest + 2) + 4, Math.max(20, vw - 4));
+    const max_body = Math.max(3, vh - CHROME - 2);
+    return {
+      width,
+      height: Math.min(Math.max(line_count, 1), max_body) + CHROME,
+      body_h: Math.min(Math.max(line_count, 1), max_body),
+      need_scroll: line_count > max_body,
+    };
+  }
+
+  /** 把**当前插件层**的键位表渲染成一个弹窗；不在插件层 ⇒ 状态栏一句话 */
+  function show_scope_keys() {
+    const scope =
+      helix.keymap && helix.keymap.active_scope ? helix.keymap.active_scope() : null;
+    if (!scope) {
+      helix.echo("which-key: 当前不在插件层（作用域键位只在面板/弹层里显示）");
+      return false;
+    }
+    const table = helix.keymap.hints(scope);
+    if (!table) {
+      helix.echo("which-key: 作用域 `" + scope + "` 没有可显示的键位");
+      return false;
+    }
+    const lines = table.split("\n");
+    let vw = 80;
+    let vh = 24;
+    try {
+      const vp = helix.viewport ? helix.viewport() : null;
+      if (vp && vp[0] > 0 && vp[1] > 0) {
+        vw = vp[0];
+        vh = vp[1];
+      }
+    } catch (e) {
+      /* 没有视口信息 ⇒ 用兜底值 */
+    }
+    const cell = (t) =>
+      helix.text && helix.text.width ? helix.text.width(t) : String(t).length;
+    const title = scope + " 的键位（[plugins." + scope.split(".")[0] + ".keys] 可改）";
+    const widest = lines.reduce((m, l) => Math.max(m, cell(l)), 20);
+    const geo = scope_box(lines.length, widest, vw, vh, cell(title));
+    helix.open_popup({
+      width: geo.width,
+      height: geo.height,
+      position: "center",
+      render: () =>
+        helix.el("col", [
+          helix.el("text", title, { style: "ui.virtual" }),
+          ...lines.map((l) => helix.el("text", l, { style: "ui.popup" })),
+          helix.el(
+            "text",
+            geo.need_scroll ? "Esc/q 关闭 · 共 " + lines.length + " 条" : "Esc/q 关闭",
+            { style: "ui.help" },
+          ),
+        ], { gap: 0 }),
+      onKey: (key) => {
+        const nm = key && key.name !== undefined ? String(key.name) : String(key);
+        if (nm === "Esc" || nm === "q" || nm === "?") return "close";
+        return "handled";
+      },
+    });
+    return true;
+  }
+
+  helix.register_command("which-key", show_scope_keys, "显示当前插件层的键位（作用域表）");
+
   // 仅供 node --test 直测（渲染路径不受影响）：位置选择是纯函数
-  helix.export({ pick_position, panel_areas, box_at, render });
+  helix.export({ pick_position, panel_areas, box_at, render, show_scope_keys, scope_box });
 
   helix.set_keymap_hint(render);
 })();

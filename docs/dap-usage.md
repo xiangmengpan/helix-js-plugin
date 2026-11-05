@@ -272,7 +272,7 @@ max_lines = 10
 - **每次命中都会推一次 `Debug` 键位表** —— `box` 模式下就是每次停下弹一个框。
   嫌挡视线就 `on_debug_hint = "off"`（想看键位随时按 `?`）或 `"status"`（只在状态栏一行）。
 - 前缀菜单（`space`/`g`/`m`…）走 `mode`；`status` 模式下也只在状态栏写一行摘要。
-- 层徽标（` DEBUG`）由 `statusline` 插件的 `layers` 段显示；dapui 的 `dap` 段只报会话
+- 层徽标（`DEBUG`，与 `PANE`/`LOCKED`/… 同在 `layers` 段）由 `statusline` 插件显示；dapui 的 `dap` 段只报会话
   （`#1 ⏸ t1`），不会重复。
 
 ### 6.3 自定义调试键：`[keys.debug]`

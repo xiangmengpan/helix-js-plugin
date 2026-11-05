@@ -3,7 +3,7 @@
 
 use crate::host::HostState;
 use boa_engine::builtins::promise::ResolvingFunctions;
-use boa_engine::JsValue;
+use boa_engine::{Context, JsValue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1097,6 +1097,29 @@ pub fn cache_input_badges(st: &HostState, badges: &str) {
     if slot.as_str() != badges {
         *slot = badges.to_string();
     }
+}
+
+/// 缓存"当前插件层的作用域"（compositor 每帧推；空串 = 不在插件层）
+pub fn cache_active_scope(st: &HostState, scope: &str) {
+    let mut slot = st.active_scope.borrow_mut();
+    if slot.as_str() != scope {
+        *slot = scope.to_string();
+    }
+}
+
+/// `helix.keymap.active_scope()`：当前占着键盘的插件作用域名（`null` = 不在插件层）。
+pub(crate) fn js_active_scope(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let st = crate::host::host_state(ctx);
+    let name = st.active_scope.borrow().clone();
+    Ok(if name.is_empty() {
+        JsValue::null()
+    } else {
+        JsValue::from(boa_engine::JsString::from(name))
+    })
 }
 
 /// `helix.input_badges()`：当前输入层徽标串（`DEBUG│PANE`，空串 = 没有层）。

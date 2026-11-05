@@ -43,6 +43,8 @@ pub(crate) enum UiOp {
         rail: bool,
         /// 切分目标（`rail:true` 时不生效）
         at: SplitAt,
+        /// 绑定的键位作用域（B 阶段：徽标 / Esc 兜底）
+        scope: Option<String>,
     },
     ClosePanel {
         id: u64,
@@ -167,8 +169,9 @@ impl UiOp {
                 focusable,
                 rail,
                 at,
+                scope,
             } => {
-                let panel = ui::PluginPanel::new(id, side, focusable);
+                let panel = ui::PluginPanel::new(id, side, focusable).with_scope(scope);
                 // rail:true + left/right → 注册 rail(贴边全高)
                 // rail:true + bottom    → 停靠到底部(贴底全宽)
                 // 否则维持"在当前活动叶上分裂"
@@ -492,6 +495,7 @@ mod tests {
             focusable: true,
             rail,
             at: None,
+            scope: None,
         };
         assert_eq!(
             handle_open_panel(mk("left", true)).unwrap(),
@@ -501,7 +505,8 @@ mod tests {
                 size: 20,
                 focusable: true,
                 rail: true,
-                at: SplitAt::Active
+                at: SplitAt::Active,
+                scope: None,
             })
         );
         let err = handle_open_panel(mk("center", false))

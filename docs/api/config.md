@@ -123,27 +123,71 @@ schema 是在**插件脚本执行时**才注册的,所以"合并结果"必须在
 
 ```toml
 [plugins.statusline]
-left    = ["mode", "file", "git"]
+left    = ["layers", "mode", "file", "git"]
 center  = ["diagnostics"]
-right   = ["position", "percent", "modified", "chars", "filetype", "lines"]
-zones   = [1, 3, 2]   # 左/中/右 宽度比例(**注册时读一次** ⇒ 改后需 :plugin-reload)
+right   = ["cpu", "mem", "modified", "chars", "filetype", "position", "percent"]
+zones   = [1, 3, 2]   # 放不下时的压缩权重(**注册时读一次** ⇒ 改后需 :plugin-reload)
 corners = "line"      # off | line | powerline(需 Nerd Font 有 U+E0B6/U+E0B4)
 ```
 
-可用段名:`window` `mode` `file` `git` `diagnostics` `position` `percent` `modified`
+可用段名:`layers` `mode` `file` `git` `diagnostics` `position` `percent` `modified`
 `selections` `readonly` `encoding` `line-ending` `register` `chars` `indent` `filetype`
-`cwd` `code-action` `workspace-diag` `spinner` `lines`。
+`cwd` `code-action` `workspace-diag` `spinner` `lines` `cpu` `mem`。
 
 - 不写数组 = 默认布局(相当于旧版的观感);**拼错的段名会在状态栏里显示成红字 `!名字`**。
 - 段不适用的那一帧返回空 ⇒ 自动隐藏(不会留双空格)。
+- `layers` = **“我在哪几层”的唯一显示口**：输入层栈徽标，栈序 `│` 分隔 ——
+  `TERM`(终端直通) · `DEBUG`(dap 停住) · `PANE`/`RESIZE`/`MOVE`/`SCROLL`/`LOCKED`(平级模式)；
+  一条都没有 ⇒ 整段隐藏。**旧 `window` 段（叶子类型图标）已删**：它读的 `ctx.window_mode`
+  就是 `pane_mode != Normal`，而 pane 模式早有徽标 ⇒ 两格报的是同一件事；老配置里还写着
+  `window` 不会报错（也不是红字 `!window`），只打一次日志提醒删掉。
+- `cpu` / `mem` = **本进程(helix 自己)**的 CPU 与常驻内存,不是整机(默认布局里它们在右区最前);
+  字形取自核心图标表 `helix.icons.sys("cpu"|"mem")`(**只取 FA4 段 f000–f2ff 的字形**,
+  其它区段在没带那套字形的 nerd font 上会显示成豆腐块);**有图标就只显示图标+值**(` 3%`),
+  拿不到图标才带名字退回纯文字(`cpu 3%`):
+  数据源是核心 API **`helix.proc_stats()`(跨平台)**:Linux 读 `/proc`、macOS 走
+  `getrusage`+`task_info`、Windows 走 `GetProcessTimes`+`GetProcessMemoryInfo`;
+  两条都按 1s 节流采样(状态栏是每帧钩子),首帧无基线 ⇒ `cpu` 不显示(多线程可 > 100%)。
+  只有核心也拿不到(极旧二进制 + 非 Linux)时才隐藏。
+- **弹性布局(2026-11)**:三个区先量内容宽度 —— 都放得下时**左贴左、右贴右、中居中于两者之间**,
+  `zones` 完全不参与(以前按比例硬分宽 ⇒ 中区空着时那段宽度白扔,左边稍长就被截断);
+  只有真放不下时才按 `zones` 压缩左右(中区让位)。
 - `corners = "powerline"` 的端帽颜色由 `helix.set_theme` 派生(`statusline.cap.<mode>`:
   fg = mode 段底色,bg = `ui.statusline` 底色),换主题时自动重算。
 - **外部段**:其他插件可用 `helix.register_statusline_segment(name, fn)` 注册段，把 `name` 写进上面
   任一列表即生效；**内置段名优先**(同名时内置实现生效)，未注册的名字显示红字 `!名字`。
 
+### 6.2 `[plugins.<插件名>.keys]` —— 插件面板/弹窗的键位
+
+键位写在**插件自己的配置表里**（不是 `[keys]`，那个命名空间归核心模式）：
+
+```toml
+[plugins.filetree]
+show_hidden = false            # 普通配置键，照旧
+
+[plugins.filetree.keys]        # 主作用域：scope 名 = 插件名
+"q"     = ":filetree-toggle"
+"C-s"   = ":filetree-focus-editor"
+
+[plugins.filetree.keys.help]   # 辅助作用域：scope 名 = `filetree.help`
+"esc"   = ":filetree-help-close"
+```
+
+- 值写 `":命令"`（或裸命令名，或用宏 `"@:命令<ret>"`），**覆盖优先于插件声明**；`:config-reload` 即生效。
+  命令**在插件加载之后**才解析（配置解析期只校验键名）⇒ 直接写插件自己的命令是合法的；
+  真没有这个命令（插件没启用 / 拼错）会在启动后提示一次。
+- 键名用**核心的键位写法**（`esc`、`C-s`、`S-Tab`、`j`）—— 与 `[keys.normal]` 同一套解析。
+- 只支持**单键**（多键序列会警告并跳过）。
+- 解析期不校验"有没有这个插件"（插件在 config 之后才加载）⇒ `[plugins.ghost.keys]` 会在启动后提示一次；
+  已注册的作用域名见 `:keys` 末尾的「插件作用域」段。
+- 一个插件可以有**多个作用域**：`[plugins.<名>.keys.<子名>]` ⇒ scope 名 `<名>.<子名>`
+  （filetree 的 `?` 帮助就是这么声明"Esc=关闭"而不是 blur 的）。
+- `[keys.<任何名字>]` 现在只认 `normal`/`insert`/`select`/`debug`，其余在**解析期**就警告。
+
 ## 7. 已知限制
 
-- **`zones` 是注册态**:`[plugins.statusline] zones` 只在 `set_statusline` 注册时读一次 ⇒ 改比例要
+- **`zones` 是注册态**(且现在只当"放不下时的压缩权重"):`[plugins.statusline] zones` 只在
+  `set_statusline` 注册时读一次 ⇒ 改比例要
   `:plugin-reload`;同段的 `left/center/right/corners` 是每帧读,`:config-reload` 即时生效。
 - **声明了却没人读的键已清零(2026-10-23)**:`filetree.show_hidden` 与 `tabbar.max_labels` 已接线;
   另两个键**从 schema 删除**了,因为当前拿不到实现它们的数据 —— `filetree.refresh_ms`(boa 没有

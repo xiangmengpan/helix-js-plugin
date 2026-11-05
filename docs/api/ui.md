@@ -236,7 +236,7 @@ helix.set_statusline(
 `fn(ctx)` 的 `ctx` 是完整的 `StatuslineCtx`（`path`/`mode`/`cursor`/`total_lines`/`modified`/`diagnostics_*`/`window_mode`/`active_leaf_type`/`read_only`/`encoding`/`line_ending`/`register`/`file_type`/`cwd`/`workspace_diagnostics_*`/`spinner` …，字段与 `helix-js/src/types.rs::StatuslineCtx` 一一对应；完整签名见 `plugins/helix.d.ts`）。
 
 - 返回数组 = **富文本**：`{ text, style?, zone? }`，`style` 是主题 scope 名（解析失败/省略 = 跟随状态栏基样式）。
-- 段间**自动插 1 空格** gap（首段前不插）；`zone` 缺省 `"left"`，`"center"`/`"right"` 受 `zones` 比例约束（`replace: true` 时才分区）。
+- 段间**自动插 1 空格** gap（首段前不插）；`zone` 缺省 `"left"`（`replace: true` 时才分区）。分区是**弹性**的：内容放得下就左/右/居中（`zones` 不参与），真放不下才按 `zones` 压缩。
 - `replace: true` 时内置组件（模式/文件名/位置…）不渲染，整行归插件。
 
 **优缺点**：优点：整行接管 + 逐段真主题色（不是 ANSI 拼接），分区比例可调；`null` 隐藏。局限：纯文本形态无富文本段；钩子**每帧**都调（实测 `statusline` 是最热的 JS 入口），里面不要跑重活。

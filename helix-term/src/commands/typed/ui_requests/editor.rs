@@ -40,19 +40,54 @@ pub(crate) fn handle_map_key(
         key,
         command,
         unbind,
+        owner,
     }: MapKeyReq,
 ) -> anyhow::Result<()> {
     // 键序列解析在 job 之前（可失败 → 调用方 set_error），闭包只捕获 owned 数据。
     let (mode, keys, cmd) = parse_plugin_binding(&mode, &key, &command)?;
-    job::dispatch_blocking(move |_editor, compositor, mut _js| {
-        if let Some(view) = compositor.find::<ui::EditorView>() {
-            if unbind {
-                // 解绑(dashboard 关屏时用)—— 真正的"摘叶",不是绑到 no_op ✗
-                view.keymaps.remove_binding(mode, &keys);
-            } else {
-                view.keymaps.insert_binding(mode, &keys, cmd);
+    // 覆盖检测在 **job 之外**做不了（要读活的 Keymaps）⇒ 挪进闭包；提示只发一次。
+    let key_label = keys
+        .iter()
+        .map(|k| k.key_sequence_format())
+        .collect::<Vec<_>>()
+        .join("");
+    job::dispatch_blocking(move |editor, compositor, mut _js| {
+        let Some(view) = compositor.find::<ui::EditorView>() else {
+            return;
+        };
+        if unbind {
+            // 解绑(dashboard 关屏时用)—— 真正的"摘叶",不是绑到 no_op ✗
+            view.keymaps.remove_binding(mode, &keys);
+            return;
+        }
+        // **抢键可见**（D 阶段）：绑之前先看这个序列现在是谁的。
+        // 静默覆盖是"插件显得不融洽"的主要来源之一 —— 用户只看到自己的键莫名失效。
+        if let Some(owner) = owner.as_deref() {
+            if let Some(what) = view.keymaps.describe_override(mode, &keys, &cmd) {
+                let id = format!("{mode:?}:{key_label}:{owner}:{what}");
+                if crate::keymap::note_new_override(&id) {
+                    let msg = format!(
+                        "插件 `{owner}` 覆盖了 `{key_label}`（{what}；`:keys` 看全部，\
+                         改回写 [keys.{}]）",
+                        mode_str(mode)
+                    );
+                    log::warn!("{msg}");
+                    editor.set_warning(msg);
+                }
             }
         }
+        view.keymaps
+            .insert_binding_owned(mode, &keys, cmd, owner.as_deref());
     });
     Ok(())
+}
+
+/// `Mode` → `[keys.<mode>]` 的段名（提示里告诉用户去哪儿改）
+fn mode_str(mode: helix_view::document::Mode) -> &'static str {
+    use helix_view::document::Mode;
+    match mode {
+        Mode::Normal => "normal",
+        Mode::Insert => "insert",
+        Mode::Select => "select",
+    }
 }

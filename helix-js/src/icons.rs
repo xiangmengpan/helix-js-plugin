@@ -233,6 +233,15 @@ static GIT_ICONS: &[(&str, char)] = &[
     ("??", '\u{f404}'),
 ];
 
+/// 系统/进程开销图标（statusline 的 `cpu` / `mem` 段用）。
+///
+/// 为何进核心而不是插件：图标是外观，字形与"字体不支持怎么降级"都应该只有一份
+/// （同 FILE/DIR/MODE 三组的理由）。nerd font 关掉时 `icon_sys` 返回**空串** ⇒
+/// 调用方自然退回纯文字。
+/// 字形只取 **Font Awesome 4 段**(f000–f2ff):那是所有 nerd font 变体都带的区段。
+/// 反例:`\u{f538}`(md-memory)在 Material Design 段,字体没带 MDI 就是豆腐块 —— 实测踩过。
+static SYS_ICONS: &[(&str, char)] = &[("cpu", '\u{f2db}'), ("mem", '\u{f1c0}')];
+
 static COMPLETION_ICONS: &[(&str, char)] = &[
     ("1", '\u{f031}'),
     ("2", '\u{ea8c}'),
@@ -338,6 +347,11 @@ macro_rules! icon_lookup_fn {
 icon_lookup_fn!(icon_mode, MODE_ICONS, "模式图标(normal/insert/select)");
 icon_lookup_fn!(icon_git, GIT_ICONS, "git 状态标记");
 icon_lookup_fn!(icon_completion, COMPLETION_ICONS, "补全类型图标(LSP kind)");
+icon_lookup_fn!(
+    icon_sys,
+    SYS_ICONS,
+    "系统/进程开销图标(cpu/mem);字体不支持时返回空串"
+);
 
 /// 诊断标记的**默认**字形(与上面的 JS 覆盖集是两条通道)
 pub fn icon_diagnostic(key: &str) -> String {
@@ -390,6 +404,13 @@ pub(crate) fn js_icons_git(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     icon_str_fn(args, ctx, icon_git)
+}
+pub(crate) fn js_icons_sys(
+    _t: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    icon_str_fn(args, ctx, icon_sys)
 }
 pub(crate) fn js_icons_completion(
     _t: &JsValue,
@@ -450,6 +471,11 @@ pub fn native_fns() -> Vec<(&'static str, boa_engine::NativeFunction, usize)> {
             1,
         ),
         (
+            "sys",
+            boa_engine::NativeFunction::from_fn_ptr(js_icons_sys),
+            1,
+        ),
+        (
             "completion",
             boa_engine::NativeFunction::from_fn_ptr(js_icons_completion),
             1,
@@ -476,6 +502,10 @@ mod table_tests {
         assert_eq!(MODE_ICONS.len(), 3, "mode 组条目数");
         assert_eq!(DIAGNOSTIC_GLYPHS.len(), 4, "diagnostic 组条目数");
         assert_eq!(GIT_ICONS.len(), 7, "git 组条目数");
+        assert_eq!(SYS_ICONS.len(), 2, "sys 组条目数(cpu/mem)");
+        assert_eq!(icon_sys("cpu"), "\u{f2db}".to_string(), "cpu 图标");
+        assert_eq!(icon_sys("mem"), "\u{f1c0}".to_string(), "mem 图标");
+        assert_eq!(icon_sys("nope"), "", "未知键 ⇒ 空串(调用方退回纯文字)");
         assert_eq!(COMPLETION_ICONS.len(), 25, "completion 组条目数");
         assert_eq!(
             icon_file("src/main.rs"),

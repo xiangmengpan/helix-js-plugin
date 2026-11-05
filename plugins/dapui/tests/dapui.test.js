@@ -72,7 +72,8 @@ function make_host(opts) {
     close_panel(id) {
       calls.closed.push(id);
     },
-    viewport: () => [80, 24],
+    // 视口可配：弹窗自适应尺寸要靠它（早先写死 80×24 ⇒ 小终端路径测不到）
+    viewport: o.viewport || (() => [80, 24]),
     // just-my-code 判"源码在不在工作区"要用；默认给个假工作区
     cwd: () => o.cwd || '/tmp/proj',
     text: {
@@ -1431,27 +1432,32 @@ test('e:adapter 没有过滤器 ⇒ 只提示,不弹层', () => {
   assert.equal(calls.popup, null);
 });
 
-test('Esc / C-4 回编辑器:按 pane.list() 找 EditorView 的 id(不硬编码 0)', () => {
+// 树面板的 Esc 已**交给核心**（作用域声明 `esc: "blur"`）⇒ 插件侧返回 ignore，不再自己挪焦点。
+// 理由：同一个语义只留一处实现（见 docs/superpowers/plans/2026-11-04-panel-keybinding-scopes.md）。
+test('树面板 Esc 交给核心：插件返回 ignore（不再自己 focus_editor）', () => {
   const focused = [];
   const { api } = load({
     cfg: {},
     sessions: () => [stopped],
-    panes: () => [
-      { id: 7, kind: 'EditorView', focused: false },
-      { id: 1, kind: 'PluginPanel', focused: true },
-    ],
+    panes: () => [{ id: 7, kind: 'EditorView', focused: false }],
     focus: (id) => focused.push(id),
   });
-  assert.equal(api.key_tree({ name: 'Esc' }), 'handled');
-  assert.equal(api.key_bottom({ name: 'Esc' }), 'handled', '底部面板 Esc 同样回编辑器');
+  assert.equal(
+    api.key_tree({ name: 'Esc' }),
+    'ignore',
+    'Esc 由核心按 esc:"blur" 处理，插件不该再消费',
+  );
+  assert.deepEqual(focused, [], '插件不再自己挪焦点');
+  // 底部面板没有绑作用域 ⇒ 仍由插件处理；C-4 是全局快捷方式，不变
+  assert.equal(api.key_bottom({ name: 'Esc' }), 'handled', '底部面板 Esc 仍由插件回编辑器');
   assert.equal(api.key_tree({ ctrl: true, name: '4' }), 'handled');
-  assert.deepEqual(focused, [7, 7, 7], '焦点给 EditorView 的真实 id');
+  assert.deepEqual(focused, [7, 7], '两次都落到 EditorView 的真实 id');
 });
 
-test('没有 pane.list() 时回退到 0(老行为)', () => {
+test('没有 pane.list() 时回退到 0(老行为)—— 底部面板与 C-4 仍走这条路', () => {
   const focused = [];
   const { api } = load({ cfg: {}, sessions: () => [stopped], focus: (id) => focused.push(id) });
-  api.key_tree({ name: 'Esc' });
+  api.key_bottom({ name: 'Esc' });
   assert.deepEqual(focused, [0]);
 });
 
@@ -1576,4 +1582,106 @@ test('继续执行 ⇒ 清装饰（含高亮），不是只清内联值', async 
   assert.equal(last.args.length, 1, 'Clear = 只传 path（VT + highlight 一起清）');
   assert.equal(last.args[0], '/tmp/main.rs');
   assert.equal(api.T.ctx, null, '上下文清空');
+});
+
+// ─────────────────── 弹窗自适应终端（popup_box） ───────────────────
+// 由来：`ask_text`/`ask_multi`/`ask_choice` 早先写死 64×6 / 60×18 / 60×16 ⇒
+// 小终端底部被切、大终端浪费（`ask_multi` 更是在 20 行以上的终端也硬截到 18 行）。
+test('popup_box:大终端不缩水，但不超过视口', () => {
+  const { api } = load();
+  // 80×24 视口要 70×30 ⇒ 高度被视口夹到 20（24-4），宽度夹到 76
+  const box = api.popup_box(70, 30);
+  assert.equal(box.width, 70, '宽度没超视口就不动它');
+  assert.equal(box.height, 20, '高度必须 ≤ 视口-4');
+});
+
+test('popup_box:小终端跟着收窄（26×10）', () => {
+  const { api } = load({ viewport: () => [26, 10] });
+  const box = api.popup_box(60, 18);
+  assert.ok(box.width <= 22, `宽度要 ≤ 视口-4: ${box.width}`);
+  assert.ok(box.height <= 6, `高度要 ≤ 视口-4: ${box.height}`);
+  assert.ok(box.width >= 20 && box.height >= 3, `别夹成 0: ${JSON.stringify(box)}`);
+});
+
+test('popup_box:拿不到视口（旧二进制/夹具 0×0）⇒ 退回 80×24 的旧行为', () => {
+  const { api } = load({ viewport: () => [0, 0] });
+  const box = api.popup_box(60, 10);
+  assert.deepEqual(box, { width: 60, height: 10 }, '没有视口信息时不该改尺寸');
+});
+
+// ─────────────── 弹窗**接线**：三个弹层真的走 popup_box + 窗口化 ───────────────
+// 上面三条只测了 `popup_box` 的数学；这里钉"每个弹窗都确实用了它、而且内容不会溢出"。
+// 驱动方式：直接用导出的 `ask_text` / `ask_multi` / `ask_choice`（都是 `helix.export` 过的，
+// 别的插件也能调），再拿桩截到的 `calls.popup` 检查尺寸与渲染结果。
+
+test('ask_text 接线：小终端下弹窗尺寸跟着收窄（不是写死 64×6）', () => {
+  const { calls, api } = load({ viewport: () => [30, 10] });
+  api.ask_text('搜索变量', '', () => {});
+  assert.ok(calls.popup, '应打开弹窗');
+  assert.ok(calls.popup.width <= 26, `宽度 ≤ 视口-4: ${calls.popup.width}`);
+  assert.ok(calls.popup.height <= 6, `高度 ≤ 视口-4: ${calls.popup.height}`);
+  // render 用**弹窗自己的**尺寸画框（兜底值也是 box，不是写死的 64/6）
+  calls.draws.length = 0;
+  assert.equal(calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height }), 'DONE');
+  const rect = calls.draws.find((d) => d.rect);
+  assert.deepEqual(rect.rect, [0, 0, calls.popup.width, calls.popup.height], '外框尺寸 = 弹窗尺寸');
+});
+
+test('ask_text 接线：拿不到视口时退回旧尺寸 64×6', () => {
+  const { calls, api } = load({ viewport: () => [0, 0] });
+  api.ask_text('x', '', () => {});
+  assert.deepEqual(
+    { w: calls.popup.width, h: calls.popup.height },
+    { w: 64, h: 6 },
+    '无视口信息 ⇒ 与改动前一致',
+  );
+});
+
+test('ask_multi 接线：大终端不再硬截 18 行；小终端改为窗口滚动', () => {
+  const filters = Array.from({ length: 25 }, (_, i) => ({ filter: `f${i}`, label: `F${i}` }));
+
+  // ① 大终端（80×60）：25 项应全部进弹窗（早先被 `min(18, …)` 截到 18）
+  {
+    const { calls, api } = load({ viewport: () => [80, 60] });
+    api.ask_multi('异常断点', filters, new Set(), () => {});
+    assert.equal(calls.popup.height, 25 + 5, `25 项应给 30 行: ${calls.popup.height}`);
+  }
+
+  // ② 小终端（80×20）：高度被夹到 16，内容区只画得下 h-5 行（窗口化）
+  {
+    const { calls, api } = load({ viewport: () => [80, 20] });
+    api.ask_multi('异常断点', filters, new Set(), () => {});
+    assert.equal(calls.popup.height, 16, `高度应夹到视口-4: ${calls.popup.height}`);
+    calls.draws.length = 0;
+    calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height });
+    const rows = calls.draws.filter((d) => typeof d.t === 'string');
+    assert.ok(rows.length <= calls.popup.height - 5, `内容行不得溢出: ${rows.length}`);
+    assert.ok(rows.length > 0, '至少画一行');
+  }
+});
+
+test('ask_choice 接线：项数多于内容区时窗口化，不往框外画', () => {
+  const items = Array.from({ length: 30 }, (_, i) => ({ label: `条目 ${i}`, payload: i }));
+  const { calls, api } = load({ viewport: () => [80, 20] });
+  api.ask_choice('选择', items, () => {});
+  assert.equal(calls.popup.height, 16, `高度夹到视口-4: ${calls.popup.height}`);
+  const tree = calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height });
+  // el 桩返回 { kind, children, opts }；children = [标题, ...行]
+  const rows = tree.children.length - 1;
+  assert.ok(rows <= calls.popup.height - 4, `行数不得超出内容区: ${rows} vs ${calls.popup.height - 4}`);
+  assert.ok(rows >= 1, '至少一行');
+});
+
+test('ask_choice 接线：光标移到底部时窗口跟着滚（最后一项可见）', () => {
+  const items = Array.from({ length: 30 }, (_, i) => ({ label: `条目 ${i}`, payload: i }));
+  const { calls, api } = load({ viewport: () => [80, 20] });
+  api.ask_choice('选择', items, () => {});
+  // 按 End / G 到底（onKey 走的是 key 对象）
+  for (let i = 0; i < 40; i++) calls.popup.onKey({ name: 'j', ctrl: false, alt: false, shift: false });
+  const tree = calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height });
+  const labels = tree.children.slice(1).map((c) => c.children);
+  assert.ok(
+    labels.some((l) => String(l).includes('条目 29')),
+    `滚到底后最后一项应在窗口内: ${JSON.stringify(labels)}`,
+  );
 });

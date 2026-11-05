@@ -317,6 +317,12 @@ pub struct Keymaps {
     state: Vec<KeyEvent>,
     /// Stores the sticky node if one is activated.
     pub sticky: Option<KeyTrieNode>,
+    /// **插件绑定的属主**：完整键序列 → 插件名。
+    ///
+    /// 用途：`:keys` 里给每条绑定标来源（"这个键现在是插件的"），以及覆盖检测时
+    /// 说清"被谁抢了"。与 `helix-js` 的 `keymap_owners`（按 `(mode, 原始键串)` 记、
+    /// 只服务 `:plugin-unload` 的解绑）是两份数据：这里要的是**解析后**的键序列。
+    owners: std::sync::Mutex<HashMap<(Mode, Vec<KeyEvent>), String>>,
 }
 
 impl Keymaps {
@@ -325,6 +331,7 @@ impl Keymaps {
             map: ArcSwap::from_pointee(map),
             state: Vec::new(),
             sticky: None,
+            owners: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -335,6 +342,17 @@ impl Keymaps {
     /// 插件键位注入：已解析的键序列 → 链式 KeyTrieNode（叶子 MappableCommand）→ merge_keys → store。
     /// 覆盖语义：同键已有绑定（含内置）被插件绑定替换（merge_nodes 叶子替换）。
     pub fn insert_binding(&self, mode: Mode, keys: &[KeyEvent], command: MappableCommand) {
+        self.insert_binding_owned(mode, keys, command, None)
+    }
+
+    /// 同上，但记下**属主**（插件名）并在 `:keys` 里标注。
+    pub fn insert_binding_owned(
+        &self,
+        mode: Mode,
+        keys: &[KeyEvent],
+        command: MappableCommand,
+        owner: Option<&str>,
+    ) {
         let mut trie = KeyTrie::MappableCommand(command);
         for key in keys.iter().rev() {
             let mut map = IndexMap::new();
@@ -343,7 +361,64 @@ impl Keymaps {
         }
         let mut current = (**self.map.load()).clone();
         merge_keys(&mut current, HashMap::from([(mode, trie)]));
-        self.map.store(Arc::new(current));
+        self.map.store(Arc::new(current.clone()));
+
+        // 属主 + `:keys` 快照：插件的绑定必须在 `:keys` 里看得见（早先快照是启动时那一次，
+        // 插件绑的键在 `:keys` 里根本不出现 —— 与"抢键可见"是同一个洞）。
+        {
+            let mut owners = self.owners.lock().unwrap_or_else(|e| e.into_inner());
+            match owner {
+                Some(name) => {
+                    owners.insert((mode, keys.to_vec()), name.to_string());
+                }
+                None => {
+                    owners.remove(&(mode, keys.to_vec()));
+                }
+            }
+        }
+        crate::keymap::set_runtime_keymaps(&current);
+        crate::keymap::set_plugin_owner(mode, &crate::keymap::sequence_label(keys), owner);
+    }
+
+    /// 查一条完整键序列当前绑的是什么（覆盖检测用；不存在 ⇒ `None`）
+    pub fn lookup_sequence(&self, mode: Mode, keys: &[KeyEvent]) -> Option<KeyTrie> {
+        let map = self.map.load();
+        let tree = map.get(&mode)?;
+        let (first, rest) = keys.split_first()?;
+        let mut node = tree.search(std::slice::from_ref(first))?.clone();
+        for k in rest {
+            node = node.search(std::slice::from_ref(k))?.clone();
+        }
+        Some(node)
+    }
+
+    /// **覆盖检测**：这条键序列现在绑的是什么，换成 `incoming` 算不算"抢"？
+    ///
+    /// 返回一句人话（`None` = 不构成覆盖：没绑定 / 绑的就是同一条命令）。
+    /// 抽成纯函数是为了可测 —— 真正 `set_warning` 的那一行在 `handle_map_key` 里。
+    pub fn describe_override(
+        &self,
+        mode: Mode,
+        keys: &[KeyEvent],
+        incoming: &MappableCommand,
+    ) -> Option<String> {
+        match self.lookup_sequence(mode, keys)? {
+            KeyTrie::MappableCommand(prev) => {
+                (prev.name() != incoming.name()).then(|| format!("原 `:{}`", prev.name()))
+            }
+            KeyTrie::Node(node) => Some(format!("原前缀节点（{} 个键）", node.len())),
+            // 序列/其他形态：说"原有绑定"即可（不猜细节）
+            _ => Some("原有绑定".to_string()),
+        }
+    }
+
+    /// 某条键序列的插件属主（`:keys` 标注用）
+    pub fn binding_owner(&self, mode: Mode, keys: &[KeyEvent]) -> Option<String> {
+        self.owners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(mode, keys.to_vec()))
+            .cloned()
     }
 
     /// 摘掉一条绑定（`insert_binding` 的**逆操作**）。
@@ -359,7 +434,13 @@ impl Keymaps {
         if let Some(trie) = current.get_mut(&mode) {
             Self::remove_from_trie(trie, keys);
         }
-        self.map.store(Arc::new(current));
+        self.map.store(Arc::new(current.clone()));
+        self.owners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(mode, keys.to_vec()));
+        crate::keymap::set_runtime_keymaps(&current);
+        crate::keymap::set_plugin_owner(mode, &crate::keymap::sequence_label(keys), None);
     }
 
     /// 在 trie 里沿 `keys` 摘除叶；若节点因此变空，返回 `true`（交由调用者摘掉该节点）✓
@@ -479,6 +560,48 @@ pub fn set_runtime_keymaps(keys: &std::collections::HashMap<Mode, KeyTrie>) {
     *runtime_slot().write().unwrap_or_else(|e| e.into_inner()) = snapshot;
 }
 
+/// 插件绑定的**全局属主快照**（键 = mode + 完整键序列的显示形态）。
+///
+/// 为什么是全局：`:keys` 只有 `&mut Editor`，拿不到 `EditorView::keymaps`（同
+/// `RUNTIME_KEYMAPS` 的理由）。写入点在 `Keymaps::insert_binding_owned` / `remove_binding`。
+static PLUGIN_OWNERS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<(Mode, String), String>>,
+> = std::sync::OnceLock::new();
+
+fn owners_slot() -> &'static std::sync::RwLock<std::collections::HashMap<(Mode, String), String>> {
+    PLUGIN_OWNERS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// 键序列 → 统一的显示串（`:keys` 与写入方必须用**同一个**函数，否则标注永远对不上）
+pub fn sequence_label(keys: &[KeyEvent]) -> String {
+    keys.iter()
+        .map(|k| k.key_sequence_format())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// 记/删一条插件绑定的全局属主快照
+pub fn set_plugin_owner(mode: Mode, label: &str, owner: Option<&str>) {
+    let mut slot = owners_slot().write().unwrap_or_else(|e| e.into_inner());
+    match owner {
+        Some(name) => {
+            slot.insert((mode, label.to_string()), name.to_string());
+        }
+        None => {
+            slot.remove(&(mode, label.to_string()));
+        }
+    }
+}
+
+/// 查某条键序列的插件属主（`:keys` 标注用）
+pub fn plugin_owner(mode: Mode, label: &str) -> Option<String> {
+    owners_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(mode, label.to_string()))
+        .cloned()
+}
+
 /// 取某个模式的运行时 keymap（没写过就退回内置默认）。
 pub fn runtime_keymap(mode: Mode) -> std::sync::Arc<KeyTrie> {
     if let Some(t) = runtime_slot()
@@ -489,6 +612,22 @@ pub fn runtime_keymap(mode: Mode) -> std::sync::Arc<KeyTrie> {
         return t.clone();
     }
     std::sync::Arc::new(default::default()[&mode].clone())
+}
+
+/// "这条覆盖已经提示过了"的去重表。
+///
+/// 为什么需要：`helix.map` 每次插件加载都会重放（`:plugin-reload` 也走同一路径），
+/// 不做去重的话每 reload 一次就弹一次同样的警告 —— 那就成了噪音，用户会直接把警告关掉。
+static WARNED_OVERRIDES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// 记一条覆盖提示；返回 `true` = **第一次**见到（调用方据此决定要不要真的提示）。
+pub fn note_new_override(id: &str) -> bool {
+    WARNED_OVERRIDES
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.to_string())
 }
 
 pub fn merge_keys(dst: &mut HashMap<Mode, KeyTrie>, mut delta: HashMap<Mode, KeyTrie>) {
@@ -811,5 +950,106 @@ mod reverse_macro_tests {
             "宏应进反查表: {:?}",
             rev.keys().collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod plugin_binding_tests {
+    use super::*;
+    use crate::commands::MappableCommand;
+    use helix_view::input::KeyEvent;
+
+    /// D 阶段的三个不变量：
+    ///  1. `lookup_sequence` 能看出"这个序列现在绑的是什么"（覆盖检测的前提）；
+    ///  2. `insert_binding_owned` 把属主记下来，`binding_owner` / 全局快照都能查到；
+    ///  3. `remove_binding` 是逆操作 —— 属主与全局标注一起清掉（否则 `:keys` 会永远标着"插件"）。
+    #[test]
+    fn override_owner_is_recorded_and_cleared() {
+        let keymaps = Keymaps::new(default());
+        let keys: Vec<KeyEvent> = vec!["Q".parse().unwrap()];
+        let label = sequence_label(&keys);
+
+        // 默认 `Q` 是内置绑定 ⇒ lookup_sequence 应能看到"原来是谁"
+        let before = keymaps
+            .lookup_sequence(Mode::Normal, &keys)
+            .expect("Q 默认应已绑定");
+        assert!(
+            matches!(before, KeyTrie::MappableCommand(_)),
+            "应该是叶子而不是前缀: {before:?}"
+        );
+        assert!(
+            keymaps.binding_owner(Mode::Normal, &keys).is_none(),
+            "默认键没有插件属主"
+        );
+        assert!(plugin_owner(Mode::Normal, &label).is_none());
+
+        // 插件抢这个键
+        let cmd: MappableCommand = "wclose".parse().unwrap();
+        keymaps.insert_binding_owned(Mode::Normal, &keys, cmd, Some("demo"));
+        assert_eq!(
+            keymaps.binding_owner(Mode::Normal, &keys).as_deref(),
+            Some("demo"),
+            "Keymaps 侧属主"
+        );
+        assert_eq!(
+            plugin_owner(Mode::Normal, &label).as_deref(),
+            Some("demo"),
+            "全局快照（`:keys` 读它）"
+        );
+        // `:keys` 的可见性：抢来的键必须出现在运行时快照里
+        let snapshot = runtime_keymap(Mode::Normal);
+        assert!(
+            snapshot.search(&keys).is_some(),
+            "插件绑定应进 runtime 快照（否则 :keys 里根本看不到）"
+        );
+
+        // 解绑 ⇒ 属主与标注一起消失
+        keymaps.remove_binding(Mode::Normal, &keys);
+        assert!(keymaps.binding_owner(Mode::Normal, &keys).is_none());
+        assert!(
+            plugin_owner(Mode::Normal, &label).is_none(),
+            "标注必须一起清"
+        );
+    }
+
+    /// `describe_override`：三种形态各说清一句话，同一条命令重复绑不算覆盖
+    #[test]
+    fn describe_override_messages() {
+        let keymaps = Keymaps::new(default());
+        let keys: Vec<KeyEvent> = vec!["Q".parse().unwrap()];
+        let other: MappableCommand = "wclose".parse().unwrap();
+
+        let msg = keymaps
+            .describe_override(Mode::Normal, &keys, &other)
+            .expect("`Q` 有内置绑定 ⇒ 应判为覆盖");
+        assert!(msg.contains("原 `:"), "要点出被顶掉的命令: {msg}");
+
+        // 绑同一条命令 ⇒ 不算覆盖（reload 重放就是这种情况，不该反复提示）
+        let same: MappableCommand = "record_macro".parse().unwrap();
+        let existing = match keymaps.lookup_sequence(Mode::Normal, &keys).unwrap() {
+            KeyTrie::MappableCommand(c) => c,
+            other => panic!("Q 应是叶子: {other:?}"),
+        };
+        assert!(
+            keymaps
+                .describe_override(Mode::Normal, &keys, &existing)
+                .is_none(),
+            "同命令重复绑不该算覆盖: {}",
+            same.name()
+        );
+
+        // 未绑定的序列 ⇒ 不算覆盖（不假设任何键"默认未绑"，这里挑一个确实没定义的：z 9）
+        let free: Vec<KeyEvent> = vec!["z".parse().unwrap(), "9".parse().unwrap()];
+        assert!(keymaps
+            .describe_override(Mode::Normal, &free, &other)
+            .is_none());
+    }
+
+    /// 去重表：同一条覆盖只提示一次（`:plugin-reload` 会重放绑定，否则每次都弹）
+    #[test]
+    fn override_notice_is_deduplicated() {
+        let id = format!("Normal:w:demo:test-{}", std::process::id());
+        assert!(note_new_override(&id), "第一次应提示");
+        assert!(!note_new_override(&id), "第二次应静默");
     }
 }

@@ -155,12 +155,17 @@ interface PopupOptions {
   width?: number; // 尺寸上限(clamp)
   height?: number;
   position?: Pos; // 屏幕锚点;默认向下展开,底部空间不足自动翻到上方(非绝对左上角)
+  /** 绑定一个**键位作用域**（`helix.keymap.scope` 的名字）：该作用域的 `passthrough`
+   *  键会绕过弹层交回编辑器，`swallow` 决定未命中键的去向。不写 = 现状（弹层全收）。 */
+  scope?: string;
 }
 interface PanelOptions {
   side: PanelSide; // 白名单 right|left|bottom(无 top)
   size: number;
   render: RenderFn; // 面板 render 固定收到 focus = null
   onKey?: KeyHandler;
+  /** 绑定键位作用域（同 `PopupOptions.scope`）。面板本来就是非模态，主要是给提示/诊断用。 */
+  scope?: string;
   onClose?: () => void;
   focusable?: boolean; // 面板内 button/input 的 Tab 焦点路由（与"拿到键盘焦点"无关）
   /**
@@ -1201,6 +1206,52 @@ interface Helix {
     /** 释放会话（条目集变化 / 弹窗关闭时调）。未知 id 是 no-op。 */
     drop(id: number): void;
   };
+  /** 插件**作用域键位**（面板/弹窗的按键声明表）。
+   *
+   * 为什么要有：面板的键以前是插件里 `switch (key.name)` 硬编码的 ⇒ 改键要改插件源码、
+   * `?` 帮助各写一份、`:keys`/which-key 看不到、跟原生键位像两个世界。现在只有**一张表**。
+   *
+   * 职责边界：这里只做「键 → 绑定」的**数据表**；**不做事**的（插件拿到动作名后自己调）分派，
+   * 未命中键的"吞/穿透"仍由 `onKey` 返回值决定（核心输入层接管是后续阶段）。 */
+  keymap: {
+    /** 声明/替换一个作用域（同名整体替换 = "声明"语义）。
+     *  - `extends: "panel"` 展开内置预设：`q` 关闭、`Esc` 回焦点（不关闭）、`?` 帮助、`/` 过滤、`j`/`k` 上下、`g` 前缀
+     *  - `keys` 的值：`{ action, desc? }` 或简写字符串（`"close"`）
+     *  - 键名写法：`"q"` / `"C-\\"` / `"<esc>"` / `"S-Tab"`（`<...>` 可省）
+     *  - **拼错的键名直接抛错**（声明期不是热路径，写错就该立刻知道） */
+    scope(scope: string, spec: {
+      extends?: "panel";
+      keys: Record<string, { action: string; desc?: string } | string>;
+      /** **永远交回编辑器**的键（B 阶段）：`[":", "C-w", "C-p"]` 这类全局前缀。
+       *  不声明 = 弹层照旧全收（**不要把 `:` 加给文本输入弹层** —— 那里 `:` 是要输入的字符） */
+      passthrough?: string[];
+      /** 未命中的键怎么处理（B 阶段）：`"all"`(默认，现状) 收下；`"unmapped"` 交回编辑器 */
+      swallow?: "all" | "unmapped";
+      /** 插件层**没消费 Esc** 时核心怎么兜底（B 阶段）：
+       *  `"ignore"`（默认，现状）Esc 继续往编辑器落；
+       *  `"blur"` 焦点回编辑器（**面板保留**）—— 只对**叶子式**插件层（`open_panel`）有意义，
+       *  弹层是模态的（压在层栈顶），blur 对它等于空动作，Esc 关闭请照旧在 `onKey` 里返回 `"close"`。 */
+      esc?: "blur" | "ignore";
+    }): void;
+    /** 查一个键：**用户 `[keys.<作用域>]` 的覆盖优先**，其次插件声明。
+     *  - `key` 两种形状都收：`onKey` 原样的 `{name,ctrl,alt,shift}` 对象，或 `"C-\\"` 字符串
+     *  - 返回 `{action}`（插件内动作）| `{command}`（用户覆盖成命令时）| `null`（未命中） */
+    resolve(scope: string, key: { name: string; ctrl?: boolean; alt?: boolean; shift?: boolean } | string):
+      | { action?: string; command?: string; desc: string }
+      | null;
+    /** 对齐好的提示文本（`?` 帮助 / `:keys` 同一份数据）；没有这个作用域 ⇒ `null` */
+    hints(scope: string): string | null;
+    /** 注销一个作用域（`:plugin-unload` / `:plugin-reload` 会按属主自动清） */
+    unregister(scope: string): boolean;
+    /** 当前**占着键盘**的插件作用域名（`null` = 不在插件层）。每帧由核心推。
+     *  用途：which-key 之类的"想显示当前插件层键位"的消费方（徽标里是大写，反推不出名字） */
+    active_scope(): string | null;
+  };
+  /** **本进程**的 CPU 时间与常驻内存（跨平台：Linux `/proc` · macOS `getrusage`+`task_info` ·
+   *  Windows `GetProcessTimes`+`GetProcessMemoryInfo`）。不做节流（调用方自己控制频率）。
+   *  两样都拿不到 ⇒ `null`；某项不可用 ⇒ 该字段为 `0`。
+   *  **不消耗能力**：只读本进程自身（无路径参数，Linux 分支读的是 `/proc/self/*`）。 */
+  proc_stats(): { cpu_ms: number; rss_kb: number } | null;
   /** 图标表 —— **核心单一来源**(helix-js/src/icons.rs)。
    *  所有插件**零依赖**可用,不需要再声明 `deps: ["lib/icons.js"]`。
    *  字体不支持 nerd font 时用 `enabled(false)` 一处降级(文件类图标变空、目录回退 ▸/▾),
@@ -1216,6 +1267,8 @@ interface Helix {
     diagnostic(severity: string): string;
     /** git 状态标记 */
     git(status: string): string;
+    /** 系统/进程开销图标(`cpu` / `mem`)；字体不支持时返回**空串** ⇒ 调用方退回纯文字 */
+    sys(kind: string): string;
     /** 补全类型图标(LSP kind;传数字会被转成字符串) */
     completion(kind: string | number): string;
     /** 总开关:无参时返回当前状态,便于插件自检 */

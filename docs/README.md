@@ -7,9 +7,10 @@
 
 | 文档 | 内容 |
 |---|---|
-| [`plugin-api.md`](plugin-api.md) | **插件 API 总览与索引** —— 从这里进 |
+| [`plugin-api.md`](plugin-api.md) | **插件 API 总览与索引** —— 从这里进(含**插件键位作用域** `helix.keymap.*`:声明表 / 用户改键 / 徽标 / `Esc` 兜底) |
 | [`api/`](api/) | 按域详细(签名 / 示例 / 优缺点):`plugin` · `events` · `loading-commands` · `config` · `ui` · `editing` · `lsp` · `fuzzy` · `terminal-layout` · `picker-theme` · `process-fs` |
 | [`plugin-layout.md`](plugin-layout.md) | **插件布局与命名约定**:一个插件 = 一个目录 + `plugin.js` · 入口如何点名 · `deps` 用插件名 · **两层覆盖**(内置 / 用户) · 分发(`contrib/install-plugins.sh`) |
+| [`api/config.md`](api/config.md) | **插件配置**:`define_config` 的四种类型 · `[plugins.<名>]` 覆盖 · **`[plugins.<名>.keys]` 键位覆盖**(主作用域 / `.子名` 辅助作用域) |
 | [`config-precedence.md`](config-precedence.md) | **配置优先级**:`config.toml` ↔ JS 谁赢 / `:config-reload` vs `:plugin-reload` 各管什么 / 什么时候写哪儿 |
 | [`plugin-vs-core.md`](plugin-vs-core.md) | **该插件化 vs 该留核心** —— 判定清单:三闸门 + 分类判定表 + 四条红线(每条对应一次真实事故)· 附实测数字出处 |
 | [`guide/`](guide/) | 教程 01–10:概览 → 启动 / 按键 / 编辑 / 渲染 → 深入(core / view / term / lsp) |

@@ -208,21 +208,18 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     };
 
     if js_replace {
-        // 全替换模式：按 zones 比例分左/中/右三区，每区段间 1 空格 gap
+        // 全替换模式：左/中/右三区。
+        //
+        // **弹性布局（2026-11）**：以前按 `zones` 比例**硬分宽**，于是中间空着时那段宽度
+        // 白白浪费，左边/右边稍微长一点就被 `set_spans` 截断（用户实测：中区空 ⇒ 左侧文件名被切）。
+        // 现在先量内容宽度再定位 —— 比例只在**真放不下**时当“压缩权重”用：
+        //   1. 三段都放得下 ⇒ 左左对齐 / 右右对齐 / 中居中于两者之间（内容自适应，0 截断）
+        //   2. 左右放得下、中挤不下 ⇒ 左右完整，中只拿剩余（不够就整段不画）
+        //   3. 真超载 ⇒ 按 zones 权重压缩左右（中让位），与旧行为一致
         let [zl, zc, zr] = match context.state.as_deref() {
             Some(st) => helix_js::statusline_zones(st),
             None => [1, 1, 1],
         };
-        let sum = (zl + zc + zr).max(1) as u32;
-        let w = viewport.width as u32;
-        let left_w = (w * zl as u32 / sum) as u16;
-        let right_w = (w * zr as u32 / sum) as u16;
-        let center_w = viewport
-            .width
-            .saturating_sub(left_w)
-            .saturating_sub(right_w);
-        let center_x = left_w;
-        let right_x = left_w.saturating_add(center_w);
 
         let mut spans: [Spans<'_>; 3] = Default::default();
         if let Some(parts) = js_parts {
@@ -246,22 +243,58 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
                 append(&mut spans[idx], span, base_style);
             }
         }
-        surface.set_spans(viewport.x, viewport.y, &spans[0], left_w);
-        // center 区：居中（内容宽 < 区域宽时居中）
-        let center_offset = center_w.saturating_sub(spans[1].width() as u16) / 2;
-        surface.set_spans(
-            viewport.x + center_x + center_offset,
-            viewport.y,
-            &spans[1],
-            center_w,
-        );
-        // right 区：右对齐（起点 = right_x + right_w - 内容宽）
-        surface.set_spans(
-            viewport.x + right_x + right_w.saturating_sub(spans[2].width() as u16),
-            viewport.y,
-            &spans[2],
-            right_w,
-        );
+
+        let w = viewport.width;
+        let lw = spans[0].width() as u16;
+        let cw = spans[1].width() as u16;
+        let rw = spans[2].width() as u16;
+        // 相邻两段都非空时才需要 1 空格间隔
+        let gap = |a: u16, b: u16| u16::from(a > 0 && b > 0);
+        let lr_gap = gap(lw, rw);
+        let lc_gap = gap(lw, cw);
+        let cr_gap = gap(cw, rw);
+
+        // `right_alloc` 是**分到的宽度**，不是内容宽度 ⇒ 起点得按内容右对齐算：
+        // 内容比宽度短时贴行尾；内容比宽度长时才从行尾倒着裁（与左侧"从头裁"对称）。
+        let mut draw = |spans: &[Spans<'_>; 3],
+                        left_w: u16,
+                        right_alloc: u16,
+                        center_x: u16,
+                        center_w: u16| {
+            surface.set_spans(viewport.x, viewport.y, &spans[0], left_w);
+            let center_offset = center_w.saturating_sub(spans[1].width() as u16) / 2;
+            surface.set_spans(
+                viewport.x + center_x + center_offset,
+                viewport.y,
+                &spans[1],
+                center_w,
+            );
+            let right_content = spans[2].width() as u16;
+            let right_start = w.saturating_sub(right_content.min(right_alloc));
+            surface.set_spans(viewport.x + right_start, viewport.y, &spans[2], right_alloc);
+        };
+
+        let need = lw + lr_gap + cw + lc_gap + cr_gap + rw;
+        if need <= w {
+            // ── 情形 1：全都放得下 ⇒ 内容自适应（比例完全不参与） ──
+            // 中区居中于“左段右侧”与“右段左侧”之间的剩余空隙。
+            let lo = lw + lc_gap;
+            let hi = w.saturating_sub(rw + cr_gap);
+            let avail = hi.saturating_sub(lo);
+            draw(&spans, lw, rw, lo, avail);
+        } else if lw + lr_gap + rw <= w {
+            // ── 情形 2：左右放得下、中区挤不下 ⇒ 左右完整，中区**整段不画**
+            //    （不"画一半"：半个 `E2 W1` 比没有更误导。走到这一档意味着剩余宽度必然 < cw）
+            draw(&spans, lw, rw, lw + lc_gap, 0);
+        } else {
+            // ── 情形 3：真超载 ⇒ 按 zones 权重压缩左右，中区隐藏 ──
+            let sum = (zl as u32 + zr as u32).max(1);
+            let usable = w.saturating_sub(lr_gap) as u32;
+            let left_w = (usable * zl as u32 / sum) as u16;
+            let right_w = usable.saturating_sub(left_w as u32) as u16;
+            let _ = zc; // 中区在这一档没有位置
+            draw(&spans, left_w, right_w, left_w, 0);
+        }
         return;
     }
 
