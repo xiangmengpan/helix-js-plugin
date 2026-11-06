@@ -9,6 +9,9 @@ use std::fs;
 use std::io::Error as IOError;
 use toml::de::Error as TomlError;
 
+/// 插件作用域键位：`作用域名 → [(键名, 命令名)]`（命令在插件加载后才解析，见 [`Config::key_scopes`]）
+pub type KeyScopes = HashMap<String, Vec<(String, String)>>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub theme: Option<theme::Config>,
@@ -22,7 +25,7 @@ pub struct Config {
     ///
     /// 为什么作用域名单独一份而不是塞进 `keys`：它不是 `Mode`；且要一直留着给
     /// `:keys` / 无人认领提示用。
-    pub key_scopes: HashMap<String, Vec<(String, String)>>,
+    pub key_scopes: KeyScopes,
     /// 调试键表（`dap_keymap()` 之上合并了 `[keys.debug]`；暂停时 `input_router` 用它）
     pub keys_debug: KeyTrie,
     /// 加载期产生的**用户可见**警告（如未知的 `[keys.X]`）：启动时显示一次
@@ -195,12 +198,10 @@ impl Display for ConfigLoadError {
 ///
 /// 为什么用**嵌套**而不是把键平铺进 `[plugins.<name>]`：配置键名与键名会撞（`size`/`filter`/`mode`），
 /// 而且一个插件可能有多个作用域（面板 vs 弹层），平铺表达不了。
-fn extract_key_scopes(
-    plugins: &mut Option<toml::Table>,
-) -> (HashMap<String, Vec<(String, String)>>, Vec<String>) {
+fn extract_key_scopes(plugins: &mut Option<toml::Table>) -> (KeyScopes, Vec<String>) {
     use std::str::FromStr;
 
-    let mut out: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut out: KeyScopes = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
     let Some(plugins) = plugins.as_mut() else {
         return (out, warnings);
@@ -209,7 +210,7 @@ fn extract_key_scopes(
     // 一张键位表 → `(键名, 命令)` 列表；只支持单键
     let collect = |scope: &str,
                    table: &toml::Table,
-                   out: &mut HashMap<String, Vec<(String, String)>>,
+                   out: &mut KeyScopes,
                    warnings: &mut Vec<String>| {
         let mut entries = Vec::new();
         for (key, val) in table {

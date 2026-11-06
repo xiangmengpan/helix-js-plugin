@@ -33,6 +33,14 @@ pub(crate) struct SurfaceOpts {
     /// 焦点在节点时按 Esc 是否「取消焦点」而不是交给 onKey。
     /// 面板:是(面板非模态,Esc 只退出节点焦点);弹窗:否(Esc 走 onKey 默认关闭)。
     pub esc_releases_focus: bool,
+    /// **首个可聚焦节点自动获得焦点**（弹窗开）。
+    ///
+    /// 为什么需要：节点级编辑（字符/退格/方向键/粘贴）全部经 `self.focus` 路由
+    /// （见 `node_key` / `paste`）—— 没有焦点就一个键都进不去 input。
+    /// 而 `apply_content` 只**收集** focusables、不设焦点 ⇒ `el("input")` 必须先按 Tab
+    /// 才能打字，于是没人用它（实测：全仓 0 处使用）。
+    /// 只对弹窗开：面板里焦点是"进/出"语义（`esc_releases_focus`），自动抢焦点会改行为。
+    pub auto_focus_first: bool,
     /// 错误文案里的组件名(`"panel"` / `"popup"`)。
     pub label: &'static str,
 }
@@ -84,6 +92,17 @@ impl JsSurface {
 
     /// 用**环境宿主**刷新(无 `Context` 的路径:`Component::required_size` 在布局期被调用,
     /// 拿不到 `&mut Context`,只能走全局解析)。
+    /// 用**核心给定的内容**刷新（`helix.dialog.*`）：跳过 JS render 回调，
+    /// 其余（焦点收集、脏格 diff）与 `refresh` 完全一致。
+    pub fn refresh_native(
+        &mut self,
+        content: helix_js::Content,
+        viewport: (u16, u16),
+        opts: SurfaceOpts,
+    ) {
+        self.apply_content(Ok(content), viewport, opts);
+    }
+
     pub fn refresh_global(&mut self, viewport: (u16, u16), opts: SurfaceOpts) {
         // L4-④:布局期没有 `&mut Context` ⇒ 用**过渡捕获入口**(无宿主时先 `init`,
         // 与旧行为一致 —— 以前 `render_popup` 自己会 `init()` 装一个默认宿主)。
@@ -105,6 +124,10 @@ impl JsSurface {
                     self.focusables.clear();
                     if let helix_js::Content::Tree(node) = &content {
                         helix_js::focusable_node_ids(node, &mut self.focusables);
+                    }
+                    // 弹窗：首个可聚焦节点直接拿焦点（否则 input 收不到任何编辑键）
+                    if opts.auto_focus_first && self.focus.is_none() {
+                        self.focus = self.focusables.first().cloned();
                     }
                     // 焦点失效重置:焦点节点不在新列表 → 清空。content 非 Tree 时列表为空 ⇒ 同样清空。
                     // 先传旧 focus 供 JS 样式,提取后再重置。
@@ -162,7 +185,7 @@ impl JsSurface {
         opts: SurfaceOpts,
     ) -> Option<EventResult> {
         let fid = self.focus.as_ref()?;
-        if !helix_js::input_has_state(self.id, fid) {
+        if !cx.js_input_has_state(self.id, fid) {
             return None;
         }
         match cx.js_dispatch_input_paste(self.id, fid, contents) {
@@ -197,14 +220,14 @@ impl JsSurface {
             // Enter:multiline input → 插入换行(dispatch_input_key 消费,不触发 onKey/提交);
             // 否则 input → onKey("Enter");button → onPress
             "Enter" => {
-                if helix_js::input_has_state(self.id, fid)
-                    && helix_js::input_is_multiline(self.id, fid)
+                if cx.js_input_has_state(self.id, fid)
+                    && cx.js_input_is_multiline(self.id, fid)
                     && cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok()
                 {
                     drain_light(cx);
                     return Some(EventResult::Consumed(None));
                 }
-                let event = if helix_js::input_has_state(self.id, fid) {
+                let event = if cx.js_input_has_state(self.id, fid) {
                     Some(key.name.as_str())
                 } else {
                     None
@@ -225,7 +248,7 @@ impl JsSurface {
             }
             // 水平方向键/Home/End:input 光标移动(input_edit 对这些键返回 None,不触发 onChange)
             "Left" | "Right" | "Home" | "End" => {
-                if helix_js::input_has_state(self.id, fid)
+                if cx.js_input_has_state(self.id, fid)
                     && cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok()
                 {
                     drain_light(cx);
@@ -234,21 +257,19 @@ impl JsSurface {
             }
             // Up/Down:multiline input → 光标行间移动;否则候选导航(走 onKey)
             "Up" | "Down" => {
-                if helix_js::input_has_state(self.id, fid)
-                    && helix_js::input_is_multiline(self.id, fid)
-                {
+                if cx.js_input_has_state(self.id, fid) && cx.js_input_is_multiline(self.id, fid) {
                     if cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok() {
                         drain_light(cx);
                         return Some(EventResult::Consumed(None));
                     }
-                } else if helix_js::input_has_state(self.id, fid)
+                } else if cx.js_input_has_state(self.id, fid)
                     && cx
                         .js_dispatch_node_event(self.id, fid, Some(&key.name))
                         .is_ok()
                 {
                     drain_light(cx);
                     return Some(EventResult::Consumed(None));
-                } else if !helix_js::input_has_state(self.id, fid) {
+                } else if !cx.js_input_has_state(self.id, fid) {
                     // 失败可见(同上):非 input 节点的 onKey 抛错/被权限拒绝时也要上屏
                     drain_light(cx);
                 }
@@ -259,7 +280,7 @@ impl JsSurface {
                     || key_name == "Backspace"
                     || key_name == "Delete" =>
             {
-                if helix_js::input_has_state(self.id, fid) {
+                if cx.js_input_has_state(self.id, fid) {
                     if cx.js_dispatch_input_key(self.id, fid, &key.name).is_ok() {
                         drain_light(cx);
                         return Some(EventResult::Consumed(None));

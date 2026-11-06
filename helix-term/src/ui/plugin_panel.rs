@@ -45,6 +45,9 @@ impl PluginPanel {
     fn opts(&self) -> crate::ui::js_surface::SurfaceOpts {
         crate::ui::js_surface::SurfaceOpts {
             collect_focusables: self.focusable,
+            // 面板不自动抢焦点：面板的焦点是"进/出"语义（Tab 进、Esc 出），
+            // 自动抢会把「面板开着但焦点在编辑器」这个常态打掉。
+            auto_focus_first: false,
             reset_missing_focus: self.focusable,
             esc_releases_focus: true,
             label: "panel",

@@ -266,7 +266,7 @@ pub(crate) fn js_open_popup(
     Ok(JsValue::from(id))
 }
 
-/// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。
+/// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。/// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。
 pub fn unregister_component_render(id: u64) {
     crate::init();
     crate::state::with_popups_current(|p| {
@@ -1144,10 +1144,13 @@ fn el_input_props(
         ("id".to_string(), id_val),
         ("value".to_string(), obj.get(JsString::from("value"), ctx)?),
     ];
+    // ⚠ 白名单漏一项 = 该属性被**静默丢弃**：`onChange`/`multiline` 曾在这里缺席，
+    // 于是文档里写的"引擎权威值 + onChange 回写""multiline 换行"从未生效（实测：
+    // 弹窗输入框永远拿不到 onChange，值停在初始值）。新增 input 属性务必加进来。
     take_opt_props(
         &obj,
         ctx,
-        &["onKey", "onPress", "width", "flex"],
+        &["onKey", "onPress", "onChange", "multiline", "width", "flex"],
         &mut props,
     )?;
     Ok(props)
@@ -1613,7 +1616,8 @@ fn node_input(
     let multiline_param = obj_opt_bool(obj, "multiline", ctx, api)?.unwrap_or(false);
     // 引擎权威：首次渲染用 JS 传值初始化；之后用 InputStates 状态覆盖 JS 传值。
     // multiline 同取 state(引擎权威)——渲染回调动态改参不与编辑语义分叉。
-    let (value, cursor, multiline) = crate::host::with_state_or_init(|st| {
+    let st = crate::host::host_state(ctx);
+    let (value, cursor, multiline) = {
         crate::input::with_input_states(st, |m| match m.entry((id, node_id.clone())) {
             std::collections::hash_map::Entry::Occupied(e) => {
                 let s = e.get();
@@ -1629,7 +1633,7 @@ fn node_input(
                 (js_value.clone(), c, multiline_param)
             }
         })
-    });
+    };
     Ok(CompNode::Input {
         value,
         cursor,

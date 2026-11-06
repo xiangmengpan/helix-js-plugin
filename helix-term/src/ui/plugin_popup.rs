@@ -24,6 +24,8 @@ const OPTS: crate::ui::js_surface::SurfaceOpts = crate::ui::js_surface::SurfaceO
     collect_focusables: true,
     reset_missing_focus: false,
     esc_releases_focus: false,
+    // 弹窗：第一个 input/button 自动拿焦点 ⇒ `el("input")` 开箱能用（不然要先按 Tab）
+    auto_focus_first: true,
     label: "popup",
 };
 

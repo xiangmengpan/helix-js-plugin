@@ -43,6 +43,7 @@ pub use input::{
     dispatch_input_key, dispatch_input_paste, input_edit, input_has_state, input_is_multiline,
     with_input_states, with_input_states_current, InputState,
 };
+pub use input::{input_has_state_in, input_is_multiline_in};
 pub use lsp::*;
 pub use popup::*;
 pub use shell::*;

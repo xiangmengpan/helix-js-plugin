@@ -289,20 +289,30 @@ pub(crate) fn clear_popup_inputs(popup_id: u64) {
 /// 该 input 节点是否已渲染（有引擎状态）。未渲染的节点返回 false。
 /// 供 helix-term 按键路由判断：有状态 → 编辑键走 dispatch_input_key，否则按 button 处理。
 pub fn input_has_state(popup_id: u64, node_id: &str) -> bool {
-    crate::host::with_state_or_init(|st| {
-        with_input_states(st, |m| m.contains_key(&(popup_id, node_id.to_string())))
-    })
+    crate::host::with_state_or_init(|st| input_has_state_in(st, popup_id, node_id))
+}
+
+/// 显式宿主版：**键路由必须用调用方那份宿主**。
+///
+/// 为什么：`dispatch_input_key` 与 `node` 的 `onChange` 处理器都挂在**应用宿主**上，
+/// 而隐式解析在多宿主场景会是另一个（实测：弹窗里 `el("input")` 永远收不到字符 ——
+/// `input_has_state` 说没有状态，字符就被当成普通 onKey 丢掉了）。
+pub fn input_has_state_in(st: &HostState, popup_id: u64, node_id: &str) -> bool {
+    with_input_states(st, |m| m.contains_key(&(popup_id, node_id.to_string())))
 }
 
 /// 该 input 是否多行（按键路由用）：multiline 时 Enter/Up/Down 是编辑键
 /// （换行/行间移动,走 dispatch_input_key）；单行时 Enter/Up/Down 走 onKey（提交/候选导航）。
 pub fn input_is_multiline(popup_id: u64, node_id: &str) -> bool {
-    crate::host::with_state_or_init(|st| {
-        with_input_states(st, |m| {
-            m.get(&(popup_id, node_id.to_string()))
-                .map(|s| s.multiline)
-                .unwrap_or(false)
-        })
+    crate::host::with_state_or_init(|st| input_is_multiline_in(st, popup_id, node_id))
+}
+
+/// 显式宿主版（同上：路由必须问同一个宿主）
+pub fn input_is_multiline_in(st: &HostState, popup_id: u64, node_id: &str) -> bool {
+    with_input_states(st, |m| {
+        m.get(&(popup_id, node_id.to_string()))
+            .map(|s| s.multiline)
+            .unwrap_or(false)
     })
 }
 

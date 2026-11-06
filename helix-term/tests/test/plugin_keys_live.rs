@@ -393,3 +393,73 @@ async fn which_key_prefix_hint_includes_scope_inside_panel() -> anyhow::Result<(
     let _ = app.close().await;
     Ok(())
 }
+
+/// **弹窗里的文本输入**：`el("input")` + 核心自动聚焦 ⇒ 真的能打字、能提交。
+///
+/// 这条钉的是一个核心缺口：`apply_content` 只**收集** focusables、不设焦点，
+/// 而所有节点级编辑（字符/退格/方向键/粘贴）都经 `self.focus` 路由 ⇒ 早先
+/// `el("input")` 必须先按 Tab 才能打字，于是全仓 0 处使用。现在弹窗里第一个
+/// input 自动拿焦点（`SurfaceOpts.auto_focus_first`，面板不受影响）。
+#[tokio::test(flavor = "multi_thread")]
+async fn dialog_input_autofocus_accepts_typing() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("dlg.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("dlg.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("dlg-demo", { deps: [], permissions: {} });
+        helix.register_command("dlg-open", () => {
+          let value = "";
+          let pid = 0;
+          pid = helix.open_popup({
+            scope: "dlg-demo",
+            width: 40, height: 4,
+            render: () => helix.el("box", [
+              helix.el("input", {
+                id: "dlg-in", value, width: 32,
+                onChange: (v) => { value = v; },
+                // 单行 input 的 Enter 由**节点**收（核心路由）⇒ 提交 + 自己关弹层
+                onKey: (k) => {
+                  const nm = k && k.name !== undefined ? String(k.name) : String(k);
+                  if (nm === "Enter") { helix.echo("got:" + value); helix.close_popup(pid); }
+                  return "handled";
+                },
+              }),
+              helix.el("text", "hint", { style: "ui.help" }),
+            ], { border: "round", title: " 输入 ", width: 40, height: 4 }),
+            onKey: (k) => {
+              const nm = k && k.name !== undefined ? String(k.name) : String(k);
+              if (nm === "Esc") return "close";
+              if (nm === "Enter") { helix.echo("got:" + value); return "close"; }
+              return "handled";
+            },
+          });
+        }, "打开输入弹窗");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":dlg-open<ret>").await?;
+
+    // 不按 Tab，直接打 —— 弹窗首个 input 应已自动聚焦
+    feed(&mut app, "abc").await?;
+
+    feed(&mut app, "<backspace>").await?;
+    feed(&mut app, "d<ret>").await?;
+
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("got:abd"),
+        "键入应进 input 并经 onChange 回写（abc → 退格 → d ⇒ abd）: {status:?}"
+    );
+
+    let _ = app.close().await;
+    Ok(())
+}

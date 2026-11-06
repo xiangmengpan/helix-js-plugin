@@ -131,6 +131,29 @@ impl Context<'_> {
     }
 
     /// 把按键送给节点回调(`onKey`/input 光标移动)
+    /// `input` 节点是否有编辑状态；**必须**与 `js_dispatch_input_key` 用同一份宿主，
+    /// 否则路由会判成"不是 input"（字符被当普通 onKey 丢掉，实测踩过）。
+    pub fn js_input_has_state(&mut self, popup_id: u64, node_id: &str) -> bool {
+        match self.with_js(|h| helix_js::input_has_state_in(h.state(), popup_id, node_id)) {
+            Some(v) => v,
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::input_has_state_in(&st, popup_id, node_id)
+            }
+        }
+    }
+
+    /// 同上（多行判定：Enter/Up/Down 是编辑键还是 onKey）
+    pub fn js_input_is_multiline(&mut self, popup_id: u64, node_id: &str) -> bool {
+        match self.with_js(|h| helix_js::input_is_multiline_in(h.state(), popup_id, node_id)) {
+            Some(v) => v,
+            None => {
+                let st = helix_js::host::state_handle_or_init();
+                helix_js::input_is_multiline_in(&st, popup_id, node_id)
+            }
+        }
+    }
+
     pub fn js_dispatch_input_key(
         &mut self,
         popup_id: u64,
