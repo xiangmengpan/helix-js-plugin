@@ -1206,6 +1206,49 @@ interface Helix {
     /** 释放会话（条目集变化 / 弹窗关闭时调）。未知 id 是 no-op。 */
     drop(id: number): void;
   };
+  /** **核心弹窗**：文本输入 / 确认。
+   *
+   * 为什么要有：手写输入弹窗（`el("input")` + 自绘框）每个插件都得写一遍，行为必然漂移 ——
+   * 早先 filetree 只能追加/退格、没有粘贴与 IME（它自己在文件头注明了这条天花板），
+   * dapui 另画一套。这里把外壳收进核心：渲染（圆角框 + 标题）、输入
+   * （值/光标/方向键/**粘贴/IME**）、`Esc`/`Enter` 全归核心，插件只给标题与回调。
+   *
+   * 行为契约：`Esc` = 取消（调 `on_cancel` 并关层）；`Enter` 或点确认 = 提交；
+   * 输入框**自动聚焦**，不用先按 Tab；尺寸跟视口走。 */
+  dialog: {
+    /** 文本输入弹窗。`on_submit(value)` 收到引擎维护的最终值。 */
+    prompt(opts: {
+      title: string;
+      /** 初值（之后的值归引擎维护） */
+      value?: string;
+      /** 期望宽度（px，会被视口夹紧） */
+      width?: number;
+      on_submit: (value: string) => void;
+      on_cancel?: () => void;
+    }): number;
+    /** 列表弹窗：`j/k` 移动、多选时 `Space` 勾选、`Enter` 确认、`Esc` 取消。
+     *  `on_pick` 收到**选中的 value 数组**（单选时长度为 1），渲染/窗口化/键位都在核心。 */
+    select(opts: {
+      title: string;
+      /** 字符串数组，或 `{label, value}`（`value` 缺省 = `label`） */
+      items: (string | { label: string; value?: string })[];
+      /** `true` = 多选（Space 勾选，Enter 确认）；缺省单选（Enter 即选中） */
+      multi?: boolean;
+      /** 初始选中的 value 列表（多选）；单选取第一个 */
+      initial?: string[];
+      width?: number;
+      on_pick: (values: string[]) => void;
+      on_cancel?: () => void;
+    }): number;
+    /** 确认弹窗（只有一行提示，Enter = 确认）。 */
+    confirm(opts: {
+      title: string;
+      width?: number;
+      on_ok: () => void;
+      on_cancel?: () => void;
+    }): number;
+  };
+
   /** 插件**作用域键位**（面板/弹窗的按键声明表）。
    *
    * 为什么要有：面板的键以前是插件里 `switch (key.name)` 硬编码的 ⇒ 改键要改插件源码、

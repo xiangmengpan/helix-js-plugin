@@ -235,6 +235,7 @@ pub(crate) fn js_open_popup(
                 on_key,
                 on_close,
                 key_scope: key_scope.clone(),
+                native: None,
                 last: None,
                 last_key: None,
                 pure: false,
@@ -262,8 +263,51 @@ pub(crate) fn js_open_popup(
                         == crate::keymap_scope::EscAction::Blur
                 })
                 .unwrap_or(false),
+            native: false,
         }));
     Ok(JsValue::from(id))
+}
+
+/// 登记一个**核心弹窗**（`helix.dialog.*`）并入队 `OpenPopup`。
+///
+/// 与 JS 的 `open_popup` 共用同一套弹层机制（layer/几何/关闭），区别只有两点：
+/// render 不吃 JS（`NativeDialog` 直接给组件树）、Esc/Enter 由核心判。
+pub(crate) fn register_native_dialog(ctx: &mut Context, id: u64, dlg: crate::dialog::NativeDialog) {
+    let layer = "helix-dialog".to_string();
+    let width = dlg.width;
+    let height = dlg.height;
+    with_popups(crate::host::host_state(ctx), |p| {
+        p.insert(
+            id,
+            PopupCallbacks {
+                render: JsValue::undefined(),
+                on_key: None,
+                on_close: None,
+                key_scope: None,
+                native: Some(dlg),
+                last: None,
+                last_key: None,
+                pure: false,
+            },
+        )
+    });
+    UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::OpenPopup(OpenPopupReq {
+            id,
+            width: Some(width),
+            height: Some(height),
+            position: None,
+            layer,
+            center: true,
+            size_pct: None,
+            scope: None,
+            esc_blur: false,
+            native: false,
+        }));
 }
 
 /// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。/// 注销组件视图回调(组件 Drop 时;纯移除,不触发 onClose)。
@@ -331,6 +375,7 @@ pub(crate) fn js_set_component_render(
                 on_key: None,
                 on_close: None,
                 key_scope: None,
+                native: None,
                 last: None,
                 last_key: None,
                 pure,
@@ -423,6 +468,7 @@ pub(crate) fn js_open_panel(
                 on_key,
                 on_close,
                 key_scope: key_scope.clone(),
+                native: None,
                 last: None,
                 last_key: None,
                 pure: false,
@@ -2690,6 +2736,7 @@ mod tests {
                 id: _,
                 scope: _,
                 esc_blur: _,
+                native: _,
                 width,
                 height,
                 position,
@@ -2787,6 +2834,7 @@ mod tests {
                 id: _,
                 scope: _,
                 esc_blur: _,
+                native: _,
                 width,
                 height,
                 position,

@@ -31,6 +31,7 @@ pub mod config;
 pub mod cursor;
 pub mod dap;
 pub mod diagnostics;
+pub mod dialog;
 pub mod draw;
 pub mod log;
 pub mod server_rows;
@@ -38,6 +39,10 @@ pub mod server_tasks;
 pub mod watch;
 
 pub use commands::*;
+pub use dialog::{
+    native_dialog_content, native_dialog_content_env, native_dialog_ids, native_dialog_key,
+    DialogKey,
+};
 pub use icons::*;
 pub use input::{
     dispatch_input_key, dispatch_input_paste, input_edit, input_has_state, input_is_multiline,
@@ -57,8 +62,8 @@ pub use state::{
     cache_layout, cache_pane_mode, cache_panes, cache_plugin_overrides, clear_command_args,
     config_schemas, register_component_state, seed_config_schema, set_command_args,
     set_layouts_dir, set_picker_state, set_plugin_roots, set_runtime_dirs, set_term_wake,
-    set_viewport, statusline_replaces, statusline_zones, take_messages, take_ui_requests,
-    unregister_component_state,
+    set_viewport, statusline_replaces, statusline_zones, take_messages, take_messages_in,
+    take_ui_requests, unregister_component_state,
 };
 // **L3 过渡入口**:helix-term 的"无宿主分支"与 `Drop` 实现拿不到 `&HostState` ⇒
 // 这些 `*_current` 是同一批访问器的隐式版本。它们**只**给 helix-term 的边界用,

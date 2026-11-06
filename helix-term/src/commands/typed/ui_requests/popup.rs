@@ -16,6 +16,7 @@ pub(crate) fn handle_open_popup(
         size_pct,
         scope,
         esc_blur,
+        native,
     }: OpenPopupReq,
 ) -> anyhow::Result<()> {
     let lid = layer_id(&layer);
@@ -25,7 +26,8 @@ pub(crate) fn handle_open_popup(
             lid,
             ui::PluginPopup::new(id, None)
                 .with_layer(lid)
-                .with_scope(scope.clone()),
+                .with_scope(scope.clone())
+                .with_native(native),
         )
         .floating(width, height, size_pct)
         .auto_close(false)
@@ -34,7 +36,8 @@ pub(crate) fn handle_open_popup(
             lid,
             ui::PluginPopup::new(id, width.zip(height))
                 .with_layer(lid)
-                .with_scope(scope),
+                .with_scope(scope)
+                .with_native(native),
         )
         .position(position.map(|(row, col)| helix_core::Position::new(row as usize, col as usize)))
         .auto_close(false)

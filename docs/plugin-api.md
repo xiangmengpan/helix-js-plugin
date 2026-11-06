@@ -124,6 +124,60 @@
 - 优点:声明式树 + 焦点;input 引擎权威;渲染脏格 diff;补全/组件外观全可定制且回退安全。
 - 局限:scroll O(内容);无树内点击命中;面板无节点焦点;completion 行钩子每帧每行(勿跑重逻辑)。
 
+#### 核心弹窗（`helix.dialog.prompt` / `confirm`）
+
+要一个"输一行"或"确认一下"的弹窗时，**不要手写** —— 核心已经有：
+
+```js
+helix.dialog.prompt({
+  title: "重命名 a.rs", value: "a.rs",
+  on_submit: (v) => rename(v),     // Enter 提交，收到引擎维护的最终值
+  on_cancel: () => {},             // Esc
+});
+helix.dialog.confirm({ title: "删除 /tmp/x ?", on_ok: () => remove() });
+
+// 列表（单选 / 多选）：渲染、窗口化、j/k/Space/Enter 全在核心
+helix.dialog.select({
+  title: "选一个符号", items: ["alpha", "beta"],            // 或 [{label, value}]
+  on_pick: (values) => open(values[0]),                     // 单选也交回数组
+});
+helix.dialog.select({
+  title: "异常断点", multi: true, items: [{ label: "Catch", value: "catch" }],
+  initial: ["catch"], on_pick: (values) => setFilters(values),
+});
+```
+
+渲染（圆角框 + 标题）、输入（值/光标/`←→ Home End Backspace Delete`/**粘贴/IME**）、
+`Esc`/`Enter` 全归核心；尺寸跟视口走；输入框**自动聚焦**。早期各插件自己拼字符时
+的已知天花板（"不支持粘贴/IME"）随之消失。
+
+#### 自定义外观：`helix.el("input")`
+
+弹窗里的输入**不要自己拼字符** —— 核心的 input 节点已经把值、光标、编辑键都做好了：
+
+```js
+let value = initial, id = 0;
+const submit = () => { on_submit(value); helix.close_popup(id); };
+id = helix.open_popup({
+  render: () => helix.el("box", [
+    helix.el("input", {
+      id: "my-input", value, width: 40,
+      onChange: (v) => { value = v; },              // 引擎权威：每次编辑回调一次
+      onKey: (k) => { if (k.name === "Enter") submit(); return "handled"; },
+    }),
+    helix.el("text", "Enter 确认 · Esc 取消", { style: "ui.help" }),
+  ], { border: "round", title: " 重命名 ", width: 44, height: 4 }),
+  onKey: (k) => (k.name === "Esc" ? "close" : "handled"),
+});
+```
+
+- **弹窗里第一个 input/button 自动拿焦点**（面板不自动抢，面板的焦点是 Tab 进 / Esc 出）。
+- 编辑键归核心：字符 · `Backspace` · `Delete` · `←→ Home End` · 粘贴/IME；`multiline: true` 时
+  `Enter` 换行、`↑↓` 行间移动。
+- **单行 input 的 `Enter` 路由给该节点自己的 `onKey`**（不是弹窗的 `onKey`）⇒ 提交逻辑写在这里；
+  节点回调的返回值被忽略，要关弹层请调 `helix.close_popup(id)`。
+- 文本输入弹窗**不要绑 `passthrough: [":"]`** —— 那里 `:` 是要输入的字符。
+
 #### 插件作用域键位（`helix.keymap.*`，2026-11-04）
 
 面板/弹窗的按键不再硬编码在插件里，改成**声明表**：
@@ -472,6 +526,7 @@ helix.pane_mode.*   current, keymap
 helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode, sys
 helix.proc_stats()  → {cpu_ms, rss_kb} | null   // 本进程自省(跨平台,不消耗能力)
 helix.keymap.*   active_scope, hints, resolve, scope, unregister   // 插件作用域键位(面板/弹窗)
+helix.dialog.*   confirm, prompt, select   // 核心弹窗(确认 / 文本输入 / 列表)
                 //   scope / resolve / hints / unregister 四个成员
 helix.fuzzy.*   drop, run, session
 helix.picker.*   define, run

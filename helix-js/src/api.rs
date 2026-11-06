@@ -1591,6 +1591,31 @@ pub static API: &[Entry] = &[
         &[],
     ),
     e_kind(Target::Ns("icons"), "enabled", 1, MemberKind::Dynamic, &[]),
+    // ── dialog：**核心弹窗**（文本输入 / 确认）。渲染与 Esc/Enter 归核心，插件只给标题与回调
+    e(
+        Target::Ns("dialog"),
+        "prompt",
+        1,
+        crate::dialog::js_dialog_prompt,
+        "js_dialog_prompt",
+        &[],
+    ),
+    e(
+        Target::Ns("dialog"),
+        "select",
+        1,
+        crate::dialog::js_dialog_select,
+        "js_dialog_select",
+        &[],
+    ),
+    e(
+        Target::Ns("dialog"),
+        "confirm",
+        1,
+        crate::dialog::js_dialog_confirm,
+        "js_dialog_confirm",
+        &[],
+    ),
     // ── keymap：插件**作用域键位**（面板/弹窗的按键声明表，见 `keymap_scope.rs`）
     e(
         Target::Ns("keymap"),
@@ -1680,6 +1705,7 @@ pub static ATTACH: &[Attach] = &[
     Attach::Ns("pane"),
     Attach::Ns("icons"),
     Attach::Ns("keymap"),
+    Attach::Ns("dialog"),
     Attach::Ns("fuzzy"),
     Attach::Ns("stack"),
     Attach::Ns("draw"),

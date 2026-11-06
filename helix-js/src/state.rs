@@ -1032,6 +1032,13 @@ pub(crate) fn with_lsp_promises<T>(
 }
 
 /// 取走并清空 echo 消息队列
+/// 显式宿主版（**与弹层/回调同一份宿主**；隐式解析在多宿主下会拿到另一条队列 ——
+/// 实测：核心弹窗的 `on_cancel` echo 了，状态栏却是空的）。
+pub fn take_messages_in(st: &HostState) -> Vec<String> {
+    let _ = st;
+    crate::host::with_messages_for(st, std::mem::take)
+}
+
 pub fn take_messages() -> Vec<String> {
     // 取走:队列按宿主隔离(T1 步骤 2);无宿主 ⇒ 空(**不得** init —— 那会建整个引擎)
     crate::host::try_with_messages(std::mem::take).unwrap_or_default()

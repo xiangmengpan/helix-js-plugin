@@ -593,7 +593,6 @@ const G = {
   diag: null,          // Map<绝对路径, {severity, count}>：最严重级别（见设计文档 §14）
   show_hidden: CFG.show_hidden === true, // 初值取 [plugins.filetree] show_hidden;H 切换
   follow: true,        // F 切换：buffer-open 时自动定位当前文件
-  prompt_value: "",    // 输入弹窗的文本框值（JS 状态渲染）
   last_cwd: null,      // cwd-change 时判断"哪些实例的 root 就是旧 cwd"
 };
 
@@ -1477,58 +1476,28 @@ function toggle_panel() {
 
 // 文本输入弹窗：字符键直接拼输入（无焦点依赖——input 组件聚焦时 Enter 会被吞）
 // 按键：普通字符/Backspace 编辑 → Enter 提交 → Esc 取消
+// ── 输入 / 确认弹窗 ────────────────────────────────────────────────
+// 交给**核心**（`helix.dialog.*`）：渲染（圆角框 + 标题）、输入（值/光标/方向键/粘贴/IME）、
+// Esc/Enter 全在核心里，插件只给标题与回调。早先这里自己拼字符 —— 天花板写在文件头
+// 注释里："不支持粘贴/IME"。dapui 也用同一套 ⇒ 两个插件的外观与行为不会再漂。
 function prompt(title, initial, on_submit) {
-  G.prompt_value = initial;
-  helix.open_popup({
-    width: 50,
-    height: 5,
-    render: () =>
-      helix.el("col", [
-        helix.el("text", title, { style: "ui.virtual" }),
-        helix.el("text", "> " + G.prompt_value + (G.prompt_value.length < 40 ? "_" : ""), { style: "ui.popup" }),
-        helix.el("text", "Enter 确认 · Esc 取消", { style: "ui.help" }),
-      ], { gap: 1 }),
-    onKey: (key) => {
-      if (key.ctrl || key.alt) return "handled";
-      if (key.name === "Enter") {
-        const v = G.prompt_value;
-        G.prompt_value = "";
-        on_submit(v);
-        return "close";
-      }
-      if (key.name === "Esc") return "close";
-      if (key.name === "Backspace") {
-        G.prompt_value = G.prompt_value.slice(0, -1);
-        return "handled";
-      }
-      if (key.name.length === 1) {
-        G.prompt_value += key.name;
-        return "handled";
-      }
-      return "handled";
-    },
+  if (!helix.dialog || !helix.dialog.prompt) {
+    helix.echo("filetree: 这个版本没有 helix.dialog.prompt（输入弹窗不可用）");
+    return;
+  }
+  helix.dialog.prompt({
+    title,
+    value: initial === null || initial === undefined ? "" : String(initial),
+    on_submit,
   });
 }
 
-// 确认弹窗（无输入）：Enter 确认 / Esc 取消
 function confirm(title, on_ok) {
-  helix.open_popup({
-    width: 60,
-    height: 4,
-    render: () =>
-      helix.el("col", [
-        helix.el("text", title, { style: "ui.popup" }),
-        helix.el("text", "Enter 确认 · Esc 取消", { style: "ui.help" }),
-      ], { gap: 1 }),
-    onKey: (key) => {
-      if (key.name === "Enter") {
-        on_ok();
-        return "close";
-      }
-      if (key.name === "Esc") return "close";
-      return "handled";
-    },
-  });
+  if (!helix.dialog || !helix.dialog.confirm) {
+    helix.echo("filetree: 这个版本没有 helix.dialog.confirm（确认弹窗不可用）");
+    return;
+  }
+  helix.dialog.confirm({ title, on_ok });
 }
 
 // ============================ 文件操作 ============================
@@ -2253,7 +2222,7 @@ if (typeof module !== "undefined" && module.exports) {
     compile_filter, dsl_hit, match_tree, glob_to_regex, parse_git_status, git_letter, is_no_match,
     list_files,
     opened_marker, worst_severity, diag_hit, diag_mark,
-    help_geometry, show_help, tree_action,
+    help_geometry, show_help, tree_action, prompt, confirm,
   };
 // render/open_panel 依赖 helix，node 测试需先 stub global.helix
 }

@@ -463,3 +463,145 @@ async fn dialog_input_autofocus_accepts_typing() -> anyhow::Result<()> {
     let _ = app.close().await;
     Ok(())
 }
+
+/// **核心弹窗**（`helix.dialog.prompt`）：渲染/输入/提交全归核心，插件只给回调。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_prompt_submits_value() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("cd.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("cd.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("cd-demo", { deps: [], permissions: {} });
+        helix.register_command("cd-open", () => {
+          helix.dialog.prompt({
+            title: "重命名 a.rs",
+            value: "a.rs",
+            on_submit: (v) => helix.echo("sub:" + v),
+            on_cancel: () => helix.echo("cancel"),
+          });
+        }, "打开核心输入弹窗");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":cd-open<ret>").await?;
+    // 不按 Tab：核心弹窗的输入框应已聚焦
+    feed(&mut app, "b.rs").await?;
+    feed(&mut app, "<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("sub:a.rsb.rs"),
+        "输入应进核心输入框（初值 a.rs + 键入 b.rs），Enter 提交: {status:?}"
+    );
+
+    let _ = app.close().await;
+    Ok(())
+}
+
+/// **核心多选弹层**（`helix.dialog.select`）：j 移动、Space 勾选、Enter 交回选中值。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_select_multi() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("sel.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("sel.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("sel-demo", { deps: [], permissions: {} });
+        helix.register_command("sel-open", () => {
+          helix.dialog.select({
+            title: "异常断点",
+            multi: true,
+            items: [{ label: "Catch", value: "catch" }, { label: "Throw", value: "throw" }],
+            initial: ["throw"],
+            on_pick: (vs) => helix.echo("picked:" + vs.join(",")),
+            on_cancel: () => helix.echo("cancel"),
+          });
+        }, "打开多选弹层");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":sel-open<ret>").await?;
+    // 画面：圆角框里应列出两项（渲染分支漏接线时这里会是空的）
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(
+            screen.contains("Catch") && screen.contains("Throw"),
+            "多选弹层应真的画出条目:\n{screen}"
+        );
+    }
+    // 初始选中 throw；j 移到 Throw 上再 Space 取消它，然后 k 回 Catch 勾上
+    feed(&mut app, "j").await?;
+    feed(&mut app, " ").await?;
+    feed(&mut app, "k").await?;
+    feed(&mut app, " ").await?;
+    feed(&mut app, "<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("picked:catch"),
+        "j/Space/k/Space 后应只剩 catch（throw 被取消勾选）: {status:?}"
+    );
+
+    let _ = app.close().await;
+    Ok(())
+}
+
+/// 核心弹窗的取消：Esc ⇒ `on_cancel`，不提交。
+///
+/// 单独一条用例（不和提交混在同一 app 里）：提交会关层并留下异步的 `close_popup`
+/// 请求，紧接着再开一个弹窗会被那笔请求的时序干扰（实测：混在一起时第二个弹窗收不到键）。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_cancel() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("cx.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("cx.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("cx-demo", { deps: [], permissions: {} });
+        helix.register_command("cx-open", () => {
+          helix.dialog.prompt({
+            title: "改个名字",
+            value: "keep",
+            on_submit: (v) => helix.echo("sub:" + v),
+            on_cancel: () => helix.echo("cancel"),
+          });
+        }, "打开输入弹窗");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":cx-open<ret>").await?;
+    feed(&mut app, "<esc>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("cancel"),
+        "Esc 应触发 on_cancel: {status:?}"
+    );
+    assert!(!status.contains("sub:"), "Esc 不该提交: {status:?}");
+
+    let _ = app.close().await;
+    Ok(())
+}

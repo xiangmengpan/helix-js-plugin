@@ -96,6 +96,10 @@ pub struct HostState {
     /// 主题覆盖的属主(scope → 插件名)。`:plugin-unload` 按它回收该插件的覆盖。
     pub(crate) theme_owners: RefCell<HashMap<String, String>>,
 
+    /// 列表弹窗（`helix.dialog.select`）的运行期状态：弹层 id → 游标/勾选。
+    /// 与声明（`PopupCallbacks.native`）分开：游标是会变的状态，声明每帧只读。
+    pub(crate) dialog_select: RefCell<HashMap<u64, crate::dialog::SelectState>>,
+
     /// **作用域键位表**（`helix.keymap.scope`，见 `keymap_scope` 模块）。
     /// 面板/弹窗的按键声明都在这张表里 —— 与 `keymaps`(原生 trie) 是两套命名空间。
     pub(crate) key_scopes: RefCell<HashMap<String, crate::keymap_scope::Scope>>,
@@ -341,6 +345,7 @@ impl JsHost {
             configs: RefCell::new(String::new()),
             theme_owners: RefCell::new(HashMap::new()),
             key_scopes: RefCell::new(HashMap::new()),
+            dialog_select: RefCell::new(HashMap::new()),
             keymap_bindings: RefCell::new(HashMap::new()),
             key_overrides: RefCell::new(HashMap::new()),
             style_source: RefCell::new(None),
@@ -1109,6 +1114,12 @@ pub fn push_message(msg: impl Into<String>) {
 /// echo 消息队列的访问器(**按宿主**隔离)。入队 / 取走都走它。
 pub(crate) fn with_messages<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     with_host_ref(|h| f(&mut h.messages.borrow_mut()))
+}
+
+/// 同 `with_messages`，但**指定宿主**（核心弹窗的回调/关闭要走它 —— 隐式解析在
+/// 多宿主下是另一条队列，实测表现是"echo 了但状态栏是空的"）。
+pub(crate) fn with_messages_for<T>(st: &HostState, f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    f(&mut st.messages.borrow_mut())
 }
 
 /// 加载缓存的访问器(**按宿主**隔离)。

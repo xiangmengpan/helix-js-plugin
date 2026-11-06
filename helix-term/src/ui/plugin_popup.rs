@@ -17,6 +17,8 @@ pub struct PluginPopup {
     /// 绑定的键位作用域（B 阶段：状态栏徽标与 Esc 兜底）—— 由 `OpenPopupReq.scope` 带下来，
     /// **不**在渲染期反查宿主（多宿主下会查错表，实测踩过）
     scope: Option<String>,
+    /// **核心弹窗**（`helix.dialog.*`）：布局期跳过 JS 预渲染（render 是 undefined）
+    native: bool,
 }
 
 /// 弹窗的共享层差异:恒收集可聚焦节点;**不做**焦点失效重置(与面板不同,保持原行为)。
@@ -35,6 +37,7 @@ impl PluginPopup {
             surface: crate::ui::js_surface::JsSurface::new(id),
             size_hint,
             scope: None,
+            native: false,
             layer: None,
         }
     }
@@ -52,9 +55,68 @@ impl PluginPopup {
         self
     }
 
+    /// 标记为**核心弹窗**（`helix.dialog.*`）：布局期不预渲染 JS render。
+    pub fn with_native(mut self, native: bool) -> Self {
+        self.native = native;
+        self
+    }
+
     /// 弹层实例 id(`open_popup` 返回的那个)—— compositor 按它移除层。
     pub(crate) fn id(&self) -> u64 {
         self.surface.id
+    }
+
+    /// 核心弹窗的 Esc/Enter：调回调 → 关层（与 `PopupKeyResult::Close` 同一路径）。
+    fn native_dialog_key(
+        &mut self,
+        key: &helix_js::PluginKey,
+        cx: &mut Context,
+    ) -> Option<EventResult> {
+        let id = self.surface.id;
+        let (action, submit, cancel) = cx
+            .with_js(|h| helix_js::native_dialog_key(h.state(), id, &key.name))
+            .flatten()?;
+        // 列表里移动游标/勾选：只消费按键，下一帧重绘（不关层）
+        if matches!(action, helix_js::DialogKey::Nav) {
+            helix_event::request_redraw();
+            return Some(EventResult::Consumed(None));
+        }
+        let cb = match &action {
+            helix_js::DialogKey::Cancel => cancel,
+            _ => submit,
+        };
+        if let Some(cb) = cb {
+            let res = match &action {
+                helix_js::DialogKey::Submit(v) => helix_js::dialog::call_dialog_callback(&cb, v),
+                helix_js::DialogKey::SubmitMany(vs) => {
+                    helix_js::dialog::call_dialog_callback_values(&cb, vs)
+                }
+                // 取消：回调不带参数（插件侧签名是 `on_cancel: () => …`）
+                helix_js::DialogKey::Cancel => helix_js::dialog::call_dialog_callback(&cb, ""),
+                helix_js::DialogKey::Nav => Ok(()),
+            };
+            if let Err(e) = res {
+                cx.editor.set_error(e);
+            }
+        }
+        // 与 onKey 返回 "close" 完全一致：先通知 JS，再移除层，最后刷状态栏
+        let layer = self.layer;
+        Some(EventResult::Consumed(Some(Box::new(
+            move |compositor: &mut Compositor, cx: &mut Context| {
+                let _ = helix_js::close_popup(id);
+                if let Some(layer) = layer {
+                    compositor.remove(layer);
+                } else {
+                    compositor.pop();
+                }
+                let msgs = cx
+                    .with_js(|h| helix_js::take_messages_in(h.state()))
+                    .unwrap_or_else(helix_js::take_messages);
+                if !msgs.is_empty() {
+                    cx.editor.set_status(msgs.join(" "));
+                }
+            },
+        ))))
     }
 
     /// 清空脏格 diff 状态(测试向不同 surface 渲染时需要重置)
@@ -69,6 +131,12 @@ impl PluginPopup {
 
     /// 无 `Context` 的预布局路径(`Component::required_size` 在布局期被调用)。
     fn refresh(&mut self, viewport: (u16, u16)) {
+        // 布局期的预渲染（`required_size` 拿不到 Context）：核心弹窗的尺寸来自
+        // `width`/`height`，由 `with_native` 标记后**跳过**预渲染 —— JS render 对它是
+        // undefined，走那条路只会渲染出一行错误。
+        if self.native {
+            return;
+        }
         self.surface.refresh_global(viewport, OPTS);
     }
 }
@@ -91,6 +159,11 @@ impl Component for PluginPopup {
         // 节点焦点路由:Tab 移动焦点;焦点在 button/input 时按键直接路由,不经过弹窗级 onKey。
         if key.name == "Tab" && self.surface.tab_focus(key.shift) {
             return EventResult::Consumed(None);
+        }
+        // 核心弹窗：Esc/Enter 在这里判（**必须在节点路由之前** —— 焦点在单行 input 时
+        // 核心会把 Enter 交给该节点的 onKey，弹窗的 onKey 根本收不到）。
+        if let Some(result) = self.native_dialog_key(&key, cx) {
+            return result;
         }
         if !self.surface.focusables.is_empty() {
             if let Some(result) = self.surface.node_key(&key, cx, OPTS) {
@@ -136,7 +209,17 @@ impl Component for PluginPopup {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        self.surface.refresh(cx, (area.width, area.height), OPTS);
+        let id = self.surface.id;
+        // 核心弹窗（`helix.dialog.*`）：内容由核心给，跳过 JS render
+        let native = cx
+            .with_js(|h| helix_js::native_dialog_content(h.state(), id))
+            .unwrap_or_else(|| helix_js::native_dialog_content_env(id));
+        match native {
+            Some(content) => self
+                .surface
+                .refresh_native(content, (area.width, area.height), OPTS),
+            None => self.surface.refresh(cx, (area.width, area.height), OPTS),
+        }
         // 脏格 diff 渲染:只重绘变化格
         self.surface.render_lines(area, surface, &cx.editor.theme);
     }

@@ -38,6 +38,21 @@ global.helix = {
     global.__popup = opts;
     return 1;
   },
+  // 单行 input 的 Enter 由**节点** onKey 收 ⇒ 弹层要自己关（核心 API）
+  close_popup: (id) => {
+    global.__closed_popup = id;
+  },
+  // 核心弹窗（prompt/confirm 现在委托给它）
+  dialog: {
+    prompt: (opts) => {
+      global.__dialog = { kind: "prompt", ...opts };
+      return 1;
+    },
+    confirm: (opts) => {
+      global.__dialog = { kind: "confirm", ...opts };
+      return 1;
+    },
+  },
   el: (kind, children, opts) => ({ kind, children: children || [], opts: opts || {} }),
   text: {
     // 够用的 cell 宽度：ASCII 1、CJK 2（与真实 `helix.text.width` 同口径）
@@ -68,8 +83,26 @@ const {
   opened_marker, worst_severity, diag_hit, diag_mark, new_panel, G,
   target_panel, panel_for_path, close_panel,
   state_encode, state_decode, save_state, load_state, state_for_root,
-  help_geometry, show_help, tree_action,
+  help_geometry, show_help, tree_action, prompt, confirm,
 } = require('../plugin.js');
+const api = { prompt, confirm };
+
+/// Enter：焦点在 input 时核心把它路由给**节点**的 onKey（不到弹窗）
+function press_enter(popup) {
+  const find = (n) => {
+    if (!n || typeof n !== "object") return null;
+    if (n.kind === "input") return n;
+    for (const c of Array.isArray(n.children) ? n.children : []) {
+      const hit = find(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const input = find(popup.render());
+  const props = input && !Array.isArray(input.children) ? input.children : null;
+  if (props && typeof props.onKey === "function") return props.onKey({ name: "Enter" });
+  return popup.onKey({ name: "Enter" });
+}
 
 const rows = (n) => Array.from({ length: n }, (_, i) => ({ node: { path: 'p' + i }, depth: 0 }));
 
@@ -945,4 +978,41 @@ test('? 帮助用例的全局桩复位（顺序无关）', () => {
   global.__viewport = [120, 40];
   global.__hints = null;
   assert.equal(global.__viewport[0], 120);
+});
+
+// ─────────────── 输入/确认弹窗：委托核心 `helix.dialog.*` ───────────────
+// 由来：这两处曾经自己拼字符（只能追加/退格），天花板写在文件头——"不支持粘贴/IME"。
+// 现在渲染、输入（光标/方向键/粘贴/IME）、Esc/Enter 都在核心里，插件只给标题与回调。
+test('prompt 委托给 helix.dialog.prompt（初值/回调原样传下去）', () => {
+  let got = null;
+  api.prompt('重命名 a.rs', 'a.rs', (v) => {
+    got = v;
+  });
+  assert.equal(global.__dialog.kind, 'prompt');
+  assert.equal(global.__dialog.title, '重命名 a.rs');
+  assert.equal(global.__dialog.value, 'a.rs', '初值透传');
+  global.__dialog.on_submit('b.rs');
+  assert.equal(got, 'b.rs', '核心提交时把值交回插件');
+});
+
+test('confirm 委托给 helix.dialog.confirm', () => {
+  let ok = false;
+  api.confirm('删除 /tmp/x ?', () => {
+    ok = true;
+  });
+  assert.equal(global.__dialog.kind, 'confirm');
+  assert.equal(global.__dialog.title, '删除 /tmp/x ?');
+  global.__dialog.on_ok();
+  assert.equal(ok, true);
+});
+
+test('没有 helix.dialog 的旧二进制：给一句可见提示，不抛错', () => {
+  const saved = global.helix.dialog;
+  delete global.helix.dialog;
+  try {
+    assert.doesNotThrow(() => api.prompt('x', '', () => {}));
+    assert.doesNotThrow(() => api.confirm('x', () => {}));
+  } finally {
+    global.helix.dialog = saved;
+  }
 });

@@ -64,6 +64,7 @@ pub(crate) fn js_split(
                         on_key: on_key.as_callable().map(|_| on_key),
                         on_close: None,
                         key_scope: key_scope.clone(),
+                        native: None,
                         last: None,
                         last_key: None,
                         pure: false,

@@ -288,6 +288,34 @@ pub(crate) fn clear_popup_inputs(popup_id: u64) {
 
 /// 该 input 节点是否已渲染（有引擎状态）。未渲染的节点返回 false。
 /// 供 helix-term 按键路由判断：有状态 → 编辑键走 dispatch_input_key，否则按 button 处理。
+/// 保证某输入节点有状态（**原生弹窗**用：它不走 JS 的 `el("input")` 解析流程）。
+/// 返回 `(当前值, 光标)`；已存在则原样返回（引擎权威：JS 传值只用于初始化）。
+pub fn ensure_state(
+    st: &HostState,
+    popup_id: u64,
+    node_id: &str,
+    initial: &str,
+) -> (String, usize) {
+    with_input_states(st, |m| {
+        let s = m
+            .entry((popup_id, node_id.to_string()))
+            .or_insert_with(|| InputState {
+                value: initial.to_string(),
+                cursor: initial.chars().count(),
+                multiline: false,
+            });
+        (s.value.clone(), s.cursor)
+    })
+}
+
+/// 读某个输入节点的当前值（原生弹窗提交时用）
+pub fn state_value(st: &HostState, popup_id: u64, node_id: &str) -> Option<String> {
+    with_input_states(st, |m| {
+        m.get(&(popup_id, node_id.to_string()))
+            .map(|s| s.value.clone())
+    })
+}
+
 pub fn input_has_state(popup_id: u64, node_id: &str) -> bool {
     crate::host::with_state_or_init(|st| input_has_state_in(st, popup_id, node_id))
 }

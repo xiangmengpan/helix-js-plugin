@@ -151,6 +151,27 @@ function make_host(opts) {
       calls.popup = opts;
       return 1;
     },
+    // 核心弹窗（ask_text 现在委托给它）；calls.popup 同时镜像一份，老用例照旧可读
+    dialog: o.noDialog ? undefined : {
+      prompt: (opts) => {
+        calls.dialog = opts;
+        calls.popup = opts;
+        return 1;
+      },
+      confirm: (opts) => {
+        calls.dialog = opts;
+        return 1;
+      },
+      select: (opts) => {
+        calls.dialog = opts;
+        calls.popup = opts;
+        return 1;
+      },
+    },
+    // 单行 input 的 Enter 由**节点** onKey 收 ⇒ 弹层要自己关（核心 API）
+    close_popup: (id) => {
+      calls.closedPopup = id;
+    },
     // 弹层里用的是组件树;测试只需要“能被调”
     el: (kind, children, opts) => ({ kind, children, opts }),
     open_file: (...args) => calls.opened.push(args),
@@ -225,6 +246,61 @@ function make_host(opts) {
     },
   };
   return { host, calls };
+}
+
+/// 模拟引擎对 `el("input")` 的编辑：单字符/退格由**核心**路由到 input 节点，
+/// 不走弹窗 onKey。桩里就把它等效成"追加字符 + 调 onChange"。
+function type_into(popup, text) {
+  // 核心弹窗（dialog.prompt）：值由核心维护，桩里直接改传入的 value 再触发回调
+  if (popup && popup.on_submit && !popup.render) {
+    const v = String(popup.value || "");
+    popup.value = text && text.backspace ? v.slice(0, -1) : v + text;
+    return popup.value;
+  }
+  const kids = (n) => (Array.isArray(n) ? n : []);
+  const find = (n) => {
+    if (!n || typeof n !== "object") return null;
+    if (n.kind === "input") return n;
+    for (const c of kids(n.children)) {
+      const hit = find(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const tree = popup.render();
+  const input = find(tree);
+  assert.ok(input, "弹窗里应有 input 节点");
+  // 叶子节点的属性放第二个参数 ⇒ 桩里落在 children（不是 opts）
+  // `helix.el("input", {…})` ⇒ 属性在第二参（桩里落在 children）；写成 `el("input", [], {…})` 则在 opts
+  const props =
+    input.children && !Array.isArray(input.children) ? input.children : (input.opts || {});
+  const next =
+    text && text.backspace
+      ? String(props.value || "").slice(0, -1) // 退格由核心处理：删掉最后一个字符
+      : String(props.value || "") + text;
+  if (typeof props.onChange === "function") props.onChange(next);
+  return next;
+}
+
+/// Enter：焦点在 input 时核心把它路由给**节点**的 onKey（不到弹窗）
+function press_enter(popup) {
+  if (popup && popup.on_submit && !popup.render) {
+    popup.on_submit(popup.value || "");
+    return "close";
+  }
+  const find = (n) => {
+    if (!n || typeof n !== "object") return null;
+    if (n.kind === "input") return n;
+    for (const c of Array.isArray(n.children) ? n.children : []) {
+      const hit = find(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const input = find(popup.render());
+  const props = input && !Array.isArray(input.children) ? input.children : null;
+  if (props && typeof props.onKey === "function") return props.onKey({ name: "Enter" });
+  return popup.onKey({ name: "Enter" });
 }
 
 function load(opts) {
@@ -782,8 +858,8 @@ test('断点页:c 改条件时把 log/hit 原样带上(核心是整组覆盖)', 
   api.open_bottom('breakpoints');
   api.key_breakpoints({ name: 'c' });
   assert.ok(calls.popup, 'c 应弹输入层（picker 收不到纯字符键）');
-  for (const ch of 'x>1') calls.popup.onKey({ name: ch });
-  calls.popup.onKey({ name: 'Enter' });
+  type_into(calls.popup, 'x>1'); // 字符由核心 input 节点消费
+  press_enter(calls.popup);
   await tick();
   assert.deepEqual(calls.setbp, [
     ['/tmp/a.rs', 3, { condition: 'x>1', log: 'x is {x}', hit: '5' }],
@@ -798,10 +874,8 @@ test('断点页:l 改日志消息(空串 = 清除该项)', async () => {
   });
   api.open_bottom('breakpoints');
   api.key_breakpoints({ name: 'l' });
-  calls.popup.onKey({ name: 'Backspace' });
-  calls.popup.onKey({ name: 'Backspace' });
-  calls.popup.onKey({ name: 'Backspace' });
-  calls.popup.onKey({ name: 'Enter' });
+  for (let i = 0; i < 3; i++) type_into(calls.popup, { backspace: true });
+  press_enter(calls.popup);
   await tick();
   assert.deepEqual(calls.setbp, [['/tmp/a.rs', 0, { condition: 'n>2', log: null, hit: null }]]);
 });
@@ -899,8 +973,8 @@ test('w/W:监视表达式（add → 顶部 Watches 组 + eval；W 清空）', as
   // 加监视：ask_text 弹层 → 输入 x → Enter
   api.key_tree({ name: 'w' }, { path: '/tmp/m.c', text: 'x', cursor: { row: 0, col: 0 }, selection: null });
   assert.ok(calls.popup, 'w 应弹输入层');
-  calls.popup.onKey({ name: 'x' });
-  calls.popup.onKey({ name: 'Enter' });
+  type_into(calls.popup, 'x'); // 单字符由核心 input 节点消费
+  press_enter(calls.popup);
   await tick();
   await tick();
   await tick();
@@ -1246,8 +1320,8 @@ test('/ 过滤：只留命中项与其祖先，且自动展开', async () => {
   // 过滤 beta
   api.key_tree({ name: '/' });
   assert.ok(calls.popup, '/ 应弹输入层');
-  calls.popup.onKey({ name: 'b' });
-  calls.popup.onKey({ name: 'Enter' });
+  type_into(calls.popup, 'b'); // 单字符由核心 input 节点消费
+  press_enter(calls.popup);
   const labels = api.T.nodes.map((n) => n.label);
   assert.ok(labels.includes('beta'), `应留 beta: ${JSON.stringify(labels)}`);
   assert.ok(!labels.includes('alpha'), `应过滤掉 alpha: ${JSON.stringify(labels)}`);
@@ -1313,10 +1387,10 @@ test('e:改变量值 ⇒ setVariable(父 ref, 名字, 新值)', async () => {
   api.T.cursor = idx;
   assert.equal(api.key_tree({ name: 'e' }), 'handled');
   assert.ok(calls.popup, '应弹输入层');
-  calls.popup.onKey({ name: 'Backspace' }); // 初值是原始值 "1"，删掉再输
-  calls.popup.onKey({ name: '4' });
-  calls.popup.onKey({ name: '2' });
-  calls.popup.onKey({ name: 'Enter' });
+  // 初值是原始值 "1"：删掉再输（退格与字符都由核心 input 节点消费）
+  type_into(calls.popup, { backspace: true });
+  type_into(calls.popup, '42');
+  press_enter(calls.popup);
   await tick();
   assert.equal(calls.reqs.length, 1);
   const [method, params] = calls.reqs[0];
@@ -1398,7 +1472,7 @@ test('readonly_on_stop = off ⇒ 完全不动只读状态', async () => {
   assert.deepEqual(calls.ran, []);
 });
 
-test('e:异常断点过滤器 ⇒ 多选弹层,Space 勾选,Esc 保存', async () => {
+test('e:异常断点过滤器 ⇒ 委托核心多选弹层（items/initial 映射正确）', async () => {
   const withFilters = {
     ...stopped,
     filters: [
@@ -1413,10 +1487,19 @@ test('e:异常断点过滤器 ⇒ 多选弹层,Space 勾选,Esc 保存', async (
   });
   api.open_bottom('breakpoints');
   api.key_breakpoints({ name: 'e' });
-  assert.ok(calls.popup, 'e 应弹多选层');
-  calls.popup.render();
-  calls.popup.onKey({ name: ' ' });      // 勾上第一项
-  calls.popup.onKey({ name: 'Esc' });    // 保存
+  assert.ok(calls.dialog, 'e 应打开核心多选弹层');
+  assert.equal(calls.dialog.multi, true, '多选');
+  assert.deepEqual(
+    calls.dialog.items,
+    [
+      { label: 'C++ Catch', value: 'cpp_catch' },
+      { label: 'C++ Throw', value: 'cpp_throw' },
+    ],
+    'label/value 原样映射',
+  );
+  assert.deepEqual(calls.dialog.initial, ['cpp_throw'], '默认勾选项作为 initial');
+  // 核心确认后把选中值交回插件 ⇒ 设到 adapter
+  calls.dialog.on_pick(['cpp_throw', 'cpp_catch']);
   await tick();
   assert.deepEqual(calls.excfilters, [['cpp_throw', 'cpp_catch']], '默认值 + 新勾选');
 });
@@ -1614,74 +1697,60 @@ test('popup_box:拿不到视口（旧二进制/夹具 0×0）⇒ 退回 80×24 �
 // 驱动方式：直接用导出的 `ask_text` / `ask_multi` / `ask_choice`（都是 `helix.export` 过的，
 // 别的插件也能调），再拿桩截到的 `calls.popup` 检查尺寸与渲染结果。
 
-test('ask_text 接线：小终端下弹窗尺寸跟着收窄（不是写死 64×6）', () => {
+test('ask_text 委托给核心弹窗（渲染/尺寸/输入都归核心）', () => {
   const { calls, api } = load({ viewport: () => [30, 10] });
-  api.ask_text('搜索变量', '', () => {});
-  assert.ok(calls.popup, '应打开弹窗');
-  assert.ok(calls.popup.width <= 26, `宽度 ≤ 视口-4: ${calls.popup.width}`);
-  assert.ok(calls.popup.height <= 6, `高度 ≤ 视口-4: ${calls.popup.height}`);
-  // render 用**弹窗自己的**尺寸画框（兜底值也是 box，不是写死的 64/6）
-  calls.draws.length = 0;
-  assert.equal(calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height }), 'DONE');
-  const rect = calls.draws.find((d) => d.rect);
-  assert.deepEqual(rect.rect, [0, 0, calls.popup.width, calls.popup.height], '外框尺寸 = 弹窗尺寸');
+  let submitted = null;
+  api.ask_text('搜索变量', 'init', (v) => {
+    submitted = v;
+  });
+  assert.ok(calls.dialog, 'ask_text 应走 helix.dialog.prompt');
+  assert.equal(calls.dialog.title, '搜索变量');
+  assert.equal(calls.dialog.value, 'init', '初值透传（引擎权威地维护后续编辑）');
+  // 提交：核心调 on_submit ⇒ 插件转发给调用方并回焦面板
+  calls.dialog.on_submit('typed');
+  assert.equal(submitted, 'typed');
 });
 
-test('ask_text 接线：拿不到视口时退回旧尺寸 64×6', () => {
-  const { calls, api } = load({ viewport: () => [0, 0] });
+test('ask_text 在旧二进制（没有 helix.dialog）里降级为一句提示，不抛错', () => {
+  const { calls, api } = load({ noDialog: true });
   api.ask_text('x', '', () => {});
-  assert.deepEqual(
-    { w: calls.popup.width, h: calls.popup.height },
-    { w: 64, h: 6 },
-    '无视口信息 ⇒ 与改动前一致',
-  );
-});
-
-test('ask_multi 接线：大终端不再硬截 18 行；小终端改为窗口滚动', () => {
-  const filters = Array.from({ length: 25 }, (_, i) => ({ filter: `f${i}`, label: `F${i}` }));
-
-  // ① 大终端（80×60）：25 项应全部进弹窗（早先被 `min(18, …)` 截到 18）
-  {
-    const { calls, api } = load({ viewport: () => [80, 60] });
-    api.ask_multi('异常断点', filters, new Set(), () => {});
-    assert.equal(calls.popup.height, 25 + 5, `25 项应给 30 行: ${calls.popup.height}`);
-  }
-
-  // ② 小终端（80×20）：高度被夹到 16，内容区只画得下 h-5 行（窗口化）
-  {
-    const { calls, api } = load({ viewport: () => [80, 20] });
-    api.ask_multi('异常断点', filters, new Set(), () => {});
-    assert.equal(calls.popup.height, 16, `高度应夹到视口-4: ${calls.popup.height}`);
-    calls.draws.length = 0;
-    calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height });
-    const rows = calls.draws.filter((d) => typeof d.t === 'string');
-    assert.ok(rows.length <= calls.popup.height - 5, `内容行不得溢出: ${rows.length}`);
-    assert.ok(rows.length > 0, '至少画一行');
-  }
-});
-
-test('ask_choice 接线：项数多于内容区时窗口化，不往框外画', () => {
-  const items = Array.from({ length: 30 }, (_, i) => ({ label: `条目 ${i}`, payload: i }));
-  const { calls, api } = load({ viewport: () => [80, 20] });
-  api.ask_choice('选择', items, () => {});
-  assert.equal(calls.popup.height, 16, `高度夹到视口-4: ${calls.popup.height}`);
-  const tree = calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height });
-  // el 桩返回 { kind, children, opts }；children = [标题, ...行]
-  const rows = tree.children.length - 1;
-  assert.ok(rows <= calls.popup.height - 4, `行数不得超出内容区: ${rows} vs ${calls.popup.height - 4}`);
-  assert.ok(rows >= 1, '至少一行');
-});
-
-test('ask_choice 接线：光标移到底部时窗口跟着滚（最后一项可见）', () => {
-  const items = Array.from({ length: 30 }, (_, i) => ({ label: `条目 ${i}`, payload: i }));
-  const { calls, api } = load({ viewport: () => [80, 20] });
-  api.ask_choice('选择', items, () => {});
-  // 按 End / G 到底（onKey 走的是 key 对象）
-  for (let i = 0; i < 40; i++) calls.popup.onKey({ name: 'j', ctrl: false, alt: false, shift: false });
-  const tree = calls.popup.render(false, { width: calls.popup.width, height: calls.popup.height });
-  const labels = tree.children.slice(1).map((c) => c.children);
+  assert.equal(calls.dialog, undefined, '不该尝试打开弹窗');
+  // 桩的 `echo` 存在 `calls.echo`（单槽，与真实状态栏一致）
+  const said = String(calls.echo || "");
   assert.ok(
-    labels.some((l) => String(l).includes('条目 29')),
-    `滚到底后最后一项应在窗口内: ${JSON.stringify(labels)}`,
+    said.includes('helix.dialog.prompt'),
+    `应给出可见提示: ${said}`,
   );
+});
+
+test('ask_multi / ask_choice 委托核心列表（窗口化与键位都在核心）', () => {
+  const { calls, api } = load({ viewport: () => [80, 20] });
+
+  // 多选：items / initial 原样映射，on_pick 交回选中值
+  let done = null;
+  api.ask_multi(
+    '异常断点',
+    [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+    new Set(['b']),
+    (v) => {
+      done = v;
+    },
+  );
+  assert.equal(calls.dialog.multi, true);
+  assert.deepEqual(calls.dialog.items, [
+    { label: 'A', value: 'a' },
+    { label: 'B', value: 'b' },
+  ]);
+  assert.deepEqual(calls.dialog.initial, ['b']);
+  calls.dialog.on_pick(['a', 'b']);
+  assert.deepEqual(done, ['a', 'b']);
+
+  // 单选：核心交回数组，插件取第一个
+  let picked = 'unset';
+  api.ask_choice('选一个', [{ label: 'X', value: 'x' }], (v) => {
+    picked = v;
+  });
+  assert.equal(calls.dialog.multi, false);
+  calls.dialog.on_pick(['x']);
+  assert.equal(picked, 'x');
 });

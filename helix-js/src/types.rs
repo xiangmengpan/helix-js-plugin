@@ -31,6 +31,9 @@ pub struct OpenPopupReq {
     pub center: bool,
     /// center 模式视口百分比 (width%, height%),两轴成对给定(78/75 → 78%×75%)
     pub size_pct: Option<(u16, u16)>,
+    /// **核心弹窗**（`helix.dialog.*`）：布局期不要预渲染 JS render（它是 undefined），
+    /// 尺寸直接取 `width`/`height`，画面由 `native_dialog_content` 给。
+    pub native: bool,
     /// 绑定的**键位作用域**（B 阶段：徽标与 Esc 兜底用；`None` = 没绑）
     pub scope: Option<String>,
     /// 该作用域声明了 `esc: "blur"` ⇒ 外层 `Popup` **不要**在 Esc 上自关，
@@ -643,6 +646,9 @@ pub(crate) struct PopupCallbacks {
     pub(crate) on_close: Option<JsValue>,
     /// 这个弹窗/面板绑定的**键位作用域**（B 阶段）：`passthrough` / `swallow` 由它查。
     pub(crate) key_scope: Option<String>,
+    /// **核心弹窗**（`helix.dialog.prompt/confirm`）：有它就**不走 JS render**，
+    /// 渲染树与 Esc/Enter 都由核心处理（见 `dialog` 模块）。
+    pub(crate) native: Option<crate::dialog::NativeDialog>,
     /// 脏渲染协议的**上次内容**:回调返回 null/undefined 表示"无变化"⇒ 复用这份,不再解析。
     /// 生命周期天然安全:注销(id 移除)、`:plugin-unload`(按 id 摘表)与 reload 的兜底回收都会丢掉它。
     pub(crate) last: Option<Content>,

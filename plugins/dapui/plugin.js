@@ -305,193 +305,58 @@ function refocus_panel() {
 }
 
 function ask_text(title, initial, on_submit) {
-  let value = String(initial === null || initial === undefined ? "" : initial);
-  const box = popup_box(64, 6);
-  helix.open_popup({
-    ...box,
-    // 样式与 picker-ui 的弹窗一致：圆角边框 + 标题 + 分隔线 + 底部提示。
-    // （面板用核心的直角框，**浮层**统一用圆角框 —— 一眼区分"浮在我上面的"和"贴着边的"）
-    render: (_focus, ctx) => {
-      // 尺寸一律听弹窗的：早先 `Math.max(28, …)` 的硬下限在窄终端上会把外框画到框外
-      const w = Math.max(1, (ctx && ctx.width) || box.width);
-      const h = Math.max(3, (ctx && ctx.height) || box.height);
-      helix.draw.rect(0, 0, w, h, {
-        border: "round",
-        title: ` ${title} `,
-        style: "ui.popup",
-      });
-      helix.draw.hline(1, 2, Math.max(0, w - 2), { style: "ui.virtual" });
-      // 输入行：超宽时保留**尾部**（光标永远在最后，前面挂 …）
-      const room = Math.max(4, w - 8);
-      const shown =
-        helix.text.width(value) > room
-          ? "…" + helix.text.truncate(value.slice(value.length - room + 1), room - 1)
-          : value;
-      helix.draw.text(
-        2,
-        1,
-        [
-          { text: "> ", style: "ui.virtual" },
-          { text: shown, style: "ui.text" },
-          { text: "█", style: "ui.text.focus" },
-        ],
-        { maxWidth: Math.max(1, w - 4) },
-      );
-      helix.draw.text(
-        2,
-        h - 2,
-        helix.text.truncate("Enter 确认（空串 = 清除该项） · Esc 取消", Math.max(8, w - 4)),
-        { style: "ui.help" },
-      );
-      return helix.draw.done();
+  // 交给核心（`helix.dialog.prompt`）：与 filetree 的输入弹窗**同一套**渲染与输入
+  // （圆角框 + 引擎权威的 input：光标/方向键/粘贴/IME）。
+  if (!helix.dialog || !helix.dialog.prompt) {
+    say("这个版本没有 helix.dialog.prompt（输入弹层不可用）");
+    return;
+  }
+  helix.dialog.prompt({
+    title,
+    value: initial === null || initial === undefined ? "" : String(initial),
+    on_submit: (v) => {
+      on_submit(v);
+      refocus_panel();
     },
-    onKey: (key) => {
-      if (key.ctrl || key.alt) return "handled";
-      if (key.name === "Enter") {
-        on_submit(value);
-        refocus_panel();
-        return "close";
-      }
-      if (key.name === "Esc") return "close";
-      if (key.name === "Backspace") {
-        value = value.slice(0, -1);
-        return "handled";
-      }
-      if (typeof key.name === "string" && key.name.length === 1) {
-        value += key.name;
-        return "handled";
-      }
-      return "handled";
-    },
+    on_cancel: () => refocus_panel(),
   });
 }
 
 /**
- * 多选弹层：`items: [{label, value}]`，`enabled` 是已选集合（Set）。
- * j/k 移动 · Space/Enter 勾选 · Esc 关闭时用最终集合调 `on_done(values[])`。
+ * 多选列表：`items: [{label, value}]，initial 是已选 value 集合。
+ * 交给核心（`helix.dialog.select({multi:true})`）：列表渲染、窗口化、j/k/Space/Enter 全在核心。
  */
 function ask_multi(title, items, enabled, on_done) {
-  let cursor = 0;
-  const picked = new Set(enabled || []);
-  // 早先是 `min(18, 项数+5)`：20 行以上的终端也硬截到 18。现在交给视口算。
-  const box = popup_box(60, Math.max(6, items.length + 5));
-  helix.open_popup({
-    ...box,
-    render: (_focus, ctx) => {
-      const w = Math.max(1, (ctx && ctx.width) || box.width);
-      const h = Math.max(3, (ctx && ctx.height) || box.height);
-      helix.draw.rect(0, 0, w, h, {
-        border: "round",
-        title: ` ${title} `,
-        style: "ui.popup",
-      });
-      helix.draw.hline(1, 2, Math.max(0, w - 2), { style: "ui.virtual" });
-      const body = Math.max(1, h - 5);
-      const top = Math.min(
-        Math.max(0, cursor - Math.floor(body / 2)),
-        Math.max(0, items.length - body),
-      );
-      for (let i = 0; i < body && top + i < items.length; i++) {
-        const idx = top + i;
-        const it = items[idx];
-        const sel = idx === cursor;
-        helix.draw.text(
-          1,
-          3 + i,
-          [
-            { text: ` ${sel ? "›" : " "} ${picked.has(it.value) ? "[x]" : "[ ]"} `, style: "ui.virtual" },
-            { text: helix.text.truncate(String(it.label || ""), Math.max(4, w - 8)), style: null },
-          ],
-          { style: sel ? "ui.selection" : null, maxWidth: Math.max(1, w - 2) },
-        );
-      }
-      helix.draw.text(
-        2,
-        h - 2,
-        helix.text.truncate("Space/Enter 勾选 · j/k 移动 · Esc 保存关闭", Math.max(8, w - 4)),
-        { style: "ui.help" },
-      );
-      return helix.draw.done();
-    },
-    onKey: (key) => {
-      if (key.ctrl || key.alt) return "handled";
-      switch (key.name) {
-        case "Esc":
-          on_done([...picked]);
-          return "close";
-        case "j":
-        case "Down":
-          cursor = Math.min(items.length - 1, cursor + 1);
-          return "handled";
-        case "k":
-        case "Up":
-          cursor = Math.max(0, cursor - 1);
-          return "handled";
-        case "Enter":
-        case " ": {
-          const it = items[cursor];
-          if (!it) return "handled";
-          if (picked.has(it.value)) picked.delete(it.value);
-          else picked.add(it.value);
-          return "handled";
-        }
-        default:
-          return "handled";
-      }
-    },
+  if (!helix.dialog || !helix.dialog.select) {
+    say("这个版本没有 helix.dialog.select（多选弹层不可用）");
+    return;
+  }
+  helix.dialog.select({
+    title,
+    multi: true,
+    items: items.map((it) => ({ label: it.label || it.value, value: it.value })),
+    initial: [...(enabled || [])],
+    on_pick: (picked) => on_done(picked || []),
   });
 }
 
-/** items: `[{label, payload}]`;`on_pick(payload)` 只在 Enter 时调。 */
+/**
+ * 单选列表：`items: [{label, value}]`；Enter 选中、Esc 取消。
+ * 与 `ask_multi` 同一套核心弹层 —— 列表渲染/窗口化/键位不再各写一份。
+ */
 function ask_choice(title, items, on_pick) {
-  let cursor = 0;
-  const box = popup_box(60, Math.max(3, items.length + 2));
-  helix.open_popup({
-    ...box,
-    render: () => {
-      // 行数超过弹窗内容区时**窗口化**（原来把 items 全画出来 ⇒ 溢出边框/被硬切）。
-      // 内容区 = 高度 - 标题(1) - gap(1) - 边框(2)
-      const body = Math.max(1, box.height - 4);
-      const top = Math.min(
-        Math.max(0, cursor - Math.floor(body / 2)),
-        Math.max(0, items.length - body),
-      );
-      const rows = [];
-      for (let i = 0; i < body && top + i < items.length; i++) {
-        const idx = top + i;
-        const it = items[idx];
-        rows.push(
-          helix.el("text", (idx === cursor ? "▸ " : "  ") + it.label, {
-            style: idx === cursor ? "ui.selection" : "ui.text",
-          }),
-        );
-      }
-      return helix.el("col", [helix.el("text", title, { style: "ui.virtual" }), ...rows], {
-        gap: 1,
-      });
-    },
-    onKey: (key) => {
-      if (key.ctrl || key.alt) return "handled";
-      switch (key.name) {
-        case "Esc":
-          return "close";
-        case "j":
-        case "Down":
-          cursor = Math.min(items.length - 1, cursor + 1);
-          return "handled";
-        case "k":
-        case "Up":
-          cursor = Math.max(0, cursor - 1);
-          return "handled";
-        case "Enter": {
-          const it = items[cursor];
-          if (it) on_pick(it.payload);
-          refocus_panel();
-          return "close";
-        }
-        default:
-          return "handled";
-      }
+  if (!helix.dialog || !helix.dialog.select) {
+    say("这个版本没有 helix.dialog.select（选择弹层不可用）");
+    return;
+  }
+  helix.dialog.select({
+    title,
+    multi: false,
+    items: items.map((it) => ({ label: it.label, value: it.value })),
+    on_pick: (picked) => {
+      const v = picked && picked.length ? picked[0] : null;
+      if (v !== null) on_pick(v);
+      refocus_panel();
     },
   });
 }

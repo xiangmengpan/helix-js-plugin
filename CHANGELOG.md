@@ -108,6 +108,15 @@ Commands:
 
 Usability improvements:
 
+* `helix.dialog.prompt` / `helix.dialog.confirm` — **core-provided dialogs**. A plugin names a
+  title and gives callbacks; rendering (round frame + title), the input field (value, caret,
+  `←→ Home End Backspace Delete`, **paste/IME**), `Esc`/`Enter` and the geometry (viewport-fit,
+  auto-focus) all live in core. filetree's new-file/new-dir/rename/delete-confirm dialogs and
+  dapui's `ask_text` now delegate to it, deleting two hand-rolled shells whose ceiling was
+  documented in filetree's own header: "no paste / no IME". `helix.dialog.select` covers lists
+  (single and multi): rendering, windowing, `j/k`, `Space` toggling and `Enter` live in core; dapui's
+  `ask_multi` / `ask_choice` delegate to it instead of drawing their own lists.
+
 * Panel/popup sizes follow the terminal: filetree's `?` help and dapui's `ask_text` /
   `ask_multi` / `ask_choice` dialogs used to be fixed (64×6, 60×18, 60×16, help capped at 20
   rows). They are now measured against the viewport, and when the content still does not fit it
@@ -136,6 +145,19 @@ Packaging:
 
 Fixes:
 
+* `helix.el("input")` silently dropped `onChange` and `multiline` — the el-node property
+  whitelist did not list them, so the documented "engine-owned value + onChange" and
+  "multiline Enter" never worked (and that is why no plugin used input nodes).
+* Core dialogs flushed their queued messages through the implicit host, so an `on_cancel` /
+  `on_submit` that called `helix.echo` produced an empty status bar. Added `take_messages_in(host)`
+  and the popup close path now drains its own host.
+* Key routing asked the **implicit** host whether a node had input state while `dispatch_input_key`
+  and the registered `onChange` handlers live on the app host, so characters typed into a popup
+  input were dropped as plain `onKey` calls. `input_has_state` / `input_is_multiline` now have
+  `*_in(host, …)` variants and the surface asks the same host it dispatches to.
+* Popups never gave the first focusable node the focus, so an `el("input")` could not be typed
+  into until `Tab` was pressed. `SurfaceOpts.auto_focus_first` (popups only) fixes it; panels keep
+  their Tab-in/Esc-out semantics.
 * `:config-reload` never rebuilt the keymaps — `[keys.*]` changes silently required a restart
   (a `ponytail:` note called it a "startup snapshot"). It now rebuilds from config **and replays
   the plugin bindings** recorded in the host, so neither side is lost on reload.
