@@ -1086,6 +1086,16 @@ pub(crate) fn pane_mode_json() -> String {
 
 /// 当前宿主的打开文档快照(还没缓存过 → 空串)。
 /// `helix.buffer.list()` / `helix.buffer.current()` 的**唯一读取口** ⇒ 分桶时只改这里。
+/// 写入折叠快照(helix-term 每帧更新;`helix.fold.list()` 读取)
+pub fn cache_folds(st: &HostState, json: &str) {
+    *st.folds.borrow_mut() = json.to_string();
+}
+
+/// 折叠快照(还没缓存过 → 空串)
+pub(crate) fn folds_json() -> String {
+    crate::host::with_host_ref(|h| h.folds.borrow().clone())
+}
+
 pub(crate) fn buffers_json() -> String {
     crate::host::with_state_or_init(|st| note_snapshot_read(st, SnapshotKind::Buffers));
     crate::host::with_host_ref(|h| h.buffers.borrow().clone())

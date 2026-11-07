@@ -1,0 +1,23 @@
+; 折叠候选（`@fold`）。
+[
+  (function_definition)
+  (class_definition)
+  (decorated_definition)
+  (if_statement)
+  (elif_clause)
+  (else_clause)
+  (while_statement)
+  (for_statement)
+  (with_statement)
+  (try_statement)
+  (except_clause)
+  (finally_clause)
+  (match_statement)
+  (case_clause)
+  (list)
+  (dictionary)
+  (set)
+  (tuple)
+  (argument_list)
+  (parameters)
+] @fold

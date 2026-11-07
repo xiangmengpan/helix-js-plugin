@@ -44,6 +44,8 @@ pub struct LanguageData {
     textobject_query: OnceCell<Option<TextObjectQuery>>,
     tag_query: OnceCell<Option<TagQuery>>,
     rainbow_query: OnceCell<Option<RainbowQuery>>,
+    /// `folds.scm`（代码折叠候选；没写的语言 ⇒ `None`，调用方回退缩进启发式）
+    fold_query: OnceCell<Option<FoldQuery>>,
 }
 
 impl LanguageData {
@@ -55,6 +57,7 @@ impl LanguageData {
             textobject_query: OnceCell::new(),
             tag_query: OnceCell::new(),
             rainbow_query: OnceCell::new(),
+            fold_query: OnceCell::new(),
         }
     }
 
@@ -215,6 +218,36 @@ impl LanguageData {
         let rainbow_query = RainbowQuery::new(grammar, &text)
             .with_context(|| format!("Failed to compile rainbows.scm query for '{name}'"))?;
         Ok(Some(rainbow_query))
+    }
+
+    /// Compiles the folds.scm query for a language.
+    /// This function should only be used by this module or the xtask crate.
+    pub fn compile_fold_query(
+        grammar: Grammar,
+        config: &LanguageConfiguration,
+    ) -> Result<Option<FoldQuery>> {
+        let name = &config.language_id;
+        let text = read_query(name, "folds.scm");
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let query = Query::new(grammar, &text, |_, _| Ok(()))
+            .with_context(|| format!("Failed to compile folds.scm query for '{name}'"))?;
+        Ok(Some(FoldQuery::new(query)))
+    }
+
+    fn fold_query(&self, loader: &Loader) -> Option<&FoldQuery> {
+        self.fold_query
+            .get_or_init(|| {
+                let grammar = self.syntax_config(loader)?.grammar;
+                Self::compile_fold_query(grammar, &self.config)
+                    .map_err(|err| {
+                        log::error!("{err}");
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .as_ref()
     }
 
     fn rainbow_query(&self, loader: &Loader) -> Option<&RainbowQuery> {
@@ -418,6 +451,11 @@ impl Loader {
 
     pub fn tag_query(&self, lang: Language) -> Option<&TagQuery> {
         self.language(lang).tag_query(self)
+    }
+
+    /// `folds.scm` 查询（没写该文件的语言 ⇒ `None`）
+    pub fn fold_query(&self, lang: Language) -> Option<&FoldQuery> {
+        self.language(lang).fold_query(self)
     }
 
     fn rainbow_query(&self, lang: Language) -> Option<&RainbowQuery> {
@@ -1157,6 +1195,50 @@ pub fn child_for_byte_range<'a>(node: &Node<'a>, range: ops::Range<u32>) -> Opti
     }
 
     None
+}
+
+/// `folds.scm`：折叠候选的 tree-sitter 查询。
+///
+/// 约定（与 nvim-treesitter 同名）：查什么就用 `@fold` 捕获，例如
+/// ```query
+/// (block) @fold
+/// (struct_item body: (_) @fold)
+/// ```
+/// 每个捕获节点的**整个跨度**作为一个折叠候选（头行 = 节点起始行，
+/// 末行 = 节点结束行 → 末行也一起藏起来，与缩进法"`}` 留在外面"不同）。
+#[derive(Debug)]
+pub struct FoldQuery {
+    query: Query,
+}
+
+impl FoldQuery {
+    pub fn new(query: Query) -> Self {
+        Self { query }
+    }
+
+    /// 在整棵树上跑查询，返回所有 `@fold` 节点的**字节区间**（按起点排序、去重）。
+    ///
+    /// 只给字节区间：调用方（`helix-term`）自己换算成行号再交给 `Folds::from_lines`，
+    /// 这样 `helix-core` 不必知道折叠的存储形态。
+    pub fn fold_byte_ranges(&self, root: Node<'_>, slice: RopeSlice<'_>) -> Vec<ops::Range<usize>> {
+        let Some(capture) = self.query.get_capture("fold") else {
+            return Vec::new();
+        };
+        let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT)
+            .execute_query(&self.query, &root, RopeInput::new(slice));
+        let mut ranges = Vec::new();
+        while let Some(mat) = cursor.next_match() {
+            for node in mat.nodes_for_capture(capture) {
+                let range = node.byte_range();
+                if range.start < range.end {
+                    ranges.push(range.start as usize..range.end as usize);
+                }
+            }
+        }
+        ranges.sort_by_key(|range| (range.start, range.end));
+        ranges.dedup();
+        ranges
+    }
 }
 
 #[derive(Debug)]

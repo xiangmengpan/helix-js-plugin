@@ -378,6 +378,17 @@ pub struct Config {
     /// * `group` = **组是导航的最小单位**：只在最近的组内部移动，走到组边界就停住
     ///   （跨组用 `p` / `P` / `Tab` 环切）。根级叶子没有更小的组 ⇒ 退化成几何。
     pub focus_scope: FocusScope,
+    /// 折叠候选来源（`indent` 默认 / `manual` / `tree-sitter`(P1) / `lsp`(P2)）
+    pub fold_method: FoldMethod,
+    /// 光标/搜索闯进折叠区：`open`（默认，自动展开）或 `skip`（钳到折叠头）
+    pub fold_jump: FoldJump,
+    /// 自动折叠至少要藏几行（避免把 1 行折起来）
+    pub fold_min_lines: usize,
+    /// gutter 折叠标记列：`auto`（默认）/`always`/`hide`
+    pub fold_column: FoldColumn,
+    /// 折叠态跨会话持久化（按文件路径存到 `~/.local/state/helix/fold-state.json`）。
+    /// 默认开；测试关掉（否则会写真实 HOME）。
+    pub fold_persist: bool,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
     /// Configuration of the statusline elements
@@ -899,6 +910,54 @@ pub enum FocusScope {
     Group,
 }
 
+/// 折叠候选来源（`[editor] fold-method`）。
+///
+/// `indent` = 缩进启发式（默认，零语言工作量）；`manual` = 只认手动折；
+/// `tree-sitter` / `lsp` 已能解析，P0 行为暂按 `indent` 兜底（见
+/// `docs/superpowers/plans/2026-11-07-code-folding.md` §0 D4）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FoldMethod {
+    /// 缩进启发式（默认）
+    #[default]
+    Indent,
+    /// 只用手动折叠（`zf`/`za`），不自动推导
+    Manual,
+    /// tree-sitter `folds.scm`（P1，未实现 ⇒ 回退 indent）
+    TreeSitter,
+    /// LSP `textDocument/foldingRange`（P2，未实现 ⇒ 回退 indent）
+    Lsp,
+}
+
+/// gutter 里的折叠标记列（`[editor] fold-column`）。
+///
+/// - `auto`（默认）：**文档已有折叠时**才占一列；`▶` = 折叠头行，`▼` = 可折但没折。
+///   没有折叠的文件不多占屏幕一列。
+/// - `always`：永远占一列，`▼` 一开始就能看到（vim 的 `foldcolumn` 手感）。
+/// - `hide`：不占列、不画标记。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FoldColumn {
+    /// 有折叠时才显示（默认）
+    #[default]
+    Auto,
+    /// 永远显示
+    Always,
+    /// 不显示
+    Hide,
+}
+
+/// 光标/搜索闯进折叠区时怎么办（`[editor] fold-jump`）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FoldJump {
+    /// 自动展开（默认，vim `foldopen` 手感：任何时候都看得见光标）
+    #[default]
+    Open,
+    /// 跳过折叠区：把光标钳到折叠头行尾，折叠保持关着
+    Skip,
+}
+
 impl std::str::FromStr for FocusScope {
     type Err = anyhow::Error;
 
@@ -1241,6 +1300,11 @@ impl Default for Config {
             auto_info: true,
             js_layout_change_batch: false,
             focus_scope: FocusScope::default(),
+            fold_method: FoldMethod::default(),
+            fold_jump: FoldJump::default(),
+            fold_min_lines: 2,
+            fold_persist: true,
+            fold_column: FoldColumn::default(),
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             statusline: StatusLineConfig::default(),
@@ -2047,6 +2111,7 @@ impl Editor {
             let doc = doc_mut!(self, &view.doc);
             view.sync_changes(doc);
             view.gutters = config.gutters.clone();
+            view.fold_column = config.fold_column;
             view.ensure_cursor_in_view(doc, config.scrolloff)
         }
     }
@@ -2512,6 +2577,66 @@ impl Editor {
         let view = self.tree.get(id);
         let doc = doc_mut!(self, &view.doc);
         view.ensure_cursor_in_view(doc, config.scrolloff)
+    }
+
+    /// 折叠对光标的两种策略（`[editor] fold-jump`，见计划 §0 D2）。
+    ///
+    /// 只在光标**看不见**时动手（落在折叠块正文里，而不是折叠头行上）：
+    /// - `Open`（默认）：展开这个折叠 —— 与 vim `foldopen` 同手感，任何时候都看得见光标；
+    /// - `Skip`：把光标**越过整个块**送到块后第一行（`fold.end`），折叠保持关着。
+    ///   反向（`k` 从块下往上进块）也会落到块后那行 —— 是"跳过"而不是"卡住"，
+    ///   要看被折的内容就 `zo`/`za` 或临时切 `fold-jump = "open"`。
+    ///
+    /// 返回是否改动过（调用方多为渲染前的一次对账，幂等）。
+    pub fn apply_fold_jump(&mut self, view_id: ViewId) -> bool {
+        let jump = self.config().fold_jump;
+        let view = self.tree.get(view_id);
+        let doc_id = view.doc;
+        let Some(doc) = self.documents.get_mut(&doc_id) else {
+            return false;
+        };
+        if doc.folds.is_empty() {
+            return false;
+        }
+        let text = doc.text().slice(..);
+        let mut selection = doc.selection(view_id).clone();
+        let mut changed = false;
+
+        match jump {
+            FoldJump::Open => {
+                let hidden: Vec<usize> = selection
+                    .iter()
+                    .map(|range| range.cursor(text))
+                    .filter(|cursor| doc.folds.is_hidden(text, *cursor))
+                    .collect();
+                for cursor in hidden {
+                    if doc.folds.remove_at(cursor) {
+                        changed = true;
+                    }
+                }
+            }
+            FoldJump::Skip => {
+                let ranges: Vec<helix_core::Range> = selection
+                    .iter()
+                    .map(|range| {
+                        let cursor = range.cursor(text);
+                        match doc.folds.at(cursor) {
+                            Some(fold) if doc.folds.is_hidden(text, cursor) => {
+                                changed = true;
+                                range.put_cursor(text, fold.end.min(text.len_chars()), false)
+                            }
+                            _ => *range,
+                        }
+                    })
+                    .collect();
+                if changed {
+                    selection = Selection::new(ranges.into(), selection.primary_index());
+                    doc.set_selection(view_id, selection);
+                }
+            }
+        }
+
+        changed
     }
 
     #[inline]

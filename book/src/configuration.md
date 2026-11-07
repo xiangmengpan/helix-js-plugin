@@ -21,6 +21,24 @@ js-layout-change-batch = false
 #   geometry(默认) = 纯几何：按屏幕位置找最近的方向邻居，可以跨组
 #   group          = 组是导航的最小单位：只在最近的组内部移动，到组边界就停住
 focus-scope = "geometry"
+# 折叠候选来源：
+#   indent(默认)  = 缩进启发式，零语言配置
+#   manual        = 只认手动折叠（z f / z a）
+#   tree-sitter   = 该语言的 folds.scm（没写这个文件 ⇒ 自动退 indent）
+#   lsp           = LSP textDocument/foldingRange（P2，未实现 ⇒ 先按 indent 兜底）
+fold-method = "indent"
+# 光标/搜索闯进折叠区时：
+#   open(默认) = 自动展开（vim foldopen 手感，任何时候都看得见光标）
+#   skip       = 跳过：光标被送到折叠块之后第一行，折叠保持关着
+fold-jump = "open"
+# 自动折叠至少要藏几行（避免把 1 行折起来）
+fold-min-lines = 2
+# 折叠态跨会话持久化（~/.local/state/helix/fold-state.json，按文件路径存行号区间）
+fold-persist = true
+# gutter 折叠标记列：
+#   auto(默认) = 文档已有折叠时才占一列；always = 一直占（一打开就看得到可折处）；hide = 不画
+# 标记：▶ = 已折（正文不上屏）、▼ = 可折但没折
+fold-column = "auto"
 
 [editor.cursor-shape]
 insert = "bar"

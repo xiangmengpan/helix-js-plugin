@@ -11,6 +11,7 @@ use super::*;
 
 pub(super) mod doc;
 pub(super) mod editor;
+pub(super) mod fold;
 pub(super) mod pane;
 pub(super) mod picker;
 pub(super) mod popup;

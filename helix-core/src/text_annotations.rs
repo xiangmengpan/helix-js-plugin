@@ -330,6 +330,14 @@ pub struct TextAnnotations<'a> {
     inline_annotations: Vec<Layer<'a, InlineAnnotation, Option<Highlight>>>,
     overlays: Vec<Layer<'a, Overlay, Option<Highlight>>>,
     line_annotations: Vec<(Cell<usize>, RawBox<dyn LineAnnotation + 'a>)>,
+    /// 要**跳过不画**的 char 区间（折叠用；后续其它"隐藏"来源也走这里）。
+    /// 已排序、已合并（见 `set_concealed`）。
+    ///
+    /// 为什么不另设一条通道：`TextAnnotations` 是 `DocumentFormatter` 唯一的外部输入
+    /// （`helix-core/src/doc_formatter.rs`），隐藏放这里 ⇒ 渲染、`visual_offset_from_*`、
+    /// `char_idx_at_visual_offset`（滚动/点击/`:goto`）自动看到同一个世界，
+    /// 不会出现"屏幕是折后的、坐标系是折前的"。
+    concealed: Vec<Range<usize>>,
 }
 
 impl Debug for TextAnnotations<'_> {
@@ -422,6 +430,60 @@ impl<'a> TextAnnotations<'a> {
         self.line_annotations.clear();
     }
 
+    /// 设置要**隐藏**的 char 区间（折叠）。
+    ///
+    /// 接受乱序 / 重叠 / 相邻的区间，内部排序并合并；空迭代器 = 取消隐藏。
+    ///
+    /// **行对齐由调用方保证**：折叠区间从「头行行尾的换行符」开始、
+    /// 到「折叠块最后一个换行符」之前结束（保留最后一个换行 ⇒ 头行独占一行，
+    /// 下一个可见行从新行开始）。区间不对齐行边界时行为仍然自洽，
+    /// 但会把两行拼到同一显示行上。
+    pub fn set_concealed(&mut self, ranges: impl IntoIterator<Item = Range<usize>>) -> &mut Self {
+        let mut ranges: Vec<Range<usize>> = ranges
+            .into_iter()
+            .filter(|range| range.start < range.end)
+            .collect();
+        ranges.sort_by_key(|range| range.start);
+        // 合并重叠与相邻（`end == next.start`）：合并后每个位置只做一次二分，
+        // 且 `concealed_end` 对"连续跳"能一次跳到底。
+        let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            match merged.last_mut() {
+                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                _ => merged.push(range),
+            }
+        }
+        self.concealed = merged;
+        self
+    }
+
+    /// 是否存在隐藏区间（formatter 的快路径）。
+    pub fn has_concealed(&self) -> bool {
+        !self.concealed.is_empty()
+    }
+
+    /// 隐藏区间（已排序合并；给测试与调试看）。
+    pub fn concealed(&self) -> &[Range<usize>] {
+        &self.concealed
+    }
+
+    /// `char_idx` 落在隐藏区间里 ⇒ 返回该区间结束位置（连续隐藏区的末尾）。
+    ///
+    /// formatter 据此"一次跳到底"：`while let Some(end) = concealed_end(pos)`。
+    pub(crate) fn concealed_end(&self, char_idx: usize) -> Option<usize> {
+        if self.concealed.is_empty() {
+            return None;
+        }
+        // 第一个 `end > char_idx` 的区间，若它 `start <= char_idx` 则命中。
+        let idx = self
+            .concealed
+            .partition_point(|range| range.end <= char_idx);
+        self.concealed
+            .get(idx)
+            .filter(|range| range.start <= char_idx)
+            .map(|range| range.end)
+    }
+
     pub(crate) fn next_inline_annotation_at(
         &self,
         char_idx: usize,
@@ -472,5 +534,60 @@ impl<'a> TextAnnotations<'a> {
             };
         }
         virt_off.row
+    }
+}
+
+#[cfg(test)]
+mod concealed_tests {
+    use super::TextAnnotations;
+
+    /// 空集：任何查询都不命中，`has_concealed` 为 false（formatter 的快路径依据）。
+    #[test]
+    fn empty_conceal_never_hits() {
+        let annot = TextAnnotations::default();
+        assert!(!annot.has_concealed());
+        assert_eq!(annot.concealed_end(0), None);
+        assert_eq!(annot.concealed_end(usize::MAX), None);
+    }
+
+    /// 区间前 / 区间内 / 区间后（含边界）：只有 `[start, end)` 内的位置命中。
+    #[test]
+    fn concealed_end_bounds_are_half_open() {
+        let mut annot = TextAnnotations::default();
+        annot.set_concealed([10..20]);
+        assert!(annot.has_concealed());
+        assert_eq!(annot.concealed_end(9), None, "区间前");
+        assert_eq!(annot.concealed_end(10), Some(20), "区间首字符命中");
+        assert_eq!(annot.concealed_end(19), Some(20), "区间末字符前一格命中");
+        assert_eq!(annot.concealed_end(20), None, "end 是开的");
+        assert_eq!(annot.concealed_end(21), None, "区间后");
+    }
+
+    /// 乱序 + 重叠 + 相邻：统一排序合并，且合并后能一次跳到连续区的末尾。
+    #[test]
+    fn set_concealed_sorts_and_merges() {
+        let mut annot = TextAnnotations::default();
+        annot.set_concealed([30..40, 0..5, 3..8, 8..12, 50..50]);
+        assert_eq!(
+            annot.concealed().to_vec(),
+            vec![0..12, 30..40],
+            "相邻也算连续"
+        );
+        assert_eq!(annot.concealed_end(4), Some(12));
+        assert_eq!(annot.concealed_end(11), Some(12));
+        assert_eq!(annot.concealed_end(12), None);
+        assert_eq!(annot.concealed_end(35), Some(40));
+    }
+
+    /// 重设会整体替换（每帧重建的 `TextAnnotations` 用不到，但 `:config-reload` 类路径要确定）。
+    #[test]
+    fn set_concealed_replaces_previous() {
+        let mut annot = TextAnnotations::default();
+        annot.set_concealed([0..10]);
+        annot.set_concealed([100..110]);
+        assert_eq!(annot.concealed().to_vec(), vec![100..110]);
+        assert_eq!(annot.concealed_end(5), None);
+        annot.set_concealed([]);
+        assert!(!annot.has_concealed(), "空迭代器 = 取消隐藏");
     }
 }

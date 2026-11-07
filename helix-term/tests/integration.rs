@@ -21,6 +21,7 @@ mod test {
     mod command_line;
     mod commands;
     mod filetree;
+    mod folding;
     mod movement;
     mod pane_modes;
     mod plugin;

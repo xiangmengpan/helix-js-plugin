@@ -167,6 +167,23 @@ pub struct Document {
     view_data: HashMap<ViewId, ViewData>,
     pub active_snippet: Option<ActiveSnippet>,
 
+    /// 候选折叠缓存（`helix-view/src/fold.rs::Document::fold_candidates_cached`）：
+    /// gutter 每帧要画 `▼`，没有缓存就得每帧重算 indent / 跑一遍 tree-sitter 查询。
+    pub(crate) fold_candidate_cache: std::cell::RefCell<Option<crate::fold::FoldCandidateCache>>,
+
+    /// LSP `textDocument/foldingRange` 的结果（行号 0-based，`end_line` **含**端点），
+    /// 按到达顺序合并（多服务器就拼接）。空 = 没请求过 / 服务器不支持。
+    ///
+    /// 生命周期：打开与保存时刷新（`helix-term/src/handlers/lsp_folds.rs`）。
+    /// 编辑后行号会轻微变旧 —— LSP 的行区间对小幅编辑足够稳，直到下次刷新，
+    /// 这也是这里**不**按版本作废的原因（否则几乎永远拿不到可用的 LSP 折叠）。
+    pub lsp_fold_ranges: Vec<helix_lsp::lsp::FoldingRange>,
+
+    /// 代码折叠（同一文档多窗口共享）。只存世界坐标（char_idx），
+    /// 屏幕行由排版器从 `concealed_ranges()` 现算 —— 见 `helix-view/src/fold.rs`
+    /// 与 `docs/superpowers/plans/2026-11-07-code-folding.md`。
+    pub folds: crate::fold::Folds,
+
     /// Changes applied since the last doc-change event was triggered (old coords, new coords);
     /// taken and cleared when the event fires.
     pub(crate) pending_doc_changes: Vec<((usize, usize), (usize, usize))>,
@@ -764,6 +781,9 @@ impl Document {
         Self {
             id: DocumentId::default(),
             active_snippet: None,
+            folds: crate::fold::Folds::default(),
+            lsp_fold_ranges: Vec::new(),
+            fold_candidate_cache: std::cell::RefCell::new(None),
             pending_doc_changes: Vec::new(),
             path: None,
             relative_path: OnceCell::new(),
@@ -1709,6 +1729,12 @@ impl Document {
 
         let success = self.apply_impl(transaction, view_id, emit_lsp_notification);
 
+        if success && !transaction.changes().is_empty() {
+            // 折叠跟着文本走：两端按 changeset 映射并对齐回行首，被删空的折叠丢弃。
+            self.folds
+                .adjust(transaction.changes(), self.text.slice(..));
+        }
+
         if !transaction.changes().is_empty() {
             // Compose this transaction with the previous one
             take_with(&mut self.changes, |changes| {
@@ -2089,6 +2115,22 @@ impl Document {
     /// Tree-sitter AST tree
     pub fn syntax(&self) -> Option<&Syntax> {
         self.syntax.as_ref()
+    }
+
+    /// LSP 折叠范围 → 行号区间（`end` 不含，供 `Folds::from_lines` 用）。
+    ///
+    /// 空 ⇒ 调用方回退缩进启发式（没请求过 / 服务器不支持 / 空文件）。
+    pub fn lsp_fold_lines(&self) -> Vec<std::ops::Range<usize>> {
+        let last_line = self.text.len_lines().saturating_sub(1);
+        self.lsp_fold_ranges
+            .iter()
+            .filter_map(|range| {
+                let start = range.start_line as usize;
+                // LSP 的 `end_line` 含端点；折叠要的是"块后那一行"
+                let end = (range.end_line as usize + 1).min(last_line + 1);
+                (end > start + 1).then_some(start..end)
+            })
+            .collect()
     }
 
     /// The width that the tab character is rendered at

@@ -806,8 +806,12 @@ fn write_impl(
                     Job::with_callback(call).wait_before_exiting()
                 });
             if fmt_job.is_none() {
-                if let Err(err) = editor.save(doc_id, path, force) {
-                    editor.set_error(format!("Error saving: {}", err));
+                match editor.save(doc_id, path, force) {
+                    Ok(()) => {
+                        // 保存后刷新 LSP 折叠范围（foldingRange 没有 push，见 handlers/lsp_folds.rs）
+                        crate::handlers::lsp_folds::request_lsp_folds(editor, doc_id);
+                    }
+                    Err(err) => editor.set_error(format!("Error saving: {}", err)),
                 }
             }
             fmt_job
@@ -825,6 +829,8 @@ fn write_impl(
         cx.jobs.add(job);
     } else {
         cx.editor.save(doc_id, path, force)?;
+        // 保存后刷新 LSP 折叠范围（同上）
+        crate::handlers::lsp_folds::request_lsp_folds(cx.editor, doc_id);
     }
 
     Ok(())
@@ -899,6 +905,68 @@ pub struct WriteOptions {
 /// `:read-only [all]`：切换**强制只读**（当前 buffer / 全部打开的 buffer）。
 ///
 /// 与 `readonly`（文件权限位）无关：这是编辑闸门（`Document::apply` + `:write` 都检查）。
+/// `:fold-open` / `:fold-close` / `:fold-toggle` / `:fold-open-all` / `:fold-close-all`
+/// —— 与 `z o/f/a/R/M` 同一份实现（`fold_*_impl`），只是入口不同。
+fn fold_open_typed(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::commands::fold_open_impl(cx.editor);
+    Ok(())
+}
+
+fn fold_close_typed(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::commands::fold_close_impl(cx.editor);
+    Ok(())
+}
+
+fn fold_toggle_typed(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::commands::fold_toggle_impl(cx.editor);
+    Ok(())
+}
+
+fn fold_open_all_typed(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::commands::fold_open_all_impl(cx.editor);
+    Ok(())
+}
+
+fn fold_close_all_typed(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::commands::fold_close_all_impl(cx.editor);
+    Ok(())
+}
+
 fn set_read_only(
     cx: &mut compositor::Context,
     args: Args,
@@ -3972,6 +4040,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "fold-open",
+        aliases: &[],
+        doc: "Open the fold at the cursor (same as `z o`).",
+        fun: fold_open_typed,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold-close",
+        aliases: &[],
+        doc: "Fold the block at the cursor (same as `z f`).",
+        fun: fold_close_typed,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold-toggle",
+        aliases: &[],
+        doc: "Toggle the fold at the cursor (same as `z a`).",
+        fun: fold_toggle_typed,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold-open-all",
+        aliases: &[],
+        doc: "Open all folds (same as `z R`).",
+        fun: fold_open_all_typed,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold-close-all",
+        aliases: &[],
+        doc: "Fold every block `fold-method` finds (same as `z M`).",
+        fun: fold_close_all_typed,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "read-only",
         aliases: &["readonly"],
         doc: "Toggle forced read-only (edits are blocked) for the current buffer, or `all` open buffers.",
@@ -5842,6 +5965,11 @@ pub(crate) fn apply_ui_requests(
             helix_js::UiRequest::OpenPicker(req) => picker::handle_open_picker(req)?,
             helix_js::UiRequest::FocusBuffer(req) => doc::handle_focus_buffer(req)?,
             helix_js::UiRequest::MoveBuffer(req) => doc::handle_move_buffer(req)?,
+            helix_js::UiRequest::FoldOpen(req) => fold::handle_fold_open(req)?,
+            helix_js::UiRequest::FoldClose(req) => fold::handle_fold_close(req)?,
+            helix_js::UiRequest::FoldToggle(req) => fold::handle_fold_toggle(req)?,
+            helix_js::UiRequest::FoldOpenAll => fold::handle_fold_open_all()?,
+            helix_js::UiRequest::FoldCloseAll => fold::handle_fold_close_all()?,
             helix_js::UiRequest::OpenBufferLeaf(req) => doc::handle_open_buffer_leaf(req)?,
             helix_js::UiRequest::TermClear(req) => term::handle_term_clear(req)?,
             helix_js::UiRequest::TermSave(req) => term::handle_term_save(req)?,
@@ -6447,6 +6575,31 @@ fn toml_to_json(v: &toml::Value) -> serde_json::Value {
         ),
         _ => serde_json::Value::Null,
     }
+}
+
+/// 折叠快照（当前文档）：`[{start_line, end_line, hidden_lines}]`，供 `helix.fold.list()`。
+/// 行号 0-based，`end_line` **不含**（与 `Folds::from_lines` 同一套语义）。
+pub fn serialize_folds(editor: &helix_view::Editor) -> String {
+    let Some(doc_id) = editor.tree.try_get(editor.tree.focus).map(|v| v.doc) else {
+        return "[]".to_string();
+    };
+    let Some(doc) = editor.document(doc_id) else {
+        return "[]".to_string();
+    };
+    let text = doc.text().slice(..);
+    let folds: Vec<_> = doc
+        .folds
+        .all()
+        .iter()
+        .map(|fold| {
+            serde_json::json!({
+                "start_line": text.char_to_line(fold.start),
+                "end_line": text.char_to_line(fold.end),
+                "hidden_lines": fold.hidden_lines(text),
+            })
+        })
+        .collect();
+    serde_json::Value::Array(folds).to_string()
 }
 
 pub fn serialize_buffers(editor: &helix_view::Editor) -> String {

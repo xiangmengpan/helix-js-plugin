@@ -97,6 +97,13 @@ pub struct FocusBufferReq {
     pub id: u64,
 }
 
+/// `helix.fold.{open,close,toggle}(line)`：按**行号**（0-based）操作折叠。
+#[derive(Debug)]
+pub struct FoldLineReq {
+    /// 0-based 行号（插件的坐标约定）
+    pub line: usize,
+}
+
 /// `helix.buffer.move(id, to)`：把文档 `id` 移到 bufferline 的第 `to` 位。
 /// 与 `:buffer-move-left/right` 是同一份顺序（`Editor::documents` 的容器序）。
 #[derive(Debug)]
@@ -423,6 +430,13 @@ pub enum UiRequest {
     FocusBuffer(FocusBufferReq),
     /// `helix.buffer.move(id, to)`：bufferline 重排（与 `:buffer-move-*` 同一份顺序）
     MoveBuffer(MoveBufferReq),
+    /// `helix.fold.open(line)` / `close(line)` / `toggle(line)`
+    FoldOpen(FoldLineReq),
+    FoldClose(FoldLineReq),
+    FoldToggle(FoldLineReq),
+    /// `helix.fold.open_all()` / `close_all()`
+    FoldOpenAll,
+    FoldCloseAll,
     MovePanel(MovePanelReq),
     /// `helix.set_readonly(on, all?)`：切换**强制只读**（编辑闸门，不是文件权限位）。
     SetReadonly(SetReadonlyReq),

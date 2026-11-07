@@ -200,6 +200,11 @@ useful when you're simply looking over text and not actively editing it.
 | `t`                  | Align the line to the top of the screen                   | `align_view_top`        |
 | `b`                  | Align the line to the bottom of the screen                | `align_view_bottom`     |
 | `m`                  | Align the line to the middle of the screen (horizontally) | `align_view_middle`     |
+| `f`                  | Fold the block at the cursor                              | `fold_close`            |
+| `o`                  | Open the fold at the cursor                               | `fold_open`             |
+| `a`                  | Toggle the fold at the cursor                             | `fold_toggle`           |
+| `M`                  | Fold every block `fold-method` finds                      | `fold_close_all`        |
+| `R`                  | Open all folds                                            | `fold_open_all`         |
 | `j`, `down`          | Scroll the view downwards                                 | `scroll_down`           |
 | `k`, `up`            | Scroll the view upwards                                   | `scroll_up`             |
 | `Ctrl-f`, `PageDown` | Move page down                                            | `page_down`             |

@@ -211,3 +211,106 @@ fn annotation_and_overlay() {
         "fooo  bar "
     );
 }
+
+fn folded_text(text: &str, concealed: impl IntoIterator<Item = std::ops::Range<usize>>) -> String {
+    DocumentFormatter::new_at_prev_checkpoint(
+        text.into(),
+        &TextFormat::new_test(false),
+        TextAnnotations::default().set_concealed(concealed),
+        0,
+    )
+    .collect_to_str()
+}
+
+fn folded_text_softwrap(
+    text: &str,
+    concealed: impl IntoIterator<Item = std::ops::Range<usize>>,
+) -> String {
+    DocumentFormatter::new_at_prev_checkpoint(
+        text.into(),
+        &TextFormat::new_test(true),
+        TextAnnotations::default().set_concealed(concealed),
+        0,
+    )
+    .collect_to_str()
+}
+
+/// 折叠的核心：隐藏行**不占屏幕行**，头行独占一行，块后那一行接在下面。
+///
+/// 区间约定（见 `docs/superpowers/plans/2026-11-07-code-folding.md` §3）：
+/// conceal = `[头行行尾换行, 块最后一个换行)` ⇒ 最后的换行保留，行数才真的减。
+#[test]
+fn concealed_lines_do_not_take_a_row() {
+    let text = "head\nhidden1\nhidden2\nafter\n";
+    // chars: "head\n"=0..5, "hidden1\n"=5..13, "hidden2\n"=13..21, "after\n"=21..27
+    assert_eq!(
+        folded_text(text, []),
+        "head \nhidden1 \nhidden2 \nafter \n ",
+        "换行字渲染成空格（`Grapheme::Newline` 的 Display）"
+    );
+    assert_eq!(folded_text(text, [4..20]), "head \nafter \n ");
+}
+
+/// 折叠后行算术必须跟着变：`visual_offset_from_block` 的行号少 2。
+#[test]
+fn concealed_lines_shrink_visual_rows() {
+    use crate::position::visual_offset_from_block;
+
+    let text = std::borrow::Cow::Borrowed("head\nhidden1\nhidden2\nafter\n");
+    let text = crate::Rope::from(text);
+    let text = text.slice(..);
+    let fmt = TextFormat::new_test(false);
+    let after = 21; // "after" 的首字符
+
+    let plain = TextAnnotations::default();
+    assert_eq!(
+        visual_offset_from_block(text, 0, after, &fmt, &plain).0.row,
+        3,
+        "不折叠时 after 在第 4 行（row=3）"
+    );
+
+    let mut folded = TextAnnotations::default();
+    folded.set_concealed([4..20]);
+    assert_eq!(
+        visual_offset_from_block(text, 0, after, &fmt, &folded)
+            .0
+            .row,
+        1,
+        "折叠 2 行后 after 落到第 2 行（row=1）"
+    );
+}
+
+/// 不变量：任意可见行 row ⇒ 反解出的 char 再正解回来，仍是同一行。
+/// 这条测试是为了抓「屏幕是折后的、坐标系是折前的」这类看不到的裂缝。
+#[test]
+fn concealed_rows_round_trip() {
+    use crate::position::{char_idx_at_visual_offset, visual_offset_from_block};
+
+    let rope = crate::Rope::from("aaa\nbbbb\nccccc\ndd\neee\n");
+    let text = rope.slice(..);
+    let fmt = TextFormat::new_test(false);
+    let mut annotations = TextAnnotations::default();
+    annotations.set_concealed([4..15]);
+
+    // 折掉 "bbbb"、"ccccc" 两行（第 1、2 行）
+    for row in 0..3 {
+        let (char_idx, _virtual) = char_idx_at_visual_offset(text, 0, row, 0, &fmt, &annotations);
+        let back = visual_offset_from_block(text, 0, char_idx, &fmt, &annotations)
+            .0
+            .row;
+        assert_eq!(
+            back, row as usize,
+            "row {row} 往返不一致（char_idx={char_idx}）"
+        );
+    }
+}
+
+/// soft wrap 开着时结果与关着时一致（覆盖 `word_buf` / `peeked_grapheme` 的 lookahead）。
+#[test]
+fn concealed_lines_with_softwrap() {
+    // 关掉软折后就是两行文本；软折开着但每行都短 ⇒ 依旧两行
+    assert_eq!(
+        folded_text_softwrap("head\nhidden1\nhidden2\nafter\n", [4..20]),
+        "head \nafter \n "
+    );
+}

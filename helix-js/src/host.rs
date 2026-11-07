@@ -75,6 +75,8 @@ pub struct HostState {
 
     /// 打开文档快照 JSON(1b:同款进程级键表 → 宿主字段)
     pub(crate) buffers: RefCell<String>,
+    /// 折叠快照 JSON（`helix.fold.list()` 读；helix-term 每帧写，与 buffers 同款）
+    pub(crate) folds: RefCell<String>,
 
     /// 布局快照 JSON(2:原为进程级 `static LAST_LAYOUT` —— 与 buffers 同类的跨宿主串味)
     pub(crate) layout: RefCell<String>,
@@ -338,6 +340,7 @@ impl JsHost {
             loaded_scripts: RefCell::new(Vec::new()),
             open_panels: RefCell::new(Vec::new()),
             buffers: RefCell::new(String::new()),
+            folds: RefCell::new(String::new()),
             layout: RefCell::new(String::new()),
             diagnostics: RefCell::new(String::new()),
             config_schemas: RefCell::new(HashMap::new()),
@@ -870,6 +873,11 @@ impl JsHost {
 
     pub fn cache_buffers(&mut self, json: &str) {
         crate::state::cache_buffers(self.state(), json);
+    }
+
+    /// 每帧推折叠快照（`helix.fold.list()` 的读取口）
+    pub fn cache_folds(&mut self, json: &str) {
+        crate::state::cache_folds(self.state(), json);
     }
 
     pub fn cache_diagnostics(&mut self, json: &str) {

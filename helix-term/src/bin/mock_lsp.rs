@@ -105,6 +105,11 @@ fn respond(msg: &serde_json::Value, scenario: &str, args: &[String]) -> Option<s
         "textDocument/documentSymbol" if scenario == "symbols_basic" => json!([
             { "name": "MockSymbol", "kind": 13, "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }, "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } } }
         ]),
+        // 折叠范围：0-based 行号、end 含端点，与 LSP 语义一致。
+        // 固定给出「第 0 行 ~ 第 3 行」一个块（够断言用，不看文档内容）。
+        "textDocument/foldingRange" if scenario == "folding_basic" => json!([
+            { "startLine": 0, "endLine": 3, "kind": "region" }
+        ]),
         "textDocument/formatting" if scenario == "format_basic" => json!([
             { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } }, "newText": "ONE" }
         ]),
@@ -232,6 +237,8 @@ fn capabilities(scenario: &str) -> serde_json::Value {
         "symbols_basic" => set(&mut caps, "documentSymbolProvider", json!(true)),
         "format_basic" => set(&mut caps, "documentFormattingProvider", json!(true)),
         "rename_cross_file" | "rename_stale" => set(&mut caps, "renameProvider", json!(true)),
+        // 折叠范围（P2）：客户端按 foldingRangeProvider 门控请求
+        "folding_basic" => set(&mut caps, "foldingRangeProvider", json!(true)),
         // resolveProvider:execute 时客户端发 codeAction/resolve(判别器依赖此路径返回本 server 的 edit)
         "code_actions_basic" => set(
             &mut caps,

@@ -170,6 +170,8 @@ pub struct View {
     pub object_selections: Vec<Selection>,
     /// all gutter-related configuration settings, used primarily for gutter rendering
     pub gutters: GutterConfig,
+    /// 折叠标记列配置（`[editor] fold-column` 的视图镜像：`GutterType::width` 只有 view+doc）
+    pub fold_column: crate::editor::FoldColumn,
     /// A mapping between documents and the last history revision the view was updated at.
     /// Changes between documents and views are synced lazily when switching windows. This
     /// mapping keeps track of the last applied history revision so that only new changes
@@ -206,6 +208,7 @@ impl View {
             last_modified_docs: [None, None],
             object_selections: Vec::new(),
             gutters,
+            fold_column: crate::editor::FoldColumn::default(),
             doc_revisions: HashMap::new(),
             diagnostics_handler: DiagnosticsHandler::new(),
         }
@@ -574,6 +577,11 @@ impl View {
                 config,
             ));
         }
+
+        // 折叠：把文档的隐藏区间喂给排版器（`TextAnnotations` 是 formatter 唯一的外部输入
+        // ⇒ 渲染、滚动、点击、`:goto` 自动看到同一个（折后的）世界）。
+        // 每帧现算，不做跨帧缓存 —— 折叠状态只有 `Document.folds` 一份。
+        text_annotations.set_concealed(doc.folds.concealed_ranges(doc.text().slice(..)));
 
         text_annotations
     }

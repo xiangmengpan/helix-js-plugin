@@ -401,6 +401,8 @@ pub fn test_editor_config() -> helix_view::editor::Config {
             enable: false,
             ..Default::default()
         },
+        // 折叠态持久化会写真实 HOME（跨测试互相污染）⇒ 测试里一律关掉
+        fold_persist: false,
         // The word-index hook accumulates per-document pending changes across
         // every `DocumentDidChange` and composes them on the next event for the
         // same doc id. Each test builds a fresh `Application` that reuses

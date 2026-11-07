@@ -419,6 +419,73 @@ impl<'t> DocumentFormatter<'t> {
         }
     }
 
+    /// 跳过一个已经取出来、但不该上屏的字（折叠区里的）。
+    ///
+    /// 与 `Iterator::next` 里“yield 后”的记账完全一致：`char_pos` 加上它的
+    /// `doc_chars()`，真文档换行的话 `line_pos` 前进一格。
+    fn skip_over(&mut self, grapheme: &GraphemeWithSource<'t>) {
+        self.char_pos += grapheme.doc_chars();
+        if grapheme.is_newline() && !grapheme.source.is_virtual() {
+            self.line_pos += 1;
+        }
+    }
+
+    /// 把隐藏（折叠）的文档字全部跳过，让 `char_pos` 落到第一个可见字上。
+    ///
+    /// 三处来源都要盖：
+    /// 1. soft wrap 已经拽进 `word_buf` 的字（折叠区间行对齐，最多只会多拽一个换行）；
+    /// 2. 同理落在 `peeked_grapheme` 里的那一个；
+    /// 3. 没有任何 lookahead 时，直接从文档字迭代器里消掉（**不经过注解** ——
+    ///    隐藏区里的 inline 注解/inlay hint 本来就不该显示，正是我们想要的互斥）。
+    fn skip_concealed(&mut self) {
+        if !self.annotations.has_concealed() {
+            return;
+        }
+        loop {
+            // ① soft wrap 已拉进缓冲的字
+            if self.word_i < self.word_buf.len() {
+                if self.annotations.concealed_end(self.char_pos).is_none() {
+                    return;
+                }
+                let grapheme = replace(
+                    self.word_buf.get_mut(self.word_i).expect("index checked"),
+                    GraphemeWithSource::placeholder(),
+                );
+                self.word_i += 1;
+                self.skip_over(&grapheme);
+                continue;
+            }
+
+            // ② peeked（soft wrap 预取的那一个）
+            if let Some(peeked) = self.peeked_grapheme.take() {
+                if self.annotations.concealed_end(self.char_pos).is_none() {
+                    self.peeked_grapheme = Some(peeked);
+                    return;
+                }
+                self.skip_over(&peeked);
+                continue;
+            }
+
+            // ③ 没有 lookahead：直接消文档字
+            let Some(end) = self.annotations.concealed_end(self.char_pos) else {
+                return;
+            };
+            while self.char_pos < end {
+                let Some(grapheme) = self.graphemes.next() else {
+                    return;
+                };
+                let chars = grapheme.len_chars();
+                if chars == 0 {
+                    return;
+                }
+                if grapheme.chars().eq("\n".chars()) {
+                    self.line_pos += 1;
+                }
+                self.char_pos += chars;
+            }
+        }
+    }
+
     /// returns the char index at the end of the last yielded grapheme
     pub fn next_char_pos(&self) -> usize {
         self.char_pos
@@ -433,6 +500,9 @@ impl<'t> Iterator for DocumentFormatter<'t> {
     type Item = FormattedGrapheme<'t>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // 折叠：先把隐藏区扔掉（必须在取字之前 —— 丢字与 yield 字要走同一套装账，
+        // 否则 soft wrap 的 lookahead 会和 `char_pos` 错位）。
+        self.skip_concealed();
         let grapheme = if self.text_fmt.soft_wrap {
             if self.word_i >= self.word_buf.len() {
                 self.advance_to_next_word();

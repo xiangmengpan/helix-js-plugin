@@ -919,6 +919,114 @@ pub(crate) fn js_focus_buffer(
     Ok(JsValue::undefined())
 }
 
+/// `helix.fold.list()` —— 当前文档的折叠快照（helix-term 每帧推来）。
+///
+/// 形如 `[{start_line, end_line, hidden_lines}]`（0-based，`end_line` **不含**）。
+pub(crate) fn js_fold_list(
+    _this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let json = crate::state::folds_json();
+    if json.is_empty() {
+        return Ok(JsValue::null());
+    }
+    js_json_parse(json, ctx, "fold.list")
+}
+
+fn fold_line_req(
+    args: &[JsValue],
+    ctx: &mut Context,
+    name: &str,
+) -> boa_engine::JsResult<FoldLineReq> {
+    let line: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{name}: line must be a number")))?;
+    Ok(FoldLineReq {
+        line: line as usize,
+    })
+}
+
+/// `helix.fold.open(line)`：展开该行所在的折叠。
+pub(crate) fn js_fold_open(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let req = fold_line_req(args, ctx, "fold.open")?;
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::FoldOpen(req));
+    Ok(JsValue::undefined())
+}
+
+/// `helix.fold.close(line)`：把该行所在的块折上。
+pub(crate) fn js_fold_close(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let req = fold_line_req(args, ctx, "fold.close")?;
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::FoldClose(req));
+    Ok(JsValue::undefined())
+}
+
+/// `helix.fold.toggle(line)`：该行有折叠就开，没有就折。
+pub(crate) fn js_fold_toggle(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let req = fold_line_req(args, ctx, "fold.toggle")?;
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::FoldToggle(req));
+    Ok(JsValue::undefined())
+}
+
+/// `helix.fold.open_all()`：全部展开。
+pub(crate) fn js_fold_open_all(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::FoldOpenAll);
+    Ok(JsValue::undefined())
+}
+
+/// `helix.fold.close_all()`：按 `fold-method` 折全部（与 `zM` 同一份实现）。
+pub(crate) fn js_fold_close_all(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::FoldCloseAll);
+    Ok(JsValue::undefined())
+}
+
 /// 重排 bufferline：helix.buffer.move(id, to) —— 把文档 `id` 移到第 `to` 位
 /// （0-based；越界 clamp 到末尾）。
 ///

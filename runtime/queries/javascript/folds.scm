@@ -1,0 +1,23 @@
+; 折叠候选（`@fold`）。
+[
+  (function_declaration)
+  (function_expression)
+  (arrow_function)
+  (method_definition)
+  (class_declaration)
+  (class_body)
+  (if_statement)
+  (for_statement)
+  (for_in_statement)
+  (while_statement)
+  (do_statement)
+  (switch_statement)
+  (switch_body)
+  (try_statement)
+  (catch_clause)
+  (finally_clause)
+  (statement_block)
+  (object)
+  (array)
+  (arguments)
+] @fold

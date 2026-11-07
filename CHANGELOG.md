@@ -118,6 +118,29 @@ Commands:
   `move(id, len - 1)` is `:buffer-move-right`. Content and focus are untouched; an unknown id
   reports an error instead of silently doing nothing.
 
+Features:
+
+* **Code folding.** `z f` (fold) / `z o` (open) / `z a` (toggle) / `z M` (fold everything) /
+  `z R` (open everything), plus `[editor] fold-method` (`indent` by default, or `manual`;
+  `tree-sitter` / `lsp` parse today but fall back to indent until P1/P2), `fold-jump`
+  (`open` = expand when the cursor would land inside a fold, `skip` = jump over the block
+  instead) and `fold-min-lines`. Hidden lines really take no row: folding is fed into the
+  document formatter (`TextAnnotations` gained concealed ranges) rather than filtered at draw
+  time, so scrolling, mouse clicks, `:goto`, scrolloff and the gutter all agree with what is
+  on screen — the invariant is unit-tested. Folds live on `Document` (shared by every window
+  showing it), follow edits through the changeset, and the line-number gutter grows one column
+  with a `▶` marker while a document has folds. Selections, `%`, `alt-s` and yanking still see
+  the hidden text. `:fold-open` / `:fold-close` / `:fold-toggle` / `:fold-open-all` /
+  `:fold-close-all` mirror the keys. `fold-method = "lsp"` uses `textDocument/foldingRange`
+  (requested when a document opens or when the server finishes initializing, cached on the
+  document, refreshed by `zM` on a miss). Plugins get `helix.fold.list/open/close/toggle/
+  open_all/close_all` (0-based lines, same state as the keys). Folds persist across sessions by
+  file path (`[editor] fold-persist`, `~/.local/state/helix/fold-state.json`).
+  `folds.scm` for rust / javascript / typescript / python / go, and
+  `cargo xtask query-check` now compiles every `folds.scm` too (it caught two stale files —
+  `blade`, which used an unsupported `@start`/`@end` convention plus node types this grammar
+  version does not have, and `latex`, whose `(environment)` node no longer exists).
+
 Usability improvements:
 
 * `Enter` in the zellij-style pane modes (`C-p`/`C-n`/`C-h`/`C-y`) now **enters the focused

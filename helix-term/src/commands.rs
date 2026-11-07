@@ -589,6 +589,11 @@ impl MappableCommand {
         align_view_middle, "Align view middle",
         align_view_top, "Align view top",
         align_view_center, "Align view center",
+        fold_close, "Close the fold at the cursor (zf)",
+        fold_open, "Open the fold at the cursor (zo)",
+        fold_toggle, "Toggle the fold at the cursor (za)",
+        fold_close_all, "Fold everything `fold-method` finds (zM)",
+        fold_open_all, "Open all folds (zR)",
         align_view_bottom, "Align view bottom",
         scroll_up, "Scroll view up",
         scroll_down, "Scroll view down",
@@ -992,6 +997,10 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
     let text = doc.text().slice(..);
     let text_fmt = doc.text_format(view.inner_area(doc).width, None);
     let mut annotations = view.text_annotations(doc, None, None);
+    // 纵向移动按**文档行**走：折叠不参与，否则"落到被藏起来的行"会被 clamp 到
+    // 折叠块末尾（`char_idx_at_visual_block_offset` 在隐藏块上只能给边界值）。
+    // 折叠的收口在渲染前的一次对账（`Editor::apply_fold_jump`）：Open 展开、Skip 跳过。
+    annotations.set_concealed(std::iter::empty());
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         move_fn(
@@ -6516,6 +6525,170 @@ fn align_view_center(cx: &mut Context) {
 fn align_view_bottom(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     align_view(doc, view, Align::Bottom);
+}
+
+/// 按 `[editor] fold-method` 给文档算候选折叠（实现在 `helix-view`，gutter 也用它画 `▼`）。
+///
+/// 返回 `(候选, 是否该补一次 LSP 请求)`：`lsp` 缓存为空时后者为 `true`。
+pub(crate) fn fold_candidates(
+    doc: &helix_view::Document,
+    loader: &helix_core::syntax::Loader,
+    fold_method: helix_view::editor::FoldMethod,
+    fold_min_lines: usize,
+) -> (Vec<helix_view::fold::Fold>, bool) {
+    helix_view::fold::candidates(doc, loader, fold_method, fold_min_lines)
+}
+
+/// 当前文档的候选折叠 + 光标位置；顺带在 LSP 缓存为空时补发请求。
+///
+/// 键位（`z f/o/a/M/R`）与 `:fold-*` 命令共用这一份实现。
+pub(crate) fn current_fold_candidates(
+    editor: &mut helix_view::Editor,
+) -> (Vec<helix_view::fold::Fold>, usize) {
+    let (fold_method, fold_min_lines) = {
+        let config = editor.config();
+        (config.fold_method, config.fold_min_lines)
+    };
+    let loader = editor.syn_loader.load_full();
+    let (cursor, candidates, needs_lsp) = {
+        let (view, doc) = current!(editor);
+        let cursor = doc
+            .selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..));
+        let (candidates, needs_lsp) = fold_candidates(doc, &loader, fold_method, fold_min_lines);
+        (cursor, candidates, needs_lsp)
+    };
+    if needs_lsp {
+        let doc_id = helix_view::doc!(editor).id();
+        crate::handlers::lsp_folds::request_lsp_folds(editor, doc_id);
+        editor.set_status("LSP folding ranges requested — press zM again");
+    }
+    (candidates, cursor)
+}
+
+/// `za` 的实现（`z a` 与 `:fold-toggle` 共用）。
+pub(crate) fn fold_toggle_impl(editor: &mut helix_view::Editor) {
+    let cursor = {
+        let (view, doc) = current!(editor);
+        doc.selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..))
+    };
+    {
+        let (_view, doc) = current!(editor);
+        if doc.folds.remove_at(cursor) {
+            editor.set_status("fold opened");
+            return;
+        }
+    }
+    let (candidates, cursor) = current_fold_candidates(editor);
+    match candidates.into_iter().find(|fold| fold.contains(cursor)) {
+        Some(fold) => {
+            let hidden = {
+                let (_view, doc) = current!(editor);
+                let hidden = fold.hidden_lines(doc.text().slice(..));
+                doc.folds.add(fold);
+                hidden
+            };
+            editor.set_status(format!("fold closed ({hidden} lines)"));
+        }
+        None => editor.set_status("nothing to fold here"),
+    }
+    crate::handlers::fold_state::persist_current(editor);
+}
+
+/// `zf` 的实现（关；已经折着就什么都不做）。
+pub(crate) fn fold_close_impl(editor: &mut helix_view::Editor) {
+    let (candidates, cursor) = current_fold_candidates(editor);
+    {
+        let (_view, doc) = current!(editor);
+        if doc.folds.at(cursor).is_some() {
+            editor.set_status("already folded");
+            return;
+        }
+    }
+    match candidates.into_iter().find(|fold| fold.contains(cursor)) {
+        Some(fold) => {
+            let hidden = {
+                let (_view, doc) = current!(editor);
+                let hidden = fold.hidden_lines(doc.text().slice(..));
+                doc.folds.add(fold);
+                hidden
+            };
+            editor.set_status(format!("fold closed ({hidden} lines)"));
+        }
+        None => editor.set_status("nothing to fold here"),
+    }
+    crate::handlers::fold_state::persist_current(editor);
+}
+
+/// `zo` 的实现（开；含光标落在折叠正文里的情况）。
+pub(crate) fn fold_open_impl(editor: &mut helix_view::Editor) {
+    let cursor = {
+        let (view, doc) = current!(editor);
+        doc.selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..))
+    };
+    let opened = {
+        let (_view, doc) = current!(editor);
+        doc.folds.remove_at(cursor)
+    };
+    editor.set_status(if opened {
+        "fold opened"
+    } else {
+        "no fold here"
+    });
+    crate::handlers::fold_state::persist_current(editor);
+}
+
+/// `zM` 的实现（按 `fold-method` 折全部候选）。
+pub(crate) fn fold_close_all_impl(editor: &mut helix_view::Editor) {
+    let (candidates, _cursor) = current_fold_candidates(editor);
+    let total = {
+        let (_view, doc) = current!(editor);
+        for fold in candidates {
+            doc.folds.add(fold);
+        }
+        doc.folds.len()
+    };
+    editor.set_status(format!("folded {total} region(s)"));
+    crate::handlers::fold_state::persist_current(editor);
+}
+
+/// `zR` 的实现（全部展开）。
+pub(crate) fn fold_open_all_impl(editor: &mut helix_view::Editor) {
+    let (_view, doc) = current!(editor);
+    let count = doc.folds.len();
+    doc.folds.clear();
+    editor.set_status(format!("opened {count} fold(s)"));
+    crate::handlers::fold_state::persist_current(editor);
+}
+
+/// `za`：光标处有折叠就展开，没有就按 `fold-method` 折上。
+fn fold_toggle(cx: &mut Context) {
+    fold_toggle_impl(cx.editor);
+}
+
+/// `zf`：把光标所在的块折起来（已经折着就什么都不做）。
+fn fold_close(cx: &mut Context) {
+    fold_close_impl(cx.editor);
+}
+
+/// `zo`：展开光标所在的折叠（含光标落在折叠正文里的情况）。
+fn fold_open(cx: &mut Context) {
+    fold_open_impl(cx.editor);
+}
+
+/// `zM`：按 `fold-method` 把所有候选都折上。
+fn fold_close_all(cx: &mut Context) {
+    fold_close_all_impl(cx.editor);
+}
+
+/// `zR`：全部展开。
+fn fold_open_all(cx: &mut Context) {
+    fold_open_all_impl(cx.editor);
 }
 
 fn align_view_middle(cx: &mut Context) {

@@ -1419,6 +1419,23 @@ impl Client {
         Some(self.call::<lsp::request::DocumentDiagnosticRequest>(params))
     }
 
+    /// `textDocument/foldingRange`：服务器没声明 `foldingRangeProvider` ⇒ `None`。
+    ///
+    /// 返回的区间是 **0-based 行号、`end_line` 含端点**（LSP 语义），
+    /// 换算成折叠区间由调用方做（`Document::lsp_fold_lines`）。
+    pub fn text_document_folding_range(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::FoldingRange>>>>> {
+        self.capabilities().folding_range_provider.as_ref()?;
+        let params = lsp::FoldingRangeParams {
+            text_document,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+        Some(self.call::<lsp::request::FoldingRangeRequest>(params))
+    }
+
     pub fn text_document_document_highlight(
         &self,
         text_document: lsp::TextDocumentIdentifier,

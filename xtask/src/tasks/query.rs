@@ -27,6 +27,7 @@ pub fn run(args: Vec<String>) -> Result<(), DynError> {
         LanguageData::compile_textobject_query(grammar, config)?;
         LanguageData::compile_tag_query(grammar, config)?;
         LanguageData::compile_rainbow_query(grammar, config)?;
+        LanguageData::compile_fold_query(grammar, config)?;
     }
 
     println!("Query check succeeded");

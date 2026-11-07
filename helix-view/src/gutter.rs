@@ -172,7 +172,10 @@ pub fn line_numbers<'doc>(
     is_focused: bool,
 ) -> GutterFn<'doc> {
     let text = doc.text().slice(..);
-    let width = line_numbers_width(view, doc);
+    // `width` = **数字字段**宽度；标记列另算（总宽 = width + fold_width）。
+    // 早先这里直接用 total width，加了标记列之后数字会被截掉（`set_stringn` 按 width 截断）。
+    let fold_width = fold_column_width(view, doc);
+    let width = line_numbers_width(view, doc) - fold_width;
 
     let last_line_in_view = view.estimate_last_doc_line(doc);
 
@@ -182,6 +185,39 @@ pub fn line_numbers<'doc>(
 
     let linenr = theme.get("ui.linenr");
     let linenr_select = theme.get("ui.linenr.selected");
+    // 折叠标记列：`▶` = 折叠头行（正文不占屏幕行），`▼` = 可折但没折。
+    //
+    // 候选走 `Document::fold_candidates_cached`（版本 + fold-method 缓存），
+    // 否则每帧都要重扫 indent / 跑 tree-sitter 查询。
+    let (folded_lines, openable_lines): (
+        std::collections::HashSet<usize>,
+        std::collections::HashSet<usize>,
+    ) = if fold_width == 0 {
+        (Default::default(), Default::default())
+    } else {
+        let folded: std::collections::HashSet<usize> = doc
+            .folds
+            .all()
+            .iter()
+            .map(|fold| text.char_to_line(fold.start))
+            .collect();
+        // `auto` 模式下来到这说明已经有折叠了 ⇒ 顺手把"还能折的地方"也标出来；
+        // `always` 模式下没有折叠也要标（这正是它存在的理由）。
+        let config = editor.config();
+        let candidates = doc.fold_candidates_cached(
+            &editor.syn_loader.load(),
+            config.fold_method,
+            config.fold_min_lines,
+        );
+        let mut openable = std::collections::HashSet::new();
+        for fold in candidates {
+            let line = text.char_to_line(fold.start);
+            if !folded.contains(&line) {
+                openable.insert(line);
+            }
+        }
+        (folded, openable)
+    };
 
     let current_line = doc
         .text()
@@ -193,6 +229,9 @@ pub fn line_numbers<'doc>(
     Box::new(
         move |line: usize, selected: bool, first_visual_line: bool, out: &mut String| {
             if line == last_line_in_view && !draw_last {
+                if fold_width > 0 {
+                    write!(out, " ").unwrap();
+                }
                 write!(out, "{:>1$}", '~', width).unwrap();
                 Some(linenr)
             } else {
@@ -216,6 +255,16 @@ pub fn line_numbers<'doc>(
                 };
 
                 if first_visual_line {
+                    if fold_width > 0 {
+                        let marker = if folded_lines.contains(&line) {
+                            '▶'
+                        } else if openable_lines.contains(&line) {
+                            '▼'
+                        } else {
+                            ' '
+                        };
+                        write!(out, "{marker}").unwrap();
+                    }
                     write!(out, "{:>1$}", display_num, width).unwrap();
                 } else {
                     write!(out, "{:>1$}", " ", width).unwrap();
@@ -239,7 +288,20 @@ fn line_numbers_width(view: &View, doc: &Document) -> usize {
     let last_drawn = if draw_last { last_line + 1 } else { last_line };
     let digits = count_digits(last_drawn);
     let n_min = view.gutters.line_numbers.min_width;
-    digits.max(n_min)
+    digits.max(n_min) + fold_column_width(view, doc)
+}
+
+/// 折叠标记列占几列（0 = 不占）。
+///
+/// `fold-column = "auto"` 只在**文档已有折叠**时才占列 —— 没有折叠的文件不该白丢一列；
+/// `always` 一直占（这样 `▼`（可折但没折）一打开就看得见，vim 的 `foldcolumn` 手感）。
+fn fold_column_width(view: &View, doc: &Document) -> usize {
+    use crate::editor::FoldColumn;
+    match view.fold_column {
+        FoldColumn::Hide => 0,
+        FoldColumn::Always => 1,
+        FoldColumn::Auto => usize::from(!doc.folds.is_empty()),
+    }
 }
 
 pub fn padding<'doc>(

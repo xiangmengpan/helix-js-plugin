@@ -1091,6 +1091,24 @@ interface Helix {
     move(id: number, to: number): void;
   };
 
+  /** 代码折叠（行号 0-based；`end_line` **不含**，与 `z M` 看到的一致）。
+   *
+   *  候选来源由 `[editor] fold-method` 决定（`indent` / `manual` / `tree-sitter` / `lsp`），
+   *  与键位 `z f/o/a/M/R`、命令 `:fold-*` 是**同一份实现**（`Document.folds`）。 */
+  fold: {
+    /** 当前文档的折叠快照；一帧都没渲染过时为 null */
+    list(): { start_line: number; end_line: number; hidden_lines: number }[] | null;
+    /** 展开该行的折叠 */
+    open(line: number): void;
+    /** 把该行所在的块折上（按 `fold-method`） */
+    close(line: number): void;
+    /** 有就开、没有就折 */
+    toggle(line: number): void;
+    /** 全部展开 */
+    open_all(): void;
+    /** 按 `fold-method` 折全部（= `z M`） */
+    close_all(): void;
+  };
   // ── 已删除的旧扁平根名(@ 2026-10 对账核实:核心**未注册**这些名字)──
   // 照旧名调用 = 运行期 undefined。迁移对照(注意两条参数顺序相反):
   //   focus(id)          → helix.pane.focus(id)

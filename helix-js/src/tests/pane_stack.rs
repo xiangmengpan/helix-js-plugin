@@ -423,3 +423,69 @@ fn buffer_move_api_enqueues_request() {
         "应报参数错，实得 {err}"
     );
 }
+
+/// `helix.fold.*`：读快照 + 四个变更请求入队（`list` 走宿主缓存，变更走 UiRequest）。
+#[test]
+fn fold_api_reads_snapshot_and_enqueues_requests() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    // 没缓存 → null
+    load_script(r#"globalThis.__f = helix.fold.list();"#).unwrap();
+    crate::state::with_engine(|engine| {
+        let v = engine
+            .global_object()
+            .get(JsString::from("__f"), engine)
+            .unwrap();
+        assert!(v.is_null(), "无缓存 fold.list() → null");
+    });
+
+    crate::host::with_state_or_init(|st| {
+        crate::state::cache_folds(st, r#"[{"start_line":0,"end_line":4,"hidden_lines":3}]"#)
+    });
+    load_script(
+        r#"
+        globalThis.__fl = helix.fold.list();
+        helix.fold.open(2);
+        helix.fold.close(2);
+        helix.fold.toggle(7);
+        helix.fold.open_all();
+        helix.fold.close_all();
+        "#,
+    )
+    .unwrap();
+    crate::state::with_engine(|engine| {
+        let arr = engine
+            .global_object()
+            .get(JsString::from("__fl"), engine)
+            .unwrap();
+        let obj = arr.as_object().expect("list() 返回数组");
+        let arr = boa_engine::object::builtins::JsArray::from_object(obj.clone()).unwrap();
+        assert_eq!(arr.length(engine).unwrap(), 1, "快照一条折叠");
+    });
+
+    let reqs = take_ui_requests();
+    assert!(
+        reqs.iter()
+            .any(|r| matches!(r, UiRequest::FoldOpen(FoldLineReq { line: 2 }))),
+        "fold.open 入队 FoldOpen"
+    );
+    assert!(
+        reqs.iter()
+            .any(|r| matches!(r, UiRequest::FoldClose(FoldLineReq { line: 2 }))),
+        "fold.close 入队 FoldClose"
+    );
+    assert!(
+        reqs.iter()
+            .any(|r| matches!(r, UiRequest::FoldToggle(FoldLineReq { line: 7 }))),
+        "fold.toggle 入队 FoldToggle"
+    );
+    assert!(reqs.iter().any(|r| matches!(r, UiRequest::FoldOpenAll)));
+    assert!(reqs.iter().any(|r| matches!(r, UiRequest::FoldCloseAll)));
+
+    // 参数类型错 ⇒ 报错不静默
+    let err = load_script(r#"helix.fold.open("nope");"#).unwrap_err();
+    assert!(
+        err.to_string().contains("line must be a number"),
+        "应报参数错，实得 {err}"
+    );
+}

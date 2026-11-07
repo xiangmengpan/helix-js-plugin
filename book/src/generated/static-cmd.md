@@ -258,6 +258,11 @@
 | `align_view_middle` | Align view middle | normal: `` Zm ``, `` zm ``, select: `` Zm ``, `` zm `` |
 | `align_view_top` | Align view top | normal: `` Zt ``, `` zt ``, select: `` Zt ``, `` zt `` |
 | `align_view_center` | Align view center | normal: `` Zc ``, `` Zz ``, `` zc ``, `` zz ``, select: `` Zc ``, `` Zz ``, `` zc ``, `` zz `` |
+| `fold_close` | Close the fold at the cursor (zf) | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
+| `fold_open` | Open the fold at the cursor (zo) | normal: `` Zo ``, `` zo ``, select: `` Zo ``, `` zo `` |
+| `fold_toggle` | Toggle the fold at the cursor (za) | normal: `` Za ``, `` za ``, select: `` Za ``, `` za `` |
+| `fold_close_all` | Fold everything `fold-method` finds (zM) | normal: `` ZM ``, `` zM ``, select: `` ZM ``, `` zM `` |
+| `fold_open_all` | Open all folds (zR) | normal: `` ZR ``, `` zR ``, select: `` ZR ``, `` zR `` |
 | `align_view_bottom` | Align view bottom | normal: `` Zb ``, `` zb ``, select: `` Zb ``, `` zb `` |
 | `scroll_up` | Scroll view up | normal: `` Zk ``, `` zk ``, `` Z<up> ``, `` z<up> ``, select: `` Zk ``, `` zk ``, `` Z<up> ``, `` z<up> `` |
 | `scroll_down` | Scroll view down | normal: `` Zj ``, `` zj ``, `` Z<down> ``, `` z<down> ``, select: `` Zj ``, `` zj ``, `` Z<down> ``, `` z<down> `` |

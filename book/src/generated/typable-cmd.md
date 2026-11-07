@@ -19,6 +19,11 @@
 | `:buffer-move-right`, `:bmr`, `:bmoveright` | Move the current buffer right in the bufferline. No argument (or `0`) moves it to the far right, `N` moves it N slots right. |
 | `:buffer-next`, `:bn`, `:bnext` | Goto next buffer. |
 | `:buffer-previous`, `:bp`, `:bprev` | Goto previous buffer. |
+| `:fold-open` | Open the fold at the cursor (same as `z o`). |
+| `:fold-close` | Fold the block at the cursor (same as `z f`). |
+| `:fold-toggle` | Toggle the fold at the cursor (same as `z a`). |
+| `:fold-open-all` | Open all folds (same as `z R`). |
+| `:fold-close-all` | Fold every block `fold-method` finds (same as `z M`). |
 | `:read-only`, `:readonly` | Toggle forced read-only (edits are blocked) for the current buffer, or `all` open buffers. |
 | `:write`, `:w` | Write changes to disk. Accepts an optional path (:write some/path.txt) |
 | `:write!`, `:w!` | Force write changes to disk creating necessary subdirectories. Accepts an optional path (:write! some/path.txt) |

@@ -23,6 +23,8 @@ pub mod diagnostics;
 mod document_colors;
 mod document_highlight;
 mod document_links;
+pub mod fold_state;
+pub mod lsp_folds;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -64,6 +66,8 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     document_colors::register_hooks(&handlers);
     dap_breakpoints::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
+    lsp_folds::register_hooks(&handlers);
+    fold_state::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);
     handlers

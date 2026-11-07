@@ -724,6 +724,15 @@ impl Application {
         // 泵：worker 结果在每帧绘制前 resolve，回调的编辑/消息同帧上屏
         self.pump_term_events();
 
+        // 折叠对账：光标落进折叠块**正文**时按 `[editor] fold-jump` 展开或跳过。
+        // 放在渲染前（而不是每个命令里）：键、鼠标、`:goto`、搜索、插件编辑全部覆盖，
+        // 且幂等（只在"光标看不见"时才动手，见 `Editor::apply_fold_jump`）。
+        let fold_views: Vec<helix_view::ViewId> =
+            self.editor.tree.views().map(|(view, _)| view.id).collect();
+        for view_id in fold_views {
+            self.editor.apply_fold_jump(view_id);
+        }
+
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
@@ -737,6 +746,10 @@ impl Application {
         let buffers_json = crate::commands::typed::serialize_buffers(&self.editor);
         if let Some(host) = self.js_host.as_deref_mut() {
             host.cache_buffers(&buffers_json);
+            // 折叠快照（当前文档；`helix.fold.list()` 读它）。
+            // 与 buffers 同一条理由：JS 侧读取是同步的，只能每帧写。
+            let folds_json = crate::commands::typed::serialize_folds(&self.editor);
+            host.cache_folds(&folds_json);
         }
         // 诊断快照:这才是贵的那份(每条 message 都要复制+序列化,大诊断集上千条),
         // 且只有显式调用 `helix.diagnostics()` 的插件才读 ⇒ 按兴趣位门控。
