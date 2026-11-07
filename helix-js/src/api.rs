@@ -729,6 +729,14 @@ pub static API: &[Entry] = &[
         &[],
     ),
     e(
+        Target::Ns("buffer"),
+        "move",
+        2,
+        crate::layout_api::js_move_buffer,
+        "js_move_buffer",
+        &[],
+    ),
+    e(
         Target::Ns("stack"),
         "list",
         0,

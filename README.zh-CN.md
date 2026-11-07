@@ -155,7 +155,7 @@ helix.layout.save("dev"); helix.layout.load("dev"); helix.layout.list(); helix.l
 // 命令行等价::layout save|load|list|delete <name>
 
 // ── buffer.* ──
-helix.buffer.list(); helix.buffer.current(); helix.buffer.focus(id);
+helix.buffer.list(); helix.buffer.current(); helix.buffer.focus(id); helix.buffer.move(id, to);
 
 // ── icons.*(核心单一来源;零依赖,不必声明 deps)──
 helix.icons.file("src/main.rs"); helix.icons.dir(true); helix.icons.mode("normal");
@@ -283,6 +283,7 @@ helix.term_state(ptyId, "cwd");                     // 读取
 helix.buffer.list();        // → [{id, path, name, dirty, language}]
 helix.buffer.current();     // → id
 helix.buffer.focus(id);     // 当前 view 切换到该文档
+helix.buffer.move(id, to);  // bufferline 重排(0-based,越界 clamp;与 :buffer-move-left/right 同一份顺序)
 
 // 当前文档的 LSP 诊断(数据来自 Document::diagnostics)
 helix.diagnostics();        // → [{line, message, severity, code, source}]

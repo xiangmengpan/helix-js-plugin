@@ -35,6 +35,8 @@ bitflags.workspace = true
 foldhash.workspace = true
 anyhow = "1"
 termina = { workspace = true, optional = true }
+# `documents` 的容器（插入序 = bufferline 顺序，`:buffer-move-left/right` 靠它重排）
+indexmap = "2"
 
 tempfile.workspace = true
 

@@ -919,6 +919,38 @@ pub(crate) fn js_focus_buffer(
     Ok(JsValue::undefined())
 }
 
+/// 重排 bufferline：helix.buffer.move(id, to) —— 把文档 `id` 移到第 `to` 位
+/// （0-based；越界 clamp 到末尾）。
+///
+/// 与 `:buffer-move-left/right` 共用同一份顺序（`Editor.documents` 的容器序）⇒
+/// 下一帧的 `buffer.list()` / bufferline 渲染 / `:buffer-next` 自动一致，不需要插件自己再维护。
+pub(crate) fn js_move_buffer(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> boa_engine::JsResult<JsValue> {
+    let id: u64 = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err("buffer.move: id must be a number"))?;
+    let to: u64 = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err("buffer.move: to must be a number"))?;
+    crate::state::UI_REQUESTS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .push(UiRequest::MoveBuffer(MoveBufferReq {
+            id,
+            to: to as usize,
+        }));
+    Ok(JsValue::undefined())
+}
+
 pub(crate) fn js_get_component_state(
     _this: &JsValue,
     args: &[JsValue],

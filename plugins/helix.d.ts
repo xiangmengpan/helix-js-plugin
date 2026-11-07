@@ -1084,6 +1084,11 @@ interface Helix {
     current(): number | null;
     /** 把当前视图切到该文档 */
     focus(id: number): void;
+    /** bufferline 重排:把文档 `id` 移到第 `to` 位(0-based,越界 clamp 到末尾)。
+     *  与 `:buffer-move-left/right` 是**同一份顺序**(`Editor.documents` 的容器序) ——
+     *  下一帧的 `buffer.list()`、bufferline 渲染、`:buffer-next` 自动一致。
+     *  只动顺序,不动文档内容与焦点;未知 id ⇒ 状态栏报错。 */
+    move(id: number, to: number): void;
   };
 
   // ── 已删除的旧扁平根名(@ 2026-10 对账核实:核心**未注册**这些名字)──

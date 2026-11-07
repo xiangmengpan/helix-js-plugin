@@ -397,3 +397,29 @@ fn buffer_traversal_api() {
         "focus_buffer 入队 FocusBuffer"
     );
 }
+
+/// `helix.buffer.move(id, to)`：bufferline 重排请求入队（与 `:buffer-move-*` 同一实现）。
+#[test]
+fn buffer_move_api_enqueues_request() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    load_script(r#"helix.buffer.move(7, 2);"#).unwrap();
+    assert!(
+        take_ui_requests()
+            .iter()
+            .any(|r| matches!(r, UiRequest::MoveBuffer(MoveBufferReq { id: 7, to: 2 }))),
+        "buffer.move 入队 MoveBuffer"
+    );
+
+    // 参数不是数字 ⇒ 报错（不静默）
+    let err = load_script(r#"helix.buffer.move("nope", 0);"#).unwrap_err();
+    assert!(
+        err.to_string().contains("id must be a number"),
+        "应报参数错，实得 {err}"
+    );
+    let err = load_script(r#"helix.buffer.move(1, "nope");"#).unwrap_err();
+    assert!(
+        err.to_string().contains("to must be a number"),
+        "应报参数错，实得 {err}"
+    );
+}

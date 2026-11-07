@@ -85,6 +85,25 @@ pub(crate) fn handle_focus_buffer(FocusBufferReq { id }: FocusBufferReq) -> anyh
     Ok(())
 }
 
+/// `helix.buffer.move(id, to)`：bufferline 重排（只动顺序，不动文档内容）。
+/// 与 `:buffer-move-left/right` 走同一个 `Editor::move_document_to`。
+pub(crate) fn handle_move_buffer(MoveBufferReq { id, to }: MoveBufferReq) -> anyhow::Result<()> {
+    job::dispatch_blocking(move |editor, _compositor, mut _js| {
+        let Some(doc_id) = editor
+            .documents
+            .keys()
+            .copied()
+            .find(|did| did.as_u64() == id)
+        else {
+            editor.set_error(format!("move_buffer: no buffer with id {id}"));
+            return;
+        };
+        // 位置没变（已在该位 / 越界 clamp 后相同）不是错误：幂等调用不报错。
+        editor.move_document_to(doc_id, to);
+    });
+    Ok(())
+}
+
 pub(crate) fn handle_open_buffer_leaf(
     OpenBufferLeafReq { path, split }: OpenBufferLeafReq,
 ) -> anyhow::Result<()> {

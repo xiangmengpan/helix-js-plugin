@@ -521,7 +521,7 @@ helix.plugin.unload(name)                       // 卸载**单个**插件(入队
 helix.pane.*   close, embed, equalize, fix, float, focus, focus_dir, info, list, minimize, move, move_into, pin, raise, resize, unzoom, zoom
 helix.layout.*   delete, get, list, load, restore, save
 helix.stack.*   activate, create, list, remove
-helix.buffer.*   current, focus, list
+helix.buffer.*   current, focus, list, move
 helix.pane_mode.*   current, keymap
 helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode, sys
 helix.proc_stats()  → {cpu_ms, rss_kb} | null   // 本进程自省(跨平台,不消耗能力)

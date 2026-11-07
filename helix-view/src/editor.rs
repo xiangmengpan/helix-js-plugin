@@ -21,6 +21,7 @@ use helix_vcs::DiffProviderRegistry;
 use futures_util::stream::select_all::SelectAll;
 use futures_util::StreamExt;
 use helix_lsp::{Call, LanguageServerId};
+use indexmap::IndexMap;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
@@ -1357,7 +1358,10 @@ pub struct Editor {
     pub server_sync_doc: Option<DocumentId>,
     pub tree: Tree,
     pub next_document_id: DocumentId,
-    pub documents: BTreeMap<DocumentId, Document>,
+    /// 打开着的文档。**容器序 = bufferline 顺序**（新文档追加到末尾），
+    /// 所以 `:buffer-move-left/right` 只需重排这个 map（`move_document_to`）——
+    /// 渲染、`buffer-next/previous`、插件 `buffer.list()` 共用同一份顺序，不存在第二份状态。
+    pub documents: IndexMap<DocumentId, Document>,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1536,7 +1540,7 @@ impl Editor {
             server_sync_doc: None,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
-            documents: BTreeMap::new(),
+            documents: IndexMap::new(),
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
@@ -2097,10 +2101,11 @@ impl Editor {
                 doc.append_changes_to_history(view);
 
                 if remove_empty_scratch {
-                    // Copy `doc.id` into a variable before calling `self.documents.remove`, which requires a mutable
-                    // borrow, invalidating direct access to `doc.id`.
+                    // Copy `doc.id` into a variable before calling `self.documents.shift_remove`, which requires a mutable
+                    // borrow, invalidating direct access to `doc.id`.（`shift_` 而非默认的
+                    // swap 删：bufferline 顺序必须保持，关掉一个 buffer 不得打乱其余位置。）
                     let id = doc.id;
-                    self.documents.remove(&id);
+                    self.documents.shift_remove(&id);
 
                     // Remove the scratch buffer from any jumplists
                     for (view, _) in self.tree.views_mut() {
@@ -2375,7 +2380,7 @@ impl Editor {
             }
         }
 
-        let doc = self.documents.remove(&doc_id).unwrap();
+        let doc = self.documents.shift_remove(&doc_id).unwrap();
 
         // If the document we removed was visible in all views, we will have no more views. We don't
         // want to close the editor just for a simple buffer close, so we need to create a new view
@@ -2522,6 +2527,30 @@ impl Editor {
     #[inline]
     pub fn documents(&self) -> impl Iterator<Item = &Document> {
         self.documents.values()
+    }
+
+    /// bufferline 顺序的文档 id（容器序 = 屏幕上的左右顺序）。
+    /// `:buffer-close-left/right` 与 `:buffer-move-left/right` 都只看这一份顺序。
+    pub fn document_ids(&self) -> Vec<DocumentId> {
+        self.documents.keys().copied().collect()
+    }
+
+    /// 把 `id` 移到 bufferline 的第 `to` 位（0-based，越界 clamp 到末尾）。
+    /// 返回 `true` = 位置真的变了。文档内容不动，只动顺序。
+    pub fn move_document_to(&mut self, id: DocumentId, to: usize) -> bool {
+        let Some(from) = self.documents.get_index_of(&id) else {
+            return false;
+        };
+        let to = to.min(self.documents.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        // `shift_*` 保其余元素的相对顺序（`swap_*` 会打乱中间那些）。
+        let Some(doc) = self.documents.shift_remove(&id) else {
+            return false;
+        };
+        self.documents.shift_insert(to, id, doc);
+        true
     }
 
     #[inline]

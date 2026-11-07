@@ -105,6 +105,18 @@ Commands:
   directory).
 * `:which-key` — show the key table of the plugin scope that currently owns the keyboard
   (`helix.keymap.active_scope()` + `hints()`), so no per-plugin help key has to be memorised.
+* `:buffer-close-left [N]` / `:buffer-close-right [N]` (and the `!` force variants) — close the
+  buffers on one side of the current one: no argument (or `0`) closes **all** of them, `N` closes
+  the nearest `N`. The current buffer is never touched, and dirty buffers are refused unless
+  forced, like `:buffer-close-others`.
+* `:buffer-move-left [N]` / `:buffer-move-right [N]` — reorder the bufferline: no argument (or
+  `0`) moves the current buffer to the far left/right, `N` shifts it `N` slots. The order lives
+  in `Editor::documents` itself (now an `IndexMap`), so the bufferline, `:buffer-next/previous`
+  and `helix.buffer.list()` all read the same sequence — nothing to keep in sync.
+* `helix.buffer.move(id, to)` — the plugin-side entry to that same reorder: an absolute target
+  index (0-based, clamped to the end), so `move(id, 0)` is `:buffer-move-left` and
+  `move(id, len - 1)` is `:buffer-move-right`. Content and focus are untouched; an unknown id
+  reports an error instead of silently doing nothing.
 
 Usability improvements:
 

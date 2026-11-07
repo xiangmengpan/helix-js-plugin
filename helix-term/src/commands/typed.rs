@@ -17,12 +17,12 @@ use helix_js::CommandContext;
 use helix_js::{
     CacheLayoutReq, CloseLeafReq, ClosePanelReq, ClosePopupReq, EqualizeLeafReq, FocusBufferReq,
     FocusLeafDirReq, FocusLeafReq, FocusPanelReq, LayoutFixReq, MapKeyReq, MinimizeLeafReq,
-    MovePanelReq, OpenBufferLeafReq, OpenFileReq, OpenPanelReq, OpenPickerReq, OpenPopupReq,
-    OpenScratchFileReq, OpenTerminalReq, PaneEmbedReq, PaneFloatReq, PaneMoveIntoReq, PanePinReq,
-    PaneRaiseReq, ResizeLeafDirReq, ResizeLeafReq, ServerListRowsReq, ServerOpReq, ServerTaskReq,
-    SetReadonlyReq, SetRegisterReq, SetThemeReq, SplitLeafReq, StackActivateReq, StackCreateReq,
-    StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq, TermFeedReq,
-    TermModeReq, TermResizeReq, TermSaveReq, ZoomLeafReq,
+    MoveBufferReq, MovePanelReq, OpenBufferLeafReq, OpenFileReq, OpenPanelReq, OpenPickerReq,
+    OpenPopupReq, OpenScratchFileReq, OpenTerminalReq, PaneEmbedReq, PaneFloatReq, PaneMoveIntoReq,
+    PanePinReq, PaneRaiseReq, ResizeLeafDirReq, ResizeLeafReq, ServerListRowsReq, ServerOpReq,
+    ServerTaskReq, SetReadonlyReq, SetRegisterReq, SetThemeReq, SplitLeafReq, StackActivateReq,
+    StackCreateReq, StackRemoveReq, SwapLeafDirReq, SwapLeavesReq, TermClearReq, TermCloseReq,
+    TermFeedReq, TermModeReq, TermResizeReq, TermSaveReq, ZoomLeafReq,
 };
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
@@ -532,6 +532,181 @@ fn force_buffer_close_all(
 
     let document_ids = buffer_gather_all_impl(cx.editor);
     buffer_close_by_ids_impl(cx, &document_ids, true)
+}
+
+/// 位置类 buffer 命令的计数参数（`:buffer-close-left` / `:buffer-move-right` …）。
+///
+/// 缺省 / `0` = 极端：关掉该侧**全部**、或移到**最左/最右**；
+/// `N > 0` = 只动**最近** N 个 buffer、或朝该方向挪 N 格。
+fn buffer_side_count(args: &Args) -> anyhow::Result<usize> {
+    match args.first() {
+        None => Ok(0),
+        Some(raw) => raw.parse::<usize>().map_err(|_| {
+            anyhow!("count must be a number (0 = all / far end, N = nearest N / N slots): {raw}")
+        }),
+    }
+}
+
+/// 当前文档在 bufferline 里的位置，与整份顺序（顺序 = `Editor::document_ids()`）。
+/// 当前文档不在里面（理论上不会）⇒ `None`，调用方直接当作无操作。
+fn buffer_side_position(editor: &Editor) -> Option<(Vec<DocumentId>, usize)> {
+    let ids = editor.document_ids();
+    let current = doc!(editor).id();
+    let index = ids.iter().position(|&id| id == current)?;
+    Some((ids, index))
+}
+
+/// `:buffer-close-left/right [N]` 的共同实现。当前文档**永不**被关；
+/// 脏 buffer 与现有 `:buffer-close-others` 一致：默认拒绝（`!` 才强关）。
+fn buffer_close_side_impl(
+    cx: &mut compositor::Context,
+    left: bool,
+    count: usize,
+    force: bool,
+) -> anyhow::Result<()> {
+    let Some((ids, index)) = buffer_side_position(cx.editor) else {
+        return Ok(());
+    };
+    let targets: Vec<DocumentId> = if left {
+        let start = if count == 0 {
+            0
+        } else {
+            index.saturating_sub(count)
+        };
+        ids[start..index].to_vec()
+    } else {
+        let end = if count == 0 {
+            ids.len()
+        } else {
+            (index + 1 + count).min(ids.len())
+        };
+        ids[index + 1..end].to_vec()
+    };
+    let (side, target) = if left {
+        ("left", "left")
+    } else {
+        ("right", "right")
+    };
+    if targets.is_empty() {
+        cx.editor
+            .set_status(format!("no buffers to the {side} of the current one"));
+        return Ok(());
+    }
+    let n = targets.len();
+    buffer_close_by_ids_impl(cx, &targets, force)?;
+    cx.editor.set_status(format!(
+        "closed {n} buffer{} to the {target}",
+        if n == 1 { "" } else { "s" }
+    ));
+    Ok(())
+}
+
+/// `:buffer-move-left/right [N]` 的共同实现：只动 bufferline 顺序，不动文档内容。
+fn buffer_move_side_impl(
+    cx: &mut compositor::Context,
+    left: bool,
+    count: usize,
+) -> anyhow::Result<()> {
+    let Some((ids, index)) = buffer_side_position(cx.editor) else {
+        return Ok(());
+    };
+    let last = ids.len().saturating_sub(1);
+    let to = if left {
+        if count == 0 {
+            0
+        } else {
+            index.saturating_sub(count)
+        }
+    } else if count == 0 {
+        last
+    } else {
+        (index + count).min(last)
+    };
+    if to == index {
+        cx.editor.set_status(if left {
+            "buffer is already leftmost"
+        } else {
+            "buffer is already rightmost"
+        });
+        return Ok(());
+    }
+    let current = doc!(cx.editor).id();
+    cx.editor.move_document_to(current, to);
+    cx.editor
+        .set_status(format!("buffer moved to position {}/{}", to + 1, ids.len()));
+    Ok(())
+}
+
+fn buffer_close_left(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = buffer_side_count(&args)?;
+    buffer_close_side_impl(cx, true, count, false)
+}
+
+fn force_buffer_close_left(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = buffer_side_count(&args)?;
+    buffer_close_side_impl(cx, true, count, true)
+}
+
+fn buffer_close_right(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = buffer_side_count(&args)?;
+    buffer_close_side_impl(cx, false, count, false)
+}
+
+fn force_buffer_close_right(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = buffer_side_count(&args)?;
+    buffer_close_side_impl(cx, false, count, true)
+}
+
+fn buffer_move_left(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = buffer_side_count(&args)?;
+    buffer_move_side_impl(cx, true, count)
+}
+
+fn buffer_move_right(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = buffer_side_count(&args)?;
+    buffer_move_side_impl(cx, false, count)
 }
 
 fn buffer_next(
@@ -3561,6 +3736,12 @@ fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyh
     Ok(())
 }
 
+/// `:buffer-close-left/right [N]` 与 `:buffer-move-left/right [N]`：最多一个位置参数（计数）。
+const BUFFER_SIDE_SIGNATURE: Signature = Signature {
+    positionals: (0, Some(1)),
+    ..Signature::DEFAULT
+};
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -3719,6 +3900,54 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
+    },
+    TypableCommand {
+        name: "buffer-close-left",
+        aliases: &["bcl", "bcloseleft"],
+        doc: "Close buffers to the left of the current one. No argument (or `0`) closes all of them, `N` closes the N nearest.",
+        fun: buffer_close_left,
+        completer: CommandCompleter::none(),
+        signature: BUFFER_SIDE_SIGNATURE,
+    },
+    TypableCommand {
+        name: "buffer-close-left!",
+        aliases: &["bcl!", "bcloseleft!"],
+        doc: "Force close buffers to the left of the current one, ignoring unsaved changes.",
+        fun: force_buffer_close_left,
+        completer: CommandCompleter::none(),
+        signature: BUFFER_SIDE_SIGNATURE,
+    },
+    TypableCommand {
+        name: "buffer-close-right",
+        aliases: &["bcr", "bcloseright"],
+        doc: "Close buffers to the right of the current one. No argument (or `0`) closes all of them, `N` closes the N nearest.",
+        fun: buffer_close_right,
+        completer: CommandCompleter::none(),
+        signature: BUFFER_SIDE_SIGNATURE,
+    },
+    TypableCommand {
+        name: "buffer-close-right!",
+        aliases: &["bcr!", "bcloseright!"],
+        doc: "Force close buffers to the right of the current one, ignoring unsaved changes.",
+        fun: force_buffer_close_right,
+        completer: CommandCompleter::none(),
+        signature: BUFFER_SIDE_SIGNATURE,
+    },
+    TypableCommand {
+        name: "buffer-move-left",
+        aliases: &["bml", "bmoveleft"],
+        doc: "Move the current buffer left in the bufferline. No argument (or `0`) moves it to the far left, `N` moves it N slots left.",
+        fun: buffer_move_left,
+        completer: CommandCompleter::none(),
+        signature: BUFFER_SIDE_SIGNATURE,
+    },
+    TypableCommand {
+        name: "buffer-move-right",
+        aliases: &["bmr", "bmoveright"],
+        doc: "Move the current buffer right in the bufferline. No argument (or `0`) moves it to the far right, `N` moves it N slots right.",
+        fun: buffer_move_right,
+        completer: CommandCompleter::none(),
+        signature: BUFFER_SIDE_SIGNATURE,
     },
     TypableCommand {
         name: "buffer-next",
@@ -5612,6 +5841,7 @@ pub(crate) fn apply_ui_requests(
             }
             helix_js::UiRequest::OpenPicker(req) => picker::handle_open_picker(req)?,
             helix_js::UiRequest::FocusBuffer(req) => doc::handle_focus_buffer(req)?,
+            helix_js::UiRequest::MoveBuffer(req) => doc::handle_move_buffer(req)?,
             helix_js::UiRequest::OpenBufferLeaf(req) => doc::handle_open_buffer_leaf(req)?,
             helix_js::UiRequest::TermClear(req) => term::handle_term_clear(req)?,
             helix_js::UiRequest::TermSave(req) => term::handle_term_save(req)?,

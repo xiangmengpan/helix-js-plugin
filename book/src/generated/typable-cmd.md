@@ -11,6 +11,12 @@
 | `:buffer-close-others!`, `:bco!`, `:bcloseother!` | Force close all buffers but the currently focused one. |
 | `:buffer-close-all`, `:bca`, `:bcloseall` | Close all buffers without quitting. |
 | `:buffer-close-all!`, `:bca!`, `:bcloseall!` | Force close all buffers ignoring unsaved changes without quitting. |
+| `:buffer-close-left`, `:bcl`, `:bcloseleft` | Close buffers to the left of the current one. No argument (or `0`) closes all of them, `N` closes the N nearest. |
+| `:buffer-close-left!`, `:bcl!`, `:bcloseleft!` | Force close buffers to the left of the current one, ignoring unsaved changes. |
+| `:buffer-close-right`, `:bcr`, `:bcloseright` | Close buffers to the right of the current one. No argument (or `0`) closes all of them, `N` closes the N nearest. |
+| `:buffer-close-right!`, `:bcr!`, `:bcloseright!` | Force close buffers to the right of the current one, ignoring unsaved changes. |
+| `:buffer-move-left`, `:bml`, `:bmoveleft` | Move the current buffer left in the bufferline. No argument (or `0`) moves it to the far left, `N` moves it N slots left. |
+| `:buffer-move-right`, `:bmr`, `:bmoveright` | Move the current buffer right in the bufferline. No argument (or `0`) moves it to the far right, `N` moves it N slots right. |
 | `:buffer-next`, `:bn`, `:bnext` | Goto next buffer. |
 | `:buffer-previous`, `:bp`, `:bprev` | Goto previous buffer. |
 | `:read-only`, `:readonly` | Toggle forced read-only (edits are blocked) for the current buffer, or `all` open buffers. |

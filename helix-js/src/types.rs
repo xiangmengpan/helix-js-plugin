@@ -97,6 +97,15 @@ pub struct FocusBufferReq {
     pub id: u64,
 }
 
+/// `helix.buffer.move(id, to)`：把文档 `id` 移到 bufferline 的第 `to` 位。
+/// 与 `:buffer-move-left/right` 是同一份顺序（`Editor::documents` 的容器序）。
+#[derive(Debug)]
+pub struct MoveBufferReq {
+    pub id: u64,
+    /// 目标位置（0-based；越界 clamp 到末尾）
+    pub to: usize,
+}
+
 #[derive(Debug)]
 pub struct SetRegisterReq {
     /// 要写入的文本（写未命名寄存器 `"`；有系统剪贴板 provider 时一并写 `+`）
@@ -412,6 +421,8 @@ pub enum UiRequest {
     /// (否则所有构造点都要跟着改)。
     OpenScratchFile(OpenScratchFileReq),
     FocusBuffer(FocusBufferReq),
+    /// `helix.buffer.move(id, to)`：bufferline 重排（与 `:buffer-move-*` 同一份顺序）
+    MoveBuffer(MoveBufferReq),
     MovePanel(MovePanelReq),
     /// `helix.set_readonly(on, all?)`：切换**强制只读**（编辑闸门，不是文件权限位）。
     SetReadonly(SetReadonlyReq),
