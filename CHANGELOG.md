@@ -108,6 +108,11 @@ Commands:
 
 Usability improvements:
 
+* `Enter` in the zellij-style pane modes (`C-p`/`C-n`/`C-h`/`C-y`) now **enters the focused
+  pane**: it pops back to normal mode with the focus left where `h j k l` put it. It used to fall
+  through the mode's dispatcher and be swallowed silently, so after `C-p h` picking a pane felt
+  like a dead end unless you knew `Esc`/`C-p` also exit (`Enter` is in the mode's hint list now).
+
 * `helix.dialog.prompt` / `helix.dialog.confirm` — **core-provided dialogs**. A plugin names a
   title and gives callbacks; rendering (round frame + title), the input field (value, caret,
   `←→ Home End Backspace Delete`, **paste/IME**), `Esc`/`Enter` and the geometry (viewport-fit,

@@ -205,7 +205,7 @@ pub enum Plan {
     Toggle(PaneMode),
     /// 平级模式内的按键：交给 compositor 的分发器，`consumed=false` 表示放行给叶子
     PaneKey(PaneMode, bool),
-    /// 栈顶是 `Esc`：弹掉栈顶层（平级模式 → Normal）
+    /// 栈顶是 `Esc` / `Enter`：弹掉栈顶层（平级模式 → Normal）
     Pop,
     /// 调试层的命令（已解析好）
     Debug(MappableCommand),
@@ -233,7 +233,8 @@ fn prefix_mode(key: &KeyEvent) -> Option<PaneMode> {
 /// **唯一的路由决策点**：给定当前层栈状态与一次按键，决定它归谁。
 ///
 /// 规则（与文档 §2 一一对应）：
-/// 1. 平级模式**在栈上**时：前缀键 = 切换/退出；`Esc` = 弹层；其余键归该模式
+/// 1. 平级模式**在栈上**时：前缀键 = 切换/退出；`Esc`/`Enter` = 弹层（`Enter` 即
+///    “确认并进入当前窗格”）；其余键归该模式
 ///    （`Locked` 例外：除 `C-g` 外全部放行）。
 /// 2. 平级模式不在栈上时：`Ctrl` 前缀键进模式（`C-g` 永不豁免；其余前缀在
 ///    Insert / 终端直通 / 输入态层前让路 —— 这是既有语义，写在 `allow_prefix` 里）。
@@ -274,7 +275,10 @@ pub fn plan_layered(
         if let Some(m) = prefix_mode(&key) {
             return Plan::Toggle(m);
         }
-        if matches!(key.code, KeyCode::Esc) {
+        // `Esc` / `Enter` 都是"完事"：弹掉本层回到 Normal（Enter 是显式确认 ——
+        // “进入这个窗格”，手感上补足“选好窗格后怎么离开模式”这一个动作）。
+        // 除 Locked（前面已返回）外，四种模式里 Enter 都没有别的语义，不会抢键。
+        if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
             return Plan::Pop;
         }
         return Plan::PaneKey(pane, true);
@@ -378,7 +382,7 @@ pub fn pane_hints(mode: PaneMode) -> (&'static str, Vec<(&'static str, &'static 
                 ("w / e", "浮动 / 收回平铺", true),
                 ("i", "pin(浮动时置顶)", true),
                 ("s", "堆叠(与兄弟窗合并)", true),
-                ("Esc / C-p", "退出", true),
+                ("Enter / Esc / C-p", "退出并进入当前窗格", true),
             ],
         ),
         PaneMode::Resize => (
@@ -387,14 +391,14 @@ pub fn pane_hints(mode: PaneMode) -> (&'static str, Vec<(&'static str, &'static 
                 ("h j k l", "向该方向增大(浮窗:改尺寸)", true),
                 ("H J K L", "向该方向减小", true),
                 ("= / - / +", "宽度 ±5%", true),
-                ("Esc / C-n", "退出", true),
+                ("Enter / Esc / C-n", "退出", true),
             ],
         ),
         PaneMode::Move => (
             "C-h",
             vec![
                 ("h j k l", "与方向邻居交换(浮窗:搬位置)", true),
-                ("Esc / C-h", "退出", true),
+                ("Enter / Esc / C-h", "退出", true),
             ],
         ),
         PaneMode::Scroll => (
@@ -403,7 +407,7 @@ pub fn pane_hints(mode: PaneMode) -> (&'static str, Vec<(&'static str, &'static 
                 ("j / k", "行滚动", true),
                 ("d / u", "半页", true),
                 ("C-f C-b / h l", "整页", true),
-                ("Esc / C-y", "退出", true),
+                ("Enter / Esc / C-y", "退出", true),
             ],
         ),
     }
@@ -548,6 +552,28 @@ mod tests {
             Plan::Toggle(PaneMode::Pane)
         );
         assert_eq!(plan(PaneMode::Pane, false, esc, true), Plan::Pop);
+        // `Enter` 与 `Esc` 同义：确认并**进入**当前窗格（四种非 Locked 模式都一样）
+        let enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+        };
+        for mode in [
+            PaneMode::Pane,
+            PaneMode::Resize,
+            PaneMode::Move,
+            PaneMode::Scroll,
+        ] {
+            assert_eq!(
+                plan(mode, false, enter, true),
+                Plan::Pop,
+                "{mode:?} 里 Enter"
+            );
+        }
+        assert_eq!(
+            plan(PaneMode::Locked, false, enter, true),
+            Plan::PaneKey(PaneMode::Locked, false),
+            "Locked 里 Enter 必须放行给叶子"
+        );
         assert_eq!(
             plan(PaneMode::Pane, false, n, true),
             Plan::PaneKey(PaneMode::Pane, true)

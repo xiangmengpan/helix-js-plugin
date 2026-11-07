@@ -422,6 +422,71 @@ async fn pane_mode_prefix_toggle_and_esc_exit() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `Enter` = 确认并**进入**当前窗格(手感):退出平级模式,焦点留在刚选中的窗格,
+/// 按键立刻回到编辑器/面板。
+///
+/// 回归:此前 `Enter` 落到 `pane_mode_key` 的 `_ => {}` 被静默吞掉 —— 用户 `C-p h`
+/// 选好窗格后按 `Enter` 什么也没发生,只能猜着按 `Esc`/`C-p`。
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_confirms_and_enters_the_focused_pane() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    split_right_panel(&mut app);
+
+    pump(&mut app, "<C-p>h").await?;
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "h → 左邻居(编辑器)"
+    );
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Pane,
+        "选窗格后仍在模式内"
+    );
+
+    pump(&mut app, "<ret>").await?;
+    assert_eq!(
+        app.compositor.pane_mode(),
+        PaneMode::Normal,
+        "Enter 应退出模式(= 进入选中的窗格)"
+    );
+    assert_eq!(
+        app.compositor.layout_tree().active(),
+        0,
+        "Enter 不得改动焦点"
+    );
+
+    // 真的“进去了”:之后的普通键回到编辑器,不再被平级模式吞掉
+    pump(&mut app, "i").await?;
+    assert_eq!(
+        app.editor.mode(),
+        helix_view::document::Mode::Insert,
+        "Enter 之后 `i` 必须落到编辑器"
+    );
+    Ok(())
+}
+
+/// `Enter` 在其余平级模式里同样是“完成”→ 退出(resize/move/scroll 里 Enter 本来也无绑定位)
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_exits_every_pane_mode() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().build()?;
+    for prefix in ["<C-n>", "<C-h>", "<C-y>"] {
+        pump(&mut app, prefix).await?;
+        assert_ne!(
+            app.compositor.pane_mode(),
+            PaneMode::Normal,
+            "{prefix} 进模式"
+        );
+        pump(&mut app, "<ret>").await?;
+        assert_eq!(
+            app.compositor.pane_mode(),
+            PaneMode::Normal,
+            "{prefix} 之后 Enter 应退出"
+        );
+    }
+    Ok(())
+}
+
 /// 平级而非压栈:任一模式内按另一个前缀键直接切过去
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_modes_switch_directly_not_nested() -> anyhow::Result<()> {

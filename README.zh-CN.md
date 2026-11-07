@@ -42,7 +42,8 @@
 | **Scroll** | `C-y` | `j`/`k` 行 · `d`/`u` 半页 · `C-f`/`C-b`、`h`/`l` 整页 |
 | **Locked** | `C-g` | 除 `C-g` 外全部按键原样交给当前窗口 |
 
-- `Esc` 退模式;状态栏显示 `PANE`/`RESIZE`/`MOVE`/`SCROLL`/`LOCKED`,并有中文键位提示
+- `Enter` 或 `Esc` 退模式：`Enter` = **进入当前窗格**（焦点留在 `h j k l` 刚选中的窗口，直接继续编辑）；
+  状态栏显示 `PANE`/`RESIZE`/`MOVE`/`SCROLL`/`LOCKED`，并有中文键位提示
 - 拦截规则:前缀键在 insert / 终端直通时**放行给叶子**(`C-h` 在 insert 里是删词);
   唯一例外是 `C-g` —— 它在所有状态下都拦,否则从终端直通里进不了 Locked
 - 旧的全局 `C-w` **已删除**(insert 模式的 `C-w` 仍是编辑器删词命令);
