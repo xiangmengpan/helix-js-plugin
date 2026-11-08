@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-8f749e1c.js";
+            window.path_to_searchindex_js = "searchindex-80e4d034.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -206,8 +206,19 @@
 <tr><td><code>:buffer-close-others!</code>, <code>:bco!</code>, <code>:bcloseother!</code></td><td>Force close all buffers but the currently focused one.</td></tr>
 <tr><td><code>:buffer-close-all</code>, <code>:bca</code>, <code>:bcloseall</code></td><td>Close all buffers without quitting.</td></tr>
 <tr><td><code>:buffer-close-all!</code>, <code>:bca!</code>, <code>:bcloseall!</code></td><td>Force close all buffers ignoring unsaved changes without quitting.</td></tr>
+<tr><td><code>:buffer-close-left</code>, <code>:bcl</code>, <code>:bcloseleft</code></td><td>Close buffers to the left of the current one. No argument (or <code>0</code>) closes all of them, <code>N</code> closes the N nearest.</td></tr>
+<tr><td><code>:buffer-close-left!</code>, <code>:bcl!</code>, <code>:bcloseleft!</code></td><td>Force close buffers to the left of the current one, ignoring unsaved changes.</td></tr>
+<tr><td><code>:buffer-close-right</code>, <code>:bcr</code>, <code>:bcloseright</code></td><td>Close buffers to the right of the current one. No argument (or <code>0</code>) closes all of them, <code>N</code> closes the N nearest.</td></tr>
+<tr><td><code>:buffer-close-right!</code>, <code>:bcr!</code>, <code>:bcloseright!</code></td><td>Force close buffers to the right of the current one, ignoring unsaved changes.</td></tr>
+<tr><td><code>:buffer-move-left</code>, <code>:bml</code>, <code>:bmoveleft</code></td><td>Move the current buffer left in the bufferline. No argument (or <code>0</code>) moves it to the far left, <code>N</code> moves it N slots left.</td></tr>
+<tr><td><code>:buffer-move-right</code>, <code>:bmr</code>, <code>:bmoveright</code></td><td>Move the current buffer right in the bufferline. No argument (or <code>0</code>) moves it to the far right, <code>N</code> moves it N slots right.</td></tr>
 <tr><td><code>:buffer-next</code>, <code>:bn</code>, <code>:bnext</code></td><td>Goto next buffer.</td></tr>
 <tr><td><code>:buffer-previous</code>, <code>:bp</code>, <code>:bprev</code></td><td>Goto previous buffer.</td></tr>
+<tr><td><code>:fold-open</code></td><td>Open the fold at the cursor (same as <code>z o</code>).</td></tr>
+<tr><td><code>:fold-close</code></td><td>Fold the block at the cursor (same as <code>z f</code>).</td></tr>
+<tr><td><code>:fold-toggle</code></td><td>Toggle the fold at the cursor (same as <code>z a</code>).</td></tr>
+<tr><td><code>:fold-open-all</code></td><td>Open all folds (same as <code>z R</code>).</td></tr>
+<tr><td><code>:fold-close-all</code></td><td>Fold every block <code>fold-method</code> finds (same as <code>z M</code>).</td></tr>
 <tr><td><code>:read-only</code>, <code>:readonly</code></td><td>Toggle forced read-only (edits are blocked) for the current buffer, or <code>all</code> open buffers.</td></tr>
 <tr><td><code>:write</code>, <code>:w</code></td><td>Write changes to disk. Accepts an optional path (:write some/path.txt)</td></tr>
 <tr><td><code>:write!</code>, <code>:w!</code></td><td>Force write changes to disk creating necessary subdirectories. Accepts an optional path (:write! some/path.txt)</td></tr>
@@ -588,6 +599,11 @@
 <tr><td><code>align_view_middle</code></td><td>Align view middle</td><td>normal: <code>Zm</code>, <code>zm</code>, select: <code>Zm</code>, <code>zm</code></td></tr>
 <tr><td><code>align_view_top</code></td><td>Align view top</td><td>normal: <code>Zt</code>, <code>zt</code>, select: <code>Zt</code>, <code>zt</code></td></tr>
 <tr><td><code>align_view_center</code></td><td>Align view center</td><td>normal: <code>Zc</code>, <code>Zz</code>, <code>zc</code>, <code>zz</code>, select: <code>Zc</code>, <code>Zz</code>, <code>zc</code>, <code>zz</code></td></tr>
+<tr><td><code>fold_close</code></td><td>Close the fold at the cursor (zf)</td><td>normal: <code>Zf</code>, <code>zf</code>, select: <code>Zf</code>, <code>zf</code></td></tr>
+<tr><td><code>fold_open</code></td><td>Open the fold at the cursor (zo)</td><td>normal: <code>Zo</code>, <code>zo</code>, select: <code>Zo</code>, <code>zo</code></td></tr>
+<tr><td><code>fold_toggle</code></td><td>Toggle the fold at the cursor (za)</td><td>normal: <code>Za</code>, <code>za</code>, select: <code>Za</code>, <code>za</code></td></tr>
+<tr><td><code>fold_close_all</code></td><td>Fold everything <code>fold-method</code> finds (zM)</td><td>normal: <code>ZM</code>, <code>zM</code>, select: <code>ZM</code>, <code>zM</code></td></tr>
+<tr><td><code>fold_open_all</code></td><td>Open all folds (zR)</td><td>normal: <code>ZR</code>, <code>zR</code>, select: <code>ZR</code>, <code>zR</code></td></tr>
 <tr><td><code>align_view_bottom</code></td><td>Align view bottom</td><td>normal: <code>Zb</code>, <code>zb</code>, select: <code>Zb</code>, <code>zb</code></td></tr>
 <tr><td><code>scroll_up</code></td><td>Scroll view up</td><td>normal: <code>Zk</code>, <code>zk</code>, <code>Z&lt;up&gt;</code>, <code>z&lt;up&gt;</code>, select: <code>Zk</code>, <code>zk</code>, <code>Z&lt;up&gt;</code>, <code>z&lt;up&gt;</code></td></tr>
 <tr><td><code>scroll_down</code></td><td>Scroll view down</td><td>normal: <code>Zj</code>, <code>zj</code>, <code>Z&lt;down&gt;</code>, <code>z&lt;down&gt;</code>, select: <code>Zj</code>, <code>zj</code>, <code>Z&lt;down&gt;</code>, <code>z&lt;down&gt;</code></td></tr>
