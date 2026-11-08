@@ -86,7 +86,10 @@ impl PluginPopup {
             _ => submit,
         };
         if let Some(cb) = cb {
-            let res = match &action {
+            // **在该弹层的属主作用域里调**：`on_submit` 里常要碰受保护 API
+            // （filetree 新建文件 = `helix.read_dir`/`write_file`），而按键路径上执行期属主
+            // 本来就是 `None` ⇒ 不切回来就 fail-closed（症状："filetree: undefined"）。
+            let res = helix_js::with_popup_owner(id, || match &action {
                 helix_js::DialogKey::Submit(v) => helix_js::dialog::call_dialog_callback(&cb, v),
                 helix_js::DialogKey::SubmitMany(vs) => {
                     helix_js::dialog::call_dialog_callback_values(&cb, vs)
@@ -94,7 +97,7 @@ impl PluginPopup {
                 // 取消：回调不带参数（插件侧签名是 `on_cancel: () => …`）
                 helix_js::DialogKey::Cancel => helix_js::dialog::call_dialog_callback(&cb, ""),
                 helix_js::DialogKey::Nav => Ok(()),
-            };
+            });
             if let Err(e) = res {
                 cx.editor.set_error(e);
             }

@@ -276,6 +276,10 @@ pub(crate) fn register_native_dialog(ctx: &mut Context, id: u64, dlg: crate::dia
     let layer = "helix-dialog".to_string();
     let width = dlg.width;
     let height = dlg.height;
+    // 注册期绑定属主：`on_submit`/`on_ok`/`on_pick`/`on_key` 由**核心**在按键路径里调，
+    // 那时执行期属主是 None ⇒ 受保护 API（fs/process）会 fail-closed。与
+    // `js_open_popup` / `js_open_panel` 同一条约定（回调经 `with_popup_owner` 切回来）。
+    crate::permissions::bind_callback(crate::permissions::CbKey::popup(id));
     with_popups(crate::host::host_state(ctx), |p| {
         p.insert(
             id,

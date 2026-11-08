@@ -2232,8 +2232,28 @@ impl LayoutTree {
             }
             return EventResult::Consumed(None);
         }
+        // 面板叶子（非模态、叶子式插件层）**忽略 Esc** ⇒ 不落给编辑器。
+        //
+        // 编辑器会把 Esc 当"取消选区/回 normal"**消费掉**，于是
+        // `Compositor` 的插件层 Esc 兜底（`helix.keymap.scope` 的 `esc: "blur"`）
+        // 永远轮不到 —— 实测症状：面板声明 `esc: "blur"` 后 Esc 既不关面板也不回焦点
+        // （`plugin_keys_live::plugin_scope_shows_in_input_badges` 红）。
+        // 让上层兜底处理：这里原样返回 Ignored。
+        let is_panel = self
+            .components
+            .get(&target)
+            .map(|c| c.type_name().contains("::plugin_panel::PluginPanel"))
+            .unwrap_or(false);
+        // **insert 模式下例外**：那时 Esc 是编辑器的"回 normal"，必须落给编辑器
+        // （否则编辑器卡在 insert，用户再按 `i` 就成了正文）。
+        let esc_ignored_by_panel = is_panel
+            && matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc)
+            && cx.editor.mode() != helix_view::document::Mode::Insert;
         if let Some(comp) = self.components.get_mut(&target) {
             match comp.handle_event(event, cx) {
+                EventResult::Ignored(cb) if target != 0 && esc_ignored_by_panel => {
+                    EventResult::Ignored(cb)
+                }
                 EventResult::Ignored(cb) if target != 0 => {
                     // 非编辑器叶子忽略 → 交给编辑器
                     if let Some(editor) = self.components.get_mut(&0) {

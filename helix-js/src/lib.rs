@@ -50,6 +50,7 @@ pub use input::{
 };
 pub use input::{input_has_state_in, input_is_multiline_in};
 pub use lsp::*;
+pub use permissions::with_popup_owner;
 pub use popup::*;
 pub use shell::*;
 // G3:`state` 的导出面**显式列出**(原来是 `pub use state::*`)。

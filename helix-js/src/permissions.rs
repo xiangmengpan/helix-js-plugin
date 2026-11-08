@@ -343,6 +343,17 @@ pub(crate) fn with_callback_owner<T>(key: &CbKey, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// 在"该弹层的属主"作用域里执行 `f`（`helix-term` 调弹窗回调时用）。
+///
+/// 为什么需要：`helix.dialog.*` 的 `on_submit`/`on_ok`/`on_pick`/`on_key` 由**核心**在按键
+/// 路径里调用，那时执行期属主是 `None` ⇒ `helix.read_dir` 之类的受保护 API 一律 fail-closed
+/// （实测症状：filetree 新建文件 → `helix.read_dir: 没有插件上下文` → 被 `err.message` 吞成
+/// "filetree: undefined"，文件建不出来）。属主在注册期由
+/// `popup::register_native_dialog` 绑定到 `CbKey::popup(id)`。
+pub fn with_popup_owner<T>(id: u64, f: impl FnOnce() -> T) -> T {
+    with_callback_owner(&CbKey::popup(id), f)
+}
+
 /// 加载期归属:该脚本声明了哪个插件名(供 `load_script_checked` 打内置标记)
 pub(crate) fn last_declared() -> Option<String> {
     with_state(|s| s.last_declared.clone())

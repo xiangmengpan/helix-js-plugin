@@ -195,20 +195,21 @@ async fn plugin_node_focus_events() -> anyhow::Result<()> {
                     assert!(app.compositor.has_component(popup_type), "popup open");
                 }),
             ),
-            // Tab 聚焦第一个按钮（btn1），Enter 触发 onPress
+            // 弹窗首个可聚焦节点**自动拿焦点**（`auto_focus_first`，让 el("input") 能打字）
+            // ⇒ 这个弹窗一打开焦点就在 btn1 上，直接 Enter 就触发它的 onPress。
             (
-                Some("<tab><ret>"),
+                Some("<ret>"),
                 Some(&|app| {
                     let (status, severity) = app.editor.get_status().unwrap();
                     assert_eq!(
                         status.as_ref(),
                         "PRESSED",
-                        "onPress should fire on Enter after Tab-focus"
+                        "Enter 应触发**已自动聚焦**的 btn1 的 onPress"
                     );
                     assert!(matches!(severity, helix_core::diagnostic::Severity::Info));
                 }),
             ),
-            // 再 Tab 聚焦 btn2，Enter → CANCELED
+            // Tab 移到 btn2，Enter → CANCELED
             (
                 Some("<tab><ret>"),
                 Some(&|app| {

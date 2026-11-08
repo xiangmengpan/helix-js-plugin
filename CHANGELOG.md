@@ -199,7 +199,25 @@ Fixes:
   `PluginPanel` ignores every key while the editor is inserting (unless one of its nodes holds
   focus), and the compositor's Esc-blur fallback is skipped in insert mode so `Esc` reaches the
   editor. Regression: `plugin_panel::panel_yields_to_insert_mode`.
-* `helix.layout.get()` returned null in a fresh session until the layout happened to change, and
+* `helix.dialog.*` callbacks ran **without a plugin owner**, so anything that needs a protected
+  API failed: filetree's "new file" prompt ran `helix.read_dir` inside `on_submit` and got
+  `没有插件上下文,拒绝 'fs_read'` — which the plugin reported as `filetree: undefined` (a thrown
+  *string*, not an `Error`, so `err.message` was undefined) and no file was created. The dialog's
+  popup id is now bound to the owning plugin at registration (`popup::register_native_dialog`,
+  like `open_popup`/`open_panel` already did) and submit/cancel callbacks run inside
+  `with_popup_owner`, so `fs_*`/`process` work from a dialog callback.
+* The compositor's plugin-layer **Esc fallback ran before the layout tree**, so a panel that
+  declares `esc: "blur"` could no longer handle `Esc` itself — filetree's panel stopped closing
+  on `Esc` (`filetree_reopen_after_esc`). The fallback is now a true last resort: panels/popups
+  see `Esc` first, and only if nobody consumed it does focus return to the editor. A panel leaf
+  that ignores `Esc` no longer falls through to the editor (which would consume it as
+  "collapse selection" and starve the fallback), except in insert mode where `Esc` belongs to
+  the editor.
+* `plugin_components::plugin_node_focus_events` still assumed a popup starts with **no** focused
+  node; since `auto_focus_first` (so `el("input")` can be typed into) the first focusable is
+  focused on open, so the test now sends `Enter` for the auto-focused button and `Tab`+`Enter`
+  for the second.
+
   `helix.layout.restore(dump)` threw `ReferenceError: arguments is not defined` when called from a
   plugin command callback (it stringified its argument through `eval`). Both fixed: the layout
   cache is primed on the first frame (cache write only — no spurious `layout-change` event) and the

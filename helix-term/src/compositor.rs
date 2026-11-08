@@ -624,13 +624,34 @@ impl Compositor {
             };
         }
 
-        // ── B 阶段（T4.4）：插件层的 **Esc 兜底** ──
-        // 插件层没消费 Esc（`onKey` 返回 ignore/未注册）时，按作用域声明处理：
-        // `esc: "blur"` ⇒ 焦点回编辑器、面板/弹层**保留**（"退一层"，与原生 Esc 同义）。
-        // 默认 `ignore` = 现状，零行为变化。
+        // 瞬态层未消费 → 布局树（活动叶子优先，忽略则编辑器叶子兜底）
+        if !consumed {
+            match self.main_tree.handle_event(event, cx) {
+                EventResult::Consumed(Some(callback)) => {
+                    callbacks.push(callback);
+                    consumed = true;
+                }
+                EventResult::Consumed(None) => {
+                    consumed = true;
+                }
+                EventResult::Ignored(Some(callback)) => {
+                    callbacks.push(callback);
+                }
+                EventResult::Ignored(None) => {}
+            }
+        }
+
+        // ── B 阶段（T4.4）：插件层的 **Esc 兜底**（**真·最后一道**）──
+        //
+        // 位置很关键：必须排在**布局树之后**。面板长在布局树里（不在 `layers`），
+        // 放在前面就会抢在面板自己的 `onKey` 之前把 Esc 吃掉 —— 表现为
+        // filetree 声明了 `esc: "blur"` 之后 Esc 只剩"焦点回编辑器"，**面板关不掉**
+        // （实测 `filetree_reopen_after_esc` 红）。
+        // 现在的语义：面板/弹层先拿 Esc（自己关/自己处理），谁都没消费才轮到"退一层"。
+        //
         // **编辑器在 insert 模式时不走这条兜底**：insert 的 `Esc` 是"回 normal"，
-        // 属于编辑器自己；被这里吃掉的话编辑器会**卡在 insert**，用户接着按 `i`
-        // 就真的把 "i" 插进文档（实测症状：光标漂移 / 莫名多字符）。
+        // 属于编辑器自己；被这里吃掉会**卡在 insert**，用户接着按 `i` 就真的把 "i"
+        // 插进文档（实测症状：光标漂移 / 莫名多字符）。
         let editor_inserting = cx.editor.mode() == helix_view::document::Mode::Insert;
         if !consumed
             && !editor_inserting
@@ -653,23 +674,6 @@ impl Compositor {
                     }
                     return true;
                 }
-            }
-        }
-
-        // 瞬态层未消费 → 布局树（活动叶子优先，忽略则编辑器叶子兜底）
-        if !consumed {
-            match self.main_tree.handle_event(event, cx) {
-                EventResult::Consumed(Some(callback)) => {
-                    callbacks.push(callback);
-                    consumed = true;
-                }
-                EventResult::Consumed(None) => {
-                    consumed = true;
-                }
-                EventResult::Ignored(Some(callback)) => {
-                    callbacks.push(callback);
-                }
-                EventResult::Ignored(None) => {}
             }
         }
 
