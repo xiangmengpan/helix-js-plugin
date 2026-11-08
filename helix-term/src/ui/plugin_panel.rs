@@ -103,6 +103,17 @@ impl PluginPanel {
 
 impl Component for PluginPanel {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        // **编辑器在 insert 模式 ⇒ 非模态面板完全让路**（面板没有节点持焦点时）。
+        //
+        // 面板设计上就是"未映射键穿透给编辑器"（见 `helix.keymap.scope` 的 passthrough），
+        // 而 insert 模式下每个键都是正文文本；此前面板仍会把 `Esc` 当成自己的 `esc` 动作
+        // （filetree 声明了 `esc: "blur"`）吃掉 ⇒ 编辑器**停在 insert**，
+        // 用户接着按 `i` 就真的把 "i" 插进文档 —— 表现为"光标漂移/莫名多出字符"。
+        // 节点持焦点时（`el("input")` 等在编辑）仍由面板处理，那是输入框该收的键。
+        let node_focused = self.focusable && self.surface.focus.is_some();
+        if cx.editor.mode() == helix_view::document::Mode::Insert && !node_focused {
+            return EventResult::Ignored(None);
+        }
         // 粘贴：焦点在 input → 批量插入整段 + 一次 onChange；否则忽略（冒泡给编辑器正文粘贴）
         if let Event::Paste(contents) = event {
             return self

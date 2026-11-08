@@ -185,6 +185,15 @@ Packaging:
 
 Fixes:
 
+* Non-modal plugin panels no longer steal keys while the editor is in **insert mode**. With a
+  panel focused (filetree is the common one) `i` entered insert mode normally, but `Esc` was
+  consumed by the panel's `esc: "blur"` fallback in the compositor — so the editor stayed in
+  insert and the next `i` was *typed into the buffer* (the reported "cursor drifts / stray
+  characters"). Same for tree keys: `j`/`k` ate characters you were typing. Both now yield:
+  `PluginPanel` ignores every key while the editor is inserting (unless one of its nodes holds
+  focus), and the compositor's Esc-blur fallback is skipped in insert mode so `Esc` reaches the
+  editor. Regression: `plugin_panel::panel_yields_to_insert_mode`.
+
 * `helix.el("input")` silently dropped `onChange` and `multiline` — the el-node property
   whitelist did not list them, so the documented "engine-owned value + onChange" and
   "multiline Enter" never worked (and that is why no plugin used input nodes).

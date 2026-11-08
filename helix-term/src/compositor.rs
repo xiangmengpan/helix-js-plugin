@@ -628,7 +628,13 @@ impl Compositor {
         // 插件层没消费 Esc（`onKey` 返回 ignore/未注册）时，按作用域声明处理：
         // `esc: "blur"` ⇒ 焦点回编辑器、面板/弹层**保留**（"退一层"，与原生 Esc 同义）。
         // 默认 `ignore` = 现状，零行为变化。
-        if !consumed && matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc)
+        // **编辑器在 insert 模式时不走这条兜底**：insert 的 `Esc` 是"回 normal"，
+        // 属于编辑器自己；被这里吃掉的话编辑器会**卡在 insert**，用户接着按 `i`
+        // 就真的把 "i" 插进文档（实测症状：光标漂移 / 莫名多字符）。
+        let editor_inserting = cx.editor.mode() == helix_view::document::Mode::Insert;
+        if !consumed
+            && !editor_inserting
+            && matches!(event, Event::Key(k) if k.code == helix_view::input::KeyCode::Esc)
         {
             // 只对**叶子式**插件层（面板）有意义：弹层是模态的，焦点挪回编辑器后
             // 按键仍然先到弹层（它压在层栈顶上）⇒ "blur" 对弹层是空动作。

@@ -223,3 +223,51 @@ async fn layout_change_args_shape_end_to_end() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+/// 回归：**非模态面板不得在 insert 模式下抢键**（filetree 打开时按 `i` 光标"漂移"）。
+///
+/// 实测症状：面板是活动叶子时 `i` 进 insert 正常，但 `Esc` 被面板的 `esc: "blur"`
+/// 兜底吃掉 ⇒ 编辑器**卡在 insert**；用户再按 `i` 就把 "i" 真插进文档（看起来像光标漂移）。
+/// 同理，树上的 `j`/`k` 也会吃掉本该输入的字符。
+///
+/// 修法两处：`PluginPanel::handle_event` 在 insert 且无节点持焦点时整体让路；
+/// `Compositor` 的 Esc-blur 兜底在 insert 模式下不生效（insert 的 Esc 属于编辑器）。
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_yields_to_insert_mode() -> anyhow::Result<()> {
+    use helix_view::{current_ref, document::Mode};
+
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("readme.md"), "abc\ndef\n")?;
+    let src = std::fs::read_to_string(repo_plugin("filetree/plugin.js"))?;
+    let plugin = dir.path().join("filetree.js");
+    std::fs::write(&plugin, src)?;
+    let mut app = AppBuilder::new()
+        .with_file(dir.path().join("readme.md"), None)
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    assert_ne!(
+        app.compositor.layout_tree().active(),
+        0,
+        "`:filetree` 应把焦点交给面板（本用例的前提）"
+    );
+
+    // ① `i` 进 insert；`Esc` 必须回 normal（不能被面板的 blur 兜底吃掉）
+    pump(&mut app, "i").await?;
+    assert_eq!(app.editor.mode(), Mode::Insert, "`i` 进 insert");
+    pump(&mut app, "<esc>").await?;
+    assert_eq!(
+        app.editor.mode(),
+        Mode::Normal,
+        "Esc 必须离开 insert（早先被面板吃掉 ⇒ 卡在 insert）"
+    );
+
+    // ② insert 里打 `jk` 是正文，不是树上/下移
+    pump(&mut app, "ijk").await?;
+    let text = {
+        let (_v, doc) = current_ref!(app.editor);
+        doc.text().to_string()
+    };
+    assert_eq!(text, "jkabc\ndef\n", "insert 模式下面板不该消费 j/k");
+    Ok(())
+}
