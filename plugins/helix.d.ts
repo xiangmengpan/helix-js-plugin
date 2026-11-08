@@ -1259,8 +1259,74 @@ interface Helix {
       multi?: boolean;
       /** 初始选中的 value 列表（多选）；单选取第一个 */
       initial?: string[];
+      /** 弹层名（缺省 `helix-dialog`）。**同名层会互相替换**：把主窗与叠在它上面的菜单
+       *  放在不同层，菜单关掉后主窗还在。 */
+      layer?: string;
+      /** 游标是否**回绕**：末项再 `j` 回到首项、首项再 `k` 到末项。
+       *  缺省 `false` = 夹住（到底就停）。两三项的小菜单开回绕更顺手。 */
+      wrap?: boolean;
+      /** **富行渲染**：返回一整行的文本或 `[{text, style}]`。
+       *  没有它就用默认外观（`▸  [x] label`）；有它则行内容完全由你决定
+       *  （图标、多列、右侧状态…），游标行会自动补 `ui.selection` 底色。 */
+      render?: (item: {
+        label: string;
+        value: string;
+        /** 当前游标是否在这一行 */
+        cursor: boolean;
+        /** 多选时：这一行是否被勾选 */
+        picked: boolean;
+      }) => string | (string | { text: string; style?: string })[];
+      /** **额外按键**：列表没消费的键交给它（如菜单里的 `i` 看信息、`q` 关闭）。
+       *  返回 `"close"` ⇒ 关层（不提交）；返回其它/不返回 ⇒ 层保留。 */
+      on_key?: (key: string) => "close" | void;
       width?: number;
       on_pick: (values: string[]) => void;
+      on_cancel?: () => void;
+    }): number;
+    /** **面板式弹层**：列表 + 头部一行 + 脚注一行，可选 `/` 搜索。
+     *
+     *  与 `select` 的区别只有"多了两行"（行渲染/游标/窗口化完全共用）：
+     *  `header` 画页签行，`footer` 画随模式变化的提示/进度，`search` 打开 `/` 搜索框。
+     *  `items` 传**函数** `(query) => [{label, value}]` 时，核心每次渲染按当前查询重算列表 ——
+     *  不需要重新开弹窗。 */
+    panel(opts: {
+      title: string;
+      /** 静态数组，或 `(query) => [...]`（搜索时按当前查询重算） */
+      items: (string | { label: string; value?: string })[] | ((query: string) => (string | { label: string; value?: string })[]);
+      /** 行渲染，语义同 `select.render` */
+      render?: (item: {
+        label: string;
+        value: string;
+        cursor: boolean;
+        picked: boolean;
+        /** 内容区列宽（外框宽 - 2），按它排版多列/右对齐 */
+        width: number;
+      }) => string | (string | { text: string; style?: string })[];
+      /** 头部右上角状态（`({width}) => string`）；有 `header` 时不显示 */
+      status?: (ctx: { width: number }) => string;
+      /** 自定义头部行（`({width}) => string | spans`），用来画页签等 */
+      header?: (ctx: { width: number }) => string | (string | { text: string; style?: string })[];
+      /** 脚注（`({width}) => string`）；搜索中会被查询串取代 */
+      footer?: (ctx: { width: number }) => string;
+      /** 启用 `/` 搜索框（字符进查询、Enter/Esc 退出搜索） */
+      search?: boolean;
+      wrap?: boolean;
+      width?: number;
+      on_pick: (values: string[]) => void;
+      /** 列表没消费的键（面板的动作键都在这层）；返回 `"close"` 关层。
+       *  第二参给出"按在哪一行"以及当前查询 —— 插件据此决定对哪一行做动作。 */
+      on_key?: (
+        key: string,
+        ctx: {
+          /** 游标行号（在 `items` 返回的数组里） */
+          index: number;
+          label: string;
+          value: string;
+          query: string;
+          searching: boolean;
+          width: number;
+        },
+      ) => "close" | void;
       on_cancel?: () => void;
     }): number;
     /** 确认弹窗（只有一行提示，Enter = 确认）。 */

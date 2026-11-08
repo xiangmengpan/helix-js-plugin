@@ -70,12 +70,9 @@ const S = {
   popup: null, // 主窗 open_popup id(null = 未打开)
   rows: [], // 全部配方行(server.rows 回传)
   loaded: false, // 至少成功回传过一次(首帧显示 loading 而不是"没有服务器")
-  searching: false, // 搜索模态(SEARCH 态;由 / 进入,Esc 退出)
-  filter: "", // 搜索查询串(仅 SEARCH 态随字符增长)
   kind: "all", // 当前页签
   sel: 0, // 选中行索引(visible 序)
   marks: new Set(), // 标记集合(name;Enter 批量)
-  menu: null, // 动作菜单状态 { items:[{op,label}], sel, name };非空 = 菜单弹窗开
   vinput: null, // 版本输入弹窗状态 { op, name, val };非空 = 输入弹窗开
   // name → 最近一次输入的版本。install 有记忆快捷直发(批量复用);update 恒弹窗不受记忆
   // 短路(换版本靠弹窗重输);Shift+C 清选中行记忆、无则清全部(弹窗内 C 清当前行)。
@@ -218,16 +215,17 @@ function tab_prev() {
   tab_step(-1);
 }
 
-function toggle_mark() {
-  const r = selected_row();
+function toggle_mark(row) {
+  const r = row || selected_row();
   if (!r) return;
   if (S.marks.has(r.name)) S.marks.delete(r.name);
   else S.marks.add(r.name);
 }
 
 // 过滤:页签 + 查询(名/语言/描述子串;大小写不敏感)
-function visible() {
-  const f = S.filter.toLowerCase();
+// 查询串**由核心弹层传入**（`items(query)`）—— 搜索输入不再由本插件维护。
+function visible(query) {
+  const f = String(query === undefined || query === null ? "" : query).toLowerCase();
   return S.rows.filter((r) => {
     if (S.kind === "installed" && !r.installed) return false;
     if (S.kind === "local" && !r.local) return false;
@@ -291,60 +289,68 @@ function build_box(title, W, body) {
   return nodes;
 }
 
-// 页签条整行(逐页签节点配色;行宽恰 W):页签左起,右侧信息(search/marked)贴右
-function tab_row(W) {
-  const innerW = W - 2;
-  let rightTxt = "";
-  if (S.searching) rightTxt = "search:" + (S.filter || " ");
-  else if (S.marks.size) rightTxt = S.marks.size + " marked";
-  let usedCols = 0;
-  for (const k of KINDS) usedCols += wc_len(" " + k + " ");
-  usedCols += KINDS.length - 1; // 页签间分隔 │
-  const leftCols = usedCols;
-  const avail = Math.max(0, innerW - leftCols);
-  rightTxt = avail > 0 ? wc_ell(rightTxt, avail) : "";
-  const padN = Math.max(0, innerW - leftCols - wc_len(rightTxt));
-  const nodes = [helix.el("text", "│", { style: "ui.virtual" })];
+// 头部行：页签（逐页签着色）+ 右侧信息（计数 / 标记数）。
+// `width` = 内容区列宽；右侧信息贴右，挤不下时先裁右侧。
+function header_spans(width) {
+  const innerW = Math.max(10, width | 0);
+  let rightTxt = S.marks.size ? S.marks.size + " marked" : "";
+  const rows = visible();
+  const upd = S.rows.filter((r) => r.upgradable).length;
+  if (S.checking) rightTxt = "检查中…";
+  const count = rows.length + "/" + S.rows.length + " recipes" + (S.lang ? " · " + S.lang : "");
+  const right = (upd ? "▲" + upd + " · " : "") + count;
+  const spans = [];
+  let used = 0;
   KINDS.forEach((k, i) => {
-    nodes.push(helix.el("text", " " + k + " ", { style: k === S.kind ? "ui.selection" : "ui.virtual" }));
-    if (i < KINDS.length - 1) nodes.push(helix.el("text", "│", { style: "ui.virtual" }));
+    const label = " " + k + " ";
+    spans.push({ text: label, style: k === S.kind ? "ui.selection" : "ui.virtual" });
+    used += wc_len(label);
+    if (i < KINDS.length - 1) {
+      spans.push({ text: "│", style: "ui.virtual" });
+      used += 1;
+    }
   });
-  if (padN > 0) nodes.push(helix.el("text", " ".repeat(padN), {}));
-  if (rightTxt) nodes.push(helix.el("text", rightTxt, { style: "ui.virtual" }));
-  nodes.push(helix.el("text", "│", { style: "ui.virtual" }));
-  return helix.el("row", nodes);
+  const extra = [right, rightTxt].filter(Boolean).join(" · ");
+  const pad = Math.max(0, innerW - used - wc_len(extra));
+  if (extra) {
+    spans.push({ text: " ".repeat(pad) + wc_ell(extra, Math.max(0, innerW - used)), style: "ui.virtual" });
+  }
+  return spans;
 }
 
-// 行:│ mark glyph name … desc …  status │(列宽=显示列宽;截断 … 收尾,状态右锚)
-function row_el(r, i, W) {
-  const sel = i === S.sel;
-  const innerW = Math.max(10, W - 2);
+// 主窗行：[游标][标记][类型图标] 名字 … 描述 … 状态（右锚）。
+// 框由核心弹层画（`dialog.panel`），这里只产**内容 spans**；`width` = 内容区列宽。
+function row_spans(r, cursor, width) {
+  const innerW = Math.max(10, width | 0);
   const stW = Math.min(ST_W, Math.max(6, innerW - 8));
   const nameW = Math.max(8, Math.min(24, Math.floor(innerW * 0.28)));
   const lead = (S.marks.has(r.name) ? "▣ " : "  ") + (KIND_GLYPH[r.kind] || "?") + " ";
   const nameArea = Math.max(1, nameW - wc_len(lead));
   const nameTxt = wc_pad(wc_ell(r.name, nameArea), nameArea);
-  const stTxt = wc_trunc(status_text(r), stW);
+  const stTxt = wc_pad(wc_trunc(status_text(r), stW), stW);
   const descW = Math.max(1, innerW - nameW - stW - 2);
   const descTxt = wc_pad(wc_ell(r.description || "", descW), descW);
-  const stSlot = wc_pad(stTxt, stW);
-  const inner = lead + nameTxt + " " + descTxt + " " + stSlot;
-  const line = frame_mid(W, inner);
-  return helix.el("text", line, sel ? { style: "ui.selection" } : {});
+  const sel = cursor ? "ui.selection" : "ui.text";
+  return [
+    { text: cursor ? "▸ " : "  ", style: sel },
+    { text: lead + nameTxt, style: sel },
+    { text: " " + descTxt, style: sel },
+    { text: " " + stTxt, style: sel },
+  ];
 }
-
-// 底帮助行:常态帮助 / 搜索提示 / busy 进度互斥;窄窗用短版防截断丢尾部键位
-function footer_text(W) {
+// 脚注：busy 进度条 > 版本选择提示 > 常规帮助（窄窗换短版，防截断丢尾部键位）。
+// 搜索中的 `/查询` 由核心弹层自己显示，这里不管。
+function footer_text(W, cur) {
   const b = S.busy;
   if (b) {
     const fin = b.done + b.fail.length;
     const pct = b.pct != null ? b.pct : b.items.length ? Math.floor((100 * fin) / b.items.length) : 0;
     const bar = "▮".repeat(Math.round(pct / 10)) + "▯".repeat(10 - Math.round(pct / 10));
-    const cur = b.cur ? b.cur.op + " " + b.cur.name : "";
-    return bar + " " + pct + "% (" + b.done + "/" + b.items.length + ") " + cur;
+    const cur2 = b.cur ? b.cur.op + " " + b.cur.name : "";
+    return bar + " " + pct + "% (" + b.done + "/" + b.items.length + ") " + cur2;
   }
-  if (S.searching) return "filtering: type to filter · ↑↓ move · Enter act · Esc exit";
   if (S.verlist) return "j/k 选版本 · Enter 装该版本 · m 手动输入 · Esc 取消";
+  if (cur && cur.stuck) return cur.stuck;
   const wide = (W || 200) >= 96;
   return wide
     ? "jk · / search · Enter act · v ver · u/U upd · d doctor · L log · y copy · l lang · i · t · x · Esc"
@@ -353,50 +359,47 @@ function footer_text(W) {
 
 /// 空列表文案(纯函数,便于测):**加载完**才说"没有服务器",否则说 loading ——
 /// 原实现无条件说 "no servers yet",而 `server.rows` 是异步的,打开瞬间必闪一句误导。
-function empty_list_text() {
-  if (S.filter && S.searching) return "no matches for '" + wc_trunc(S.filter, 40) + "'";
+function empty_list_text(query) {
+  if (query) return "no matches for '" + wc_trunc(String(query), 40) + "'";
   return S.loaded ? "no servers yet — press r to refresh" : "loading servers…";
 }
 
-function main_render(focus, ctx) {
-  try {
-    const W = Math.max(30, (ctx && ctx.width) || 90);
-    const H = Math.max(6, (ctx && ctx.height) || 30);
-    const listH = H - 4;
-    const rows = visible();
-    if (S.sel > rows.length - 1) S.sel = Math.max(0, rows.length - 1);
-    const start = Math.max(0, Math.min(S.sel - Math.floor(listH / 2), Math.max(0, rows.length - listH)));
-    const win = rows.slice(start, start + listH);
-    const lines = win.map((r, i) => row_el(r, start + i, W));
-    if (!win.length) {
-      lines.push(
-        helix.el(
-          "text",
-          frame_mid(W, wc_ell(empty_list_text(), Math.max(1, W - 8))),
-          { style: "ui.virtual" }
-        )
-      );
-    }
-    // 行不足时以空白填充到 listH:scroll 只保留末尾 listH 行,框底须贴区域底
-    while (lines.length < listH) lines.push(helix.el("text", frame_mid(W, ""), {}));
-    const list = lines;
-    const upd = S.rows.filter((r) => r.upgradable).length;
-    const topTxt = frame_top(W, "arsenal",
-      (upd ? "▲" + upd + " 更新 · " : S.checking ? "检查中… · " : "") +
-      rows.length + "/" + S.rows.length + " recipes" + (S.lang ? " · " + S.lang : ""));
-    const footer = frame_mid(W, wc_ell(footer_text(W), W - 2));
-    return helix.el("col", [
-      helix.el("text", topTxt, { style: "ui.virtual" }),
-      tab_row(W),
-      helix.el("scroll", list, { height: listH }),
-      helix.el("text", footer, { style: S.busy ? "ui.popup" : "ui.virtual" }),
-      helix.el("text", frame_bottom(W), { style: "ui.virtual" }),
-    ]);
-  } catch (e) {
-    return helix.el("col", [
-      helix.el("text", "arsenal render error: " + (e && e.message || e), { style: "ui.popup" }),
-    ]);
-  }
+/// **主窗规格**：交给核心弹层（`helix.dialog.panel`）。
+///
+/// 迁移前这里是 `main_render` + `handle_key` 里的一整段：自画窗框（┌│└）、自算窗口化、
+/// 自己维护 `S.sel` 与 `S.searching/S.filter`。现在这些都在核心里，本插件只给：
+/// **数据**（`items(query)`）· **行/头/脚注的画法** · **动作键**。
+function panel_spec() {
+  return {
+    title: "arsenal",
+    layer: LAYERS.main, // 与叠在它上面的菜单/信息窗分层，菜单关掉后主窗还在
+    wrap: true, // 页内 j/k 到头回绕（迁移前就是这手感）
+    search: true, // `/` 过滤（核心维护查询串，字符不再走本插件的命令表）
+    width: undefined,
+    items: (query) =>
+      visible(query).map((r) => ({ label: r.name, value: r.name })),
+    render: ({ label, cursor, width }) => {
+      const r = row_by_name(label);
+      if (!r) return [{ text: label }];
+      return row_spans(r, cursor, width);
+    },
+    header: ({ width }) => header_spans(width),
+    footer: ({ width }) => footer_text(width),
+    on_key: (key, ctx) => {
+      // 游标行由核心给出；把它同步到 `S.sel`，动作函数（x/u/i/v/t/C…）不用改
+      if (ctx && typeof ctx.index === "number") S.sel = ctx.index;
+      const cur = ctx && ctx.value ? row_by_name(ctx.value) : selected_row();
+      if (!cur) return;
+      const r = handle_action_key(key, cur);
+      return r;
+    },
+    on_pick: (values) => {
+      const name = values && values[0];
+      if (S.marks.size) return batch_run();
+      const r = name ? row_by_name(name) : selected_row();
+      if (r) open_action_menu(r);
+    },
+  };
 }
 
 // ────────────────────────── 动作(M4:真实任务执行/菜单/版本输入) ──────────────────────────
@@ -570,9 +573,12 @@ function run_action(op, name) {
   begin_task([{ op, name: r.name }]);
 }
 
-// 动作菜单弹窗(layer arsenal-menu 叠于主窗上;Esc/q 关自己回主窗)
-function open_action_menu() {
-  const r = selected_row();
+// 动作菜单：交给核心列表弹层（`helix.dialog.select`），富行用 `render` 画 `▸ 动作  名字`。
+//
+// 早先这里自己开 popup + 维护 `S.menu` 游标 + 手写 j/k/Enter/Esc 分支；核心弹层接管后
+// 只剩"渲染一行 + 额外键"两件事：`i` 看信息（菜单保留）、`q` 关闭（与 Esc 等价）。
+function open_action_menu(row) {
+  const r = row || selected_row();
   if (!r) return;
   const acts = row_actions(r);
   if (!acts.length) {
@@ -583,51 +589,32 @@ function open_action_menu() {
     return;
   }
   if (acts.length === 1) return run_action(acts[0].op, r.name); // 单项直达
-  S.menu = { items: acts, sel: 0, name: r.name };
-  const W = 46;
-  helix.open_popup({
-    layer: LAYERS.menu,
-    position: "center",
-    width: W,
-    height: S.menu.items.length + 3,
-    render: () => {
-      const body = S.menu.items.map((it, idx) => ({
-        text: (idx === S.menu.sel ? "▸ " : "  ") + it.label + "  " + S.menu.name,
-        style: idx === S.menu.sel ? "ui.selection" : undefined,
-      }));
-      body.push({ text: "↑↓/jk select · Enter run · i info · Esc/q close", style: "ui.virtual" });
-      return helix.el("col", build_box(S.menu.name + " · actions", W, body));
+  if (!helix.dialog || !helix.dialog.select) {
+    // 旧二进制：退化为逐项动作菜单不可用，直接执行第一项（保持"能装"这条主路径）
+    helix.echo("arsenal: 这个版本没有 helix.dialog.select（动作菜单不可用，直接执行 " + acts[0].label + "）");
+    return run_action(acts[0].op, r.name);
+  }
+  helix.dialog.select({
+    title: r.name + " · actions",
+    wrap: true, // 保持迁移前的手感：末项按 j 回到首项
+    items: acts.map((it, i) => ({ label: it.label, value: String(i) })),
+    render: ({ label, cursor }) => [
+      { text: cursor ? "▸ " : "  ", style: "ui.selection" },
+      { text: wc_pad(label, 10), style: cursor ? "ui.selection" : "ui.text" },
+      { text: r.name, style: "ui.virtual" },
+    ],
+    on_key: (key) => {
+      if (key === "i") {
+        run_action("info", r.name); // 信息叠于菜单之上，菜单保留
+        return; // 不关层
+      }
+      if (key === "q") return "close";
+      return undefined;
     },
-    onClose: () => {
-      S.menu = null; // 引擎非按键关闭时自愈
-    },
-    onKey: (key) => {
-      if (key.ctrl || key.alt) return "handled";
-      const k = key.name;
-      if (k === "Esc" || k === "q") {
-        S.menu = null;
-        return "close";
-      }
-      if (k === "i") {
-        run_action("info", S.menu.name); // 信息叠于菜单层上(i 直达,菜单保留)
-        return "handled";
-      }
-      if (k === "j" || k === "Down") {
-        S.menu.sel = (S.menu.sel + 1) % S.menu.items.length;
-        return "handled";
-      }
-      if (k === "k" || k === "Up") {
-        S.menu.sel = (S.menu.sel - 1 + S.menu.items.length) % S.menu.items.length;
-        return "handled";
-      }
-      if (k === "Enter") {
-        const it = S.menu.items[S.menu.sel];
-        const name = S.menu.name;
-        S.menu = null;
-        run_action(it.op, name); // 可能在 run_action 里打开版本输入弹窗(叠于其上)
-        return "close";
-      }
-      return "handled";
+    on_pick: (picked) => {
+      const idx = Number(picked && picked[0]);
+      const it = acts[idx];
+      if (it) run_action(it.op, r.name);
     },
   });
 }
@@ -782,9 +769,7 @@ function silent_update_check() {
 // ────────────────────────── 开关 ──────────────────────────
 
 function open_arsenal() {
-  // 自愈:层可能被 onKey 的 "close" / reload / 别的插件移除,而 JS 侧没有主动关闭入口
-  // (`helix.close_popup` 未注册)⇒ 本地句柄会永久失效(原症状:`:arsenal` 一直回 already open)。
-  // `helix.popup_exists` 让我们能自查;老版本没有这个 API 时退化为"信任本地句柄"。
+  // 自愈:层可能被 reload / 别的弹层替换掉 ⇒ 用 `popup_exists` 自查本地句柄是否还有效
   if (S.popup !== null && typeof helix.popup_exists === "function" && !helix.popup_exists(S.popup)) {
     S.popup = null;
   }
@@ -792,19 +777,13 @@ function open_arsenal() {
     helix.echo("arsenal: already open (Esc/q to close)");
     return;
   }
+  if (!helix.dialog || !helix.dialog.panel) {
+    helix.echo("arsenal: 这个版本没有 helix.dialog.panel（主窗不可用）");
+    return;
+  }
   fetch_rows();
   silent_update_check();
-  S.popup = helix.open_popup({
-    layer: LAYERS.main,
-    position: "center",
-    width: "78%",
-    height: "75%",
-    render: main_render,
-    onKey: handle_key,
-    onClose: () => {
-      S.popup = null;
-    },
-  });
+  S.popup = helix.dialog.panel(panel_spec());
 }
 
 function toggle_arsenal() {
@@ -817,92 +796,35 @@ function toggle_arsenal() {
   }
 }
 
-// ────────────────────────── 按键(主窗 onKey;模态搜索) ──────────────────────────
+// ────────────────────────── 动作键（主窗） ──────────────────────────
 
-function handle_key(key) {
-  if (key.ctrl || key.alt) return "handled";
-  const k = key.name;
-  if (S.searching) {
-    // ── SEARCH 态:可打印字符进查询;j/k/q/f/x/u/t/r/i/C 均不触发命令 ──
-    if (k === "Esc") {
-      S.searching = false;
-      S.filter = "";
-      S.sel = 0;
-      return "handled";
-    }
-    if (k === "Backspace") {
-      S.filter = S.filter.slice(0, -1);
-      return "handled";
-    }
-    if (k === "Enter") {
-      if (S.marks.size) batch_run();
-      else open_action_menu();
-      return "handled";
-    }
-    if (k === "Tab") {
-      tab_step(key.shift ? -1 : 1);
-      return "handled";
-    }
-    if (k === "Down") {
-      move(1);
-      return "handled";
-    }
-    if (k === "Up") {
-      move(-1);
-      return "handled";
-    }
-    if (k === "/") return "handled"; // SEARCH 内 / 忽略,不输入字面
-    if (k.length === 1) {
-      S.filter += k;
-      S.sel = 0;
-      return "handled";
-    }
-    return "handled"; // 未映射键消费(模态市场窗)
-  }
-  // ── NORMAL 态:可打印字符不搜索(仅 / 进入搜索),字母为命令 ──
-  if (k === "/") {
-    S.searching = true;
-    S.filter = "";
-    S.sel = 0;
-    return "handled";
-  }
-  if (k === "Esc") return "close";
-  if (k === "q") return "close";
+/// 动作键（主窗）。导航 / 搜索 / Enter / Esc 已归核心弹层：
+/// 这里只处理"对当前行走一个动作"的键，`cur` = 当前游标行（核心给的）。
+function handle_action_key(key, cur) {
+  const k = key && key.name ? key.name : key;
+  if (key && (key.ctrl || key.alt)) return;
   if (k === "Tab") {
-    tab_step(key.shift ? -1 : 1);
-    return "handled";
+    tab_step(key && key.shift ? -1 : 1); // 切页签（核心不消费 Tab）
+    return;
   }
-  if (k === "j" || k === "Down") {
-    move(1);
-    return "handled";
-  }
-  if (k === "k" || k === "Up") {
-    move(-1);
-    return "handled";
-  }
-  if (k === "Enter") {
-    if (S.marks.size) batch_run();
-    else open_action_menu();
-    return "handled";
-  }
-  if (k === "i") { open_info(); return "handled"; }
-  if (k === "l") { lang_filter_cycle(); return "handled"; }
-  if (k === "d") { open_doctor(); return "handled"; }
-  if (k === "L") { open_log(); return "handled"; }
-  if (k === "y") { copy_bin(); return "handled"; }
-  if (k === "U") { update_all(); return "handled"; }
-  if (k === "v") { const r = selected_row(); open_version_picker(r && r.installed ? "update" : "install"); return "handled"; }
+  if (k === "i") return open_info(cur);
+  if (k === "l") return lang_filter_cycle();
+  if (k === "d") return open_doctor();
+  if (k === "L") return open_log();
+  if (k === "y") return copy_bin(cur);
+  if (k === "U") return update_all();
+  if (k === "v") return open_version_picker(cur && cur.installed ? "update" : "install");
   if (k === "t") {
-    toggle_mark();
-    return "handled";
+    toggle_mark(cur);
+    return;
   }
   if (k === "r") {
     fetch_rows(); // 手动刷新行列表(状态列/可升级标记重新检测)
-    return "handled";
+    return;
   }
   if (k === "C") {
     // Shift+C:清版本记忆——选中行 needs_version 且有记忆清该行,否则清全部(换版本逃生)
-    const r = selected_row();
+    const r = cur || selected_row();
     if (r && r.needs_version && S.vinputs[r.name] !== undefined) {
       delete S.vinputs[r.name];
       helix.echo("arsenal: cleared version memory for " + r.name + " (reinstall/update asks version again)");
@@ -915,21 +837,21 @@ function handle_key(key) {
         helix.echo("arsenal: no version memory to clear (Shift+C clears selected row, else all)");
       }
     }
-    return "handled";
+    return;
   }
   if (k === "x") {
-    const r = selected_row();
+    const r = cur || selected_row();
     if (r && r.installed) open_remove_confirm(r);
     else helix.echo("arsenal: selected row not removable (press Enter to see actions)");
-    return "handled";
+    return;
   }
   if (k === "u") {
-    const r = selected_row();
+    const r = cur || selected_row();
     if (r && r.installed && !r.local) run_action("update", r.name);
     else helix.echo("arsenal: no managed install to update (press Enter to see actions)");
-    return "handled";
+    return;
   }
-  return "handled"; // NORMAL 态未映射键消费(不再即搜)
+  // 未映射键：什么都不做（核心已经消费掉）
 }
 
 // ────────────────────────── 注册(node 环境跳过) ──────────────────────────
@@ -943,7 +865,7 @@ if (typeof module !== "undefined" && module.exports) {
     S, KINDS, KIND_GLYPH, LAYERS,
     wc_len, wc_trunc, wc_ell, wc_pad,
     visible, status_text, move, tab_step, tab_next, tab_prev, toggle_mark,
-    handle_key, main_render, row_actions, run_action, batch_run, plan_batch,
+    handle_action_key, panel_spec, row_spans, header_spans, row_actions, run_action, batch_run, plan_batch,
     open_remove_confirm, empty_list_text, open_arsenal, footer_text,
     lang_filter_cycle, update_all, silent_update_check,
   };

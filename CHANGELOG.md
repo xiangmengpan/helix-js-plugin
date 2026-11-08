@@ -161,7 +161,16 @@ Usability improvements:
   dapui's `ask_text` now delegate to it, deleting two hand-rolled shells whose ceiling was
   documented in filetree's own header: "no paste / no IME". `helix.dialog.select` covers lists
   (single and multi): rendering, windowing, `j/k`, `Space` toggling and `Enter` live in core; dapui's
-  `ask_multi` / `ask_choice` delegate to it instead of drawing their own lists.
+  `ask_multi` / `ask_choice` delegate to it instead of drawing their own lists. `render` draws a
+  fully custom row (icons, columns, right-aligned status) and `on_key` receives keys the list did not
+  consume — arsenal's action menu moved onto it (core keeps cursor/windowing/Enter, arsenal keeps
+  `▸ label … name` and its `i`-for-info key, with `wrap: true` keeping the menu's old
+  wrap-around cursor). `helix.dialog.panel` adds the "application window" shape on top of `select`:
+  a custom header line (tabs/status), a footer line (mode-dependent hint or progress) and an optional
+  `/` search box; `items` may be a function `(query) => [...]` so filtering never re-opens the layer.
+  Every dialog takes a `layer`, and `render`/`header`/`footer`/`status`/`on_key` receive layout
+  context (`width`, cursor row, query) — arsenal's main window now *is* such a panel: it supplies
+  items/render/header/footer and 12 action keys, core owns the frame, the windowing and the search.
 
 * Panel/popup sizes follow the terminal: filetree's `?` help and dapui's `ask_text` /
   `ask_multi` / `ask_choice` dialogs used to be fixed (64×6, 60×18, 60×16, help capped at 20

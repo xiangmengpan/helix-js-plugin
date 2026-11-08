@@ -145,6 +145,20 @@ helix.dialog.select({
   title: "异常断点", multi: true, items: [{ label: "Catch", value: "catch" }],
   initial: ["catch"], on_pick: (values) => setFilters(values),
 });
+
+// 富行（图标/多列）+ 额外按键：行内容与"菜单里再按 i"都由插件决定
+helix.dialog.select({
+  title: "rust-analyzer · actions",
+  items: [{ label: "update", value: "0" }],
+  render: ({ label, cursor }) => [
+    { text: cursor ? "▸ " : "  ", style: "ui.selection" },
+    { text: label.padEnd(10), style: "ui.text" },
+    { text: "◍ ", style: "ui.virtual" },
+  ],
+  wrap: true,                                         // j/k 到头回绕（缺省夹住）
+  on_key: (k) => (k === "q" ? "close" : undefined),   // 不关层 ⇒ 什么都不返回
+  on_pick: (values) => run(values[0]),
+});
 ```
 
 渲染（圆角框 + 标题）、输入（值/光标/`←→ Home End Backspace Delete`/**粘贴/IME**）、
@@ -527,7 +541,7 @@ helix.pane_mode.*   current, keymap
 helix.icons.*   completion, diagnostic, dir, enabled, file, git, mode, sys
 helix.proc_stats()  → {cpu_ms, rss_kb} | null   // 本进程自省(跨平台,不消耗能力)
 helix.keymap.*   active_scope, hints, resolve, scope, unregister   // 插件作用域键位(面板/弹窗)
-helix.dialog.*   confirm, prompt, select   // 核心弹窗(确认 / 文本输入 / 列表)
+helix.dialog.*   confirm, panel, prompt, select   // 核心弹窗(确认 / 文本输入 / 列表 / 面板)
                 //   scope / resolve / hints / unregister 四个成员
 helix.fuzzy.*   drop, run, session
 helix.picker.*   define, run
@@ -707,3 +721,37 @@ layout-change 的投递时机有两种模式(`[editor] js-layout-change-batch`,�
     逐点 4 条 → 批量 2 条),代价是拿不到中间态。
 键位模式:normal | insert | select
 ```
+#### 面板式弹层（`helix.dialog.panel`）
+
+`select` 之上多两行：**头部**（页签/状态）与**脚注**（随模式变化的提示），外加可选 `/` 搜索框。
+行渲染、游标、窗口化与 `select` 完全共用，所以迁移一个"带页签和脚注的列表窗"只需要搬数据。
+
+```js
+helix.dialog.panel({
+  title: "arsenal",
+  search: true,                         // `/` 进搜索，字符进查询，Enter/Esc 退出搜索
+  wrap: true,
+  items: (q) => rows.filter((r) => r.name.includes(q)),   // 函数形式：按查询重算
+  header: () => [{ text: "[all] ", style: "ui.selection" }, { text: "│ lsp │ dap" }],
+  footer: () => "jk · / search · Enter act",
+  status: () => "3/3 recipes",          // 没有 header 时显示在头部右侧
+  render: ({ label, cursor }) => [
+    { text: cursor ? "▸ " : "  ", style: "ui.selection" },
+    { text: label.padEnd(16), style: "ui.text" },
+  ],
+  on_key: (k) => ({ i: () => openInfo(), q: () => "close" })[k]?.(),
+  on_pick: (values) => act(values[0]),
+});
+```
+
+要点：
+
+- **`layer`**：同名层会互相替换。主窗与叠在它上面的菜单/信息窗要分属不同层
+  （`layer: "arsenal"` / `"arsenal-menu"`），否则打开菜单会把主窗顶掉；
+- 上下文里给 **`width`**（内容区列宽）：`render` / `header` / `footer` / `status` 都拿到它，
+  多列排版与右对齐靠它；
+- **`on_key(key, ctx)`** 的 `ctx` 是 `{index, label, value, query, searching, width}` ——
+  "对当前行做动作"不需要自己维护游标；
+- `items` 传**函数**时，核心每次渲染用它 + 当前查询重算列表 ⇒ 不需要重开弹窗；
+- 面板里**所有**未消费的键都进 `on_key`（`i`/`x`/`u`/`v`… 这些动作键不用改核心）；
+- `search` 打开时，未进搜索的字符键同样会进 `on_key`（不会误吞）。

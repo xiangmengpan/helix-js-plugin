@@ -273,7 +273,11 @@ pub(crate) fn js_open_popup(
 /// 与 JS 的 `open_popup` 共用同一套弹层机制（layer/几何/关闭），区别只有两点：
 /// render 不吃 JS（`NativeDialog` 直接给组件树）、Esc/Enter 由核心判。
 pub(crate) fn register_native_dialog(ctx: &mut Context, id: u64, dlg: crate::dialog::NativeDialog) {
-    let layer = "helix-dialog".to_string();
+    // 弹层名由调用方给（同层会互相替换：主窗与叠在它上面的菜单要分属两层）
+    let layer = dlg
+        .layer
+        .clone()
+        .unwrap_or_else(|| "helix-dialog".to_string());
     let width = dlg.width;
     let height = dlg.height;
     // 注册期绑定属主：`on_submit`/`on_ok`/`on_pick`/`on_key` 由**核心**在按键路径里调，

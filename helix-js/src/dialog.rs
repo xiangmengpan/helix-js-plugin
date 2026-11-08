@@ -31,12 +31,17 @@ pub enum DialogKind {
     SelectOne,
     /// 多选列表（j/k 移动，Space 勾选，Enter 确认）
     SelectMany,
+    /// 面板式列表（`dialog.panel`）：头部/脚注 + 可选搜索框，行仍是列表
+    Panel,
 }
 
 impl DialogKind {
     /// 列表类（`select`）：渲染是「可滚动行 + 提示」，没有输入框。
     fn is_select(self) -> bool {
-        matches!(self, DialogKind::SelectOne | DialogKind::SelectMany)
+        matches!(
+            self,
+            DialogKind::SelectOne | DialogKind::SelectMany | DialogKind::Panel
+        )
     }
     fn multi(self) -> bool {
         matches!(self, DialogKind::SelectMany)
@@ -60,6 +65,28 @@ pub struct NativeDialog {
     pub items: Vec<(String, String)>,
     /// 列表初始选中项（下标）
     pub initial_picked: Vec<usize>,
+    /// **富行渲染**（可选）：`render({label, value, cursor, picked}) → string | [{text, style}]`
+    /// —— 有它就能画图标/多列（arsenal 的市场菜单），没有就用"游标 + 勾选 + label"。
+    pub render: Option<JsValue>,
+    /// **额外按键**（可选）：列表没消费的键交给它；返回 `"close"` 表示关层（不提交）。
+    /// 用途：arsenal 的菜单里 `i` 看信息（菜单保留）、`q` 关闭。
+    pub on_key: Option<JsValue>,
+    /// 头部右上角状态（`status() → string`，面板式）
+    pub status: Option<JsValue>,
+    /// 自定义头部行（`header() → spans`，面板式：页签行等）
+    pub header: Option<JsValue>,
+    /// 脚注（`footer() → string`，面板式：随模式变化的提示/进度）
+    pub footer: Option<JsValue>,
+    /// 列表项来源（`items(query) → [{label,value}]`，面板式搜索时按 query 重算）
+    pub items_fn: Option<JsValue>,
+    /// 是否启用 `/` 搜索框（面板式）
+    pub search: bool,
+    /// 弹层名（缺省 `helix-dialog`）。**同层会互相替换**：把主窗与叠在它上面的菜单
+    /// 放在不同层，菜单关闭后主窗还在（arsenal 的主窗 = `arsenal`，菜单 = `arsenal-menu`）。
+    pub layer: Option<String>,
+    /// 列表游标是否**回绕**（末项再 `j` 回到首项，首项再 `k` 到末项）。
+    /// 缺省夹住（到底就停）；两行的小菜单开回绕更顺手。
+    pub wrap: bool,
 }
 
 impl NativeDialog {
@@ -70,6 +97,7 @@ impl NativeDialog {
             DialogKind::Confirm => "Enter 确认 · Esc 取消",
             DialogKind::SelectOne => "j/k 移动 · Enter 选中 · Esc 取消",
             DialogKind::SelectMany => "j/k 移动 · Space 勾选 · Enter 确认 · Esc 取消",
+            DialogKind::Panel => "j/k 移动 · Enter 选中 · Esc 取消",
         }
     }
 }
@@ -82,6 +110,10 @@ impl NativeDialog {
 pub struct SelectState {
     pub cursor: usize,
     pub picked: std::collections::BTreeSet<usize>,
+    /// 面板式搜索框里的当前查询（`/` 进入编辑）
+    pub query: String,
+    /// 是否正在搜索框里输入（此时字符进 query，不进列表）
+    pub searching: bool,
 }
 
 /// 按键结果（由 `PluginPopup` 执行：它才知道怎么关层、怎么刷状态栏）
@@ -108,7 +140,9 @@ fn geometry(title: &str, kind: DialogKind, want_w: Option<u16>) -> (u16, u16) {
     let content_lines = match kind {
         DialogKind::Prompt => 2,  // 输入 + 提示
         DialogKind::Confirm => 1, // 提示
-        _ => 8,                   // 列表：7 行滚动区 + 提示
+        // 列表：滚动区 + 提示；面板式再多两行（头部 + 脚注）
+        DialogKind::Panel => 10,
+        _ => 8,
     };
     let need_w = (title.chars().count() as u16 + 4).max(want_w.unwrap_or(48));
     let width = need_w.min(vw.saturating_sub(4)).max(24);
@@ -281,6 +315,8 @@ pub(crate) fn js_dialog_select(
 
     let on_pick = get("on_pick", ctx)?;
     let on_cancel = get("on_cancel", ctx)?;
+    let render = get("render", ctx)?;
+    let on_key = get("on_key", ctx)?;
     let id = crate::state::next_popup_id(crate::host::host_state(ctx));
     let dlg = NativeDialog {
         title: title.clone(),
@@ -293,7 +329,150 @@ pub(crate) fn js_dialog_select(
         on_cancel: on_cancel.as_callable().map(|_| on_cancel),
         items,
         initial_picked,
+        render: render.as_callable().map(|_| render),
+        on_key: on_key.as_callable().map(|_| on_key),
+        status: None,
+        header: None,
+        footer: None,
+        items_fn: None,
+        search: false,
+        layer: opt_string(get("layer", ctx)?, ctx),
+        wrap: get("wrap", ctx)?.as_boolean().unwrap_or(false),
     };
+    crate::popup::register_native_dialog(ctx, id, dlg);
+    Ok(JsValue::from(id))
+}
+
+/// 取可选的字符串字段（`undefined`/非字符串 ⇒ `None`）
+fn opt_string(v: JsValue, ctx: &mut Context) -> Option<String> {
+    v.as_string()
+        .map(|s| s.to_std_string_escaped())
+        .or_else(|| {
+            let _ = ctx;
+            None
+        })
+}
+
+/// 解析 `items`：字符串数组，或 `{label, value}` 数组（`value` 缺省 = `label`）。
+fn parse_items(v: &JsValue, ctx: &mut Context, api: &str) -> JsResult<Vec<(String, String)>> {
+    use boa_engine::object::builtins::JsArray;
+    let arr: JsArray = v
+        .try_js_into(ctx)
+        .map_err(|_| crate::js_err(format!("{api}: items 必须是数组")))?;
+    let len: usize = arr
+        .get(JsString::from("length"), ctx)?
+        .try_js_into(ctx)
+        .unwrap_or(0);
+    let mut items: Vec<(String, String)> = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = arr.get(i, ctx)?;
+        if let Some(o) = item.as_object() {
+            let label: String = o
+                .get(JsString::from("label"), ctx)
+                .ok()
+                .and_then(|v| v.try_js_into::<String>(ctx).ok())
+                .ok_or_else(|| crate::js_err(format!("{api}: items[{i}] 缺少 label")))?;
+            let value: String = o
+                .get(JsString::from("value"), ctx)
+                .ok()
+                .and_then(|v| v.try_js_into::<String>(ctx).ok())
+                .unwrap_or_else(|| label.clone());
+            items.push((label, value));
+        } else {
+            let label: String = item.try_js_into(ctx).map_err(|_| {
+                crate::js_err(format!("{api}: items[{i}] 必须是字符串或 {{label}}"))
+            })?;
+            items.push((label.clone(), label));
+        }
+    }
+    Ok(items)
+}
+
+/// `helix.dialog.panel({ title, items, render?, status?, header?, footer?, search?, wrap?,
+///                        on_pick, on_key?, on_cancel? })`
+///
+/// 面板式列表：比 `select` 多**头部一行**与**脚注一行**，可选 `/` 搜索框。
+/// `items` 可以是函数 `(query) => [{label, value}]` —— 搜索时核心用当前查询重算列表。
+pub(crate) fn js_dialog_panel(
+    _this: &JsValue,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> JsResult<JsValue> {
+    use boa_engine::object::builtins::JsFunction;
+
+    let api = "dialog.panel";
+    let obj = args
+        .first()
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| crate::js_err(format!("{api}: 需要 {{ title, items, on_pick }}")))?;
+    let get =
+        |key: &str, ctx: &mut Context| -> JsResult<JsValue> { obj.get(JsString::from(key), ctx) };
+    let title: String = match get("title", ctx)? {
+        v if v.is_null_or_undefined() => String::new(),
+        v => v
+            .try_js_into(ctx)
+            .map_err(|_| crate::js_err(format!("{api}: title 必须是字符串")))?,
+    };
+    let items_val = get("items", ctx)?;
+    let (items, items_fn) = if items_val.as_callable().is_some() {
+        // 注意：这里**在** JS 调用树内（插件命令里同步调本 API）⇒ 必须用现有 ctx
+        let items = call_items_ctx(&items_val, "", ctx).unwrap_or_default();
+        (items, Some(items_val))
+    } else {
+        (parse_items(&items_val, ctx, api)?, None)
+    };
+    let wrap = get("wrap", ctx)?.as_boolean().unwrap_or(false);
+    let search = get("search", ctx)?.as_boolean().unwrap_or(false);
+
+    let widest = items
+        .iter()
+        .map(|(l, _)| l.chars().count() as u16 + 6)
+        .max()
+        .unwrap_or(0);
+    let (width, _) = geometry(&title, DialogKind::Panel, Some(widest).filter(|w| *w > 0));
+    // 面板高度：头部 + 列表（最多 10 行）+ 脚注 + 边框，**再夹回视口**
+    let (_, vh) = {
+        let (vw, vh) = crate::state::viewport();
+        if vw == 0 || vh == 0 {
+            (80, 24)
+        } else {
+            (vw, vh)
+        }
+    };
+    let height = ((10 + items.len().min(10)) as u16)
+        .min(vh.saturating_sub(4))
+        .max(6);
+
+    let on_pick = get("on_pick", ctx)?;
+    let on_key = get("on_key", ctx)?;
+    let on_cancel = get("on_cancel", ctx)?;
+    let render = get("render", ctx)?;
+    let status = get("status", ctx)?;
+    let header = get("header", ctx)?;
+    let footer = get("footer", ctx)?;
+    let id = crate::state::next_popup_id(crate::host::host_state(ctx));
+    let dlg = NativeDialog {
+        title: title.clone(),
+        kind: DialogKind::Panel,
+        initial: String::new(),
+        input_id: String::new(),
+        width,
+        height,
+        on_submit: on_pick.as_callable().map(|_| on_pick),
+        on_cancel: on_cancel.as_callable().map(|_| on_cancel),
+        items,
+        initial_picked: Vec::new(),
+        render: render.as_callable().map(|_| render),
+        on_key: on_key.as_callable().map(|_| on_key),
+        status: status.as_callable().map(|_| status),
+        header: header.as_callable().map(|_| header),
+        footer: footer.as_callable().map(|_| footer),
+        items_fn,
+        search,
+        layer: opt_string(get("layer", ctx)?, ctx),
+        wrap,
+    };
+    let _ = JsFunction::from_object; // 保持 use 一致（可调用性已由 as_callable 判过）
     crate::popup::register_native_dialog(ctx, id, dlg);
     Ok(JsValue::from(id))
 }
@@ -302,6 +481,7 @@ fn open(args: &[JsValue], ctx: &mut Context, kind: DialogKind) -> JsResult<JsVal
     let api = match kind {
         DialogKind::Prompt => "dialog.prompt",
         DialogKind::Confirm => "dialog.confirm",
+        DialogKind::Panel => "dialog.panel",
         _ => "dialog.select",
     };
     let obj = args
@@ -355,6 +535,15 @@ fn open(args: &[JsValue], ctx: &mut Context, kind: DialogKind) -> JsResult<JsVal
         on_cancel: on_cancel.as_callable().map(|_| on_cancel),
         items: Vec::new(),
         initial_picked: Vec::new(),
+        render: None,
+        on_key: None,
+        status: None,
+        header: None,
+        footer: None,
+        items_fn: None,
+        search: false,
+        layer: None,
+        wrap: false,
     };
     crate::popup::register_native_dialog(ctx, id, dlg);
     Ok(JsValue::from(id))
@@ -396,34 +585,74 @@ pub fn native_dialog_key(
     popup_id: u64,
     key: &str,
 ) -> Option<(DialogKey, Option<JsValue>, Option<JsValue>)> {
-    let (kind, input_id, submit, cancel, items) = crate::state::with_popups(st, |p| {
-        p.get(&popup_id).and_then(|cb| {
-            cb.native.as_ref().map(|n| {
-                (
-                    n.kind,
-                    n.input_id.clone(),
-                    n.on_submit.clone(),
-                    n.on_cancel.clone(),
-                    n.items.clone(),
-                )
-            })
-        })
+    let dlg = crate::state::with_popups(st, |p| {
+        p.get(&popup_id)
+            .and_then(|cb| cb.native.as_ref().map(NativeDialog::clone_shallow))
     })?;
+    let submit = dlg.on_submit.clone();
+    let cancel = dlg.on_cancel.clone();
 
-    if kind.is_select() {
+    if dlg.kind.is_select() {
+        let items = resolve_items(st, popup_id, &dlg);
         let len = items.len();
-        let mut sel = select_state(st, popup_id, len, &[]);
+        let mut sel = select_state(st, popup_id, len, &dlg.initial_picked);
+
+        // 搜索框：`/` 进入，字符/退格编辑，Enter/Esc 退出（**不关层、不提交**）
+        if dlg.search {
+            if sel.searching {
+                match key {
+                    "Esc" => {
+                        sel.searching = false;
+                        set_select_state(st, popup_id, sel);
+                        return Some((DialogKey::Nav, submit, cancel));
+                    }
+                    "Enter" => {
+                        sel.searching = false;
+                        sel.cursor = 0;
+                        set_select_state(st, popup_id, sel);
+                        return Some((DialogKey::Nav, submit, cancel));
+                    }
+                    "Backspace" => {
+                        sel.query.pop();
+                        sel.cursor = 0;
+                        set_select_state(st, popup_id, sel);
+                        return Some((DialogKey::Nav, submit, cancel));
+                    }
+                    k if k.chars().count() == 1 => {
+                        sel.query.push_str(k);
+                        sel.cursor = 0;
+                        set_select_state(st, popup_id, sel);
+                        return Some((DialogKey::Nav, submit, cancel));
+                    }
+                    _ => return Some((DialogKey::Nav, submit, cancel)),
+                }
+            }
+            if key == "/" {
+                sel.searching = true;
+                set_select_state(st, popup_id, sel);
+                return Some((DialogKey::Nav, submit, cancel));
+            }
+        }
+
         match key {
             "Esc" => return Some((DialogKey::Cancel, submit, cancel)),
             "j" | "Down" => {
                 if len > 0 {
-                    sel.cursor = (sel.cursor + 1).min(len - 1);
+                    sel.cursor = if dlg.wrap {
+                        (sel.cursor + 1) % len
+                    } else {
+                        (sel.cursor + 1).min(len - 1)
+                    };
                 }
                 set_select_state(st, popup_id, sel);
                 return Some((DialogKey::Nav, submit, cancel));
             }
             "k" | "Up" => {
-                sel.cursor = sel.cursor.saturating_sub(1);
+                if dlg.wrap && len > 0 {
+                    sel.cursor = (sel.cursor + len - 1) % len;
+                } else {
+                    sel.cursor = sel.cursor.saturating_sub(1);
+                }
                 set_select_state(st, popup_id, sel);
                 return Some((DialogKey::Nav, submit, cancel));
             }
@@ -438,7 +667,7 @@ pub fn native_dialog_key(
                 return Some((DialogKey::Nav, submit, cancel));
             }
             // 多选：Space 勾选当前项（不关闭）
-            "Space" | " " if kind.multi() => {
+            "Space" | " " if dlg.kind.multi() => {
                 if sel.picked.contains(&sel.cursor) {
                     sel.picked.remove(&sel.cursor);
                 } else {
@@ -448,9 +677,8 @@ pub fn native_dialog_key(
                 return Some((DialogKey::Nav, submit, cancel));
             }
             "Enter" => {
-                let values: Vec<String> = if kind.multi() {
+                let values: Vec<String> = if dlg.kind.multi() {
                     let picks = if sel.picked.is_empty() {
-                        // 一个都没勾 = 空选择（与 dapui 原语义一致：全部关闭）
                         Vec::new()
                     } else {
                         sel.picked.iter().copied().collect()
@@ -467,16 +695,22 @@ pub fn native_dialog_key(
                 };
                 return Some((DialogKey::SubmitMany(values), submit, cancel));
             }
-            _ => return Some((DialogKey::Nav, submit, cancel)),
+            // 其余键：交给插件的 `on_key`（返回 "close" ⇒ 关层不提交）
+            _ => {
+                if let Some(out) = extra_key(st, popup_id, key) {
+                    return Some((out, submit, cancel));
+                }
+                return Some((DialogKey::Nav, submit, cancel));
+            }
         }
     }
 
     match key {
         "Esc" => Some((DialogKey::Cancel, submit, cancel)),
         "Enter" => {
-            let value = match kind {
+            let value = match dlg.kind {
                 DialogKind::Prompt => {
-                    crate::input::state_value(st, popup_id, &input_id).unwrap_or_default()
+                    crate::input::state_value(st, popup_id, &dlg.input_id).unwrap_or_default()
                 }
                 _ => String::new(),
             };
@@ -484,6 +718,28 @@ pub fn native_dialog_key(
         }
         _ => None,
     }
+}
+
+/// 把列表未消费的键交给插件的 `on_key(key)`：返回 `"close"` ⇒ `DialogKey::Cancel`，
+/// 插件自己做了事（如 arsenal 的 `i` 看信息）⇒ `None`（当 Nav 处理，层保留）。
+fn extra_key(st: &crate::host::HostState, popup_id: u64, key: &str) -> Option<DialogKey> {
+    use boa_engine::object::builtins::JsFunction;
+
+    let f = crate::state::with_popups(st, |p| {
+        p.get(&popup_id)
+            .and_then(|cb| cb.native.as_ref()?.on_key.clone())
+    })?;
+    let func = f.as_callable().and_then(JsFunction::from_object)?;
+    let ret = crate::state::with_engine(|engine| {
+        func.call(
+            &JsValue::undefined(),
+            &[JsValue::from(JsString::from(key))],
+            engine,
+        )
+        .ok()
+        .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+    })?;
+    (ret == "close").then_some(DialogKey::Cancel)
 }
 
 /// 取（或初始化）列表弹窗的状态：游标 0、勾选 = 声明时的初值
@@ -497,6 +753,8 @@ pub(crate) fn select_state(
     m.entry(popup_id).or_insert_with(|| SelectState {
         cursor: 0,
         picked: initial.iter().copied().filter(|i| *i < len).collect(),
+        query: String::new(),
+        searching: false,
     });
     m.get(&popup_id).cloned().unwrap_or_default()
 }
@@ -513,42 +771,15 @@ fn select_content(
 ) -> crate::types::Content {
     use crate::types::{CompNode, TextSpan};
 
-    let len = dlg.items.len();
-    let sel = select_state(st, popup_id, len, &dlg.initial_picked);
-    // 内容区 = 外框高 - 边框(2) - 提示(1)
-    let body = (dlg.height as usize).saturating_sub(3).max(1);
-    let top = sel
-        .cursor
-        .saturating_sub(body / 2)
-        .min(len.saturating_sub(body));
-    let mut rows = Vec::new();
-    for i in top..(top + body).min(len) {
-        let (label, _) = &dlg.items[i];
-        let marker = if i == sel.cursor { "▸ " } else { "  " };
-        let check = if dlg.kind.multi() {
-            if sel.picked.contains(&i) {
-                "[x] "
-            } else {
-                "[ ] "
-            }
-        } else {
-            ""
-        };
-        rows.push(CompNode::Text {
-            spans: vec![TextSpan {
-                text: format!("{marker}{check}{label}"),
-                style: Some(if i == sel.cursor {
-                    "ui.selection".to_string()
-                } else {
-                    "ui.text".to_string()
-                }),
-            }],
-            width: None,
-            id: None,
-            flex: None,
-            wrap: false,
-        });
+    if dlg.kind == DialogKind::Panel {
+        return panel_content(st, popup_id, dlg);
     }
+
+    let items = resolve_items(st, popup_id, dlg);
+    let sel = select_state(st, popup_id, items.len(), &dlg.initial_picked);
+    let body = (dlg.height as usize).saturating_sub(3).max(1);
+    let rows = list_rows(dlg, &items, &sel, body);
+
     let hint = if dlg.kind.multi() {
         "Space 勾选 · Enter 确认 · Esc 取消"
     } else {
@@ -581,6 +812,392 @@ fn select_content(
         width: Some(dlg.width),
         height: Some(dlg.height),
         flex: None,
+    })
+}
+
+/// 面板式：头部（自定义 header 或 标题右侧 status）+ 列表 + 脚注（可含搜索框）。
+///
+/// 与 `select` 的差别只有"多了两行"：头部一行、脚注一行；行渲染/游标/窗口化完全共用。
+fn panel_content(
+    st: &crate::host::HostState,
+    popup_id: u64,
+    dlg: &NativeDialog,
+) -> crate::types::Content {
+    use crate::types::{CompNode, TextSpan};
+
+    let inner_w = dlg.width.saturating_sub(2);
+
+    let items = resolve_items(st, popup_id, dlg);
+    let sel = select_state(st, popup_id, items.len(), &dlg.initial_picked);
+    // 内容区 = 外框高 - 边框(2) - 头部(1) - 脚注(1) - gap
+    let body = (dlg.height as usize).saturating_sub(4).max(1);
+    let rows = list_rows(dlg, &items, &sel, body);
+
+    // 头部：插件自定义行优先，否则退化成"标题左 / status 右"
+    let header_spans = dlg
+        .header
+        .as_ref()
+        .and_then(|f| call_spans_w(f, inner_w))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            let right = dlg
+                .status
+                .as_ref()
+                .and_then(|f| call_string_w(f, inner_w))
+                .unwrap_or_default();
+            vec![TextSpan {
+                text: right,
+                style: Some("ui.virtual".to_string()),
+            }]
+        });
+
+    // 脚注：搜索中显示查询；否则用插件给的 footer；都没有就跟 select 一样
+    let footer_text = if sel.searching || !sel.query.is_empty() {
+        format!("/{}", sel.query)
+    } else {
+        dlg.footer
+            .as_ref()
+            .and_then(|f| call_string_w(f, inner_w))
+            .unwrap_or_else(|| dlg.hint().to_string())
+    };
+    // 搜索中：查询串 + 光标块；有查询但不在输入：查询串（淡色）；否则插件的脚注
+    let (footer, footer_style) = if sel.searching {
+        (format!("{footer_text}▏"), "ui.popup")
+    } else if !sel.query.is_empty() {
+        (footer_text, "ui.virtual")
+    } else {
+        (footer_text, "ui.help")
+    };
+
+    crate::types::Content::Tree(CompNode::Box {
+        children: vec![
+            CompNode::Text {
+                spans: header_spans,
+                width: None,
+                id: None,
+                flex: None,
+                wrap: false,
+            },
+            CompNode::Scroll {
+                children: rows,
+                height: body as u16,
+                offset: None,
+            },
+            CompNode::Text {
+                spans: vec![TextSpan {
+                    text: footer,
+                    style: Some(footer_style.to_string()),
+                }],
+                width: None,
+                id: None,
+                flex: None,
+                wrap: false,
+            },
+        ],
+        border: crate::draw::BorderKind::Round,
+        title: vec![TextSpan {
+            text: format!(" {} ", dlg.title),
+            style: None,
+        }],
+        style: None,
+        width: Some(dlg.width),
+        height: Some(dlg.height),
+        flex: None,
+    })
+}
+
+/// 列表项：`items_fn(query)` 优先（面板式搜索），否则用声明时的 items。
+fn resolve_items(
+    st: &crate::host::HostState,
+    popup_id: u64,
+    dlg: &NativeDialog,
+) -> Vec<(String, String)> {
+    let Some(f) = dlg.items_fn.as_ref() else {
+        return dlg.items.clone();
+    };
+    let query = select_state(st, popup_id, dlg.items.len(), &dlg.initial_picked).query;
+    call_items(f, &query).unwrap_or_default()
+}
+
+/// 调 `items(query)` → `[{label, value}]`（也接受字符串数组）；抛错 ⇒ `None`（空列表）。
+fn call_items(f: &JsValue, query: &str) -> Option<Vec<(String, String)>> {
+    crate::state::with_engine(|ctx| call_items_ctx(f, query, ctx))
+}
+
+/// 同 `call_items`，但用**已有**的 `ctx`（在 JS 调用树内必须走这条：
+/// 再进一次 `with_engine` 就是重入 panic —— 实测踩过）。
+fn call_items_ctx(f: &JsValue, query: &str, ctx: &mut Context) -> Option<Vec<(String, String)>> {
+    use boa_engine::object::builtins::JsFunction;
+    let func = f.as_callable().and_then(JsFunction::from_object)?;
+    let out = func
+        .call(
+            &JsValue::undefined(),
+            &[JsValue::from(JsString::from(query))],
+            ctx,
+        )
+        .ok()?;
+    let obj = out.as_object()?;
+    let len: usize = obj
+        .get(JsString::from("length"), ctx)
+        .ok()
+        .and_then(|v| v.try_js_into::<usize>(ctx).ok())
+        .unwrap_or(0);
+    let mut items = Vec::with_capacity(len);
+    for i in 0..len {
+        let Ok(item) = obj.get(i, ctx) else { continue };
+        if let Some(o) = item.as_object() {
+            let label = o
+                .get(JsString::from("label"), ctx)
+                .ok()
+                .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+                .unwrap_or_default();
+            let value = o
+                .get(JsString::from("value"), ctx)
+                .ok()
+                .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+                .unwrap_or_else(|| label.clone());
+            items.push((label, value));
+        } else if let Some(st) = item.as_string() {
+            let t = st.to_std_string_escaped();
+            items.push((t.clone(), t));
+        }
+    }
+    Some(items)
+}
+
+/// 收起 `call_string` 的 width 变体（`footer({width})` / `status({width})`）
+fn call_string_w(f: &JsValue, width: u16) -> Option<String> {
+    use boa_engine::object::builtins::JsFunction;
+    use boa_engine::object::ObjectInitializer;
+    use boa_engine::property::Attribute;
+    let func = f.as_callable().and_then(JsFunction::from_object)?;
+    crate::state::with_engine(|engine| {
+        let arg = ObjectInitializer::new(engine)
+            .property(JsString::from("width"), width, Attribute::all())
+            .build();
+        func.call(&JsValue::undefined(), &[arg.into()], engine)
+            .ok()
+            .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+    })
+}
+
+/// 同上（`header({width})` → spans）
+fn call_spans_w(f: &JsValue, width: u16) -> Option<Vec<crate::types::TextSpan>> {
+    use boa_engine::object::builtins::JsFunction;
+    use boa_engine::object::ObjectInitializer;
+    use boa_engine::property::Attribute;
+    let func = f.as_callable().and_then(JsFunction::from_object)?;
+    crate::state::with_engine(|engine| {
+        let arg = ObjectInitializer::new(engine)
+            .property(JsString::from("width"), width, Attribute::all())
+            .build();
+        let out = func
+            .call(&JsValue::undefined(), &[arg.into()], engine)
+            .ok()?;
+        spans_from_value(&out, engine)
+    })
+}
+
+/// 把 JS 值转成 spans：字符串 / `[{text, style}]` / 字符串数组。
+fn spans_from_value(out: &JsValue, ctx: &mut Context) -> Option<Vec<crate::types::TextSpan>> {
+    let mut spans: Vec<crate::types::TextSpan> = Vec::new();
+    if let Some(s) = out.as_string() {
+        spans.push(crate::types::TextSpan {
+            text: s.to_std_string_escaped(),
+            style: None,
+        });
+        return Some(spans);
+    }
+    let obj = out.as_object()?;
+    let len: usize = obj
+        .get(JsString::from("length"), ctx)
+        .ok()
+        .and_then(|v| v.try_js_into::<usize>(ctx).ok())
+        .unwrap_or(0);
+    for i in 0..len {
+        let Ok(item) = obj.get(i, ctx) else { continue };
+        if let Some(s) = item.as_string() {
+            spans.push(crate::types::TextSpan {
+                text: s.to_std_string_escaped(),
+                style: None,
+            });
+            continue;
+        }
+        let Some(o) = item.as_object() else { continue };
+        let text = o
+            .get(JsString::from("text"), ctx)
+            .ok()
+            .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+            .unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        let style = o
+            .get(JsString::from("style"), ctx)
+            .ok()
+            .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()));
+        spans.push(crate::types::TextSpan { text, style });
+    }
+    if spans.is_empty() {
+        None
+    } else {
+        Some(spans)
+    }
+}
+
+#[allow(dead_code)]
+fn call_string(f: &JsValue) -> Option<String> {
+    use boa_engine::object::builtins::JsFunction;
+    let func = f.as_callable().and_then(JsFunction::from_object)?;
+    crate::state::with_engine(|engine| {
+        func.call(&JsValue::undefined(), &[], engine)
+            .ok()
+            .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+    })
+}
+
+/// 窗口化地生成行（`select` 与 `panel` 共用）。
+fn list_rows(
+    dlg: &NativeDialog,
+    items: &[(String, String)],
+    sel: &SelectState,
+    body: usize,
+) -> Vec<crate::types::CompNode> {
+    use crate::types::{CompNode, TextSpan};
+
+    // 内容宽度（供插件的行长排版用）：外框宽 - 左右边框
+    let inner_w = dlg.width.saturating_sub(2);
+
+    let len = items.len();
+    let top = sel
+        .cursor
+        .saturating_sub(body / 2)
+        .min(len.saturating_sub(body));
+    let mut rows = Vec::new();
+    for (i, (label, value)) in items
+        .iter()
+        .enumerate()
+        .skip(top)
+        .take(body.min(len.saturating_sub(top)))
+    {
+        let is_cursor = i == sel.cursor;
+        let is_picked = sel.picked.contains(&i);
+        let mut spans = dlg
+            .render
+            .as_ref()
+            .and_then(|f| rich_row(f, label, value, is_cursor, is_picked, inner_w))
+            .unwrap_or_default();
+        if spans.is_empty() {
+            let marker = if is_cursor { "▸ " } else { "  " };
+            let check = if dlg.kind.multi() {
+                if is_picked {
+                    "[x] "
+                } else {
+                    "[ ] "
+                }
+            } else {
+                ""
+            };
+            spans = vec![TextSpan {
+                text: format!("{marker}{check}{label}"),
+                style: Some(if is_cursor {
+                    "ui.selection".to_string()
+                } else {
+                    "ui.text".to_string()
+                }),
+            }];
+        } else if is_cursor {
+            for sp in spans.iter_mut() {
+                if sp.style.is_none() {
+                    sp.style = Some("ui.selection".to_string());
+                }
+            }
+        }
+        rows.push(CompNode::Text {
+            spans,
+            width: None,
+            id: None,
+            flex: None,
+            wrap: false,
+        });
+    }
+    rows
+}
+
+/// 调列表的**富行渲染** `render({label, value, cursor, picked})`，把返回值转成 spans。
+///
+/// 接受：字符串 / `[{text, style}]` / 纯字符串数组。
+/// 回调抛错或返回空 ⇒ `None`（渲染退回默认行，不把整帧画成错误行）。
+fn rich_row(
+    f: &JsValue,
+    label: &str,
+    value: &str,
+    cursor: bool,
+    picked: bool,
+    width: u16,
+) -> Option<Vec<crate::types::TextSpan>> {
+    use boa_engine::object::builtins::JsFunction;
+    use boa_engine::object::ObjectInitializer;
+    use boa_engine::property::Attribute;
+    use boa_engine::JsString as JsStr;
+
+    let func = f.as_callable().and_then(JsFunction::from_object)?;
+    crate::state::with_engine(|engine| {
+        let arg = ObjectInitializer::new(engine)
+            .property(JsStr::from("label"), JsStr::from(label), Attribute::all())
+            .property(JsStr::from("value"), JsStr::from(value), Attribute::all())
+            .property(JsStr::from("cursor"), cursor, Attribute::all())
+            .property(JsStr::from("picked"), picked, Attribute::all())
+            .property(JsStr::from("width"), width, Attribute::all())
+            .build();
+        let Ok(out) = func.call(&JsValue::undefined(), &[arg.into()], engine) else {
+            return None;
+        };
+        let mut spans: Vec<crate::types::TextSpan> = Vec::new();
+        if let Some(s) = out.as_string() {
+            spans.push(crate::types::TextSpan {
+                text: s.to_std_string_escaped(),
+                style: None,
+            });
+            return Some(spans);
+        }
+        let obj = out.as_object()?;
+        let len: usize = obj
+            .get(JsString::from("length"), engine)
+            .ok()
+            .and_then(|v| v.try_js_into::<usize>(engine).ok())
+            .unwrap_or(0);
+        for i in 0..len {
+            let Ok(item) = obj.get(i, engine) else {
+                continue;
+            };
+            if let Some(s) = item.as_string() {
+                spans.push(crate::types::TextSpan {
+                    text: s.to_std_string_escaped(),
+                    style: None,
+                });
+                continue;
+            }
+            let Some(o) = item.as_object() else { continue };
+            let text = o
+                .get(JsString::from("text"), engine)
+                .ok()
+                .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+                .unwrap_or_default();
+            if text.is_empty() {
+                continue;
+            }
+            let style = o
+                .get(JsString::from("style"), engine)
+                .ok()
+                .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()));
+            spans.push(crate::types::TextSpan { text, style });
+        }
+        if spans.is_empty() {
+            None
+        } else {
+            Some(spans)
+        }
     })
 }
 
@@ -638,6 +1255,15 @@ impl NativeDialog {
             on_cancel: self.on_cancel.clone(),
             items: self.items.clone(),
             initial_picked: self.initial_picked.clone(),
+            render: self.render.clone(),
+            on_key: self.on_key.clone(),
+            status: self.status.clone(),
+            header: self.header.clone(),
+            footer: self.footer.clone(),
+            items_fn: self.items_fn.clone(),
+            search: self.search,
+            layer: self.layer.clone(),
+            wrap: self.wrap,
         }
     }
 }

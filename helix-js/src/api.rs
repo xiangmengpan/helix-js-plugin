@@ -1658,6 +1658,14 @@ pub static API: &[Entry] = &[
     ),
     e(
         Target::Ns("dialog"),
+        "panel",
+        1,
+        crate::dialog::js_dialog_panel,
+        "js_dialog_panel",
+        &[],
+    ),
+    e(
+        Target::Ns("dialog"),
         "select",
         1,
         crate::dialog::js_dialog_select,

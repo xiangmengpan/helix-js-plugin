@@ -33,6 +33,22 @@ global.helix = {
     alivePopups.add(id);
     return id;
   },
+  // 核心弹层（动作菜单现在走 helix.dialog.select）
+  dialog: {
+    select(opts) {
+      const id = popup_seq++;
+      calls.dialog = opts;
+      calls.dialog_id = id;
+      return id;
+    },
+    panel(opts) {
+      const id = popup_seq++;
+      calls.panel = opts;
+      calls.panel_id = id;
+      alivePopups.add(id);
+      return id;
+    },
+  },
   // popup_exists:默认按 alivePopups 判定(测试可模拟"层被外部关闭")
   popup_exists(id) {
     return alivePopups.has(id);
@@ -88,8 +104,6 @@ const FIXED = {
 function reset() {
   S.popup = null;
   S.rows = [];
-  S.searching = false;
-  S.filter = '';
   S.kind = 'all';
   S.sel = 0;
   S.marks = new Set();
@@ -136,96 +150,67 @@ test('wc_len/wc_trunc/wc_ell/wc_pad:宽字符双宽、截断在列边界不中�
 
 // ────────────────────────── v2:模态搜索 —— 只有 / 后才可输入 ──────────────────────────
 
-test('NORMAL:可打印字符不再即搜(字母是命令,其余忽略)', () => {
-  S.rows = [{ ...NV_MANAGED }];
-  S.vinputs['rust-analyzer'] = '2024-09-16';
-  assert.equal(M.handle_key({ name: 'a' }), 'handled');
-  assert.equal(S.filter, '', 'NORMAL 字母不进过滤');
-  assert.equal(M.handle_key({ name: 'c' }), 'handled');
-  assert.equal(S.vinputs['rust-analyzer'], '2024-09-16', 'c 不清记忆');
-  assert.equal(M.handle_key({ name: ' ' }), 'handled', '空格不搜索');
-  assert.equal(S.filter, '');
-  assert.equal(S.searching, false);
+// ────────────────────────── 主窗已交给核心弹层（`dialog.panel`）──────────────────────────
+// 迁移前这里测的是"自维护的 SEARCH 态"；现在搜索/导航/Enter/Esc 归核心，
+// 本插件只负责：数据（items(query)）· 行/头/脚注画法 · 动作键（on_key）。
+
+test('panel_spec:交给核心弹层的规格（title/layer/wrap/search/items/render/…）', () => {
+  S.rows = [{ ...NV_MANAGED, name: 'rust-analyzer', kind: 'lsp' }];
+  const spec = M.panel_spec();
+  assert.equal(spec.title, 'arsenal');
+  assert.equal(spec.layer, M.LAYERS.main, '主窗与菜单分层（菜单关掉后主窗还在）');
+  assert.equal(spec.wrap, true);
+  assert.equal(spec.search, true, '搜索由核心负责');
+  // items(query)：查询过滤在插件侧，但**由核心按当前查询调用**
+  assert.deepEqual(spec.items('').map((i) => i.value), ['rust-analyzer']);
+  assert.deepEqual(spec.items('zzz'), []);
+  assert.ok(Array.isArray(spec.render({ label: 'rust-analyzer', cursor: true, width: 80 })));
+  assert.ok(Array.isArray(spec.header({ width: 80 })));
+  assert.ok(String(spec.footer({ width: 80 })).length > 0);
 });
 
-test('/ 进 SEARCH;SEARCH 内可打印(含 j/k/q/x/u/i/f/t/r/C)全进查询,命令不触发', () => {
-  S.rows = [{ ...NV_MANAGED, upgradable: true }]; // x/u/i/f/t 本会触发命令
-  S.vinputs['rust-analyzer'] = '2024-09-16';
-  assert.equal(M.handle_key({ name: '/' }), 'handled');
-  assert.equal(S.searching, true, '/ 进入搜索态');
-  assert.equal(S.filter, '');
-  for (const k of ['j', 'k', 'q', 'x', 'u', 'i', 'f', 't', 'r', 'C']) M.handle_key({ name: k, shift: k === 'C' });
-  assert.equal(S.filter, 'jkqxuiftrC', 'SEARCH 内一切可打印字符追加');
-  assert.equal(calls.tasks.length, 0, 'x/u 不得触发动作');
-  assert.deepEqual(calls.popups, [], 'i/f/t 不得开窗/标记');
-  assert.equal(S.marks.size, 0);
-  assert.equal(S.sel, 0, 'j/k 不得移动(查询字符)');
-  assert.equal(S.kind, 'all', 'f 已移除,不循环分类');
-  assert.equal(calls.rowsFetch.length, 0, 'r 不得刷新');
-  assert.ok('rust-analyzer' in S.vinputs, 'C 不得清记忆');
+test('panel_spec.on_key:把核心给的游标行同步到 S.sel 后走动作键', () => {
+  S.rows = [
+    { ...NV_MANAGED, name: 'a-server', kind: 'lsp', upgradable: true },
+    { ...NV_MANAGED, name: 'b-server', kind: 'lsp', upgradable: true },
+  ];
+  const spec = M.panel_spec();
+  // t = 标记当前行；核心把"按在哪一行"通过 ctx 传进来
+  spec.on_key('t', { index: 1, value: 'b-server', label: 'b-server', query: '', searching: false });
+  assert.equal(S.sel, 1, '游标同步');
+  assert.ok(S.marks.has('b-server'), '标记的是核心游标那一行');
+  assert.ok(!S.marks.has('a-server'));
+  // i = 开信息弹窗（针对该行）
+  spec.on_key('i', { index: 0, value: 'a-server' });
+  popupOn(M.LAYERS.info);
 });
 
-test('SEARCH:Backspace 删尾、Enter 动作、Tab 切页签保留查询、Esc 清退;NORMAL Esc/q 关', () => {
-  S.rows = [{ ...NV_MANAGED }];
-  M.handle_key({ name: '/' });
-  M.handle_key({ name: 'r' });
-  M.handle_key({ name: 'a' });
-  assert.equal(S.filter, 'ra');
-  M.handle_key({ name: 'Backspace' });
-  assert.equal(S.filter, 'r');
-  // Tab 切页签:all → lsp(查询保留)
-  M.handle_key({ name: 'Tab' });
-  assert.equal(S.kind, 'lsp');
-  assert.equal(S.filter, 'r', 'Tab 切页签不清查询');
-  assert.equal(S.searching, true);
-  // SEARCH 内 q 是查询字符,不关窗
-  M.handle_key({ name: 'q' });
-  assert.equal(S.filter, 'rq');
-  // Esc:清查询退 NORMAL;再 Esc 关窗(NORMAL)
-  assert.equal(M.handle_key({ name: 'Esc' }), 'handled');
-  assert.equal(S.searching, false);
-  assert.equal(S.filter, '');
-  assert.equal(M.handle_key({ name: 'Esc' }), 'close', 'NORMAL Esc 关窗');
-  // 重开 '/' 直接可输(空查询)
-  assert.equal(M.handle_key({ name: '/' }), 'handled');
-  assert.equal(S.filter, '');
+test('panel_spec.on_pick:Enter 的行为（有标记→批量；否则开动作菜单）', () => {
+  // 可批量行：受管已装且不需要显式版本（needs_version 的行走单行安装）
+  S.rows = [{ ...NV_MANAGED, name: 'x', kind: 'lsp', upgradable: true, needs_version: false }];
+  const spec = M.panel_spec();
+  S.marks = new Set(['x']);
+  spec.on_pick(['x']);
+  assert.equal(calls.tasks.length, 1, '有标记 ⇒ 批量提交');
+  S.marks = new Set();
+  calls.dialog = null;
+  spec.on_pick(['x']);
+  assert.ok(calls.dialog, '无标记 ⇒ 打开动作菜单（核心列表）');
 });
-
-test('SEARCH:↑↓ 移动,Down/Up 不吞查询', () => {
-  S.rows = [FIXED, { ...FIXED, name: 'gopls2' }];
-  M.handle_key({ name: '/' });
-  M.handle_key({ name: 'Down' });
-  assert.equal(S.sel, 1, 'SEARCH 内 ↑↓ 仍导航');
-  assert.equal(S.filter, '', '导航不改查询');
-  M.handle_key({ name: 'Up' });
-  assert.equal(S.sel, 0);
-});
-
-test('/ 在 SEARCH 内忽略(不输入字面 /),过滤无匹配不炸', () => {
-  S.rows = [FIXED];
-  M.handle_key({ name: '/' });
-  M.handle_key({ name: '/' });
-  assert.equal(S.filter, '', 'SEARCH 内 / 不追加');
-  M.handle_key({ name: 'z' });
-  M.handle_key({ name: 'z' });
-  assert.equal(S.filter, 'zz');
-});
-
-// ────────────────────────── v2:Tab/Shift+Tab 页签循环(取代 f) ──────────────────────────
 
 test('Tab 循环页签 all→lsp→…→local→all;Shift+Tab 反向', () => {
   const order = [...M.KINDS];
   for (let i = 1; i < order.length; i++) {
-    M.handle_key({ name: 'Tab' });
+    M.handle_action_key({ name: 'Tab' });
     assert.equal(S.kind, order[i]);
   }
-  M.handle_key({ name: 'Tab' });
+  M.handle_action_key({ name: 'Tab' });
   assert.equal(S.kind, 'all', '循环回 all');
-  M.handle_key({ name: 'Tab', shift: true });
+  M.handle_action_key({ name: 'Tab', shift: true });
   assert.equal(S.kind, 'local', 'Shift+Tab 反向');
   // NORMAL 直接字母不再循环(f 移除)
   assert.equal(S.kind, 'local');
-  M.handle_key({ name: 'f' });
+  M.handle_action_key({ name: 'f' });
   assert.equal(S.kind, 'local', 'f 键已移除,不影响页签');
 });
 
@@ -235,9 +220,9 @@ test('页签过滤生效:kind 过滤 rows', () => {
     { ...FIXED, name: 'dbg', kind: 'dap' },
     { ...FIXED, name: 'blk', kind: 'formatter' },
   ];
-  M.handle_key({ name: 'Tab' }); // lsp
+  M.handle_action_key({ name: 'Tab' }); // lsp
   assert.deepEqual(M.visible().map((r) => r.name), ['ra']);
-  M.handle_key({ name: 'Tab' }); // dap
+  M.handle_action_key({ name: 'Tab' }); // dap
   assert.deepEqual(M.visible().map((r) => r.name), ['dbg']);
 });
 
@@ -304,19 +289,17 @@ test('主窗 Shift+C:清选中行记忆;无该行记忆时清全部', () => {
   S.rows = [NV_MANAGED, FIXED];
   S.sel = 0; // rust-analyzer
   S.vinputs = { 'rust-analyzer': '2024-09-16', gopls: 'v0.14' };
-  M.handle_key({ name: 'C', shift: true });
+  M.handle_action_key({ name: 'C', shift: true });
   assert.ok(!('rust-analyzer' in S.vinputs));
   assert.equal(S.vinputs.gopls, 'v0.14', '只清选中行');
   // 选中无记忆行(gopls)→ 清全部
   S.sel = 1;
-  M.handle_key({ name: 'C', shift: true });
+  M.handle_action_key({ name: 'C', shift: true });
   assert.deepEqual(S.vinputs, {});
-  // NORMAL c 是忽略键,不清记忆也不搜索(v2 模态)
+  // 小写 c 不是动作键：什么都清不掉（搜索/输入归核心，轮不到插件）
   S.vinputs['rust-analyzer'] = '1.0';
-  M.handle_key({ name: 'c' });
+  M.handle_action_key({ name: 'c' });
   assert.equal(S.vinputs['rust-analyzer'], '1.0');
-  assert.equal(S.filter, '');
-  assert.equal(S.searching, false);
 });
 
 // ── f:批量提交(marks 快照)version 正确携带 ──
@@ -338,9 +321,11 @@ test('open_arsenal:句柄失效(层被外部关掉)→ 自愈并重新打开', (
   S.rows = [FIXED];
   S.popup = 4242; // 一个早已不存在的层
   alivePopups.clear();
-  const before = calls.popups.length;
+  calls.panel = null;
+  calls.echo.length = 0;
   M.open_arsenal();
-  assert.ok(calls.popups.length > before, '应当重新打开,而不是回 already open');
+  assert.ok(calls.panel, '应当重新打开（走 helix.dialog.panel），而不是回 already open');
+  assert.ok(!calls.echo.some((m) => m.includes('already open')));
   assert.notEqual(S.popup, 4242, '句柄应更新为新层');
 });
 
@@ -361,21 +346,16 @@ test('visible:查询匹配 bin(命令名),不只 name/描述', () => {
     { ...FIXED, name: 'gopls', bin: 'gopls', languages: ['go'], description: 'go lang server' },
   ];
   S.kind = 'all';
-  S.searching = true;
-  S.filter = 'langserver';
-  assert.deepEqual(M.visible().map((r) => r.name), ['pyright'], '按 bin 命中');
+  // 查询串现在由核心弹层传给 `visible(query)`
+  assert.deepEqual(M.visible('langserver').map((r) => r.name), ['pyright'], '按 bin 命中');
 });
 
 test('empty_list_text:未回传过数据时是 loading,回传后才说没有服务器', () => {
-  S.searching = false;
-  S.filter = '';
   S.loaded = false;
   assert.ok(M.empty_list_text().includes('loading servers'), '首帧应是 loading');
   S.loaded = true;
   assert.ok(M.empty_list_text().includes('no servers yet'), '加载完才算"没有服务器"');
-  S.searching = true;
-  S.filter = 'zzz';
-  assert.ok(M.empty_list_text().includes("no matches for 'zzz'"), '搜索无匹配优先');
+  assert.ok(M.empty_list_text('zzz').includes("no matches for 'zzz'"), '搜索无匹配优先');
 });
 
 test('批量:每个 done/error 不再各自全量 fetch,只在批次结束刷新一次', () => {
@@ -392,7 +372,7 @@ test('批量:每个 done/error 不再各自全量 fetch,只在批次结束刷新
 // ── f3:x 卸载确认(2026-10:原实现单键即卸,手滑就丢受管安装)──
 test('x:受管已装行 → 先弹确认,不立即提交任务', () => {
   S.rows = [{ ...FIXED, name: 'gopls', installed: true, local: false, version: 'v1' }];
-  M.handle_key({ name: 'x' });
+  M.handle_action_key({ name: 'x' });
   assert.equal(calls.tasks.length, 0, '确认前不得提交');
   const last = calls.popups.at(-1);
   assert.equal(last.opts.layer, 'arsenal-confirm', JSON.stringify(last.opts.layer));
@@ -403,18 +383,18 @@ test('x:受管已装行 → 先弹确认,不立即提交任务', () => {
 
 test('x:确认弹层 Esc/n 取消 → 不提交', () => {
   S.rows = [{ ...FIXED, name: 'gopls', installed: true, local: false }];
-  M.handle_key({ name: 'x' });
+  M.handle_action_key({ name: 'x' });
   const last = calls.popups.at(-1);
   last.opts.onKey({ name: 'Esc' });
   assert.equal(calls.tasks.length, 0, 'Esc 取消不得提交');
-  M.handle_key({ name: 'x' });
+  M.handle_action_key({ name: 'x' });
   calls.popups.at(-1).opts.onKey({ name: 'n' });
   assert.equal(calls.tasks.length, 0, 'n 取消不得提交');
 });
 
 test('x:local 行确认后走 unmanage(不是 remove)', () => {
   S.rows = [{ ...FIXED, name: 'local-tool', installed: true, local: true }];
-  M.handle_key({ name: 'x' });
+  M.handle_action_key({ name: 'x' });
   calls.popups.at(-1).opts.onKey({ name: 'y' });
   assert.deepEqual(calls.tasks[0].items, [{ op: 'unmanage', name: 'local-tool' }]);
 });
@@ -514,24 +494,38 @@ test('多任务批量:逐项 done msg + 末尾汇总', () => {
 });
 
 // ── g:菜单 i 直达信息 + 子弹窗 onClose 自愈 ──
-test('菜单:两动作行 Enter 开菜单;菜单内 i 直达信息(不关菜单)', () => {
+test('菜单:两动作行 Enter 开核心列表;render 画富行;菜单内 i 直达信息(不关层)', () => {
   const R = { ...NV_MANAGED, upgradable: true }; // update/remove 两动作
   S.rows = [R];
-  M.handle_key({ name: 'Enter' });
-  const menu = popupOn(M.LAYERS.menu);
-  assert.ok(S.menu, '菜单状态非空');
-  assert.equal(S.menu.items.length, 2);
-  menu.opts.onKey({ name: 'i' });
+  M.panel_spec().on_pick(['rust-analyzer']);
+  const sel = calls.dialog;
+  assert.ok(sel, '应调用 helix.dialog.select');
+  assert.equal(sel.title, 'rust-analyzer · actions');
+  assert.equal(sel.wrap, true, '菜单保持回绕手感（迁移前就是 % 长度）');
+  assert.deepEqual(sel.items, [
+    { label: 'update', value: '0' },
+    { label: 'remove', value: '1' },
+  ]);
+  // 富行：游标行带 ▸ 与动作名，非游标行不带 ▸
+  const cursorRow = sel.render({ label: 'update', cursor: true, picked: false });
+  assert.equal(cursorRow[0].text, '▸ ');
+  assert.ok(cursorRow[1].text.startsWith('update'), JSON.stringify(cursorRow));
+  const plainRow = sel.render({ label: 'remove', cursor: false, picked: false });
+  assert.equal(plainRow[0].text, '  ');
+  // i 看信息：不关层；q 关层
+  assert.equal(sel.on_key('i'), undefined, 'i 不关层');
   const info = popupOn(M.LAYERS.info);
-  assert.notEqual(info.id, menu.id);
-  assert.ok(S.menu, '信息叠于菜单上,菜单保留');
+  assert.ok(info, '信息叠于菜单之上');
+  assert.equal(sel.on_key('q'), 'close', 'q 关层');
+  // 选中后执行对应动作
+  sel.on_pick(['1']);
 });
 
 // 占位配方(未装 + 无下载源)Enter:提示原因并回退打开信息弹窗(不再只 echo)
 test('无动作行 Enter:echo 原因并打开信息弹窗', () => {
   const PLACEHOLDER = { ...FIXED, name: 'jdtls', installable: false, source: null };
   S.rows = [PLACEHOLDER];
-  M.handle_key({ name: 'Enter' });
+  M.panel_spec().on_pick(['jdtls']);
   popupOn(M.LAYERS.info); // 回退到信息弹窗(解释/引导)
   assert.equal(S.menu, null, '不建空菜单');
   assert.ok(
@@ -540,12 +534,7 @@ test('无动作行 Enter:echo 原因并打开信息弹窗', () => {
   );
 });
 
-test('子弹窗 onClose 自愈:引擎非按键关闭时 S.menu/S.vinput 置 null', () => {
-  // 菜单
-  S.rows = [{ ...NV_MANAGED, upgradable: true }];
-  M.handle_key({ name: 'Enter' });
-  popupOn(M.LAYERS.menu).opts.onClose();
-  assert.equal(S.menu, null);
+test('子弹窗 onClose 自愈:引擎非按键关闭时 S.vinput 置 null', () => {
   // 版本输入
   S.rows = [NV_INSTALLABLE];
   M.run_action('install', 'rust-analyzer');
@@ -629,16 +618,13 @@ test('I4:busy 时版本提交链路被拒(run_action 拦截,不弹输入不提�
   assert.equal(calls.tasks.length, 1);
 });
 
-test('I4:主窗 r 无过滤时触发 fetch_rows(刷新);SEARCH 内 r 是查询字符', () => {
+test('I4:主窗 r 触发 fetch_rows(刷新)；搜索字符不再经过插件（归核心）', () => {
   S.rows = [FIXED];
-  M.handle_key({ name: 'r' });
+  M.handle_action_key({ name: 'r' });
   assert.equal(calls.rowsFetch.length, 1, 'r 应触发一次 fetch_rows');
-  assert.equal(S.filter, '', 'r 不进 filter');
-  assert.equal(S.searching, false);
-  M.handle_key({ name: '/' });
-  M.handle_key({ name: 'r' });
-  assert.equal(S.filter, 'r', 'SEARCH 内 r 是查询字符');
-  assert.equal(calls.rowsFetch.length, 1, '不再触发刷新');
+  // 搜索态里核心不会把字符转发给 on_key，所以这里只需确认"插件没有搜索状态"
+  assert.equal('searching' in M.S, false, '搜索状态已归属核心');
+  assert.equal('filter' in M.S, false, '查询串已归属核心');
 });
 
 // ────────────────────────── M-f:批级 panic(name="")补齐剩余项 error 终态,防 busy 卡底栏 ──────────────────────────

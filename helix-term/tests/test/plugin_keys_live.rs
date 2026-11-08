@@ -605,3 +605,274 @@ async fn core_dialog_cancel() -> anyhow::Result<()> {
     let _ = app.close().await;
     Ok(())
 }
+
+/// `dialog.select` 的 **富行 render** 与 **on_key** 扩展：
+/// 行内容由插件决定（图标/多列），未消费的按键回到插件。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_select_render_and_extra_keys() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("rs.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("rs.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("rs-demo", { deps: [], permissions: {} });
+        helix.register_command("rs-open", () => {
+          helix.dialog.select({
+            title: "动作",
+            items: [{ label: "update", value: "0" }, { label: "remove", value: "1" }],
+            // 富行：游标列 + 动作名 + 右侧说明
+            render: (it) => [
+              { text: it.cursor ? "▸ " : "  ", style: "ui.selection" },
+              { text: it.label.padEnd(8), style: "ui.text" },
+              { text: "RICH", style: "ui.virtual" },
+            ],
+            on_key: (k) => { if (k === "i") { helix.echo("extra:i"); } else if (k === "q") { return "close"; } },
+            on_pick: (vs) => helix.echo("pick:" + vs.join(",")),
+          });
+        }, "打开富行列表");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":rs-open<ret>").await?;
+
+    // 富行真的画出插件给的内容
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(
+            screen.contains("RICH") && screen.contains("update"),
+            "render 的富行内容应上屏:\n{screen}"
+        );
+    }
+    // 未消费的键回到插件（不关层），然后 Enter 选中
+    feed(&mut app, "i").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(status.contains("extra:i"), "on_key 应收到 i: {status:?}");
+    feed(&mut app, "<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(status.contains("pick:0"), "Enter 应交回第一项: {status:?}");
+
+    let _ = app.close().await;
+    Ok(())
+}
+
+/// `dialog.select` 的 `wrap`：末项再 `j` 回到首项（缺省是夹住到底就停）。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_select_wraps_when_asked() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("wr.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("wr.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("wr-demo", { deps: [], permissions: {} });
+        helix.register_command("wr-open", () => {
+          helix.dialog.select({
+            title: "两行菜单", wrap: true,
+            items: [{ label: "update", value: "update" }, { label: "remove", value: "remove" }],
+            on_pick: (vs) => helix.echo("pick:" + vs.join(",")),
+          });
+        }, "打开回绕列表");
+        helix.register_command("wr-open-nowrap", () => {
+          helix.dialog.select({
+            title: "两行菜单(不回绕)",
+            items: [{ label: "update", value: "update" }, { label: "remove", value: "remove" }],
+            on_pick: (vs) => helix.echo("pick:" + vs.join(",")),
+          });
+        }, "打开不回绕列表");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+
+    // wrap: j 两次（update → remove → 回到 update）后 Enter ⇒ update
+    feed(&mut app, ":wr-open<ret>").await?;
+    feed(&mut app, "j").await?;
+    feed(&mut app, "j").await?;
+    feed(&mut app, "<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("pick:update"),
+        "wrap 应回到首项: {status:?}"
+    );
+
+    // 不回绕：j 两次应停在末项 ⇒ remove
+    feed(&mut app, ":wr-open-nowrap<ret>").await?;
+    feed(&mut app, "j").await?;
+    feed(&mut app, "j").await?;
+    feed(&mut app, "<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("pick:remove"),
+        "无 wrap 应夹在末项: {status:?}"
+    );
+
+    let _ = app.close().await;
+    Ok(())
+}
+
+/// **面板式弹层**（`helix.dialog.panel`）：头部/脚注 + `/` 搜索，列表由 `items(query)` 重算。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_panel_header_footer_search() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("pn.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("pn.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("pn-demo", { deps: [], permissions: {} });
+        const ALL = [
+          { label: "rust-analyzer", value: "ra" },
+          { label: "gopls", value: "gopls" },
+          { label: "pyright", value: "pyright" },
+        ];
+        helix.register_command("pn-open", () => {
+          helix.dialog.panel({
+            title: "arsenal",
+            search: true,
+            wrap: true,
+            // 列表随查询变化（核心每次渲染按当前 query 重算）
+            items: (q) => ALL.filter((r) => r.label.toLowerCase().includes((q || "").toLowerCase())),
+            header: () => [
+              { text: "[all] ", style: "ui.selection" },
+              { text: "│ lsp │ dap", style: "ui.virtual" },
+            ],
+            footer: () => "jk · / search · Enter act",
+            status: () => "3/3 recipes",
+            render: (it) => [
+              { text: it.cursor ? "▸ " : "  ", style: "ui.selection" },
+              { text: it.label.padEnd(16), style: "ui.text" },
+              { text: it.cursor ? "◍" : "○", style: "ui.virtual" },
+            ],
+            on_key: (k) => { if (k === "q") return "close"; },
+            on_pick: (vs) => helix.echo("open:" + vs.join(",")),
+          });
+        }, "打开面板");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":pn-open<ret>").await?;
+
+    // 头部 + 脚注 + 富行都应上屏
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(screen.contains("arsenal"), "标题应在:\n{screen}");
+        assert!(screen.contains("[all]"), "自定义头部应在:\n{screen}");
+        assert!(screen.contains("jk · / search"), "脚注应在:\n{screen}");
+        assert!(screen.contains("rust-analyzer"), "列表行应在:\n{screen}");
+    }
+
+    // `/` 进搜索 → 键入 "py" → 列表应只剩 pyright
+    feed(&mut app, "/").await?;
+    feed(&mut app, "py").await?;
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(screen.contains("pyright"), "过滤后应留 pyright:\n{screen}");
+        assert!(
+            !screen.contains("rust-analyzer"),
+            "过滤后不该再有 rust-analyzer:\n{screen}"
+        );
+        assert!(screen.contains("/py"), "脚注应显示查询串:\n{screen}");
+    }
+    // Enter 退出搜索（不提交），再 Enter 选中
+    feed(&mut app, "<ret>").await?;
+    feed(&mut app, "<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_default();
+    assert!(
+        status.contains("open:pyright"),
+        "应选中过滤后的唯一项: {status:?}"
+    );
+
+    let _ = app.close().await;
+    Ok(())
+}
+
+/// `dialog.*` 的 **layer** 选项：主窗与叠在它上面的菜单分层，菜单关掉后主窗还在。
+#[tokio::test(flavor = "multi_thread")]
+async fn core_dialog_layer_separation() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("ly.txt");
+    std::fs::write(&file, "x\n")?;
+    let plugin = dir.path().join("ly.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.plugin("ly-demo", { deps: [], permissions: {} });
+        let main = 0, menu = 0;
+        helix.register_command("ly-main", () => {
+          main = helix.dialog.panel({
+            title: "main-panel", layer: "ly-main",
+            items: [{ label: "row", value: "row" }],
+            on_key: (k) => { if (k === "m") {
+              menu = helix.dialog.select({
+                title: "menu-popup", layer: "ly-menu",
+                items: [{ label: "act", value: "act" }],
+                on_pick: () => helix.echo("act"),
+              });
+            } },
+            on_pick: () => helix.echo("row"),
+          });
+        }, "打开主窗");
+        "#,
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file, None).build()?;
+    feed(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    feed(&mut app, ":ly-main<ret>").await?;
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(screen.contains("main-panel"), "主窗应在:\n{screen}");
+    }
+    // 打开菜单（另一层），再 Esc 关掉它
+    feed(&mut app, "m").await?;
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(screen.contains("menu-popup"), "菜单应在:\n{screen}");
+    }
+    feed(&mut app, "<esc>").await?;
+    {
+        let area = helix_view::graphics::Rect::new(0, 0, 100, 24);
+        let screen = super::helpers::render_rows(&mut app, area).join("\n");
+        assert!(
+            screen.contains("main-panel"),
+            "菜单关掉后主窗必须还在:\n{screen}"
+        );
+        assert!(!screen.contains("menu-popup"), "菜单应已关闭:\n{screen}");
+    }
+
+    let _ = app.close().await;
+    Ok(())
+}
