@@ -271,3 +271,44 @@ async fn panel_yields_to_insert_mode() -> anyhow::Result<()> {
     assert_eq!(text, "jkabc\ndef\n", "insert 模式下面板不该消费 j/k");
     Ok(())
 }
+
+/// 回归：面板聚焦 + insert 模式时，**终端光标必须仍然画在编辑器里**。
+///
+/// `[editor.cursor-shape] insert = "bar"` 的 bar 光标**只能**由终端光标画（block 光标才在
+/// 缓冲区内手绘）。`LayoutTree::cursor` 早先只问**活动叶子**——面板聚焦 ⇒ `PluginPanel`
+/// 没有光标 ⇒ `(None, Hidden)` ⇒ 打字时屏幕上根本没有光标（用户视角："光标漂移/不跟手"）。
+/// 现在活动叶子没光标时按"主编辑器优先"退到第一个有光标的叶子。
+#[tokio::test(flavor = "multi_thread")]
+async fn bar_cursor_stays_in_editor_when_panel_is_focused() -> anyhow::Result<()> {
+    use helix_view::graphics::{CursorKind, Rect};
+
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("readme.md"), "abc\ndef\n")?;
+    let src = std::fs::read_to_string(repo_plugin("filetree/plugin.js"))?;
+    let plugin = dir.path().join("filetree.js");
+    std::fs::write(&plugin, src)?;
+
+    let mut config = test_config();
+    // 用户配置就是 insert = "bar"（`CursorShapeConfig` 只有 Deserialize ⇒ 从 JSON 构造）
+    config.editor.cursor_shape = serde_json::from_str(r#"{"insert":"bar"}"#)?;
+    let mut app = AppBuilder::new()
+        .with_file(dir.path().join("readme.md"), None)
+        .with_config(config)
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+    pump(&mut app, ":filetree<ret>").await?;
+    assert_ne!(
+        app.compositor.layout_tree().active(),
+        0,
+        "面板应是活动叶子（本用例的前提）"
+    );
+
+    pump(&mut app, "i").await?;
+    let (pos, kind) = app.compositor.cursor(Rect::new(0, 0, 120, 30), &app.editor);
+    assert!(
+        pos.is_some(),
+        "insert 模式下光标必须落在编辑器里（面板聚焦也不例外）"
+    );
+    assert_eq!(kind, CursorKind::Bar, "insert 模式应是 bar 光标");
+    Ok(())
+}

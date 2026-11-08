@@ -215,6 +215,12 @@ Fixes:
   popup id is now bound to the owning plugin at registration (`popup::register_native_dialog`,
   like `open_popup`/`open_panel` already did) and submit/cancel callbacks run inside
   `with_popup_owner`, so `fs_*`/`process` work from a dialog callback.
+* With a panel focused (filetree), insert mode had **no visible cursor**: `LayoutTree::cursor`
+  only asked the active leaf, and `PluginPanel` has no cursor, so the terminal cursor went
+  `Hidden`. Block cursors are drawn in the buffer, but `[editor.cursor-shape] insert = "bar"`
+  is drawn *only* by the terminal cursor — so typing looked like "the cursor jumps/sticks".
+  When the active leaf has no cursor the tree now falls back to the first leaf that has one
+  (main editor first). Regression: `plugin_panel::bar_cursor_stays_in_editor_when_panel_is_focused`.
 * The compositor's plugin-layer **Esc fallback ran before the layout tree**, so a panel that
   declares `esc: "blur"` could no longer handle `Esc` itself — filetree's panel stopped closing
   on `Esc` (`filetree_reopen_after_esc`). The fallback is now a true last resort: panels/popups

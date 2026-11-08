@@ -1609,8 +1609,42 @@ impl LayoutTree {
         Option<helix_core::Position>,
         helix_view::graphics::CursorKind,
     ) {
-        use helix_view::graphics::CursorKind;
+        let pos = self.cursor_of(self.active(), area, editor);
+        if pos.0.is_some() {
+            return pos;
+        }
+        // 活动叶子**没有**光标（面板/终端/滚动视图）⇒ 按"主编辑器优先"的顺序退到第一个
+        // 有光标的叶子。
+        //
+        // 面板非模态：它聚焦时按 `i` 仍然往编辑器里打字。而 **insert 模式的 bar 光标只由
+        // 终端光标画**（block 光标才在缓冲区内手绘）⇒ 不退回的话打字时屏幕上根本没有光标
+        // （用户视角：filetree 打开 + insert 模式 ⇒ "光标漂移/不跟手"）。
         let active = self.active();
+        let mut ids: Vec<u64> = self.components.keys().copied().collect();
+        // 叶子 0 = 主编辑器，优先；其余按 id 保证确定性
+        ids.sort_by_key(|id| (*id != 0, *id));
+        for id in ids {
+            if id == active {
+                continue;
+            }
+            let candidate = self.cursor_of(id, area, editor);
+            if candidate.0.is_some() {
+                return candidate;
+            }
+        }
+        pos
+    }
+
+    fn cursor_of(
+        &self,
+        active: u64,
+        area: Rect,
+        editor: &helix_view::Editor,
+    ) -> (
+        Option<helix_core::Position>,
+        helix_view::graphics::CursorKind,
+    ) {
+        use helix_view::graphics::CursorKind;
         let (Some(comp), Some(rect)) = (self.components.get(&active), self.leaf_rects.get(&active))
         else {
             return (None, CursorKind::Hidden);
