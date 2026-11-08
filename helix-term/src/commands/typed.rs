@@ -6602,6 +6602,35 @@ pub fn serialize_folds(editor: &helix_view::Editor) -> String {
     serde_json::Value::Array(folds).to_string()
 }
 
+/// 布局用的折叠快照：`{"<绝对路径>": [[start_line, end_line], ...]}`（行号 0-based，end 不含）。
+///
+/// 只收**有路径**的文档（无名 buffer 没有跨会话/跨布局的锚点）。`helix.layout.get/save`
+/// 会把它并进布局 JSON ⇒ `:layout save/load` 自带折叠态。
+pub fn serialize_layout_folds(editor: &helix_view::Editor) -> String {
+    let mut map = serde_json::Map::new();
+    for doc in editor.documents() {
+        let Some(path) = doc.path() else {
+            continue;
+        };
+        let text = doc.text().slice(..);
+        let pairs: Vec<serde_json::Value> = doc
+            .folds
+            .all()
+            .iter()
+            .map(|fold| {
+                serde_json::json!([text.char_to_line(fold.start), text.char_to_line(fold.end)])
+            })
+            .collect();
+        if !pairs.is_empty() {
+            map.insert(
+                path.to_string_lossy().into_owned(),
+                serde_json::Value::Array(pairs),
+            );
+        }
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
 pub fn serialize_buffers(editor: &helix_view::Editor) -> String {
     let current = editor
         .tree

@@ -340,3 +340,58 @@ async fn gutter_column_is_absent_without_folds_in_auto_mode() -> anyhow::Result<
     );
     Ok(())
 }
+
+/// `helix.layout.get()` 带上折叠态；`helix.layout.restore(dump)` 把它恢复回来。
+/// （`:layout save/load` 存的就是这份 JSON ⇒ 命名布局自带折叠。）
+#[tokio::test(flavor = "multi_thread")]
+async fn layout_get_carries_folds_and_restore_applies_them() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, SRC)?;
+    let plugin = dir.path().join("lay.js");
+    std::fs::write(
+        &plugin,
+        r#"
+        helix.register_command("lay-save", () => {
+            globalThis.__dump = helix.layout.get();
+            const d = globalThis.__dump;
+            const f = d && d.folds;
+            const n = f ? Object.keys(f).length : 0;
+            helix.echo("layfolds:" + n + " dump:" + (d ? Object.keys(d).join(",") : "null"));
+        });
+        helix.register_command("lay-open-all", () => {
+            helix.fold.open_all();
+        });
+        helix.register_command("lay-restore", () => {
+            helix.layout.restore(globalThis.__dump);
+        });
+        "#,
+    )?;
+    let mut app = AppBuilder::new()
+        .with_file(file, None)
+        .with_config(test_config())
+        .build()?;
+    pump(&mut app, &format!(":plugin-load {}<ret>", plugin.display())).await?;
+
+    // 折一个块，然后取布局快照 ⇒ 里面应有 1 个文档带折叠
+    pump(&mut app, "za").await?;
+    assert_eq!(folds(&app).0, 1, "先折上");
+    pump(&mut app, ":lay-save<ret>").await?;
+    assert!(
+        status_text(&app).contains("layfolds:1"),
+        "layout.get() 应带 folds；status={}",
+        status_text(&app)
+    );
+
+    // 全开 ⇒ 折叠没了；再 restore 那份 dump ⇒ 折叠回来
+    pump(&mut app, ":lay-open-all<ret>").await?;
+    assert_eq!(folds(&app).0, 0, "open_all 之后没有折叠");
+    pump(&mut app, ":lay-restore<ret>").await?;
+    let st = status_text(&app);
+    assert_eq!(
+        folds(&app),
+        (1, vec![2]),
+        "restore 把折叠还回来了（status={st}）"
+    );
+    Ok(())
+}

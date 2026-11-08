@@ -1074,6 +1074,17 @@ pub fn cache_buffers(st: &HostState, json: &str) {
     st.serialized.set((b + 1, d));
 }
 
+/// 写入"布局用的折叠快照"(`{"<绝对路径>": [[start,end],...]}`;helix-term 每帧更新)。
+/// `helix.layout.get()` / `save()` 会把它并进布局 JSON —— 这样命名布局能带上折叠态。
+pub fn cache_layout_folds(st: &HostState, json: &str) {
+    *st.layout_folds.borrow_mut() = json.to_string();
+}
+
+/// 布局用的折叠快照(还没缓存过 → 空串)
+pub(crate) fn layout_folds_json() -> String {
+    crate::host::with_host_ref(|h| h.layout_folds.borrow().clone())
+}
+
 /// 当前宿主的 pane 清单快照(还没缓存过 → 空串)。`helix.pane.*` 的读取口。
 pub(crate) fn panes_json() -> String {
     crate::host::with_host_ref(|h| h.panes.borrow().clone())

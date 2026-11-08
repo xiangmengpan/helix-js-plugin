@@ -86,6 +86,10 @@ pub struct Application {
 
     /// 光标检测上次位置(cursor-move 帧级节流)
     last_cursor: Option<(usize, usize)>,
+    /// 首帧是否已把布局快照推给 JS：`helix.layout.get()` / `:layout save` 在**没改过布局**
+    /// 的新会话里也要有数据（此前只有布局变更后才写缓存 ⇒ 刚启动时 `:layout save` 报
+    /// "还没有布局快照"）。这里只写缓存、不发 `layout-change` 事件。
+    layout_cache_primed: bool,
     /// 选区数上次值(selection-change 变化检测)
     last_selection_count: usize,
 
@@ -467,6 +471,7 @@ impl Application {
             theme_mode,
             last_cursor: None,
             last_selection_count: 0,
+            layout_cache_primed: false,
             js_host: Some(js_host),
         };
 
@@ -750,6 +755,18 @@ impl Application {
             // 与 buffers 同一条理由：JS 侧读取是同步的，只能每帧写。
             let folds_json = crate::commands::typed::serialize_folds(&self.editor);
             host.cache_folds(&folds_json);
+            // 布局用的折叠快照（按路径；`:layout save/load` 靠它带折叠态）
+            let layout_folds = crate::commands::typed::serialize_layout_folds(&self.editor);
+            host.cache_layout_folds(&layout_folds);
+            if !self.layout_cache_primed {
+                // 新会话第一次渲染就把布局灌进缓存：`:layout save` / `helix.layout.get()`
+                // 不必等到"改过一次布局"才有数据（只写缓存，不发事件）。
+                self.layout_cache_primed = true;
+                let dump = self.compositor.layout_tree().dump();
+                if let Ok(json) = serde_json::to_string(&dump) {
+                    helix_js::cache_layout(host.state(), &json);
+                }
+            }
         }
         // 诊断快照:这才是贵的那份(每条 message 都要复制+序列化,大诊断集上千条),
         // 且只有显式调用 `helix.diagnostics()` 的插件才读 ⇒ 按兴趣位门控。

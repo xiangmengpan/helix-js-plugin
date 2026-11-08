@@ -123,3 +123,45 @@ pub(crate) fn handle_fold_close_all() -> anyhow::Result<()> {
     });
     Ok(())
 }
+
+/// `layout.restore` 里带的折叠态：`{"<绝对路径>": [[start_line, end_line], ...]}`。
+///
+/// 只对**当前已打开**的文档生效（文档由布局恢复/插件自己打开，这里不主动开文件）；
+/// 文本变短时 `Folds::from_lines` 会 clamp/丢弃 —— 与 `fold-state.json` 同一套语义。
+pub(crate) fn apply_layout_folds(editor: &mut helix_view::Editor, dump: &serde_json::Value) {
+    let Some(map) = dump.get("folds").and_then(|v| v.as_object()) else {
+        return;
+    };
+    let mut applied = 0usize;
+    for doc in editor.documents_mut() {
+        let Some(path) = doc.path() else {
+            continue;
+        };
+        let key = path.to_string_lossy();
+        let Some(entries) = map.get(key.as_ref()).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let text = doc.text().slice(..);
+        let restored: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| entry.as_array())
+            .filter_map(|pair| {
+                let start = pair.first()?.as_u64()? as usize;
+                let end = pair.get(1)?.as_u64()? as usize;
+                helix_view::fold::Folds::from_lines(text, start..end)
+            })
+            .collect();
+        if restored.is_empty() {
+            continue;
+        }
+        doc.folds.clear();
+        for fold in restored {
+            doc.folds.add(fold);
+        }
+        applied += 1;
+    }
+    if applied > 0 {
+        editor.set_status(format!("layout: restored folds for {applied} buffer(s)"));
+        helix_event::request_redraw();
+    }
+}

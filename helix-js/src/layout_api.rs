@@ -8,7 +8,7 @@
 //! 疑似与 `:layout` 的 JS 实现构成两套实现 —— 见 `docs/architecture-audit.md` D7。
 use crate::js_err;
 
-use boa_engine::{Context, JsError, JsString, JsValue, Source};
+use boa_engine::{Context, JsError, JsString, JsValue};
 
 use crate::popup::{obj_opt_str, obj_opt_u16};
 use crate::state::{buffers_json, layout_json};
@@ -576,12 +576,38 @@ pub(crate) fn js_json_parse(
 }
 
 /// 读取最近一次布局树序列化（helix-term 树变更时缓存；可能滞后一个操作）
+/// 布局 JSON + 折叠态（`{"folds": {"<path>": [[start,end],...]}}`）。
+///
+/// **为什么要并进去**：`:layout save/load` 存的是 `helix.layout.get()` 的整份 JSON
+/// ⇒ 折叠态只要出现在这里，就自动跟着命名布局一起存/取；否则它只能靠
+/// `fold-state.json`（按文件、与布局无关）另存一份。
+fn layout_json_with_folds() -> String {
+    let layout = layout_json();
+    if layout.is_empty() {
+        return layout;
+    }
+    let folds = crate::state::layout_folds_json();
+    if folds.is_empty() {
+        return layout;
+    }
+    let (Ok(mut dump), Ok(folds)) = (
+        serde_json::from_str::<serde_json::Value>(&layout),
+        serde_json::from_str::<serde_json::Value>(&folds),
+    ) else {
+        return layout;
+    };
+    if let Some(obj) = dump.as_object_mut() {
+        obj.insert("folds".to_string(), folds);
+    }
+    dump.to_string()
+}
+
 pub(crate) fn js_get_layout(
     _this: &JsValue,
     _args: &[JsValue],
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
-    let json = layout_json();
+    let json = layout_json_with_folds();
     if json.is_empty() {
         return Ok(JsValue::null());
     }
@@ -1088,11 +1114,16 @@ pub(crate) fn js_restore_layout(
             "helix.restore_layout: layout object required",
         ));
     }
-    // 用 JSON.stringify 序列化传入对象
-    let json: String = ctx
-        .eval(Source::from_bytes("JSON.stringify(arguments[0])"))
-        .and_then(|v| v.try_js_into::<String>(ctx))
-        .map_err(|e| crate::js_err(format!("restore_layout: {e}")))?;
+    // 用 `JsValue::to_json` 序列化传入对象。
+    //
+    // 早先这里是 `ctx.eval("JSON.stringify(arguments[0])")` —— 只在**顶层脚本**里成立：
+    // 从插件命令回调里调 `helix.layout.restore(dump)` 会炸
+    // `ReferenceError: arguments is not defined`（实测，`layout_get_carries_folds…` 抓到的）。
+    let json: String = dump
+        .to_json(ctx)
+        .map_err(|e| crate::js_err(format!("restore_layout: {e}")))?
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string());
     UI_REQUESTS
         .get()
         .unwrap()
@@ -1182,7 +1213,7 @@ pub(crate) fn js_layout_save(
     ctx: &mut Context,
 ) -> boa_engine::JsResult<JsValue> {
     let name = arg_name(args, ctx, "helix.layout.save")?;
-    let json = crate::state::layout_json();
+    let json = layout_json_with_folds();
     if json.is_empty() {
         return Err(js_err(
             "helix.layout.save: 还没有布局快照(需编辑器先渲染过至少一帧)",

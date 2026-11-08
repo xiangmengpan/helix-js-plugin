@@ -421,6 +421,8 @@ impl UiOp {
                             editor.set_error(format!("restore_layout: {e}"));
                         } else {
                             compositor.sync_editor_focus(editor);
+                            // 布局里带的折叠态（`:layout load` / `helix.layout.restore`）
+                            super::fold::apply_layout_folds(editor, &v);
                         }
                     }
                     Err(e) => editor.set_error(format!("restore_layout: 非法 JSON: {e}")),

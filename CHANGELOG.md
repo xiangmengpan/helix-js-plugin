@@ -135,7 +135,13 @@ Features:
   (requested when a document opens or when the server finishes initializing, cached on the
   document, refreshed by `zM` on a miss). Plugins get `helix.fold.list/open/close/toggle/
   open_all/close_all` (0-based lines, same state as the keys). Folds persist across sessions by
-  file path (`[editor] fold-persist`, `~/.local/state/helix/fold-state.json`).
+  file path (`[editor] fold-persist`, `~/.local/state/helix/fold-state.json`). The gutter grows
+  one column showing `▶` (folded) and `▼` (foldable, still open); `[editor] fold-column` picks
+  `auto` (default: only once the document has folds, so nothing is stolen from files you never
+  fold), `always` (vim `foldcolumn` feel) or `hide`, and candidates are cached per document
+  version so the column costs no extra scan per frame. Named layouts carry folds too:
+  `helix.layout.get()` (and therefore `:layout save` / `:layout load`) embeds `folds` keyed by
+  file path, and restoring a layout re-applies them.
   `folds.scm` for rust / javascript / typescript / python / go, and
   `cargo xtask query-check` now compiles every `folds.scm` too (it caught two stale files —
   `blade`, which used an unsupported `@start`/`@end` convention plus node types this grammar
@@ -193,6 +199,11 @@ Fixes:
   `PluginPanel` ignores every key while the editor is inserting (unless one of its nodes holds
   focus), and the compositor's Esc-blur fallback is skipped in insert mode so `Esc` reaches the
   editor. Regression: `plugin_panel::panel_yields_to_insert_mode`.
+* `helix.layout.get()` returned null in a fresh session until the layout happened to change, and
+  `helix.layout.restore(dump)` threw `ReferenceError: arguments is not defined` when called from a
+  plugin command callback (it stringified its argument through `eval`). Both fixed: the layout
+  cache is primed on the first frame (cache write only — no spurious `layout-change` event) and the
+  dump is serialized with `JsValue::to_json`.
 
 * `helix.el("input")` silently dropped `onChange` and `multiline` — the el-node property
   whitelist did not list them, so the documented "engine-owned value + onChange" and
